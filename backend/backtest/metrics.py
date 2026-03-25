@@ -1,0 +1,173 @@
+# ============================================================
+# 文件: backend/backtest/metrics.py
+# 狀態: 已完成
+# 問題: 無
+# 關聯文件:
+#   ← backend/backtest/engine.py  (回測完成後調用)
+#   ← backend/api/routes.py       (API 查詢績效)
+#   → backend/db/models.py        (Trade, Metrics)
+# 函數結構:
+#   - MetricsCalculator.calculate_all(trades, capital) -> Metrics
+#   - MetricsCalculator.win_rate(trades) -> float
+#   - MetricsCalculator.expectancy(trades) -> float
+#   - MetricsCalculator.max_drawdown(trades, capital) -> (float, float)
+#   - MetricsCalculator.sharpe_ratio(trades) -> float
+#   - MetricsCalculator.profit_factor(trades) -> float
+#   - MetricsCalculator.max_consecutive_losses(trades) -> int
+#   - MetricsCalculator.daily_pnl_summary(trades) -> dict
+# ============================================================
+"""
+績效指標計算模組
+"""
+
+from __future__ import annotations
+import math
+from typing import Dict, List, Tuple
+
+from backend.db.models import Metrics, Trade, StrategyType
+
+
+class MetricsCalculator:
+
+    def calculate_all(
+        self, trades: List[Trade], initial_capital: float
+    ) -> Metrics:
+        """一次計算所有指標"""
+        if not trades:
+            return Metrics()
+
+        completed = [t for t in trades if t.pnl is not None]
+        if not completed:
+            return Metrics()
+
+        wins = [t for t in completed if t.pnl > 0]
+        losses = [t for t in completed if t.pnl <= 0]
+
+        win_pnls = [t.pnl for t in wins]
+        loss_pnls = [t.pnl for t in losses]
+
+        avg_win = sum(win_pnls) / len(win_pnls) if win_pnls else 0
+        avg_loss = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0
+
+        wr = len(wins) / len(completed) if completed else 0
+
+        dd, dd_pct = self.max_drawdown(completed, initial_capital)
+
+        metrics = Metrics(
+            total_trades=len(completed),
+            wins=len(wins),
+            losses=len(losses),
+            win_rate=wr,
+            avg_win=avg_win,
+            avg_loss=avg_loss,
+            avg_rr_ratio=abs(avg_win / avg_loss) if avg_loss != 0 else 0,
+            expectancy=self.expectancy(completed),
+            max_drawdown=dd,
+            max_drawdown_pct=dd_pct,
+            sharpe_ratio=self.sharpe_ratio(completed),
+            profit_factor=self.profit_factor(completed),
+            max_consecutive_losses=self.max_consecutive_losses(completed),
+            total_pnl=sum(t.pnl for t in completed),
+            daily_pnl=self.daily_pnl_summary(completed),
+        )
+
+        return metrics
+
+    @staticmethod
+    def win_rate(trades: List[Trade]) -> float:
+        completed = [t for t in trades if t.pnl is not None]
+        if not completed:
+            return 0.0
+        wins = sum(1 for t in completed if t.pnl > 0)
+        return wins / len(completed)
+
+    @staticmethod
+    def expectancy(trades: List[Trade]) -> float:
+        """期望值 = (wr × avg_win) - (lr × avg_loss)"""
+        completed = [t for t in trades if t.pnl is not None]
+        if not completed:
+            return 0.0
+
+        wins = [t.pnl for t in completed if t.pnl > 0]
+        losses = [abs(t.pnl) for t in completed if t.pnl <= 0]
+
+        wr = len(wins) / len(completed)
+        lr = 1 - wr
+        avg_w = sum(wins) / len(wins) if wins else 0
+        avg_l = sum(losses) / len(losses) if losses else 0
+
+        return (wr * avg_w) - (lr * avg_l)
+
+    @staticmethod
+    def max_drawdown(
+        trades: List[Trade], initial_capital: float
+    ) -> Tuple[float, float]:
+        """最大回撤 (金額, 百分比)"""
+        equity = initial_capital
+        peak = equity
+        max_dd = 0.0
+        max_dd_pct = 0.0
+
+        for t in trades:
+            if t.pnl is not None:
+                equity += t.pnl
+                peak = max(peak, equity)
+                dd = peak - equity
+                if dd > max_dd:
+                    max_dd = dd
+                    max_dd_pct = dd / peak if peak > 0 else 0
+
+        return max_dd, max_dd_pct
+
+    @staticmethod
+    def sharpe_ratio(
+        trades: List[Trade], risk_free_rate: float = 0.0
+    ) -> float:
+        """Sharpe Ratio (年化，假設每日 1-3 筆)"""
+        pnls = [t.pnl for t in trades if t.pnl is not None]
+        if len(pnls) < 2:
+            return 0.0
+
+        mean = sum(pnls) / len(pnls)
+        variance = sum((p - mean) ** 2 for p in pnls) / (len(pnls) - 1)
+        std = math.sqrt(variance) if variance > 0 else 0
+
+        if std == 0:
+            return 0.0
+
+        # 假設每日 ~2 筆，252 交易日 → √504 年化
+        daily_sharpe = (mean - risk_free_rate) / std
+        return daily_sharpe * math.sqrt(252)
+
+    @staticmethod
+    def profit_factor(trades: List[Trade]) -> float:
+        """Profit Factor = gross_profit / gross_loss"""
+        gross_profit = sum(t.pnl for t in trades if t.pnl and t.pnl > 0)
+        gross_loss = abs(sum(t.pnl for t in trades if t.pnl and t.pnl < 0))
+
+        if gross_loss == 0:
+            return float('inf') if gross_profit > 0 else 0
+        return gross_profit / gross_loss
+
+    @staticmethod
+    def max_consecutive_losses(trades: List[Trade]) -> int:
+        """最大連續虧損次數"""
+        max_streak = 0
+        current = 0
+        for t in trades:
+            if t.pnl is not None and t.pnl <= 0:
+                current += 1
+                max_streak = max(max_streak, current)
+            else:
+                current = 0
+        return max_streak
+
+    @staticmethod
+    def daily_pnl_summary(trades: List[Trade]) -> Dict[str, float]:
+        """每日盈虧匯總"""
+        daily: Dict[str, float] = {}
+        for t in trades:
+            if t.pnl is not None and t.exit_time:
+                date_str = t.exit_time.strftime("%Y-%m-%d")
+                daily[date_str] = daily.get(date_str, 0) + t.pnl
+        return daily

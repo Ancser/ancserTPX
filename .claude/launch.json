@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ancserTPX",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "backend.main"],
+      "port": 8001
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:8000/api/health)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(ping -n 4 127.0.0.1)",
+      "Bash(ping -n 15 127.0.0.1)",
+      "Bash(ping -n 30 127.0.0.1)",
+      "Bash(curl -s http://localhost:8000/api/simulator/status)",
+      "Bash(python -m json.tool)",
+      "Bash(taskkill /f /im python.exe)",
+      "Bash(python -c \"from backend.data.market_simulator import MarketSimulator; print\\(''OK''\\)\")",
+      "Bash(python -c \"from backend.api.routes import router; print\\(''Routes OK''\\); print\\([r.path for r in router.routes]\\)\")",
+      "Bash(curl -s http://localhost:8000/openapi.json)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(''''\\\\n''''.join\\(sorted\\(d.get\\(''''paths'''',{}\\).keys\\(\\)\\)\\)\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(ping -n 6 127.0.0.1)",
+      "Bash(curl -s http://localhost:8001/api/simulator/status)",
+      "Bash(python -c \"from backend.data.market_simulator import MarketSimulator; print\\(''Import OK''\\)\")",
+      "Bash(curl -s -X POST http://localhost:8001/api/simulator/start -H \"Content-Type: application/json\" -d \"{\"\"base_price\"\": 23500, \"\"speed\"\": 100}\")",
+      "Bash(ping -n 8 127.0.0.1)",
+      "Bash(curl -s -X POST http://localhost:8001/api/simulator/stop)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''backend/data/market_simulator.py'', doraise=True\\); print\\(''OK''\\)\")",
+      "Bash(tasklist /FI 'IMAGENAME eq python.exe' /NH)",
+      "Bash(findstr \"8001\")",
+      "Bash(findstr :8001)",
+      "Bash(curl -s http://localhost:8001/api/health)",
+      "Bash(curl -s http://localhost:8001/api/accounts -X POST -H \"Content-Type: application/json\" -d \"{}\")",
+      "Bash(curl -s http://localhost:8001/api/data/fetch-historical -X POST -H \"Content-Type: application/json\" -d \"{\"\"unit\"\": 2, \"\"unit_number\"\": 5, \"\"start_time\"\": \"\"2026-03-20T00:00:00Z\"\", \"\"end_time\"\": \"\"2026-03-22T23:59:59Z\"\"}\")",
+      "Bash(cd /d F:ancserQuantancserTPX)",
+      "Bash(python -c \"from backend.strategy.live_strategy import LiveStrategyEngine, create_live_engine; e = create_live_engine\\(\\); print\\(''LiveStrategyEngine OK''\\)\")",
+      "Bash(python -c \"from backend.api.routes import router; print\\(''Routes OK''\\)\")",
+      "Bash(curl -s http://localhost:8001/api/config)",
+      "Bash(timeout 8)",
+      "Bash(python -c \"from backend.strategy.reversion import ReversionStrategy; from backend.strategy.trend_follow import TrendFollowStrategy; from backend.backtest.engine import BacktestEngine; from backend.strategy.live_strategy import LiveStrategyEngine; r=ReversionStrategy\\(\\); t=TrendFollowStrategy\\(\\); print\\(''OK''\\); print\\(''REV SL=''+str\\(r.sl_points\\)+''pt TP=''+str\\(r.tp_points\\)+''pt''\\); print\\(''TREND SL=''+str\\(t.sl_points\\)+''pt TP=''+str\\(t.tp_points\\)+''pt confirm=''+str\\(t.confirm_candles\\)\\)\")",
+      "Bash(python -c \"from backend.api.routes import router; from backend.backtest.engine import BacktestEngine; print\\(''All OK''\\)\")"
+    ]
+  }
+}
