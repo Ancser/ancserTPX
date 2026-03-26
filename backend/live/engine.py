@@ -238,6 +238,18 @@ class LiveTradingEngine:
 
         self._candles_processed = len(historical_candles)
 
+        # ── CRITICAL: Reset strategy state after warm-up ──
+        # Warm-up may leave trend_follow in "confirmed" state (signal generated
+        # but never acted on). Must reset to idle so live ticks start fresh.
+        if "trend_follow" in self.strategies:
+            old_state = self.trend_follow.raw_state
+            self.trend_follow.reset()
+            if old_state != "idle":
+                self._log_event(
+                    f"⚠ Warm-up 後重置 TrendFollow: {old_state} → idle "
+                    f"(防止 stale state 卡死)"
+                )
+
         # Get initial account balance
         try:
             positions = await self.client.get_positions(self.account_id)
@@ -390,6 +402,13 @@ class LiveTradingEngine:
 
         # Trend follow
         if "trend_follow" in self.strategies:
+            # Safety: if strategy thinks it's confirmed but no order exists, reset
+            if self.trend_follow.raw_state == "confirmed" and not self._pending_order_id:
+                self._log_event(
+                    "⚠ TrendFollow stuck in 'confirmed' but no pending order → reset to idle"
+                )
+                self.trend_follow.reset()
+
             signal = self.trend_follow.evaluate(candle, active_zone, all_zones, False)
             if signal and not self._pending_order_id:
                 await self._place_order(signal)

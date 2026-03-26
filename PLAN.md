@@ -508,6 +508,8 @@ TopstepX 行為:
 - [x] **zone 過期警告**: warm-up 結束後如 big_zone age > 12h → error log
 - [x] **追蹤 fill price**: `_check_pending_fill()` 比較 entry vs fill, 差距>5pts 報警
 - [x] **Engine 不下 SL/TP**: `skip_engine_sl_tp=True`, 由 TopstepX Position Bracket 300:900 管理
+- [x] **Warm-up state reset**: warm-up 結束後 `trend_follow.reset()` → 防止 confirmed/retry 狀態卡死
+- [x] **Tick 安全檢查**: 若 TrendFollow state=="confirmed" 但無 pending order → 自動 reset to idle
 
 ### Step 2: Zone Detection 修復
 - [ ] **live mode 下持續 zone detection**: 每次拉新 candle 都要 feed detector, 不只是 warm-up
