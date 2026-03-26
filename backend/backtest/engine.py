@@ -1,6 +1,7 @@
 # ============================================================
 # 文件: backend/backtest/engine.py
-# 狀態: 已更新 v2
+# 狀態: 已完成
+# 問題: 無
 # 變更:
 #   - Reversion: 10 candle zone, top 90%/bottom 10%, SL $300 TP $900
 #   - TrendFollow: stateful, 4-candle confirm, vol comparison, POC retry
@@ -37,8 +38,24 @@ class BacktestEngine:
     TICK_SIZE = 0.25
     FLATTEN_TIME = time(15, 5)
 
-    def __init__(self, config: Optional[BacktestConfig] = None):
+    def __init__(self, config: Optional[BacktestConfig] = None,
+                 sl_dollars: float = 300.0,
+                 tp_dollars: float = 900.0,
+                 reversion_tp_mode: str = "general",
+                 trend_tp_mode: str = "general",
+                 trend_tp_multiplier: float = 3.0,
+                 max_daily_trades: int = 5):
         self.config = config or BacktestConfig()
+
+        sl_pts = sl_dollars / self.POINT_VALUE
+        tp_pts_rev = tp_dollars / self.POINT_VALUE
+        tp_pts_trend = tp_dollars / self.POINT_VALUE
+
+        # Override TP based on mode
+        if trend_tp_mode == "multiplier":
+            tp_pts_trend = sl_pts * trend_tp_multiplier
+
+        self.reversion_tp_mode = reversion_tp_mode  # "general" or "poc"
 
         self.detector = ConsolidationDetector(
             min_candles=self.config.min_candles_for_zone,
@@ -46,15 +63,15 @@ class BacktestEngine:
             value_area_pct=self.config.value_area_pct,
         )
         self.reversion = ReversionStrategy(
-            sl_points=15.0,       # $300
-            tp_points=45.0,       # $900
+            sl_points=sl_pts,
+            tp_points=tp_pts_rev,
             min_zone_candles=10,
             entry_pct_high=0.90,
             entry_pct_low=0.10,
         )
         self.trend_follow = TrendFollowStrategy(
-            sl_points=15.0,       # $300
-            tp_points=60.0,       # $1200
+            sl_points=sl_pts,
+            tp_points=tp_pts_trend,
             confirm_candles=4,
             range_pct=0.90,
         )
@@ -62,9 +79,14 @@ class BacktestEngine:
         # State
         self._capital = self.config.initial_capital
         self._open_position: Optional[Trade] = None
+        self._pending_order: Optional[TradeSignal] = None  # limit order waiting to fill
+        self._pending_age: int = 0  # candles since order placed
+        self._pending_max_age: int = 20  # cancel after N candles
         self._trades: List[Trade] = []
         self._equity_curve: List[Tuple[datetime, float]] = []
         self._daily_pnl: Dict[str, float] = {}
+        self._daily_trade_count: Dict[str, int] = {}
+        self._max_daily_trades: int = max_daily_trades
         self._last_zone_event: Optional[ZoneEvent] = None
         self._last_closed_trade: Optional[Trade] = None
 
@@ -86,10 +108,12 @@ class BacktestEngine:
         calc = MetricsCalculator()
         metrics = calc.calculate_all(self._trades, self.config.initial_capital)
 
+        all_zones = self.detector.get_all_zones()
+
         result = BacktestResult(
             config=self.config,
             trades=self._trades,
-            zones=self.detector.get_all_zones(),
+            zones=all_zones,
             metrics=metrics,
             equity_curve=self._equity_curve,
         )
@@ -136,6 +160,8 @@ class BacktestEngine:
             if trades_after > trades_before:
                 t = self._trades[-1]
                 events.append(f"exit_{t.exit_reason.value}" if t.exit_reason else "exit")
+            if self._pending_order and self._pending_age == 0:
+                events.append("order_placed")
 
             # Capture zone state
             active_zone = self.detector.get_active_zone()
@@ -146,11 +172,19 @@ class BacktestEngine:
             trend_raw = self.trend_follow.raw_state
 
             if self._open_position:
+                is_new_entry = open_after and open_after != open_before
                 if self._open_position.strategy == StrategyType.REVERSION:
-                    phase = "入場中"
+                    phase = "掛單成交" if is_new_entry else "持倉中"
                     mode = "邊界回歸POC"
                 else:
-                    phase = "入場中"
+                    phase = "掛單成交" if is_new_entry else "持倉中"
+                    mode = "趨勢突破"
+            elif self._pending_order:
+                # Limit order placed, waiting for fill
+                phase = "掛單中"
+                if self._pending_order.strategy == StrategyType.REVERSION:
+                    mode = "邊界回歸POC"
+                else:
                     mode = "趨勢突破"
             elif active_zone and trend_raw == "idle":
                 # In consolidation
@@ -178,6 +212,8 @@ class BacktestEngine:
                     "left_at": z.left_at.isoformat() if z.left_at else None,
                     "exit_direction": z.exit_direction,
                     "num_candles": z.num_candles,
+                    "timeframe": getattr(z, 'timeframe', '5m'),
+                    "parent_zone_id": getattr(z, 'parent_zone_id', None),
                 }
                 # VP profile for current active zone (re-computed)
                 if z.candles and z.status.value == "active":
@@ -209,6 +245,20 @@ class BacktestEngine:
                     "zone_id": p.zone_id,
                 }
 
+            # Pending order info
+            pending_info = None
+            if self._pending_order:
+                po = self._pending_order
+                pending_info = {
+                    "strategy": po.strategy.value,
+                    "direction": po.direction.value,
+                    "entry_price": po.entry_price,
+                    "sl_price": po.sl_price,
+                    "tp_price": po.tp_price,
+                    "zone_id": po.zone_id,
+                    "age": self._pending_age,
+                }
+
             snapshots.append({
                 "i": i,
                 "phase": phase,
@@ -216,6 +266,7 @@ class BacktestEngine:
                 "events": events,
                 "zones": zone_list,
                 "open_trade": open_trade,
+                "pending_order": pending_info,
                 "capital": round(self._capital, 0),
             })
 
@@ -283,9 +334,12 @@ class BacktestEngine:
     def _reset(self):
         self._capital = self.config.initial_capital
         self._open_position = None
+        self._pending_order = None
+        self._pending_age = 0
         self._trades = []
         self._equity_curve = []
         self._daily_pnl = {}
+        self._daily_trade_count = {}
         self._last_zone_event = None
         self._last_closed_trade = None
         self.detector.reset()
@@ -300,6 +354,15 @@ class BacktestEngine:
         if daily <= -self.config.max_daily_loss:
             if self._open_position:
                 self._force_exit(candle, ExitReason.FLATTEN)
+            if self._pending_order:
+                self._cancel_pending_order()
+            return
+
+        # Daily trade limit
+        daily_trades = self._daily_trade_count.get(date_str, 0)
+        if daily_trades >= self._max_daily_trades and not self._open_position:
+            if self._pending_order:
+                self._cancel_pending_order()
             return
 
         # Flatten time
@@ -307,18 +370,49 @@ class BacktestEngine:
         if candle_time >= self.FLATTEN_TIME:
             if self._open_position:
                 self._force_exit(candle, ExitReason.FLATTEN)
+            if self._pending_order:
+                self._cancel_pending_order()
             return
 
-        # Check SL/TP
+        # Check SL/TP on open position
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
                 return  # still open, don't open new
 
+        # ── Check if pending limit order fills on this candle ──
+        if self._pending_order and not self._open_position:
+            filled = self._check_pending_fill(candle)
+            if filled:
+                return  # just filled, done for this candle
+            # Check expiry
+            self._pending_age += 1
+            if self._pending_age > self._pending_max_age:
+                logger.debug(f"掛單超時取消: {self._pending_order.reason}")
+                self._cancel_pending_order()
+
         # Update consolidation detector
         event = self.detector.update(candle)
         if event:
             self._last_zone_event = event
+
+        # ── Cancel pending order if a new (3rd+) zone forms ──
+        if self._pending_order:
+            all_active_or_left = [z for z in self.detector.get_all_zones()
+                                  if z.status in (ZoneStatus.ACTIVE, ZoneStatus.LEFT)]
+            pending_zone = self._pending_order.zone_id
+            # If 2+ newer zones have formed since the pending order's zone
+            newer_zones = [z for z in all_active_or_left if z.zone_id != pending_zone]
+            if len(newer_zones) >= 2:
+                logger.debug(f"掛單取消(新區間形成): {self._pending_order.reason}")
+                self._cancel_pending_order()
+
+        # ── Cancel pending 15 min before flatten ──
+        if self._pending_order:
+            pre_flatten = time(self.FLATTEN_TIME.hour, max(0, self.FLATTEN_TIME.minute - 15))
+            if candle.timestamp.time() >= pre_flatten:
+                logger.debug(f"掛單取消(收盤前): {self._pending_order.reason}")
+                self._cancel_pending_order()
 
         # ── Always evaluate trend follow (stateful) ──
         # Check if last closed trade was a trend SL
@@ -333,20 +427,24 @@ class BacktestEngine:
         active_zone = self.detector.get_active_zone()
 
         # Try trend follow first (it needs every candle for state tracking)
+        # Trend follow is always evaluated for state tracking, even with pending order
         if not self._open_position and "trend_follow" in self.config.strategies:
             signal = self.trend_follow.evaluate(
                 candle, active_zone, all_zones, last_trend_sl
             )
-            if signal:
-                self._execute_entry(signal, candle)
+            if signal and not self._pending_order:
+                self._place_pending_order(signal, candle)
                 return
 
-        # Try reversion
-        if not self._open_position and "reversion" in self.config.strategies:
+        # Try reversion (skip if already have a pending order)
+        if not self._open_position and not self._pending_order and "reversion" in self.config.strategies:
             if active_zone:
                 signal = self.reversion.evaluate(candle, active_zone)
                 if signal:
-                    self._execute_entry(signal, candle)
+                    # POC TP mode: set TP to zone POC
+                    if self.reversion_tp_mode == "poc" and active_zone.poc:
+                        signal.tp_price = active_zone.poc
+                    self._place_pending_order(signal, candle)
                     return
 
     def _check_exit(self, candle: Candle):
@@ -364,6 +462,46 @@ class BacktestEngine:
                 self._execute_exit(candle, pos.sl_price, ExitReason.SL)
             elif candle.low <= pos.tp_price:
                 self._execute_exit(candle, pos.tp_price, ExitReason.TP)
+
+    def _cancel_pending_order(self):
+        """Cancel a pending limit order and notify the strategy."""
+        if self._pending_order and self._pending_order.strategy == StrategyType.TREND_FOLLOW:
+            self.trend_follow.notify_order_cancelled()
+        self._pending_order = None
+        self._pending_age = 0
+
+    def _place_pending_order(self, signal: TradeSignal, candle: Candle):
+        """Place a limit order — will fill on a future candle when price touches."""
+        self._pending_order = signal
+        self._pending_age = 0
+        logger.debug(
+            f"掛單: {signal.strategy.value} {signal.direction.value} "
+            f"limit @ {signal.entry_price:.2f} | SL={signal.sl_price:.2f} TP={signal.tp_price:.2f}"
+        )
+
+    def _check_pending_fill(self, candle: Candle) -> bool:
+        """Check if the pending limit order fills on this candle."""
+        order = self._pending_order
+        if not order:
+            return False
+
+        filled = False
+        if order.direction == Direction.BUY:
+            # BUY limit fills when price drops to or below the limit price
+            if candle.low <= order.entry_price:
+                filled = True
+        else:
+            # SELL limit fills when price rises to or above the limit price
+            if candle.high >= order.entry_price:
+                filled = True
+
+        if filled:
+            self._execute_entry(order, candle)
+            self._pending_order = None
+            self._pending_age = 0
+            return True
+
+        return False
 
     def _execute_entry(self, signal: TradeSignal, candle: Candle):
         slippage = self.config.slippage_ticks * self.TICK_SIZE
@@ -386,6 +524,8 @@ class BacktestEngine:
             is_big_trend=signal.is_big_trend,
         )
         self._open_position = trade
+        date_str = candle.timestamp.strftime("%Y-%m-%d")
+        self._daily_trade_count[date_str] = self._daily_trade_count.get(date_str, 0) + 1
         logger.debug(
             f"入場: {trade.strategy.value} {trade.direction.value} "
             f"@ {fill_price:.2f} | SL={trade.sl_price:.2f} TP={trade.tp_price:.2f}"
@@ -426,7 +566,7 @@ class BacktestEngine:
         self._last_closed_trade = pos
         self._open_position = None
 
-        # Notify trend follow strategy of trade close
+        # Notify strategy of trade close
         if pos.strategy == StrategyType.TREND_FOLLOW:
             self.trend_follow.notify_trade_closed(reason.value)
 

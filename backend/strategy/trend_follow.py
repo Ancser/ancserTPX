@@ -111,6 +111,13 @@ class TrendFollowStrategy:
         elif self._state == "watching":
             return self._handle_watching(candle)
 
+        # ── State: confirmed (order placed, waiting for fill) ──
+        elif self._state == "confirmed":
+            # Nothing to do — engine manages the pending order.
+            # If the order was cancelled externally, notify_order_cancelled
+            # will move us back to idle.
+            return None
+
         # ── State: retry (wait for price to return to POC) ──
         elif self._state == "retry":
             return self._handle_retry(candle)
@@ -292,24 +299,42 @@ class TrendFollowStrategy:
         return None
 
     def _generate_signal(self, candle: Candle) -> Optional[TradeSignal]:
-        """Generate the initial trend signal."""
+        """
+        Generate the initial trend signal.
+
+        Entry price = 50% midpoint of (4-candle breakthrough extreme + VAH/VAL).
+        For up breakout:  entry = (max_high_of_4_candles + VAH_80) / 2
+        For down breakout: entry = (min_low_of_4_candles + VAL_80) / 2
+        """
         if not self._ref_zone:
             return None
 
+        if not self._outside_candles or len(self._outside_candles) < self.confirm_candles:
+            return None
+
+        confirm_4 = self._outside_candles[:self.confirm_candles]
+
         if self._exit_direction == "up":
-            # Price broke above → buy limit at current level
-            entry = candle.close
+            # 4-candle max high + VAH → midpoint
+            max_high = max(c.high for c in confirm_4)
+            vah = self._ref_zone.vah_80
+            entry = (max_high + vah) / 2.0
             sl = entry - self.sl_points
             tp = entry + self.tp_points
             direction = Direction.BUY
         elif self._exit_direction == "down":
-            # Price broke below → sell limit
-            entry = candle.close
+            # 4-candle min low + VAL → midpoint
+            min_low = min(c.low for c in confirm_4)
+            val = self._ref_zone.val_80
+            entry = (min_low + val) / 2.0
             sl = entry + self.sl_points
             tp = entry - self.tp_points
             direction = Direction.SELL
         else:
             return None
+
+        sl_dollars = self.sl_points * POINT_VALUE
+        tp_dollars = self.tp_points * POINT_VALUE
 
         return TradeSignal(
             strategy=StrategyType.TREND_FOLLOW,
@@ -321,7 +346,8 @@ class TrendFollowStrategy:
             reason=(
                 f"TREND {direction.value.upper()} | "
                 f"4-candle confirm {self._exit_direction} | "
-                f"SL $300 TP $1200"
+                f"entry=50%({('high' if self._exit_direction == 'up' else 'low')}+{'VAH' if self._exit_direction == 'up' else 'VAL'}) | "
+                f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f}"
             ),
             timestamp=candle.timestamp,
         )
@@ -334,6 +360,14 @@ class TrendFollowStrategy:
             logger.info("[TrendFollow] Trade SL'd → entering retry mode")
         elif exit_reason in ("tp", "flatten"):
             self._state = "idle"
+            self._first_trade_failed = False
+
+    def notify_order_cancelled(self):
+        """Called by engine when a pending trend order is cancelled (timeout/flatten/new zones)."""
+        if self._state in ("confirmed", "retry"):
+            logger.info(f"[TrendFollow] Order cancelled → reset from {self._state} to idle")
+            self._state = "idle"
+            self._outside_candles = []
             self._first_trade_failed = False
 
     def get_phase_label(self) -> str:

@@ -53,6 +53,8 @@ def _env(key: str, default: str = "") -> str:
 # ── 臨時存儲（後續改用 SQLite）──────────────────────────
 _backtest_results = []
 _historical_candles: List[Candle] = []
+_topstepx_client = None  # TopstepXClient instance (set after connect)
+_live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
 
 
 # ── Pydantic 請求/回應模型 ────────────────────────────
@@ -65,6 +67,13 @@ class BacktestRequest(BaseModel):
     min_candles_for_zone: int = 6
     poc_drift_threshold: float = 3.0
     value_area_pct: float = 0.80
+    # Strategy params
+    sl_dollars: float = 300.0
+    tp_dollars: float = 900.0
+    reversion_tp_mode: str = "general"   # "general" | "poc"
+    trend_tp_mode: str = "general"       # "general" | "multiplier"
+    trend_tp_multiplier: float = 4.0     # TP = SL * multiplier
+    max_daily_trades: int = 5             # max entries per day
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -110,7 +119,20 @@ class ZoneResponse(BaseModel):
     status: str
     exit_direction: Optional[str]
     profile: Optional[list] = None  # VP histogram data [{price, volume, pct}]
+    timeframe: str = "5m"
+    parent_zone_id: Optional[str] = None
 
+
+class SubMetricsResponse(BaseModel):
+    total_trades: int = 0
+    wins: int = 0
+    losses: int = 0
+    win_rate: float = 0.0
+    avg_win: float = 0.0
+    avg_loss: float = 0.0
+    avg_rr_ratio: float = 0.0
+    total_pnl: float = 0.0
+    profit_factor: float = 0.0
 
 class MetricsResponse(BaseModel):
     total_trades: int
@@ -127,6 +149,9 @@ class MetricsResponse(BaseModel):
     profit_factor: float
     max_consecutive_losses: int
     total_pnl: float
+    # Per-strategy breakdown
+    reversion: Optional[SubMetricsResponse] = None
+    trend_follow: Optional[SubMetricsResponse] = None
 
 
 class BacktestResponse(BaseModel):
@@ -184,6 +209,150 @@ async def get_stored_candles():
         ],
         "count": len(_historical_candles),
     }
+
+
+@router.get("/data/latest-candles")
+async def get_latest_candles(since: str = ""):
+    """
+    Fetch fresh candles from TopstepX API (for live polling).
+    If `since` is provided (ISO timestamp), only return candles after that time.
+    Also appends new candles to _historical_candles store.
+    """
+    if not _topstepx_client:
+        # Fallback: return last few stored candles
+        if _historical_candles:
+            recent = _historical_candles[-5:]
+            return {
+                "candles": [
+                    {
+                        "time": c.timestamp.isoformat(),
+                        "open": c.open, "high": c.high, "low": c.low,
+                        "close": c.close, "volume": c.volume,
+                    }
+                    for c in recent
+                ],
+                "count": len(recent),
+            }
+        return {"candles": [], "count": 0}
+
+    try:
+        from backend.db.models import BarUnit
+        # Fetch last 10 candles (5-min bars)
+        candles = await _topstepx_client.get_historical_bars(
+            contract_id=_live_contract_id,
+            unit=BarUnit.MINUTE,
+            unit_number=5,
+            limit=10,
+        )
+
+        if not candles:
+            return {"candles": [], "count": 0}
+
+        # Append new candles to global store
+        if _historical_candles:
+            last_stored_ts = _historical_candles[-1].timestamp
+            for c in candles:
+                if c.timestamp > last_stored_ts:
+                    _historical_candles.append(c)
+
+        # Filter by `since` if provided
+        result = candles
+        if since:
+            from datetime import datetime as dt
+            try:
+                since_dt = dt.fromisoformat(since.replace("Z", "+00:00"))
+                result = [c for c in candles if c.timestamp > since_dt]
+            except Exception:
+                pass
+
+        return {
+            "candles": [
+                {
+                    "time": c.timestamp.isoformat(),
+                    "open": c.open, "high": c.high, "low": c.low,
+                    "close": c.close, "volume": c.volume,
+                }
+                for c in result
+            ],
+            "count": len(result),
+        }
+    except Exception as e:
+        logger.error(f"latest-candles error: {e}")
+        # Fallback to stored
+        if _historical_candles:
+            recent = _historical_candles[-5:]
+            return {
+                "candles": [
+                    {
+                        "time": c.timestamp.isoformat(),
+                        "open": c.open, "high": c.high, "low": c.low,
+                        "close": c.close, "volume": c.volume,
+                    }
+                    for c in recent
+                ],
+                "count": len(recent),
+            }
+        return {"candles": [], "count": 0}
+
+
+class DetectZonesRequest(BaseModel):
+    min_candles_for_zone: int = 6
+    poc_drift_threshold: float = 3.0
+    value_area_pct: float = 0.80
+
+
+@router.post("/data/detect-zones")
+async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
+    """Run zone detection on stored candles — returns zones with VP profiles."""
+    if not _historical_candles:
+        raise HTTPException(400, "No candles loaded")
+
+    from backend.strategy.consolidation import ConsolidationDetector
+    from backend.strategy.volume_profile import VolumeProfileCalculator
+
+    detector = ConsolidationDetector(
+        min_candles=req.min_candles_for_zone,
+        poc_drift_threshold=req.poc_drift_threshold,
+        value_area_pct=req.value_area_pct,
+    )
+    vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=req.value_area_pct)
+
+    for c in _historical_candles:
+        detector.update(c)
+
+    all_zones = detector.get_all_zones()
+    zone_list = []
+    for z in all_zones:
+        zd = {
+            "zone_id": z.zone_id,
+            "poc": z.poc,
+            "vah_80": z.vah_80,
+            "val_80": z.val_80,
+            "high_100": z.high_100,
+            "low_100": z.low_100,
+            "status": z.status.value,
+            "formed_at": z.formed_at.isoformat() if z.formed_at else None,
+            "left_at": z.left_at.isoformat() if z.left_at else None,
+            "exit_direction": z.exit_direction,
+            "num_candles": z.num_candles,
+            "timeframe": getattr(z, 'timeframe', '5m'),
+            "parent_zone_id": getattr(z, 'parent_zone_id', None),
+        }
+        if z.candles and z.status.value == "active":
+            try:
+                vp = vp_calc.calculate(z.candles)
+                max_vol = max(vp.profile.values()) if vp.profile else 1
+                zd["profile"] = [
+                    {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
+                    for p, v in sorted(vp.profile.items())
+                ]
+            except Exception:
+                zd["profile"] = []
+        else:
+            zd["profile"] = []
+        zone_list.append(zd)
+
+    return {"zones": zone_list, "count": len(zone_list)}
 
 
 @router.post("/data/load-sample")
@@ -503,10 +672,20 @@ async def fetch_historical(req: FetchHistoricalRequest):
         await client.authenticate()
         logger.info("Auth OK")
 
+        # Store client globally for live trading
+        global _topstepx_client, _live_contract_id
+        if _topstepx_client:
+            try:
+                await _topstepx_client.disconnect()
+            except Exception:
+                pass
+        _topstepx_client = client
+
         # 自動找 NQ 合約
         if not contract_id:
             contract_id = await client.get_nq_contract_id()
             logger.info(f"Auto-detected contract: {contract_id}")
+        _live_contract_id = contract_id
 
         candles = await client.get_historical_bars_paginated(
             contract_id=contract_id,
@@ -530,8 +709,6 @@ async def fetch_historical(req: FetchHistoricalRequest):
     except Exception as e:
         logger.error(f"Fetch failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        await client.disconnect()
 
 
 @router.post("/data/aggregate")
@@ -579,9 +756,17 @@ async def run_backtest(req: BacktestRequest):
         value_area_pct=req.value_area_pct,
     )
 
-    engine = BacktestEngine(config)
+    engine = BacktestEngine(
+        config,
+        sl_dollars=req.sl_dollars,
+        tp_dollars=req.tp_dollars,
+        reversion_tp_mode=req.reversion_tp_mode,
+        trend_tp_mode=req.trend_tp_mode,
+        trend_tp_multiplier=req.trend_tp_multiplier,
+        max_daily_trades=req.max_daily_trades,
+    )
 
-    # 如果是 1m 數據，先聚合
+    # Aggregate 1m to 5m if needed
     if _historical_candles and _historical_candles[0].interval in ("1m", "1s"):
         candles = engine.aggregate_1m_to_5m(_historical_candles)
     else:
@@ -642,9 +827,22 @@ async def run_backtest(req: BacktestRequest):
             status=z.status.value,
             exit_direction=z.exit_direction,
             profile=profile_data,
+            timeframe=getattr(z, 'timeframe', '5m'),
+            parent_zone_id=getattr(z, 'parent_zone_id', None),
         ))
 
     m = result.metrics
+
+    def _sub_resp(sm):
+        if not sm:
+            return None
+        return SubMetricsResponse(
+            total_trades=sm.total_trades, wins=sm.wins, losses=sm.losses,
+            win_rate=sm.win_rate, avg_win=sm.avg_win, avg_loss=sm.avg_loss,
+            avg_rr_ratio=sm.avg_rr_ratio, total_pnl=sm.total_pnl,
+            profit_factor=sm.profit_factor,
+        )
+
     metrics_resp = MetricsResponse(
         total_trades=m.total_trades,
         wins=m.wins,
@@ -660,6 +858,8 @@ async def run_backtest(req: BacktestRequest):
         profit_factor=m.profit_factor,
         max_consecutive_losses=m.max_consecutive_losses,
         total_pnl=m.total_pnl,
+        reversion=_sub_resp(m.reversion_metrics),
+        trend_follow=_sub_resp(m.trend_follow_metrics),
     )
 
     equity = [
@@ -696,7 +896,15 @@ async def run_backtest_replay(req: BacktestRequest):
         value_area_pct=req.value_area_pct,
     )
 
-    engine = BacktestEngine(config)
+    engine = BacktestEngine(
+        config,
+        sl_dollars=req.sl_dollars,
+        tp_dollars=req.tp_dollars,
+        reversion_tp_mode=req.reversion_tp_mode,
+        trend_tp_mode=req.trend_tp_mode,
+        trend_tp_multiplier=req.trend_tp_multiplier,
+        max_daily_trades=req.max_daily_trades,
+    )
 
     if _historical_candles and _historical_candles[0].interval in ("1m", "1s"):
         candles = engine.aggregate_1m_to_5m(_historical_candles)
@@ -706,6 +914,16 @@ async def run_backtest_replay(req: BacktestRequest):
     data = engine.run_with_replay(candles)
 
     m = data["metrics"]
+
+    def _sub_dict(sm):
+        if not sm:
+            return None
+        return {
+            "total_trades": sm.total_trades, "wins": sm.wins, "losses": sm.losses,
+            "win_rate": sm.win_rate, "total_pnl": sm.total_pnl,
+            "profit_factor": sm.profit_factor,
+        }
+
     return {
         "metrics": {
             "total_trades": m.total_trades,
@@ -716,6 +934,8 @@ async def run_backtest_replay(req: BacktestRequest):
             "profit_factor": m.profit_factor,
             "max_drawdown": m.max_drawdown,
             "expectancy": m.expectancy,
+            "reversion": _sub_dict(m.reversion_metrics),
+            "trend_follow": _sub_dict(m.trend_follow_metrics),
         },
         "trades": data["trades"],
         "snapshots": data["snapshots"],
@@ -736,3 +956,200 @@ async def list_backtests():
         }
         for i, r in enumerate(_backtest_results)
     ]
+
+
+# ============================================================
+# 即時交易 (Live Trading)
+# ============================================================
+
+_live_engine = None
+
+
+class LiveStartRequest(BaseModel):
+    account_id: int
+    contract_id: str = "CON.F.US.ENQ.M26"
+    strategies: List[str] = ["trend_follow"]
+    sl_dollars: float = 300.0
+    tp_dollars: float = 900.0
+    reversion_tp_mode: str = "poc"
+    trend_tp_mode: str = "multiplier"
+    trend_tp_multiplier: float = 4.0
+    max_daily_trades: int = 5
+    min_candles_for_zone: int = 6
+    poc_drift_threshold: float = 3.0
+    value_area_pct: float = 0.80
+    slippage_ticks: int = 1
+
+
+@router.post("/live/start")
+async def live_start(req: LiveStartRequest):
+    """啟動即時交易引擎"""
+    global _live_engine
+
+    if _live_engine and _live_engine.is_running:
+        raise HTTPException(400, "Live engine already running")
+
+    if not _historical_candles:
+        raise HTTPException(400, "No candles loaded — connect first")
+
+    if not _topstepx_client:
+        raise HTTPException(400, "TopstepX client not initialized — connect first")
+
+    # Safety: verify account is practice
+    try:
+        accounts = await _topstepx_client.get_accounts()
+        logger.info(f"[LIVE START] accounts found: {[{a.get('id'): a.get('name')} for a in accounts]}")
+        logger.info(f"[LIVE START] requested account_id={req.account_id}")
+        target = None
+        for acc in accounts:
+            if acc.get("id") == req.account_id:
+                target = acc
+                break
+        if not target:
+            avail_ids = [a.get("id") for a in accounts]
+            raise HTTPException(400, f"Account {req.account_id} not found. Available: {avail_ids}")
+        name = target.get("name", "")
+        if "PRAC" not in name.upper():
+            raise HTTPException(403, f"BLOCKED: Only practice accounts allowed. Account name='{name}'")
+        logger.info(f"[LIVE START] account verified: {name} (id={req.account_id})")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[LIVE START] Account check error: {e}")
+        raise HTTPException(500, f"Account check failed: {e}")
+
+    from backend.live.engine import LiveTradingEngine
+
+    _live_engine = LiveTradingEngine(
+        client=_topstepx_client,
+        account_id=req.account_id,
+        contract_id=req.contract_id,
+        strategies=req.strategies,
+        sl_dollars=req.sl_dollars,
+        tp_dollars=req.tp_dollars,
+        reversion_tp_mode=req.reversion_tp_mode,
+        trend_tp_mode=req.trend_tp_mode,
+        trend_tp_multiplier=req.trend_tp_multiplier,
+        max_daily_trades=req.max_daily_trades,
+        min_candles_for_zone=req.min_candles_for_zone,
+        poc_drift_threshold=req.poc_drift_threshold,
+        value_area_pct=req.value_area_pct,
+        slippage_ticks=req.slippage_ticks,
+        skip_engine_sl_tp=True,  # Let TopstepX Position Bracket (300:900) manage SL/TP
+    )
+
+    # Log candle date range
+    if _historical_candles:
+        first_ts = _historical_candles[0].timestamp
+        last_ts = _historical_candles[-1].timestamp
+        logger.info(
+            f"[LIVE START] {len(_historical_candles)} candles | "
+            f"range: {first_ts} ~ {last_ts}"
+        )
+    else:
+        logger.warning("[LIVE START] NO historical candles loaded!")
+    try:
+        await _live_engine.start(_historical_candles)
+        logger.info(f"[LIVE START] Engine started successfully")
+    except Exception as e:
+        logger.error(f"[LIVE START] Engine start failed: {e}")
+        _live_engine = None
+        raise HTTPException(500, f"Engine start failed: {e}")
+
+    return {"success": True, "message": "Live engine started"}
+
+
+@router.post("/live/stop")
+async def live_stop():
+    """停止即時交易引擎"""
+    global _live_engine
+    if not _live_engine or not _live_engine.is_running:
+        return {"success": True, "message": "Not running"}
+
+    await _live_engine.stop()
+    return {"success": True, "message": "Live engine stopped"}
+
+
+@router.post("/live/flatten")
+async def live_flatten():
+    """緊急平倉"""
+    if not _live_engine:
+        raise HTTPException(400, "Live engine not started")
+    await _live_engine.flatten_now()
+    return {"success": True, "message": "Flatten executed"}
+
+
+@router.get("/live/status")
+async def live_status():
+    """取得即時交易狀態"""
+    if not _live_engine:
+        return {"running": False}
+    return _live_engine.get_status()
+
+
+@router.get("/live/account-state")
+async def live_account_state():
+    """
+    讀取 TopstepX 帳戶的真實狀態 (持倉 + 掛單 + 餘額)
+    直接從 TopstepX API 讀取, 不依賴 live engine 狀態
+    """
+    if not _topstepx_client:
+        raise HTTPException(400, "TopstepX client not initialized — connect first")
+
+    try:
+        # Get all accounts
+        accounts = await _topstepx_client.get_accounts()
+        results = []
+
+        for acc in accounts:
+            acc_id = acc.get("id")
+            acc_name = acc.get("name", "?")
+            acc_balance = acc.get("balance", 0)
+
+            # Get positions
+            try:
+                positions = await _topstepx_client.get_positions(acc_id)
+            except Exception as e:
+                positions = [{"error": str(e)}]
+
+            # Get orders
+            try:
+                orders = await _topstepx_client.get_orders(acc_id)
+            except Exception as e:
+                orders = [{"error": str(e)}]
+
+            results.append({
+                "account_id": acc_id,
+                "name": acc_name,
+                "balance": acc_balance,
+                "is_practice": "PRAC" in acc_name,
+                "positions": positions,
+                "orders": orders,
+            })
+
+        # Also include live engine state for comparison
+        engine_state = None
+        if _live_engine:
+            engine_state = {
+                "running": _live_engine._running,
+                "pending_order_id": _live_engine._pending_order_id,
+                "pending_signal": {
+                    "direction": _live_engine._pending_signal.direction.value,
+                    "entry": _live_engine._pending_signal.entry_price,
+                    "sl": _live_engine._pending_signal.sl_price,
+                    "tp": _live_engine._pending_signal.tp_price,
+                    "strategy": _live_engine._pending_signal.strategy.value,
+                } if _live_engine._pending_signal else None,
+                "open_position": _live_engine._open_position,
+                "candles_processed": _live_engine._candles_processed,
+                "log": _live_engine._log[-30:],
+            }
+
+        return {
+            "accounts": results,
+            "engine": engine_state,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+    except Exception as e:
+        raise HTTPException(500, f"Failed to read account state: {e}")

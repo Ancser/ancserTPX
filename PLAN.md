@@ -329,33 +329,199 @@ ancserTPX/
 ## 六、開發階段
 
 ### Phase 1：數據基礎 + 回測引擎
-- [ ] 建立 Python 後端專案結構
-- [ ] 實作 Volume Profile 計算模組
-- [ ] 實作盤整區間偵測演算法
-- [ ] 建立回測引擎（讀取歷史 CSV/API 數據）
-- [ ] 計算策略一（均值回歸）回測結果
-- [ ] 計算策略二（趨勢跟隨）回測結果
+- [x] 建立 Python 後端專案結構 (FastAPI)
+- [x] 實作 Volume Profile 計算模組 (`backend/strategy/volume_profile.py`)
+- [x] 實作盤整區間偵測演算法 (`backend/strategy/consolidation.py`)
+- [x] 建立回測引擎 (`backend/backtest/engine.py`)
+- [x] 計算策略一（均值回歸）回測結果 (`backend/strategy/reversion.py`)
+- [x] 計算策略二（趨勢跟隨）回測結果 (`backend/strategy/trend_follow.py`)
 
 ### Phase 2：前端可視化
-- [ ] 建立 React 前端專案
-- [ ] K 線圖 + Volume Profile 疊加
-- [ ] 盤整區間框選可視化
-- [ ] 交易進出場標記
-- [ ] 績效統計面板
+- [x] 建立前端 (Pure HTML + lightweight-charts v4.1.3, 少女前線風格 UI)
+- [x] K 線圖 + Volume Profile canvas overlay 疊加
+- [x] 盤整區間框選可視化 (VP histogram, POC/VAH/VAL lines)
+- [x] 交易進出場標記 (chart markers + position tool overlay)
+- [x] 績效統計面板 (含 per-strategy breakdown: 1m/5m/reversion/trend)
+- [x] VP overlay 隨 scroll/zoom 即時跟隨 (rAF)
+- [x] Left zone: POC 在 left_at 停止延伸, 極淡顯示, 無標籤
 
 ### Phase 3：即時交易
-- [ ] TopstepX API 封裝（REST + WebSocket）
-- [ ] Practice Account 連接測試
-- [ ] 即時數據串流 -> 策略引擎
-- [ ] 自動下單模組
-- [ ] 風控模組（止損、日內平倉、帳戶限制）
+- [x] TopstepX API 封裝 (`backend/broker/topstepx.py`)
+- [x] Practice Account 連接 + 帳戶列表
+- [x] 即時 K 線每 30 秒 polling (`/data/latest-candles`)
+- [x] Live engine 主循環 (`backend/live/engine.py`)
+- [x] 自動下單模組 (limit order + SL/TP stop order)
+- [x] 風控模組 (日內平倉 CT 15:05, 每日交易上限)
+- [ ] ⚠️ **即時交易未驗證** — "僅監控" 模式原因不明
+- [ ] ⚠️ **SL/TP order 互相取消邏輯未完成**
 
-### Phase 4：優化與生產
+### Phase 4：~~多時間框架 (MTF) 策略~~ — 已移除 (2026-03-26)
+> MTF 模式已完全移除。原因：warm-up 歷史數據導致 stale zone/state，造成錯誤下單。
+> 專注於已驗證的原始策略 (Reversion + Trend Follow, 5m candles)。
+> 文件 `backend/strategy/mtf_strategy.py` 保留但不再 import。
+
+### Phase 5：優化與生產
 - [ ] 策略參數優化（回測結果驅動）
-- [ ] 多時間框架確認（15 分鐘輔助判斷）
-- [ ] 交易日誌 + 統計報告自動生成
+- [ ] Walk-forward validation
 - [ ] Practice Account 實測驗證
 - [ ] Funded Account 上線
+
+---
+
+## 九、已解決的 UI/前端 問題
+
+| # | 問題 | 解決方案 | 狀態 |
+|---|------|---------|------|
+| 1 | `var(--surface)` 未定義 → 白底 | 改為 `var(--bg)` | ✅ |
+| 2 | Live candle 不更新 | 新增 `/data/latest-candles` endpoint, incremental polling | ✅ |
+| 3 | GO LIVE 失敗 → 全部停止 | 改為 polling 先啟動, 引擎失敗 → 僅監控模式 | ✅ |
+| 4 | VP overlay 不隨 scroll/zoom | rAF + `subscribeVisibleLogicalRangeChange` + mousemove | ✅ |
+| 5 | POC 線全部重疊 | Left zone: 在 left_at 停止, 極淡, 無標籤/histogram | ✅ |
+| 6 | VP overlay 只在停止拖拽後更新 | 改用 rAF (持續) 取代 debounce | ✅ |
+| 7 | GFL UI 按鈕風格不一致 | GO LIVE/STOP/FLATTEN 加上 glow 效果 | ✅ |
+| 8 | 1min SL default $100 | 改為 $300 (models + strategy + frontend) | ✅ |
+| 9 | ~~Live 和 Backtest 共用 MTF toggle~~ | ~~分離為獨立 toggle + 參數~~ | ❌ MTF 已移除 |
+| 10 | 回測無 per-strategy 勝率 | 新增 reversion/trend_follow breakdown | ✅ |
+| 11 | 市場時段標籤中文混亂 | 改為 PRE/NORMAL/AFTER/CLOSED | ✅ |
+| 12 | Top bar 缺少 PHASE | 新增 PHASE 到 top bar + left panel | ✅ |
+
+---
+
+## 十、🔴 即時交易 — 嚴重問題 (2026-03-25 實測發現)
+
+### 10.1 實測事件記錄
+
+2026-03-25 晚間，使用者在 Practice 帳戶 PRAC-V2-556574-32302360 上點擊 GO LIVE (當時使用 MTF mode，已移除)。
+
+**TopstepX 上的真實訂單 (從 TopstepX 平台觀察到):**
+```
+#2708307397  2026-03-25 22:45:23  SELL 1 /NQ  Limit  23,930.25  → Filled @ 24,272.50
+#2708307400  2026-03-25 22:45:23  BUY  1 /NQ  Stop Market  @ 24,287.50  [Open] ← SL
+#2708307401  2026-03-25 22:45:23  BUY  1 /NQ  Limit  @ 24,227.50  [Open] ← TP
+#2708422926  2026-03-25 23:14:55  SELL 1 /NQ  Limit  24,085.50  → Filled @ 24,245.25
+```
+
+**Web app 顯示 (完全不同):**
+```
+▼ LIMIT SELL  ENTRY: 23930.25  SL: 23915.25  TP: 23990.25  PENDING...
+```
+
+**問題:**
+- Web 上的 signal 價格 (23930) 與 TopstepX 實際成交價 (24272) 差距 300+ 點
+- Engine 發出了一個 SELL limit @ 23930.25, 但因為當時市場價 ~24272, limit sell 在遠低於市場價的位置 → **被 TopstepX 以市場價立即成交** (limit sell 低於市場價 = 馬上成交)
+- SL 24287.50 和 TP 24227.50 是 **TopstepX 平台的 Position Bracket (Auto Follow-up SL/TP)**, 不是 engine 下的
+- Engine 認為自己還在 "掛單中", 實際上已經成交並被平台的 bracket order 管理
+
+### 10.2 根本原因分析
+
+| # | 問題 | 根因 | 嚴重度 |
+|---|------|------|--------|
+| **A** | **Engine 用舊 POC 計算入場價** | warm-up 只用 CONNECT 時拉的歷史數據 (3/18-3/19), 不包含 3/25 當天數據, 所以 zone/POC 是一週前的值 | 🔴 致命 |
+| **B** | **Limit Sell 低於市場價 = 立即成交** | Engine 基於舊 zone 算出 entry=23930, 但市價=24272, limit sell 在市價下方 → 交易所視為 marketable order 立即填單 | 🔴 致命 |
+| **C** | **SL/TP 不是 engine 下的** | TopstepX 平台有 "Position Bracket" 功能自動掛 SL/TP, engine 自己下的 SL/TP orders 可能重複或衝突 | 🔴 高 |
+| **D** | **Engine 不知道已成交** | `_sync_position` 可能沒正確偵測到新持倉, 或偵測到了但 `_pending_signal` 已被清空 | 🔴 高 |
+| **E** | **圖表只顯示 1 個舊 POC 區間** | Zone detection 基於 warm-up 的歷史數據, 3/25 當天新形成的 zone 不在 warm-up 範圍內 | 🔴 高 |
+| **F** | **TPX Real State 讀不到訂單** | `GET /live/account-state` 回傳 NO ORDERS/NO POSITIONS — 可能是 Order/search API 回傳格式不同, 或訂單已平倉 | 🟡 中 |
+| **G** | ~~**MTF 混合時間框架造成圖表混亂**~~ | ~~1m candle 和 5m candle 的 zone 重疊顯示~~ | ✅ MTF 已移除 |
+
+### 10.3 問題 A 深入: 為什麼 Engine 用舊數據?
+
+```
+用戶操作流程:
+  1. CONNECT (拉取 3/18-3/25 的 K線) → _historical_candles = [3/18 ... 3/25]
+  2. GO LIVE → live_engine.start(_historical_candles)
+     → warm-up: 遍歷所有 historical candles, 跑 detector
+     → 但! 如果數據跨多天, detector 偵測到的 zone 是舊的
+     → 到最新數據時, zone 可能:
+        a) 正在 "forming" 一個新 zone (但還沒 "active")
+        b) 之前的 zone 已經 "left", 新 zone 還沒形成
+  3. Engine 開始 tick → 只拉最新 1 根 candle
+     → 如果 signal 基於舊 zone → entry price 完全錯誤
+```
+
+**結論:** Engine 的 entry price 23930.25 ≈ 3/18 zone 的 VAL 附近, 不是 3/25 當天的值。
+
+### 10.4 問題 B 深入: Limit Order 行為
+
+```
+Engine 下單: SELL LIMIT @ 23930.25
+市場當時價: ~24272
+
+TopstepX 行為:
+  - Limit Sell = "願意以 23930.25 或更高價格賣出"
+  - 當市場價 24272 > 23930.25 → 立即以市場價 24272.50 成交
+  - 這不是 bug, 是 limit order 的正確行為
+  - 但 Engine 不知道自己已經成交了, 因為 entry price ≠ fill price
+```
+
+### 10.5 問題 F 深入: TPX Real State 讀不到數據
+
+可能原因:
+1. `POST /api/Order/search` 回傳格式可能是 `{"data": [...]}` 而不是 `{"orders": [...]}`
+2. 訂單可能在查詢時已經被 SL/TP 平倉, 變成 "Filled" 但仍應顯示
+3. Position 在查詢時可能已平 (SL triggered), 所以 NO POSITIONS 是正確的
+4. 需要檢查 API raw response
+
+---
+
+## 十一、待修復的問題 (按優先級排序)
+
+### 🔴 P0 — 致命 (可能造成真實虧損)
+
+| # | 問題 | 描述 | 相關文件 |
+|---|------|------|---------|
+| 1 | **Entry price 基於舊 zone** | warm-up 用 CONNECT 歷史數據, 如果數據跨多天, zone 是舊的, entry price 完全錯誤 | `live/engine.py` |
+| 2 | **Limit order 即時成交** | 當 limit sell price << 市場價, 交易所立即成交, engine 不知道 fill price, SL/TP 計算全部錯誤 | `live/engine.py` L525-555 |
+| 3 | **Engine 不追蹤 fill price** | `_check_pending_fill()` 只看有沒有 position, 不比較 fill price vs signal entry price, 無法計算真實 PnL | `live/engine.py` L579-595 |
+| 4 | **SL/TP vs Platform Bracket 衝突** | Engine 下 SL/TP orders, 但 TopstepX 平台 "Position Bracket" 也自動掛 SL/TP → 重複 orders, 互相干擾 | `live/engine.py` L597-642 |
+
+### 🔴 P1 — 高 (功能不正確)
+
+| # | 問題 | 描述 | 相關文件 |
+|---|------|------|---------|
+| 5 | **圖表只顯示舊 POC** | Zone detection 來自 warm-up 歷史數據, live mode 下新 candle 不觸發新 zone detection | `live/engine.py` |
+| 6 | ~~**MTF 回測 0 筆交易**~~ | ~~signal propagation 邏輯有問題~~ | ✅ MTF 已移除 |
+| 7 | ~~**1m zone detection = 0**~~ | ~~INSIDE_BIG 狀態下 1m detector 偵測不到 zone~~ | ✅ MTF 已移除 |
+| 8 | **TPX Real State 讀不到訂單** | `get_orders()` API 回傳格式可能不對, 需要檢查 raw response | `broker/topstepx.py`, `api/routes.py` |
+| 9 | **僅監控 vs 交易中 狀態不穩定** | 之前顯示"交易中"後變成"僅監控", 可能是 engine 啟動後 crash 但沒 catch | `live/engine.py`, `api/routes.py` |
+
+### 🟡 P2 — 中 (需改善)
+
+| # | 問題 | 描述 | 相關文件 |
+|---|------|------|---------|
+| 10 | **5m zone formed_at 不準** | zone 起點早於實際橫盤開始 | `consolidation.py` |
+| 11 | **SL/TP 互相取消邏輯缺失** | SL 觸發後 TP order 仍掛著, 反之亦然 | `live/engine.py` L644-689 |
+| 12 | **daily_pnl 追蹤不準** | initial capital 只在 start 設定, 不隨天更新 | `live/engine.py` L678-685 |
+| 13 | ~~**MTF 時間框架混合顯示混亂**~~ | ~~1m 和 5m zone 重疊~~ | ✅ MTF 已移除 |
+
+---
+
+## 十二、修復計劃 (建議順序)
+
+### Step 1: 安全優先 — 防止錯誤下單 ✅ (2026-03-25 初修, 2026-03-26 加強)
+
+**3/26 根本原因: warm-up 結束後策略處於 BIG_BREAKOUT 狀態, 第一個 live tick 立刻基於舊 zone 下單**
+
+- [x] **下單前驗證 entry price vs 當前市價**: `_place_order()` PRICE_SAFETY_MARGIN=50pts 攔截
+- [x] **無市價時拒絕下單**: `_last_market_price=None` → 直接 return (不只是警告)
+- [x] **warm-up 後強制重置 breakout 狀態**: `reset_to_safe_state()` — BIG_BREAKOUT/IN_5M_TRADE/IN_1M_TRADE → WAITING_BIG 或 INSIDE_BIG
+- [x] **zone 過期警告**: warm-up 結束後如 big_zone age > 12h → error log
+- [x] **追蹤 fill price**: `_check_pending_fill()` 比較 entry vs fill, 差距>5pts 報警
+- [x] **Engine 不下 SL/TP**: `skip_engine_sl_tp=True`, 由 TopstepX Position Bracket 300:900 管理
+
+### Step 2: Zone Detection 修復
+- [ ] **live mode 下持續 zone detection**: 每次拉新 candle 都要 feed detector, 不只是 warm-up
+- [ ] **warm-up 只用最近 N 天數據**: 如果拉了一週, 只用最後 1-2 天做 warm-up, 避免舊 zone 主導
+- [ ] **前端顯示 zone 時間**: 讓使用者看到 zone 是什麼時候形成的
+
+### ~~Step 3: MTF 策略修復~~ — 已移除 (2026-03-26)
+> MTF 模式已從整個 codebase 移除，此步驟不再需要。
+
+### Step 4: 帳戶狀態同步 (部分完成)
+- [x] **修復 get_orders() API 格式**: 加入 raw response logging (type, keys, preview), 支援兩種格式
+- [x] **get_positions() logging**: 加入 side, avgPrice, size 詳細 log
+- [ ] **定期同步真實 position vs engine 狀態**: 如果兩邊不一致 → 警告 + 停止交易
+- [ ] **加入 trade history 查詢**: 讓使用者看到所有歷史成交
 
 ---
 

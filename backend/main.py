@@ -82,7 +82,10 @@ def create_app() -> FastAPI:
 
         @app.get("/")
         async def serve_frontend():
-            return FileResponse(str(frontend_dir / "index.html"))
+            return FileResponse(
+                str(frontend_dir / "index.html"),
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
 
     return app
 

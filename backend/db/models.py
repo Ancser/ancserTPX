@@ -141,6 +141,8 @@ class ConsolidationZone:
     status: ZoneStatus = ZoneStatus.FORMING
     exit_direction: Optional[str] = None   # "up" | "down"
     candles: List[Candle] = field(default_factory=list)
+    timeframe: str = "5m"                  # "5m" | "1m"
+    parent_zone_id: Optional[str] = None   # 1m zone → parent 5m zone_id
 
     @property
     def range_80(self) -> float:

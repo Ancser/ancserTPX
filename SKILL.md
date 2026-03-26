@@ -536,9 +536,9 @@ class MetricsCalculator:
 
 | 項目 | 內容 |
 |------|------|
-| **狀態** | 空白 |
-| **問題** | 無 |
-| **關聯文件** | <- `api/websocket.py`, `api/routes.py`, `risk/manager.py` / -> `db/models.py` |
+| **狀態** | 已完成 + 已加入完整 logging |
+| **問題** | 已修復: get_orders() 回傳格式不明 → 加入 raw response logging |
+| **關聯文件** | <- `api/websocket.py`, `api/routes.py`, `risk/manager.py`, `live/engine.py` / -> `db/models.py` |
 
 **函數結構：**
 ```python
@@ -547,52 +547,42 @@ class TopstepXClient:
 
     # === 連接管理 ===
     async connect() -> None
-        # 建立 REST session + WebSocket 連接
-
     async disconnect() -> None
-        # 斷開連接，清理資源
-
     async reconnect() -> None
-        # 斷線重連機制（指數退避）
 
     # === 市場數據 ===
     async subscribe_market_data(symbol: str) -> None
-        # 訂閱即時 L1/L2 數據（WebSocket）
-
-    async get_historical_candles(
-        symbol: str, interval: str, start: str, end: str
-    ) -> List[Candle]
-        # 獲取歷史 K 線（REST）
-
+    async get_historical_candles(...) -> List[Candle]
     def on_candle(callback: Callable) -> None
-        # 註冊新 K 線回調
-
     def on_tick(callback: Callable) -> None
-        # 註冊逐筆回調
 
-    # === 訂單管理 ===
+    # === 訂單管理 (所有操作都有完整 logging) ===
     async place_order(order: OrderRequest) -> OrderResponse
-        # 下單（market / limit / stop）
+        # [LOG] [ORDER SEND] side, type, limit/stop price, account, contract
+        # [LOG] [ORDER RESP] success, order_id, error_code, raw response keys
+        # 安全檢查：自動攔截 Funded 帳戶下單
 
-    async cancel_order(order_id: str) -> bool
-        # 取消訂單
+    async cancel_order(order_id: int) -> bool
+        # [LOG] [ORDER CANCEL] + [ORDER CANCEL RESP]
 
-    async get_open_orders() -> List[Order]
-        # 查詢未成交訂單
+    async get_orders(account_id: int) -> List[Dict]
+        # [LOG] [ORDER SEARCH] response_type, keys, raw_preview (前500字)
+        # 處理兩種回傳格式: {"orders": [...]} 或直接 list
 
-    # === 持倉管理 ===
-    async get_positions() -> List[Position]
-        # 查詢當前持倉
+    async get_open_orders(account_id: int) -> List[Dict]
+        # 過濾 status in ("Open", "Working")
 
-    async flatten_all() -> List[OrderResponse]
-        # 平倉所有持倉
+    # === 持倉管理 (加入 logging) ===
+    async get_positions(account_id: int) -> List[Dict]
+        # [LOG] [POSITION] count, side, avgPrice, size, contractId, unrealizedPnl
+        # 處理兩種格式: {"positions": [...]} 或直接 list
+
+    async close_position(account_id, contract_id) -> OrderResponse
+    async flatten_all(account_id: int) -> List[OrderResponse]
 
     # === 帳戶資訊 ===
     async get_account_info() -> AccountInfo
-        # 查詢帳戶餘額、已用保證金等
-
     async get_daily_pnl() -> float
-        # 查詢當日盈虧
 ```
 
 ---
@@ -644,6 +634,57 @@ class RiskManager:
     get_risk_status() -> RiskStatus
         # 返回當前風控狀態摘要
 ```
+
+---
+
+### 1.12a `backend/live/engine.py` — 即時交易引擎
+
+| 項目 | 內容 |
+|------|------|
+| **狀態** | 正在修改 — 已加入 safety checks + logging |
+| **問題** | 已修復 P0 致命問題 (詳見 PLAN.md §10) |
+| **關聯文件** | <- `api/routes.py` / -> `broker/topstepx.py`, `strategy/consolidation.py` |
+
+**函數結構：**
+```python
+class LiveTradingEngine:
+    __init__(client, account_id, contract_id, ..., skip_engine_sl_tp=True)
+        # skip_engine_sl_tp: True = 由 TopstepX Position Bracket 管理 SL/TP (預設)
+
+    async start(historical_candles: List[Candle]) -> None
+        # [LOG] K 線日期範圍 (first_ts ~ last_ts)，防止用舊數據
+
+    async _place_order(signal: TradeSignal) -> None
+        # [SAFETY] entry price vs market price 驗證 (±50pts)
+        #   → SELL LIMIT << 市價 = 立即成交 → 攔截!
+        #   → BUY LIMIT >> 市價 = 立即成交 → 攔截!
+        # [LOG] [SAFETY OK/BLOCK] 市價 vs entry 差距
+        # [LOG] zone_id 追蹤
+
+    async _check_pending_fill() -> bool
+        # [LOG] fill price vs entry price 比較
+        # [LOG] ⚠ [FILL MISMATCH] if slippage > 5 pts
+        # [LOG] position raw data (含 avgPrice)
+        # 如果 skip_engine_sl_tp=True → 不下 SL/TP
+
+    async _place_sl_tp() -> None
+        # 當 skip_engine_sl_tp=True 時不會被調用
+        # TopstepX Position Bracket (300:900) 自動管理
+
+    async _sync_position() -> None
+        # [LOG] [PNL] balance changes
+        # [LOG] fill price 追蹤到平倉
+
+    _last_market_price: float  # 每次拉 candle 更新 close 價
+    _fill_price: float         # 實際成交價 (from avgPrice)
+    _skip_engine_sl_tp: bool   # 是否由平台 bracket 管理
+```
+
+**安全機制 (2026-03-25 新增)：**
+1. `PRICE_SAFETY_MARGIN = 50 pts` — entry 偏離市價超過此值 → 攔截
+2. `skip_engine_sl_tp = True` — 預設由 TopstepX Bracket 管理 SL/TP，避免重複
+3. Fill price tracking — 成交後比較 signal.entry_price vs position.avgPrice
+4. Candle date range logging — warm-up 時顯示數據日期範圍
 
 ---
 

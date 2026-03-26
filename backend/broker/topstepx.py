@@ -424,33 +424,68 @@ class TopstepXClient:
                 error_message="[BLOCK] 安全攔截: 禁止在 Funded 帳戶下單（Bot 測試模式）",
             )
 
-        data = await self._request(
-            "POST", "/api/Order/place",
-            json={
-                "accountId": order.account_id,
-                "contractId": order.contract_id,
-                "type": order.order_type,
-                "side": order.side,
-                "size": order.size,
-                "limitPrice": order.limit_price or 0,
-                "stopPrice": order.stop_price or 0,
-            }
+        order_types = {1: "Limit", 2: "Market", 3: "Stop"}
+        order_sides = {1: "BUY", 2: "SELL"}
+        logger.info(
+            f"[ORDER SEND] {order_sides.get(order.side, '?')} {order_types.get(order.order_type, '?')} "
+            f"size={order.size} limit={order.limit_price} stop={order.stop_price} "
+            f"account={order.account_id} contract={order.contract_id}"
         )
 
-        return OrderResponse(
+        payload = {
+            "accountId": order.account_id,
+            "contractId": order.contract_id,
+            "type": order.order_type,
+            "side": order.side,
+            "size": order.size,
+            "limitPrice": order.limit_price or 0,
+            "stopPrice": order.stop_price or 0,
+        }
+        data = await self._request("POST", "/api/Order/place", json=payload)
+
+        resp = OrderResponse(
             order_id=data.get("orderId", 0),
             success=data.get("success", False),
             error_code=data.get("errorCode", 0),
             error_message=data.get("errorMessage"),
         )
+        logger.info(
+            f"[ORDER RESP] success={resp.success} order_id={resp.order_id} "
+            f"error_code={resp.error_code} error_msg={resp.error_message} "
+            f"raw_keys={list(data.keys())}"
+        )
+        return resp
 
     async def cancel_order(self, order_id: int) -> bool:
         """取消訂單"""
+        logger.info(f"[ORDER CANCEL] order_id={order_id}")
         data = await self._request(
             "POST", "/api/Order/cancel",
             json={"orderId": order_id}
         )
-        return data.get("success", False)
+        success = data.get("success", False)
+        logger.info(f"[ORDER CANCEL RESP] order_id={order_id} success={success} raw={data}")
+        return success
+
+    async def get_orders(self, account_id: int) -> List[Dict]:
+        """查詢所有訂單 (open + filled + cancelled)"""
+        data = await self._request(
+            "POST", "/api/Order/search",
+            json={"accountId": account_id}
+        )
+        logger.info(
+            f"[ORDER SEARCH] account={account_id} | response_type={type(data).__name__} "
+            f"keys={list(data.keys()) if isinstance(data, dict) else 'list'} "
+            f"raw_preview={str(data)[:500]}"
+        )
+        orders = data.get("orders", data if isinstance(data, list) else [])
+        logger.info(f"[ORDER SEARCH] parsed {len(orders)} orders")
+        return orders
+
+    async def get_open_orders(self, account_id: int) -> List[Dict]:
+        """查詢未成交掛單"""
+        all_orders = await self.get_orders(account_id)
+        return [o for o in all_orders if o.get("status") in ("Open", "Working", "open", "working")]
 
     # ── 持倉 ─────────────────────────────────────────
 
@@ -460,7 +495,13 @@ class TopstepXClient:
             "POST", "/api/Position/search",
             json={"accountId": account_id}
         )
-        return data.get("positions", [])
+        positions = data.get("positions", data if isinstance(data, list) else [])
+        if positions:
+            logger.info(
+                f"[POSITION] account={account_id} | count={len(positions)} | "
+                f"details={[{k: p.get(k) for k in ('side','avgPrice','size','contractId','unrealizedPnl')} for p in positions[:3]]}"
+            )
+        return positions
 
     async def close_position(
         self, account_id: int, contract_id: str

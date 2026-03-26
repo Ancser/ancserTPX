@@ -71,7 +71,44 @@ class MetricsCalculator:
             daily_pnl=self.daily_pnl_summary(completed),
         )
 
+        # ── Per-strategy breakdown ──
+        # Reversion / Trend Follow
+        rev_trades = [t for t in completed if t.strategy == StrategyType.REVERSION]
+        tf_trades = [t for t in completed if t.strategy == StrategyType.TREND_FOLLOW]
+
+        if rev_trades:
+            metrics.reversion_metrics = self._sub_metrics(rev_trades, initial_capital)
+        if tf_trades:
+            metrics.trend_follow_metrics = self._sub_metrics(tf_trades, initial_capital)
+
         return metrics
+
+    def _sub_metrics(self, trades: List[Trade], initial_capital: float) -> Metrics:
+        """Calculate metrics for a subset of trades."""
+        if not trades:
+            return Metrics()
+        wins = [t for t in trades if t.pnl > 0]
+        losses = [t for t in trades if t.pnl <= 0]
+        win_pnls = [t.pnl for t in wins]
+        loss_pnls = [t.pnl for t in losses]
+        avg_w = sum(win_pnls) / len(win_pnls) if win_pnls else 0
+        avg_l = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0
+        wr = len(wins) / len(trades)
+        dd, dd_pct = self.max_drawdown(trades, initial_capital)
+        return Metrics(
+            total_trades=len(trades),
+            wins=len(wins),
+            losses=len(losses),
+            win_rate=wr,
+            avg_win=avg_w,
+            avg_loss=avg_l,
+            avg_rr_ratio=abs(avg_w / avg_l) if avg_l != 0 else 0,
+            expectancy=self.expectancy(trades),
+            max_drawdown=dd,
+            max_drawdown_pct=dd_pct,
+            profit_factor=self.profit_factor(trades),
+            total_pnl=sum(t.pnl for t in trades),
+        )
 
     @staticmethod
     def win_rate(trades: List[Trade]) -> float:
