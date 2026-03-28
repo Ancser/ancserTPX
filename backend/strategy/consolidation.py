@@ -90,7 +90,7 @@ class ConsolidationDetector:
     ):
         """
         Args:
-            min_candles:          最少 K 線數才開始判定盤整（6 根 5min = 30 分鐘）
+            min_candles:          最少 K 線數才開始判定盤整（6 根 1min = 6 分鐘）
             max_candles:          盤整區間最大 K 線數（超過重新計算）
             poc_drift_threshold:  POC 允許漂移量（點數）, 超過 = 不穩定
             min_touches:          價格觸及 VAH 或 VAL 的最少次數
@@ -133,7 +133,14 @@ class ConsolidationDetector:
         return self._handle_no_zone(candle)
 
     def _handle_active_zone(self, candle: Candle) -> Optional[ZoneEvent]:
-        """已有 active zone，監控是否離開"""
+        """已有 active zone，監控是否離開
+
+        CRITICAL: Exit detection uses ORIGINAL zone boundaries (high_100 / low_100)
+        that were set when the zone was first detected. These are NEVER updated.
+        Only POC / VAH / VAL are updated for display (developing profile).
+        This prevents the "drifting zone" bug where boundaries shift with price
+        and the zone never exits.
+        """
 
         zone = self._active_zone
 
@@ -141,7 +148,24 @@ class ConsolidationDetector:
         zone.num_candles += 1
         zone.candles.append(candle)
 
-        # 檢查是否離開 100% 範圍
+        # Safety: force expire zone after 120 bars (2 hours for 1min candles)
+        # Prevents zombie zones that accumulate forever
+        MAX_ZONE_LIFETIME = 120
+        if zone.num_candles > MAX_ZONE_LIFETIME:
+            zone.status = ZoneStatus.LEFT
+            zone.left_at = candle.timestamp
+            zone.exit_direction = "expired"
+            self._active_zone = None
+            self._candle_buffer = []
+            self._exit_count = 0
+            self._exit_direction = None
+            self._prev_poc = None
+            return ZoneEvent(
+                "left", zone,
+                message=f"Zone {zone.zone_id} 超時強制過期 ({zone.num_candles} bars)"
+            )
+
+        # 檢查是否離開 100% 範圍 (uses ORIGINAL high_100/low_100)
         exit_dir = self._detect_zone_exit(candle)
 
         if exit_dir:
@@ -156,18 +180,19 @@ class ConsolidationDetector:
             self._exit_count = 0
             self._exit_direction = None
 
-        # zone 仍然 active，更新 VP（如果 K 線數超過上限，截取最近的）
-        if zone.num_candles > self.max_candles:
-            # 用最近的 K 線重新計算，保持 zone 新鮮
-            recent = zone.candles[-self.max_candles:]
-            vp = self.vp_calc.calculate(recent)
-            zone.poc = vp.poc
-            zone.vah_80 = vp.vah
-            zone.val_80 = vp.val
-            zone.high_100 = vp.high_100
-            zone.low_100 = vp.low_100
-            zone.total_volume = vp.total_volume
-            return ZoneEvent("updated", zone, message="zone VP 更新")
+        # Update DISPLAY values every 5 candles (developing profile) — NOT exit boundaries
+        if zone.num_candles >= self.min_candles and zone.num_candles % 5 == 0:
+            candles_for_vp = zone.candles[-self.max_candles:] if len(zone.candles) > self.max_candles else zone.candles
+            try:
+                vp = self.vp_calc.calculate(candles_for_vp)
+                zone.poc = vp.poc
+                zone.vah_80 = vp.vah
+                zone.val_80 = vp.val
+                # DO NOT update high_100 / low_100 — exit boundaries stay at original
+                zone.total_volume = vp.total_volume
+            except ValueError:
+                pass
+            return ZoneEvent("updated", zone, message="zone VP 更新 (邊界不變)")
 
         return None
 

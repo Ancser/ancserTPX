@@ -1016,12 +1016,21 @@
             <!-- Live Monitor Top Bar -->
             <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'Share Tech Mono',monospace;font-size:11px;">
                 <div style="display:flex;align-items:stretch;height:28px;">
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">TF: <span id="lv-timeframe" style="color:var(--cyan);margin-left:6px;">5min</span></div>
+                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">TF: <span id="lv-timeframe" style="color:var(--cyan);margin-left:6px;">1min</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">ZONE: <span id="lv-zone-status" style="color:var(--text3);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">PHASE: <span id="lv-phase-top" style="color:var(--text3);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MARKET: <span id="lv-session" style="color:var(--amber);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">持倉: <span id="lv-position" style="color:var(--text2);margin-left:6px;">FLAT</span></div>
                     <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:0 8px;">資金: <span id="lv-capital" style="color:var(--green);margin-left:6px;">--</span></div>
+                </div>
+                <!-- Zone levels row (always show when zone active) -->
+                <div id="lv-zone-row" style="display:none;height:22px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:16px;font-size:10px;letter-spacing:0.5px;">
+                    <span style="color:var(--text2);">ACTIVE ZONE</span>
+                    <span>VAH: <span id="lv-z-vah" style="color:var(--cyan);">--</span></span>
+                    <span>POC: <span id="lv-z-poc" style="color:var(--amber);font-weight:600;">--</span></span>
+                    <span>VAL: <span id="lv-z-val" style="color:var(--cyan);">--</span></span>
+                    <span style="color:var(--text2);">100%: <span id="lv-z-h100" style="color:var(--text3);">--</span> ~ <span id="lv-z-l100" style="color:var(--text3);">--</span></span>
+                    <span>ID: <span id="lv-z-id" style="color:var(--text3);">--</span></span>
                 </div>
                 <!-- Signal row (shown on confirmed break) -->
                 <div id="lv-signal-row" style="display:none;height:24px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:20px;font-size:10px;letter-spacing:0.5px;">
@@ -1240,7 +1249,13 @@ async function loadAccounts() {
                 opt.textContent = acc.name + ' [$' + acc.balance.toLocaleString(undefined, {maximumFractionDigits: 0}) + '] ' + label;
                 liveSelect.appendChild(opt);
             });
-            if (practice) liveSelect.value = practice.id;
+            // Restore saved account selection, fallback to practice
+            const savedAccId = localStorage.getItem('ancser_live_account_id');
+            if (savedAccId && data.accounts.find(a => a.id == savedAccId)) {
+                liveSelect.value = savedAccId;
+            } else if (practice) {
+                liveSelect.value = practice.id;
+            }
             document.getElementById('btn-go-live').disabled = false;
             onLiveAccountSwitch();
         }
@@ -1256,6 +1271,8 @@ let liveAccount = null;
 function onLiveAccountSwitch() {
     const id = parseInt(document.getElementById('live-account-select').value);
     liveAccount = allAccounts.find(a => a.id === id) || null;
+    // Save selection
+    if (id) localStorage.setItem('ancser_live_account_id', id);
     // Sync header badge
     currentAccount = liveAccount;
     updateAccountBadge();
@@ -1338,7 +1355,7 @@ function updateLiveTopBar() {
 
     // Timeframe
     const tfEl = document.getElementById('lv-timeframe');
-    if (tfEl) { tfEl.textContent = '5min'; }
+    if (tfEl) { tfEl.textContent = '1min'; }
 
     // Zone status default
     const zsEl = document.getElementById('lv-zone-status');
@@ -1394,11 +1411,11 @@ async function goLive() {
     // ── Start candle polling + status polling (always, even if engine fails) ──
     _lastLiveCandleTime = '';  // reset
     if (_liveInterval) clearInterval(_liveInterval);
-    _liveInterval = setInterval(pollLiveCandle, 30000); // every 30s
+    _liveInterval = setInterval(pollLiveCandle, 1000); // every 1s (backend caches API calls)
     pollLiveCandle(); // immediate first poll
 
     if (_liveStatusInterval) clearInterval(_liveStatusInterval);
-    _liveStatusInterval = setInterval(pollLiveStatus, 5000);
+    _liveStatusInterval = setInterval(pollLiveStatus, 1000); // every 1s
     pollLiveStatus();
 
     // Update top bar session info
@@ -1460,11 +1477,11 @@ async function goLive() {
         statusEl.textContent = '交易中';
         const dot = document.getElementById('live-status-dot');
         if (dot) { dot.style.background = 'var(--green)'; dot.style.boxShadow = '0 0 6px var(--green)'; }
-        log('即時交易啟動 — K線每30秒更新 | 狀態每5秒更新', 'success');
+        log('即時交易啟動 — K線每秒更新 | 狀態每秒更新', 'success');
     } else {
         const dot = document.getElementById('live-status-dot');
         if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
-        log('監控模式 — K線每30秒更新 (交易引擎未啟動)', 'info');
+        log('監控模式 — K線每秒更新 (交易引擎未啟動)', 'info');
     }
 
     // Auto-fetch real account state
@@ -1626,10 +1643,16 @@ async function pollLiveStatus() {
         const st = await resp.json();
         if (!st.running) return;
 
+        // Show engine version in console for debugging
+        if (st.engine_version && !window._loggedVersion) {
+            log('[ENGINE] ' + st.engine_version, 'info');
+            window._loggedVersion = true;
+        }
+
         // ── Top bar: Timeframe ──
         const tfEl = document.getElementById('lv-timeframe');
         if (tfEl) {
-            tfEl.textContent = '5min';
+            tfEl.textContent = '1min';
             tfEl.style.color = 'var(--cyan)';
         }
 
@@ -1645,11 +1668,29 @@ async function pollLiveStatus() {
             else if (/確認|confirm/i.test(phase)) { zLabel = 'CONFIRMED ✓'; zColor = 'var(--green)'; }
             else if (/入場|entry|掛單/i.test(phase)) { zLabel = 'ENTRY READY'; zColor = 'var(--green)'; }
             else if (/持倉/i.test(phase)) { zLabel = 'IN TRADE'; zColor = 'var(--green)'; }
-            else if (/5min出界/.test(phase)) { zLabel = '5M BREAKING'; zColor = 'var(--amber)'; }
+            else if (/1min出界/.test(phase)) { zLabel = '1M BREAKING'; zColor = 'var(--amber)'; }
             else if (/1min/.test(phase)) { zLabel = '1M ZONE'; zColor = 'var(--cyan)'; }
             else { zLabel = phase; }
             zoneStatusEl.textContent = zLabel;
             zoneStatusEl.style.color = zColor;
+        }
+
+        // ── Top bar: Active zone levels (text) ──
+        const zoneRow = document.getElementById('lv-zone-row');
+        if (zoneRow && st.zones && st.zones.length > 0) {
+            // Find the active zone (or the most recent one)
+            const activeZone = st.zones.find(z => z.status === 'active') || st.zones[st.zones.length - 1];
+            if (activeZone) {
+                zoneRow.style.display = 'flex';
+                document.getElementById('lv-z-vah').textContent = activeZone.vah_80.toFixed(2);
+                document.getElementById('lv-z-poc').textContent = activeZone.poc.toFixed(2);
+                document.getElementById('lv-z-val').textContent = activeZone.val_80.toFixed(2);
+                document.getElementById('lv-z-h100').textContent = activeZone.high_100.toFixed(2);
+                document.getElementById('lv-z-l100').textContent = activeZone.low_100.toFixed(2);
+                document.getElementById('lv-z-id').textContent = activeZone.zone_id + ' (' + activeZone.num_candles + ' bars)';
+            }
+        } else if (zoneRow) {
+            zoneRow.style.display = 'none';
         }
 
         // ── Left panel: Trade count ──
@@ -1753,14 +1794,47 @@ async function pollLiveStatus() {
             if (window._liveEntryLine) { try { candleSeries.removePriceLine(window._liveEntryLine); } catch(e){} window._liveEntryLine = null; }
         }
 
-        // ── Redraw zones from live status (includes both 5m + 1m zones) ──
+        // ── Redraw zones from live status ──
         if (st.zones && st.zones.length > 0) {
-            const zoneKey = st.zones.map(z => z.zone_id + z.status).join('|');
+            // Include POC/VAH/VAL + num_candles in key so VP redraws when zone updates
+            const zoneKey = st.zones.map(z => z.zone_id + z.status + z.poc.toFixed(2) + z.num_candles).join('|');
             if (zoneKey !== window._lastLiveZoneKey) {
                 window._lastLiveZoneKey = zoneKey;
                 const liveZoneIds = new Set(st.zones.map(z => z.zone_id));
                 const merged = [...(_cachedVPZones || []).filter(z => !liveZoneIds.has(z.zone_id)), ...st.zones];
                 drawVolumeProfile(merged);
+            }
+        }
+
+        // ── Live trade markers on chart (like backtest) ──
+        if (candleSeries && st.trades && st.trades.length > 0) {
+            const liveMarkers = [];
+            // Show pending signal as marker
+            if (sig) {
+                const isLong = sig.direction === 'long';
+                liveMarkers.push({
+                    time: Math.floor(Date.now() / 1000),
+                    position: isLong ? 'belowBar' : 'aboveBar',
+                    color: isLong ? '#00e5a0' : '#ff4060',
+                    shape: isLong ? 'arrowUp' : 'arrowDown',
+                    text: (sig.strategy === 'reversion' ? 'R' : 'T') + ' @ ' + sig.entry_price.toFixed(0),
+                });
+            }
+            // Show position if filled
+            if (st.position) {
+                const posIsLong = st.position.side === 1;
+                const avgP = st.position.avgPrice || st.position.averagePrice || 0;
+                liveMarkers.push({
+                    time: Math.floor(Date.now() / 1000),
+                    position: posIsLong ? 'belowBar' : 'aboveBar',
+                    color: posIsLong ? '#00e5a0' : '#ff4060',
+                    shape: posIsLong ? 'arrowUp' : 'arrowDown',
+                    text: (posIsLong ? 'LONG' : 'SHORT') + ' @ ' + (typeof avgP === 'number' ? avgP.toFixed(0) : avgP),
+                });
+            }
+            if (liveMarkers.length > 0) {
+                liveMarkers.sort((a, b) => a.time - b.time);
+                try { candleSeries.setMarkers(liveMarkers); } catch(e) {}
             }
         }
 
@@ -1977,14 +2051,16 @@ function drawVolumeProfile(zones) {
         const yVAL = priceToY(val);
         const yH100 = priceToY(h100);
         const yL100 = priceToY(l100);
-        if (yPOC < 0) return;
+        // Check if ANY zone level is visible (don't skip just because POC is off-screen)
+        const anyVisible = [yPOC, yVAH, yVAL, yH100, yL100].some(y => y >= -50 && y <= H + 50);
+        if (!anyVisible) return;
 
         // Zone X boundaries (histogram + background only within zone time)
         const xStart = timeToX(z.formed_at);
         const xEnd = z.left_at ? timeToX(z.left_at) : W - 60;
 
-        if (xStart === null) return;
-        const x0 = Math.max(0, xStart);
+        // Fallback: if formed_at can't resolve (live zone not in chart data), use left edge
+        const x0 = Math.max(0, xStart !== null ? xStart : 0);
         const x1 = xEnd !== null ? Math.min(W - 60, xEnd) : W - 60;
         if (x1 <= x0 + 20) return; // too narrow
 
@@ -2118,11 +2194,13 @@ function drawVolumeProfile(zones) {
         const isLeft = z.status === 'left';
         const poc = z.poc;
         const yPOC = priceToY(poc);
-        if (yPOC < 0 || yPOC > H) return;
+        // Only skip if POC is far off-screen (allow partial visibility)
+        if (yPOC < -100 || yPOC > H + 100) return;
 
         const xStart = timeToX(z.formed_at);
-        if (xStart === null) return;
-        const x0 = Math.max(0, xStart);
+        // Fallback: if formed_at can't resolve, use left edge for active / skip for left
+        if (xStart === null && isLeft) return;  // left zones without coordinates → skip
+        const x0 = Math.max(0, xStart !== null ? xStart : 0);
 
         // Left zones: POC stops at left_at (no more extending!)
         // Active/forming: extends to right edge
@@ -2796,7 +2874,9 @@ function startOverlaySync() {
                 _replayForceRedraw = true;
                 drawReplayState(replay.currentIndex - 1);
             } else {
-                if (data.zones) drawVolumeProfile(data.zones);
+                // Use cached zones (which includes live zone updates) if available
+                const zonesToDraw = _cachedVPZones || data.zones;
+                if (zonesToDraw) drawVolumeProfile(zonesToDraw);
                 if (data.trades) drawPositionTools(data.trades);
             }
         }

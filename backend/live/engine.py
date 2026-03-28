@@ -14,18 +14,20 @@
 #   → backend/broker/topstepx.py         (API 下單)
 # ============================================================
 # 即時交易引擎 — 在 Practice 帳戶上執行策略下單
-# 僅支援原始策略 (trend_follow / reversion), 5 分鐘 K 線
+# 僅支援原始策略 (trend_follow / reversion), 1 分鐘 K 線
 # ============================================================
 """
 Live Trading Engine
 
-每 60 秒輪詢 5m K 線 → 盤整偵測 → 策略評估 → 下真實 limit order
+每 30 秒輪詢 1m K 線 → 盤整偵測 → 策略評估 → 下真實 limit order
 支援：掛單 / 取消 / SL-TP / 收盤前平倉 / 每日交易上限
 """
 
 from __future__ import annotations
 import asyncio
+import json
 import logging
+import os
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional
 
@@ -40,12 +42,13 @@ from backend.broker.topstepx import TopstepXClient
 
 logger = logging.getLogger(__name__)
 
+ENGINE_VERSION = "v3.1-1min-2026-03-26"  # Verify correct code is loaded
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
 
 
 class LiveTradingEngine:
-    """即時交易引擎 — 原始模式 (5m K 線)"""
+    """即時交易引擎 — 原始模式 (1m K 線)"""
 
     FLATTEN_TIME = time(15, 5)      # CT 15:05 = flatten
     PRE_FLATTEN = time(14, 50)      # CT 14:50 = cancel pending
@@ -125,14 +128,106 @@ class LiveTradingEngine:
         self._last_candle_time: Optional[str] = None
         self._trades: List[Dict] = []
         self._log: List[str] = []
+        self._last_status_log_minute: int = -1  # track minute for periodic status log
+        self._zone_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data", "live_zones.json"
+        )
 
     @property
     def is_running(self) -> bool:
         return self._running
 
+    def _save_zones(self):
+        """Persist current zones to disk so they survive restart."""
+        try:
+            zones = self.detector.get_all_zones()
+            active = self.detector.get_active_zone()
+            data = {
+                "saved_at": datetime.utcnow().isoformat(),
+                "active_zone_id": active.zone_id if active else None,
+                "zones": [],
+            }
+            for z in zones[-20:]:
+                data["zones"].append({
+                    "zone_id": z.zone_id,
+                    "poc": z.poc,
+                    "vah_80": z.vah_80,
+                    "val_80": z.val_80,
+                    "high_100": z.high_100,
+                    "low_100": z.low_100,
+                    "total_volume": z.total_volume,
+                    "duration_minutes": z.duration_minutes,
+                    "num_candles": z.num_candles,
+                    "status": z.status.value,
+                    "formed_at": z.formed_at.isoformat() if z.formed_at else None,
+                    "left_at": z.left_at.isoformat() if z.left_at else None,
+                    "exit_direction": z.exit_direction,
+                })
+            os.makedirs(os.path.dirname(self._zone_file), exist_ok=True)
+            with open(self._zone_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save zones: {e}")
+
+    def _load_zones(self) -> bool:
+        """Load persisted zones from disk. Returns True if loaded."""
+        try:
+            if not os.path.exists(self._zone_file):
+                return False
+            with open(self._zone_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Check freshness — only use if saved within last 6 hours
+            saved_at = datetime.fromisoformat(data["saved_at"])
+            age_hours = (datetime.utcnow() - saved_at).total_seconds() / 3600
+            if age_hours > 6:
+                self._log_event(f"Zone 快照過期 ({age_hours:.1f}h) — 重新偵測")
+                return False
+
+            active_id = data.get("active_zone_id")
+            loaded = 0
+            for zd in data.get("zones", []):
+                zone = ConsolidationZone(
+                    zone_id=zd["zone_id"],
+                    formed_at=datetime.fromisoformat(zd["formed_at"]) if zd.get("formed_at") else None,
+                    left_at=datetime.fromisoformat(zd["left_at"]) if zd.get("left_at") else None,
+                    poc=zd["poc"],
+                    vah_80=zd["vah_80"],
+                    val_80=zd["val_80"],
+                    high_100=zd["high_100"],
+                    low_100=zd["low_100"],
+                    total_volume=zd["total_volume"],
+                    duration_minutes=zd["duration_minutes"],
+                    num_candles=zd["num_candles"],
+                    status=ZoneStatus(zd["status"]),
+                    exit_direction=zd.get("exit_direction"),
+                    candles=[],  # candles not persisted (too large)
+                )
+                self.detector._all_zones.append(zone)
+                if zone.zone_id == active_id and zone.status == ZoneStatus.ACTIVE:
+                    self.detector._active_zone = zone
+                self.detector._zone_counter = max(
+                    self.detector._zone_counter,
+                    int(zone.zone_id.lstrip("Z")) if zone.zone_id.startswith("Z") else 0
+                )
+                loaded += 1
+
+            if loaded > 0:
+                self._log_event(
+                    f"載入 {loaded} 個 zone 快照 (存檔 {age_hours:.1f}h 前) | "
+                    f"活躍={active_id or 'None'}"
+                )
+                return True
+            return False
+        except Exception as e:
+            logger.warning(f"Failed to load zones: {e}")
+            return False
+
     def get_status(self) -> Dict:
         """Return current engine state for frontend."""
         return {
+            "engine_version": ENGINE_VERSION,
             "running": self._running,
             "account_id": self.account_id,
             "contract_id": self.contract_id,
@@ -238,6 +333,15 @@ class LiveTradingEngine:
 
         self._candles_processed = len(historical_candles)
 
+        # If warm-up found no active zone, try loading from persisted snapshot
+        if not self.detector.get_active_zone():
+            zones_loaded = self._load_zones()
+            if zones_loaded:
+                self._log_event("Warm-up 無活躍 zone → 使用上次快照")
+        else:
+            # Save current state for next restart
+            self._save_zones()
+
         # ── CRITICAL: Reset strategy state after warm-up ──
         # Warm-up may leave trend_follow in "confirmed" state (signal generated
         # but never acted on). Must reset to idle so live ticks start fresh.
@@ -264,9 +368,16 @@ class LiveTradingEngine:
 
         active = self.detector.get_active_zone()
         all_z = self.detector.get_all_zones()
+        active_info = "None"
+        if active:
+            active_info = (
+                f"{active.zone_id} POC={active.poc:.2f} "
+                f"H100={active.high_100:.2f} L100={active.low_100:.2f} "
+                f"bars={active.num_candles}"
+            )
         self._log_event(
-            f"引擎啟動 | 帳戶={self.account_id} | "
-            f"區間={len(all_z)} | 活躍={active.zone_id if active else 'None'} | "
+            f"引擎啟動 [{ENGINE_VERSION}] | 帳戶={self.account_id} | "
+            f"區間={len(all_z)} | 活躍={active_info} | "
             f"策略={self.strategies}"
         )
 
@@ -274,7 +385,8 @@ class LiveTradingEngine:
         self._task = asyncio.create_task(self._main_loop())
 
     async def stop(self):
-        """Stop the engine. Cancel pending orders."""
+        """Stop the engine. Cancel pending orders. Save zones to disk."""
+        self._save_zones()  # persist zones before shutdown
         self._running = False
         if self._task:
             self._task.cancel()
@@ -308,8 +420,8 @@ class LiveTradingEngine:
     # ── Main Loop ──────────────────────────────────────────
 
     async def _main_loop(self):
-        """Main trading loop — runs every 60 seconds (5m candles)."""
-        interval = 60
+        """Main trading loop — runs every 5 seconds."""
+        interval = 5
         self._log_event(f"主循環啟動 — 每{interval}秒輪詢")
 
         while self._running:
@@ -324,7 +436,7 @@ class LiveTradingEngine:
                 await asyncio.sleep(1)
 
     async def _tick(self):
-        """One iteration of the trading loop (5m candles)."""
+        """One iteration of the trading loop (1m candles)."""
         now = datetime.utcnow()
 
         # Reset daily counters
@@ -335,23 +447,27 @@ class LiveTradingEngine:
             self._daily_pnl = 0.0
             self._log_event("新交易日 — 重置計數")
 
-        # Check position status from API
+        # Check position status from API (ALWAYS, even without new candle)
         await self._sync_position()
 
-        # Get latest 5m candle
-        candle = await self._fetch_latest_candle(unit_number=5)
+        # Get latest 1m candle
+        candle = await self._fetch_latest_candle(unit_number=1)
         if not candle:
             return
 
-        # Skip if same candle as last tick
+        # Always update market price from latest candle close (even if same candle)
+        self._last_market_price = candle.close
+
+        # Skip strategy evaluation if same candle as last tick
         candle_ts = candle.timestamp.isoformat()
         if candle_ts == self._last_candle_time:
             return
         self._last_candle_time = candle_ts
         self._candles_processed += 1
 
-        # Track latest market price for safety checks
-        self._last_market_price = candle.close
+        # Auto-save zones every 5 new candles (~5 minutes for 1m bars)
+        if self._candles_processed % 5 == 0:
+            self._save_zones()
 
         # Convert to CT for time checks (CDT = UTC-5)
         ct_time = (now - timedelta(hours=5)).time()
@@ -393,6 +509,26 @@ class LiveTradingEngine:
         if self._open_position:
             return
 
+        # ── Periodic status log every minute (POC/VAH/VAL in Chinese) ──
+        current_minute = now.minute
+        if current_minute != self._last_status_log_minute:
+            self._last_status_log_minute = current_minute
+            active = self.detector.get_active_zone()
+            phase = self._get_phase()
+            if active:
+                self._log_event(
+                    f"狀態={phase} | "
+                    f"POC={active.poc:.2f} | "
+                    f"VAH={active.vah_80:.2f} | "
+                    f"VAL={active.val_80:.2f} | "
+                    f"市價={self._last_market_price or 0:.2f}"
+                )
+            else:
+                self._log_event(
+                    f"狀態={phase} | 無活躍區間 | "
+                    f"市價={self._last_market_price or 0:.2f}"
+                )
+
         # ── Update zone detector ──
         self.detector.update(candle)
 
@@ -411,7 +547,10 @@ class LiveTradingEngine:
 
             signal = self.trend_follow.evaluate(candle, active_zone, all_zones, False)
             if signal and not self._pending_order_id:
-                await self._place_order(signal)
+                placed = await self._place_order(signal)
+                if not placed:
+                    # Order was blocked/failed → reset strategy so it doesn't stay in confirmed
+                    self.trend_follow.notify_order_cancelled()
                 return
 
         # Reversion
@@ -426,13 +565,25 @@ class LiveTradingEngine:
 
     # ── Order Management ──────────────────────────────────
 
-    async def _place_order(self, signal: TradeSignal):
+    @staticmethod
+    def _round_to_tick(price: float) -> float:
+        """Round price to nearest NQ tick (0.25)."""
+        return round(round(price / TICK_SIZE) * TICK_SIZE, 2)
+
+    async def _place_order(self, signal: TradeSignal) -> bool:
         """Place a limit order on the exchange.
 
         Safety checks:
         1. Entry price vs market price — block if too far (instant fill risk)
         2. No market price reference — block entirely
+
+        Returns True if order was placed, False if blocked.
         """
+        # Round all prices to valid tick size (0.25)
+        signal.entry_price = self._round_to_tick(signal.entry_price)
+        signal.sl_price = self._round_to_tick(signal.sl_price)
+        signal.tp_price = self._round_to_tick(signal.tp_price)
+
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "買" if signal.direction == Direction.BUY else "賣"
 
@@ -446,14 +597,14 @@ class LiveTradingEngine:
                     f"(差 {mkt - signal.entry_price:.1f} pts) → 攔截",
                     "error"
                 )
-                return
+                return False
             if signal.direction == Direction.BUY and signal.entry_price > mkt + PRICE_SAFETY_MARGIN:
                 self._log_event(
                     f"[SAFETY BLOCK] BUY LIMIT @ {signal.entry_price:.2f} 遠高於市價 {mkt:.2f} "
                     f"(差 {signal.entry_price - mkt:.1f} pts) → 攔截",
                     "error"
                 )
-                return
+                return False
             self._log_event(
                 f"[SAFETY OK] {dir_label} LIMIT @ {signal.entry_price:.2f} | 市價={mkt:.2f} | "
                 f"差距={abs(signal.entry_price - mkt):.1f} pts"
@@ -463,7 +614,7 @@ class LiveTradingEngine:
                 f"[SAFETY BLOCK] 無市價參考, 拒絕下單! entry={signal.entry_price:.2f}",
                 "error"
             )
-            return
+            return False
 
         if signal.zone_id:
             self._log_event(
@@ -490,10 +641,18 @@ class LiveTradingEngine:
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
                     f"策略={signal.strategy.value}"
                 )
+                return True
             else:
-                self._log_event(f"掛單失敗: {resp.error_message}", "error")
+                self._log_event(
+                    f"掛單失敗: code={resp.error_code} msg={resp.error_message} "
+                    f"| entry={signal.entry_price:.2f} side={'BUY' if side == 1 else 'SELL'} "
+                    f"(api_side={0 if side == 1 else 1})",
+                    "error"
+                )
+                return False
         except Exception as e:
             self._log_event(f"下單異常: {e}", "error")
+            return False
 
     async def _cancel_pending(self):
         """Cancel the pending limit order."""
@@ -514,49 +673,19 @@ class LiveTradingEngine:
         self._pending_age = 0
 
     async def _check_pending_fill(self) -> bool:
-        """Check if our pending order resulted in a position."""
-        try:
-            positions = await self.client.get_positions(self.account_id)
-            if positions and len(positions) > 0:
-                self._open_position = positions[0]
-                self._daily_trade_count += 1
-
-                # Track fill price
-                fill_price_raw = positions[0].get('avgPrice', positions[0].get('averagePrice'))
-                try:
-                    self._fill_price = float(fill_price_raw) if fill_price_raw else None
-                except (ValueError, TypeError):
-                    self._fill_price = None
-
-                self._log_event(
-                    f"掛單成交! 持倉: {positions[0].get('side', '?')} @ "
-                    f"fill={self._fill_price} | position_raw={positions[0]}"
-                )
-
-                if self._fill_price and self._pending_signal:
-                    entry = self._pending_signal.entry_price
-                    slippage = abs(self._fill_price - entry)
-                    slippage_dollars = slippage * POINT_VALUE
-                    if slippage > 5.0:
-                        self._log_event(
-                            f"⚠ [FILL MISMATCH] entry={entry:.2f} fill={self._fill_price:.2f} "
-                            f"差距={slippage:.2f} pts (${slippage_dollars:.0f})",
-                            "error"
-                        )
-                    else:
-                        self._log_event(
-                            f"[FILL OK] entry={entry:.2f} fill={self._fill_price:.2f} "
-                            f"滑價={slippage:.2f} pts (${slippage_dollars:.0f})"
-                        )
-
-                # SL/TP: let TopstepX Position Bracket handle it
-                if not self._skip_engine_sl_tp:
-                    await self._place_sl_tp()
-                else:
-                    self._log_event("[SL/TP] 由 TopstepX Position Bracket 管理")
-                return True
-        except Exception as e:
-            self._log_event(f"檢查成交失敗: {e}", "error")
+        """Backup check: if _sync_position already detected fill, just confirm.
+        Primary fill detection is now in _sync_position (runs every 5s).
+        """
+        # If _sync_position already cleared pending and set position, we're done
+        if self._open_position and not self._pending_order_id:
+            return True
+        # If position exists but pending wasn't cleared yet (shouldn't happen)
+        if self._open_position:
+            self._log_event(f"[BACKUP] 偵測到持倉但掛單未清除 → 清除")
+            self._pending_order_id = None
+            self._pending_signal = None
+            self._pending_age = 0
+            return True
         return False
 
     async def _place_sl_tp(self):
@@ -608,14 +737,63 @@ class LiveTradingEngine:
             self._log_event(f"TP 下單異常: {e}", "error")
 
     async def _sync_position(self):
-        """Sync position state from exchange."""
+        """Sync position state from exchange.
+
+        Handles three transitions:
+          1. pending → filled:  position appears while _pending_order_id is set
+          2. filled  → closed:  position disappears (SL/TP hit)
+          3. no change:         update capital only
+        """
         try:
             positions = await self.client.get_positions(self.account_id)
             was_open = self._open_position is not None
-            self._open_position = positions[0] if positions else None
+            has_position = positions and len(positions) > 0
+            self._open_position = positions[0] if has_position else None
 
-            # Position closed (SL or TP hit)
-            if was_open and not self._open_position:
+            # ── Transition 1: Pending order just FILLED ──
+            if has_position and self._pending_order_id:
+                fill_price_raw = positions[0].get('averagePrice', positions[0].get('avgPrice'))
+                try:
+                    self._fill_price = float(fill_price_raw) if fill_price_raw else None
+                except (ValueError, TypeError):
+                    self._fill_price = None
+
+                self._daily_trade_count += 1
+                self._log_event(
+                    f"掛單成交! #{self._pending_order_id} | "
+                    f"fill={self._fill_price} | size={positions[0].get('size', '?')} | "
+                    f"side={'LONG' if positions[0].get('side', 0) == 0 else 'SHORT'}"
+                )
+
+                if self._fill_price and self._pending_signal:
+                    entry = self._pending_signal.entry_price
+                    slippage = abs(self._fill_price - entry)
+                    slippage_dollars = slippage * POINT_VALUE
+                    if slippage > 5.0:
+                        self._log_event(
+                            f"⚠ [FILL MISMATCH] entry={entry:.2f} fill={self._fill_price:.2f} "
+                            f"差距={slippage:.2f} pts (${slippage_dollars:.0f})",
+                            "error"
+                        )
+                    else:
+                        self._log_event(
+                            f"[FILL OK] entry={entry:.2f} fill={self._fill_price:.2f} "
+                            f"滑價={slippage:.2f} pts (${slippage_dollars:.0f})"
+                        )
+
+                # SL/TP managed by TopstepX bracket
+                if not self._skip_engine_sl_tp:
+                    await self._place_sl_tp()
+                else:
+                    self._log_event("[SL/TP] 由 TopstepX Position Bracket 管理")
+
+                # Clear pending state — order is now a position
+                self._pending_order_id = None
+                self._pending_signal = None
+                self._pending_age = 0
+
+            # ── Transition 2: Position CLOSED (SL/TP hit) ──
+            if was_open and not has_position:
                 pnl_info = ""
                 if self._fill_price:
                     pnl_info = f" | entry_fill={self._fill_price:.2f}"
@@ -624,6 +802,11 @@ class LiveTradingEngine:
                 self._sl_order_id = None
                 self._tp_order_id = None
                 self._fill_price = None
+
+                # Also clear pending state in case it wasn't cleared
+                self._pending_order_id = None
+                self._pending_signal = None
+                self._pending_age = 0
 
                 self._trades.append({
                     "time": datetime.utcnow().isoformat(),

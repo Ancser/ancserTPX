@@ -429,19 +429,46 @@ class TopstepXClient:
         logger.info(
             f"[ORDER SEND] {order_sides.get(order.side, '?')} {order_types.get(order.order_type, '?')} "
             f"size={order.size} limit={order.limit_price} stop={order.stop_price} "
-            f"account={order.account_id} contract={order.contract_id}"
+            f"account={order.account_id} contract={order.contract_id} "
+            f"(API: side={0 if order.side == 1 else 1}, type={4 if order.order_type == 3 else order.order_type})"
         )
+
+        # ProjectX API enums (integers):
+        #   side:  0=Bid(buy), 1=Ask(sell)
+        #   type:  1=Limit, 2=Market, 4=Stop, 5=TrailingStop
+        # Internal convention: side 1=Buy, 2=Sell → convert to API 0/1
+        api_side = 0 if order.side == 1 else 1  # 1(Buy)→0(Bid), 2(Sell)→1(Ask)
+        # Internal convention: type 1=Limit, 2=Market, 3=Stop → convert 3→4 for API
+        api_type = 4 if order.order_type == 3 else order.order_type
 
         payload = {
             "accountId": order.account_id,
             "contractId": order.contract_id,
-            "type": order.order_type,
-            "side": order.side,
+            "type": api_type,
+            "side": api_side,
             "size": order.size,
             "limitPrice": order.limit_price or 0,
             "stopPrice": order.stop_price or 0,
         }
-        data = await self._request("POST", "/api/Order/place", json=payload)
+
+        # Use direct request to capture 400 error body (not _request which raises)
+        client = await self._ensure_http()
+        raw_resp = await client.request("POST", "/api/Order/place", json=payload)
+
+        # Token expired → retry
+        if raw_resp.status_code == 401:
+            await self.authenticate()
+            client = await self._ensure_http()
+            raw_resp = await client.request("POST", "/api/Order/place", json=payload)
+
+        data = raw_resp.json()
+
+        # Log full response on error for debugging
+        if raw_resp.status_code >= 400:
+            logger.error(
+                f"[ORDER ERROR] HTTP {raw_resp.status_code} | payload={payload} | "
+                f"response={data}"
+            )
 
         resp = OrderResponse(
             order_id=data.get("orderId", 0),
@@ -483,23 +510,27 @@ class TopstepXClient:
         return orders
 
     async def get_open_orders(self, account_id: int) -> List[Dict]:
-        """查詢未成交掛單"""
-        all_orders = await self.get_orders(account_id)
-        return [o for o in all_orders if o.get("status") in ("Open", "Working", "open", "working")]
+        """查詢未成交掛單 (使用 searchOpen 端點)"""
+        data = await self._request(
+            "POST", "/api/Order/searchOpen",
+            json={"accountId": account_id}
+        )
+        orders = data.get("orders", data if isinstance(data, list) else [])
+        return orders
 
     # ── 持倉 ─────────────────────────────────────────
 
     async def get_positions(self, account_id: int) -> List[Dict]:
-        """查詢持倉"""
+        """查詢持倉 (使用 searchOpen 端點)"""
         data = await self._request(
-            "POST", "/api/Position/search",
+            "POST", "/api/Position/searchOpen",
             json={"accountId": account_id}
         )
         positions = data.get("positions", data if isinstance(data, list) else [])
         if positions:
             logger.info(
                 f"[POSITION] account={account_id} | count={len(positions)} | "
-                f"details={[{k: p.get(k) for k in ('side','avgPrice','size','contractId','unrealizedPnl')} for p in positions[:3]]}"
+                f"details={[{k: p.get(k) for k in ('side','averagePrice','size','contractId','type')} for p in positions[:3]]}"
             )
         return positions
 
@@ -508,7 +539,7 @@ class TopstepXClient:
     ) -> OrderResponse:
         """平倉指定合約"""
         data = await self._request(
-            "POST", "/api/Position/close",
+            "POST", "/api/Position/closeContract",
             json={
                 "accountId": account_id,
                 "contractId": contract_id,

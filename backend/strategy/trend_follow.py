@@ -87,7 +87,7 @@ class TrendFollowStrategy:
         Evaluate each candle. Stateful — call on every candle.
 
         Args:
-            candle: current 5m candle
+            candle: current 1m candle
             active_zone: currently active zone (if any)
             all_zones: all zones for POC reference
             last_trade_was_sl: whether the last trend trade hit SL

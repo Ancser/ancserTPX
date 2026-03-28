@@ -55,6 +55,7 @@ _backtest_results = []
 _historical_candles: List[Candle] = []
 _topstepx_client = None  # TopstepXClient instance (set after connect)
 _live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
+_candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
 
 
 # ── Pydantic 請求/回應模型 ────────────────────────────
@@ -236,14 +237,22 @@ async def get_latest_candles(since: str = ""):
         return {"candles": [], "count": 0}
 
     try:
+        import time as _time
         from backend.db.models import BarUnit
-        # Fetch last 10 candles (5-min bars)
-        candles = await _topstepx_client.get_historical_bars(
-            contract_id=_live_contract_id,
-            unit=BarUnit.MINUTE,
-            unit_number=5,
-            limit=10,
-        )
+
+        # Cache: only fetch from API every 5 seconds to avoid rate limits
+        now_ts = _time.time()
+        if _candle_cache["data"] and (now_ts - _candle_cache["time"]) < 5:
+            candles = _candle_cache["data"]
+        else:
+            candles = await _topstepx_client.get_historical_bars(
+                contract_id=_live_contract_id,
+                unit=BarUnit.MINUTE,
+                unit_number=1,
+                limit=30,
+            )
+            _candle_cache["data"] = candles
+            _candle_cache["time"] = now_ts
 
         if not candles:
             return {"candles": [], "count": 0}
@@ -1020,6 +1029,35 @@ async def live_start(req: LiveStartRequest):
 
     from backend.live.engine import LiveTradingEngine
 
+    # ── CRITICAL: Re-fetch fresh candles for warm-up ──
+    # Don't use stale _historical_candles from CONNECT (could be days old).
+    # Fetch last 2 days of 1-min candles for accurate zone detection.
+    try:
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        fresh_start = (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        fresh_end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        logger.info(f"[LIVE START] Fetching fresh 1min candles: {fresh_start} ~ {fresh_end}")
+
+        fresh_candles = await _topstepx_client.get_historical_bars_paginated(
+            contract_id=req.contract_id,
+            unit=BarUnit.MINUTE,
+            unit_number=1,
+            start_time=fresh_start,
+            end_time=fresh_end,
+        )
+        if fresh_candles and len(fresh_candles) > 0:
+            _historical_candles.clear()
+            _historical_candles.extend(fresh_candles)
+            logger.info(
+                f"[LIVE START] Fresh candles loaded: {len(fresh_candles)} | "
+                f"range: {fresh_candles[0].timestamp} ~ {fresh_candles[-1].timestamp}"
+            )
+        else:
+            logger.warning("[LIVE START] Fresh fetch returned 0 candles, using existing data")
+    except Exception as e:
+        logger.error(f"[LIVE START] Failed to fetch fresh candles: {e} — using existing data")
+
     _live_engine = LiveTradingEngine(
         client=_topstepx_client,
         account_id=req.account_id,
@@ -1035,7 +1073,7 @@ async def live_start(req: LiveStartRequest):
         poc_drift_threshold=req.poc_drift_threshold,
         value_area_pct=req.value_area_pct,
         slippage_ticks=req.slippage_ticks,
-        skip_engine_sl_tp=True,  # Let TopstepX Position Bracket (300:900) manage SL/TP
+        skip_engine_sl_tp=True,  # TopstepX bracket handles SL/TP
     )
 
     # Log candle date range

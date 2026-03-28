@@ -2,7 +2,7 @@
 # 文件: backend/strategy/reversion.py
 # 狀態: 已更新 v2
 # 規則:
-#   1. Zone 必須有至少 10 根 K 線 (50 分鐘形成)
+#   1. Zone 必須有至少 10 根 K 線 (10 分鐘形成)
 #   2. Sell limit at top 90% of 100% range
 #   3. Buy limit at bottom 10% of 100% range
 #   4. SL: $300 (15 NQ points), TP: $900 (45 NQ points)
