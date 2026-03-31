@@ -965,7 +965,7 @@ async def live_start(req: LiveStartRequest):
         contract_id=req.contract_id,
         max_daily_trades=req.max_daily_trades,
         value_area_pct=req.value_area_pct,
-        skip_engine_sl_tp=True,  # TopstepX bracket handles SL/TP
+        skip_engine_sl_tp=False,  # Engine places SL/TP after fill
     )
 
     # Log candle date range

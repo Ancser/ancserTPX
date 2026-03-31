@@ -62,8 +62,8 @@ class LiveTradingEngine:
         max_daily_trades: int = 5,
         value_area_pct: float = 0.80,
         slippage_ticks: int = 1,
-        # Safety: let TopstepX Position Bracket handle SL/TP instead of engine
-        skip_engine_sl_tp: bool = True,
+        # Engine manages SL/TP — MUST be False to protect positions
+        skip_engine_sl_tp: bool = False,
         # Legacy params (ignored, kept for API compatibility)
         strategies: List[str] = None,
         sl_dollars: float = 300.0,
@@ -98,6 +98,7 @@ class LiveTradingEngine:
         self._fill_price: Optional[float] = None
         self._sl_order_id: Optional[int] = None
         self._tp_order_id: Optional[int] = None
+        self._active_signal: Optional[TradeSignal] = None  # preserved after fill for SL/TP
         self._daily_trade_count: int = 0
         self._daily_pnl: float = 0.0
         self._today: str = ""
@@ -521,8 +522,15 @@ class LiveTradingEngine:
                 self._log_event("掛單超時 30 分鐘取消")
                 await self._cancel_pending()
 
-        # ── If position open, managed by SL/TP on exchange ──
+        # ── If position open, verify SL/TP are in place ──
         if self._open_position:
+            if not self._skip_engine_sl_tp and self._active_signal:
+                if not self._sl_order_id and not self._tp_order_id:
+                    self._log_event("⚠ 持倉中但無 SL/TP → 補掛 SL/TP", "error")
+                    # Temporarily restore signal for _place_sl_tp
+                    self._pending_signal = self._active_signal
+                    await self._place_sl_tp()
+                    self._pending_signal = None
             return
 
         # ── Strategy evaluation ──
@@ -674,8 +682,8 @@ class LiveTradingEngine:
     async def _place_sl_tp(self):
         """Place SL and TP orders for the current position.
 
-        NOTE: If skip_engine_sl_tp=True (default), this is NOT called.
-        TopstepX Position Bracket manages SL/TP automatically.
+        Called immediately after fill detection in _sync_position.
+        Also retried in _tick if SL/TP orders are missing.
         """
         if not self._pending_signal or not self._open_position:
             return
@@ -776,13 +784,18 @@ class LiveTradingEngine:
                     "strategy": "trend_follow",
                 })
 
-                # SL/TP managed by TopstepX bracket
+                # Place SL/TP protection orders
                 if not self._skip_engine_sl_tp:
                     await self._place_sl_tp()
+                    self._log_event(
+                        f"[SL/TP] 引擎管理 SL={self._pending_signal.sl_price:.2f} "
+                        f"TP={self._pending_signal.tp_price:.2f}"
+                    )
                 else:
                     self._log_event("[SL/TP] 由 TopstepX Position Bracket 管理")
 
-                # Clear pending state — order is now a position
+                # Save signal for SL/TP retry, then clear pending state
+                self._active_signal = self._pending_signal  # keep for SL/TP reference
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
@@ -797,6 +810,7 @@ class LiveTradingEngine:
                 self._sl_order_id = None
                 self._tp_order_id = None
                 self._fill_price = None
+                self._active_signal = None  # clear SL/TP reference
 
                 # Also clear pending state in case it wasn't cleared
                 self._pending_order_id = None

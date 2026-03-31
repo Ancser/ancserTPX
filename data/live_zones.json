@@ -1,6 +1,6 @@
 {
-  "saved_at": "2026-03-31T07:29:03.624192",
-  "active_zone_id": "S0006",
+  "saved_at": "2026-03-31T13:54:03.049323",
+  "active_zone_id": "S0007",
   "zones": [
     {
       "zone_id": "S0001",
@@ -79,16 +79,31 @@
     },
     {
       "zone_id": "S0006",
-      "poc": 23258.0,
-      "vah_80": 23286.75,
-      "val_80": 23238.5,
-      "high_100": 23309.5,
+      "poc": 23348.0,
+      "vah_80": 23416.5,
+      "val_80": 23302.75,
+      "high_100": 23439.25,
       "low_100": 23238.25,
-      "total_volume": 3785,
-      "duration_minutes": 23,
-      "num_candles": 29,
-      "status": "forming",
+      "total_volume": 84386,
+      "duration_minutes": 389,
+      "num_candles": 395,
+      "status": "left",
       "formed_at": "2026-03-31T07:00:00+00:00",
+      "left_at": "2026-03-31T13:30:00+00:00",
+      "exit_direction": "session_end"
+    },
+    {
+      "zone_id": "S0007",
+      "poc": 23441.75,
+      "vah_80": 23459.0,
+      "val_80": 23408.75,
+      "high_100": 23490.0,
+      "low_100": 23378.75,
+      "total_volume": 33410,
+      "duration_minutes": 18,
+      "num_candles": 19,
+      "status": "forming",
+      "formed_at": "2026-03-31T13:30:00+00:00",
       "left_at": null,
       "exit_direction": null
     }
