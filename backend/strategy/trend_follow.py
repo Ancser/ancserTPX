@@ -388,3 +388,181 @@ class TrendFollowStrategy:
     @property
     def raw_state(self) -> str:
         return self._state
+
+
+# ══════════════════════════════════════════════════════════
+# Session-based Trend Follow (for live overnight trading)
+# ══════════════════════════════════════════════════════════
+
+class SessionTrendFollow:
+    """
+    Session-based trend follow strategy.
+
+    規則:
+      1. 等待 SessionZoneDetector 報告區間成熟
+      2. 突破上方: 連續 5 根 1m close > VAH → BUY LIMIT @ (high_100 + VAH) / 2
+      3. 突破下方: 連續 5 根 1m close < VAL → SELL LIMIT @ (low_100 + VAL) / 2
+      4. SL: BUY → VAH - 50 tick,  SELL → VAL + 50 tick
+      5. TP: entry ± (|entry - SL| × 3)
+      6. 30 分鐘未成交取消
+    """
+
+    BREAKOUT_CONFIRM_CANDLES = 5   # 連續 5 根 close 在外
+    SL_TICKS = 50                  # 50 tick = 12.5 pts
+    TP_MULTIPLIER = 3              # TP = SL × 3
+    TICK_SIZE = 0.25
+    PENDING_TIMEOUT_CANDLES = 30   # 30 根 1m = 30 min
+
+    def __init__(self):
+        self._state = "idle"  # idle | watching | confirmed | in_trade
+        self._consecutive_outside: int = 0
+        self._breakout_direction: Optional[str] = None  # "up" | "down"
+        self._ref_zone = None  # snapshot of zone at breakout
+
+    def reset(self):
+        self._state = "idle"
+        self._consecutive_outside = 0
+        self._breakout_direction = None
+        self._ref_zone = None
+
+    def evaluate(
+        self,
+        candle: Candle,
+        zone: Optional[ConsolidationZone],
+        is_mature: bool,
+    ) -> Optional[TradeSignal]:
+        """
+        每根 1m K 線調用一次.
+
+        Args:
+            candle:    current 1m candle
+            zone:      active session zone (from SessionZoneDetector)
+            is_mature: whether zone is mature
+        """
+        # Need a mature zone to trade
+        if not zone or not is_mature:
+            if self._state == "watching":
+                self._state = "idle"
+                self._consecutive_outside = 0
+            return None
+
+        # No operation on AH (After Hours 20:00 - 22:00 UTC)
+        h = candle.timestamp.hour
+        if 20 <= h < 22:
+            return None
+
+        # Already confirmed or in trade → engine manages
+        if self._state in ("confirmed", "in_trade"):
+            return None
+
+        vah = zone.vah_80
+        val = zone.val_80
+
+        # ── Check breakout direction ──
+        if candle.close > vah:
+            current_dir = "up"
+        elif candle.close < val:
+            current_dir = "down"
+        else:
+            # Inside VA → reset
+            self._consecutive_outside = 0
+            self._breakout_direction = None
+            self._state = "idle"
+            return None
+
+        # ── Count consecutive outside ──
+        if current_dir == self._breakout_direction:
+            self._consecutive_outside += 1
+        else:
+            # Direction changed
+            self._breakout_direction = current_dir
+            self._consecutive_outside = 1
+
+        self._state = "watching"
+
+        # ── 5 consecutive → confirmed breakout ──
+        if self._consecutive_outside >= self.BREAKOUT_CONFIRM_CANDLES:
+            self._state = "confirmed"
+            self._ref_zone = zone
+            return self._generate_signal(candle, zone, current_dir)
+
+        return None
+
+    def _generate_signal(
+        self,
+        candle: Candle,
+        zone: ConsolidationZone,
+        direction: str,
+    ) -> TradeSignal:
+        """Generate entry signal with SL/TP."""
+        sl_points = self.SL_TICKS * self.TICK_SIZE  # 50 * 0.25 = 12.5 pts
+
+        if direction == "up":
+            # BUY: entry = midpoint(high_100, VAH), SL = VAH - 12.5
+            entry = (zone.high_100 + zone.vah_80) / 2.0
+            sl = zone.vah_80 - sl_points
+            sl_distance = abs(entry - sl)
+            tp = entry + sl_distance * self.TP_MULTIPLIER
+            trade_dir = Direction.BUY
+        else:
+            # SELL: entry = midpoint(low_100, VAL), SL = VAL + 12.5
+            entry = (zone.low_100 + zone.val_80) / 2.0
+            sl = zone.val_80 + sl_points
+            sl_distance = abs(entry - sl)
+            tp = entry - sl_distance * self.TP_MULTIPLIER
+            trade_dir = Direction.SELL
+
+        sl_dollars = sl_distance * POINT_VALUE
+        tp_dollars = sl_distance * self.TP_MULTIPLIER * POINT_VALUE
+
+        logger.info(
+            f"[SessionTrend] BREAKOUT {direction.upper()} confirmed | "
+            f"entry={(entry):.2f} SL={sl:.2f} TP={tp:.2f} | "
+            f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f} | "
+            f"zone={zone.zone_id}"
+        )
+
+        return TradeSignal(
+            strategy=StrategyType.TREND_FOLLOW,
+            direction=trade_dir,
+            entry_price=entry,
+            sl_price=sl,
+            tp_price=tp,
+            zone_id=zone.zone_id,
+            reason=(
+                f"SESSION TREND {direction.upper()} | "
+                f"5-bar breakout {'> VAH' if direction == 'up' else '< VAL'} | "
+                f"entry=50%({'H100+VAH' if direction == 'up' else 'L100+VAL'}) | "
+                f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f} (1:{self.TP_MULTIPLIER})"
+            ),
+            timestamp=candle.timestamp,
+        )
+
+    def notify_trade_closed(self, exit_reason: str):
+        """Called by engine when trade closes."""
+        self._state = "idle"
+        self._consecutive_outside = 0
+        self._breakout_direction = None
+
+    def notify_order_cancelled(self):
+        """Called by engine when pending order is cancelled/timeout."""
+        if self._state == "confirmed":
+            logger.info("[SessionTrend] Order cancelled → reset")
+        self._state = "idle"
+        self._consecutive_outside = 0
+        self._breakout_direction = None
+
+    def get_phase_label(self) -> str:
+        if self._state == "idle":
+            return "等待突破"
+        elif self._state == "watching":
+            return f"出界({self._consecutive_outside}/{self.BREAKOUT_CONFIRM_CANDLES} bar)"
+        elif self._state == "confirmed":
+            return "入場準備"
+        elif self._state == "in_trade":
+            return "持倉中"
+        return self._state
+
+    @property
+    def raw_state(self) -> str:
+        return self._state

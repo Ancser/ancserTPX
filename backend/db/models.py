@@ -140,6 +140,7 @@ class ConsolidationZone:
     num_candles: int
     status: ZoneStatus = ZoneStatus.FORMING
     exit_direction: Optional[str] = None   # "up" | "down"
+    mature: bool = False                   # 是否曾達到成熟條件
     candles: List[Candle] = field(default_factory=list)
     timeframe: str = "5m"                  # "5m" | "1m"
     parent_zone_id: Optional[str] = None   # 1m zone → parent 5m zone_id
@@ -281,7 +282,7 @@ class BreakoutAnalysis:
 @dataclass
 class BacktestConfig:
     """回測配置"""
-    strategies: List[str] = field(default_factory=lambda: ["reversion", "trend_follow"])
+    strategies: List[str] = field(default_factory=lambda: ["trend_follow"])
     symbol: str = "NQ"
     interval: str = "5m"
     start_date: str = ""

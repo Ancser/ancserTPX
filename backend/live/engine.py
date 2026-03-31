@@ -35,78 +35,58 @@ from backend.db.models import (
     Candle, TradeSignal, OrderRequest, OrderResponse,
     ConsolidationZone, Direction, StrategyType, ZoneStatus, BarUnit,
 )
-from backend.strategy.consolidation import ConsolidationDetector
-from backend.strategy.trend_follow import TrendFollowStrategy
-from backend.strategy.reversion import ReversionStrategy
+from backend.strategy.consolidation import SessionZoneDetector
+from backend.strategy.trend_follow import SessionTrendFollow
 from backend.broker.topstepx import TopstepXClient
 
 logger = logging.getLogger(__name__)
 
-ENGINE_VERSION = "v3.1-1min-2026-03-26"  # Verify correct code is loaded
+ENGINE_VERSION = "v4.0-session-2026-03-29"  # Session-based overnight zone
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
 
 
 class LiveTradingEngine:
-    """即時交易引擎 — 原始模式 (1m K 線)"""
+    """即時交易引擎 — Session 模式 (1m K 線, 晚盤 overnight zone)"""
 
-    FLATTEN_TIME = time(15, 5)      # CT 15:05 = flatten
-    PRE_FLATTEN = time(14, 50)      # CT 14:50 = cancel pending
+    # 加州 12:45 PT = 15:45 ET = 14:45 CT = 19:45 UTC
+    FLATTEN_TIME_UTC = time(19, 45)     # UTC 19:45 = PT 12:45 flatten
+    PRE_FLATTEN_UTC = time(19, 30)      # UTC 19:30 = PT 12:30 cancel pending
 
     def __init__(
         self,
         client: TopstepXClient,
         account_id: int,
         contract_id: str,
-        # Strategy params
+        # Strategy params (simplified — SessionTrendFollow only)
+        max_daily_trades: int = 5,
+        value_area_pct: float = 0.80,
+        slippage_ticks: int = 1,
+        # Safety: let TopstepX Position Bracket handle SL/TP instead of engine
+        skip_engine_sl_tp: bool = True,
+        # Legacy params (ignored, kept for API compatibility)
         strategies: List[str] = None,
         sl_dollars: float = 300.0,
         tp_dollars: float = 900.0,
         reversion_tp_mode: str = "poc",
         trend_tp_mode: str = "multiplier",
         trend_tp_multiplier: float = 4.0,
-        max_daily_trades: int = 5,
-        # Zone detection params
         min_candles_for_zone: int = 6,
         poc_drift_threshold: float = 3.0,
-        value_area_pct: float = 0.80,
-        # Slippage
-        slippage_ticks: int = 1,
-        # Safety: let TopstepX Position Bracket handle SL/TP instead of engine
-        skip_engine_sl_tp: bool = True,
     ):
         self.client = client
         self.account_id = account_id
         self.contract_id = contract_id
-        self.strategies = strategies or ["trend_follow"]
+        self.strategies = ["trend_follow"]  # Only SessionTrendFollow
         self.slippage_ticks = slippage_ticks
         self.max_daily_trades = max_daily_trades
-        self.reversion_tp_mode = reversion_tp_mode
 
-        sl_pts = sl_dollars / POINT_VALUE
-        tp_pts_rev = tp_dollars / POINT_VALUE
-        tp_pts_trend = tp_dollars / POINT_VALUE
-        if trend_tp_mode == "multiplier":
-            tp_pts_trend = sl_pts * trend_tp_multiplier
-
-        self.detector = ConsolidationDetector(
-            min_candles=min_candles_for_zone,
-            poc_drift_threshold=poc_drift_threshold,
+        # Session-based zone detector (overnight zone with maturity)
+        self.detector = SessionZoneDetector(
             value_area_pct=value_area_pct,
         )
-        self.reversion = ReversionStrategy(
-            sl_points=sl_pts,
-            tp_points=tp_pts_rev,
-            min_zone_candles=10,
-            entry_pct_high=0.90,
-            entry_pct_low=0.10,
-        )
-        self.trend_follow = TrendFollowStrategy(
-            sl_points=sl_pts,
-            tp_points=tp_pts_trend,
-            confirm_candles=4,
-            range_pct=0.90,
-        )
+        # Session-based trend follow (5-bar breakout, SL=50tick, TP=3x)
+        self.trend_follow = SessionTrendFollow()
 
         # Live state
         self._running = False
@@ -188,6 +168,11 @@ class LiveTradingEngine:
             active_id = data.get("active_zone_id")
             loaded = 0
             for zd in data.get("zones", []):
+                # Skip legacy ConsolidationDetector zones (Z prefix)
+                zid = zd.get("zone_id", "")
+                if not zid.startswith("S"):
+                    logger.info(f"跳過舊版 zone: {zid}")
+                    continue
                 zone = ConsolidationZone(
                     zone_id=zd["zone_id"],
                     formed_at=datetime.fromisoformat(zd["formed_at"]) if zd.get("formed_at") else None,
@@ -209,7 +194,7 @@ class LiveTradingEngine:
                     self.detector._active_zone = zone
                 self.detector._zone_counter = max(
                     self.detector._zone_counter,
-                    int(zone.zone_id.lstrip("Z")) if zone.zone_id.startswith("Z") else 0
+                    int(zone.zone_id.lstrip("S")) if zone.zone_id.startswith("S") else 0
                 )
                 loaded += 1
 
@@ -260,15 +245,23 @@ class LiveTradingEngine:
         if self._pending_order_id:
             return "掛單中"
 
+        active = self.detector.get_active_zone()
+        is_mature = self.detector.is_zone_mature
+
         trend_state = self.trend_follow.raw_state
         if trend_state == "watching":
             return self.trend_follow.get_phase_label()
         if trend_state == "confirmed":
             return "入場準備"
-        active = self.detector.get_active_zone()
+
+        if active and is_mature:
+            return "成熟區間"
         if active:
-            return "盤整"
-        return "等待盤整"
+            age_min = active.duration_minutes
+            hours = age_min // 60
+            mins = age_min % 60
+            return f"區間發展中({hours}h{mins:02d}m)"
+        return "等待晚盤"
 
     def _get_zone_summary(self) -> List[Dict]:
         zones = self.detector.get_all_zones()
@@ -286,6 +279,7 @@ class LiveTradingEngine:
                 "left_at": z.left_at.isoformat() if z.left_at else None,
                 "exit_direction": z.exit_direction,
                 "num_candles": z.num_candles,
+                "mature": self.detector.is_zone_mature if z == self.detector.get_active_zone() else False,
             })
         return result
 
@@ -323,36 +317,28 @@ class LiveTradingEngine:
         else:
             self._log_event("⚠ 無歷史K線! warm-up 跳過", "error")
 
-        # Warm up: feed to detector + strategy
+        # Warm up: feed historical candles to session zone detector
+        # MUST sort chronologically — API returns newest-first
+        historical_candles = sorted(historical_candles, key=lambda c: c.timestamp)
         for c in historical_candles:
             self.detector.update(c)
-            active_zone = self.detector.get_active_zone()
-            all_zones = self.detector.get_all_zones()
-            if "trend_follow" in self.strategies:
-                self.trend_follow.evaluate(c, active_zone, all_zones, False)
 
         self._candles_processed = len(historical_candles)
 
-        # If warm-up found no active zone, try loading from persisted snapshot
-        if not self.detector.get_active_zone():
-            zones_loaded = self._load_zones()
-            if zones_loaded:
-                self._log_event("Warm-up 無活躍 zone → 使用上次快照")
-        else:
-            # Save current state for next restart
-            self._save_zones()
-
-        # ── CRITICAL: Reset strategy state after warm-up ──
-        # Warm-up may leave trend_follow in "confirmed" state (signal generated
-        # but never acted on). Must reset to idle so live ticks start fresh.
+        # Reset strategy after warm-up (prevent stale state)
         if "trend_follow" in self.strategies:
-            old_state = self.trend_follow.raw_state
             self.trend_follow.reset()
-            if old_state != "idle":
-                self._log_event(
-                    f"⚠ Warm-up 後重置 TrendFollow: {old_state} → idle "
-                    f"(防止 stale state 卡死)"
-                )
+
+        active = self.detector.get_active_zone()
+        is_mature = self.detector.is_zone_mature
+        if active:
+            self._log_event(
+                f"Warm-up 完成 | session zone {active.zone_id} | "
+                f"bars={active.num_candles} | mature={'YES' if is_mature else 'NO'} | "
+                f"POC={active.poc:.2f} VAH={active.vah_80:.2f} VAL={active.val_80:.2f}"
+            )
+        else:
+            self._log_event("Warm-up 完成 | 尚無 session zone")
 
         # Get initial account balance
         try:
@@ -469,21 +455,51 @@ class LiveTradingEngine:
         if self._candles_processed % 5 == 0:
             self._save_zones()
 
-        # Convert to CT for time checks (CDT = UTC-5)
-        ct_time = (now - timedelta(hours=5)).time()
+        # ── ALWAYS update zone detector first (even during flatten/limits) ──
+        self.detector.update(candle)
 
-        # ── Flatten time ──
-        if ct_time >= self.FLATTEN_TIME:
+        # ── Periodic status log every minute (POC/VAH/VAL) ──
+        current_minute = now.minute
+        if current_minute != self._last_status_log_minute:
+            self._last_status_log_minute = current_minute
+            active = self.detector.get_active_zone()
+            is_mature = self.detector.is_zone_mature
+            phase = self._get_phase()
+            if active:
+                spread_ticks = (active.vah_80 - active.val_80) / TICK_SIZE
+                self._log_event(
+                    f"狀態={phase} | "
+                    f"{'🟢成熟' if is_mature else '🟡發展中'} | "
+                    f"POC={active.poc:.2f} | "
+                    f"VAH={active.vah_80:.2f} | "
+                    f"VAL={active.val_80:.2f} | "
+                    f"spread={spread_ticks:.0f}tick | "
+                    f"市價={self._last_market_price or 0:.2f}"
+                )
+            else:
+                self._log_event(
+                    f"狀態={phase} | 無活躍區間 | "
+                    f"市價={self._last_market_price or 0:.2f}"
+                )
+
+        # Use UTC directly for time checks
+        utc_time = now.time()
+
+        # ── Flatten time (PT 12:45 = UTC 19:45) ──
+        # Only flatten between 19:45-21:59 UTC (22:00+ is new session)
+        from datetime import time as _time
+        session_start = _time(22, 0)
+        if utc_time >= self.FLATTEN_TIME_UTC and utc_time < session_start:
             if self._open_position:
-                self._log_event("收盤平倉")
+                self._log_event("PT 12:45 收盤平倉")
                 await self.flatten_now()
             if self._pending_order_id:
                 await self._cancel_pending()
-            return
+            return  # no new trades during flatten, but detector already updated
 
-        # ── Pre-flatten: cancel pending ──
-        if ct_time >= self.PRE_FLATTEN and self._pending_order_id:
-            self._log_event("收盤前取消掛單")
+        # ── Pre-flatten: cancel pending (PT 12:30 = UTC 19:30) ──
+        if utc_time >= self.PRE_FLATTEN_UTC and utc_time < session_start and self._pending_order_id:
+            self._log_event("PT 12:30 收盤前取消掛單")
             await self._cancel_pending()
 
         # ── Daily trade limit ──
@@ -501,67 +517,34 @@ class LiveTradingEngine:
                 self._pending_age = 0
                 return
             self._pending_age += 1
-            if self._pending_age > 20:
-                self._log_event("掛單超時取消")
+            if self._pending_age > 30:  # 30 candles = 30 min timeout
+                self._log_event("掛單超時 30 分鐘取消")
                 await self._cancel_pending()
 
         # ── If position open, managed by SL/TP on exchange ──
         if self._open_position:
             return
 
-        # ── Periodic status log every minute (POC/VAH/VAL in Chinese) ──
-        current_minute = now.minute
-        if current_minute != self._last_status_log_minute:
-            self._last_status_log_minute = current_minute
-            active = self.detector.get_active_zone()
-            phase = self._get_phase()
-            if active:
-                self._log_event(
-                    f"狀態={phase} | "
-                    f"POC={active.poc:.2f} | "
-                    f"VAH={active.vah_80:.2f} | "
-                    f"VAL={active.val_80:.2f} | "
-                    f"市價={self._last_market_price or 0:.2f}"
-                )
-            else:
-                self._log_event(
-                    f"狀態={phase} | 無活躍區間 | "
-                    f"市價={self._last_market_price or 0:.2f}"
-                )
-
-        # ── Update zone detector ──
-        self.detector.update(candle)
-
         # ── Strategy evaluation ──
         active_zone = self.detector.get_active_zone()
-        all_zones = self.detector.get_all_zones()
+        is_mature = self.detector.is_zone_mature
 
-        # Trend follow
+        # Session Trend Follow (primary strategy)
         if "trend_follow" in self.strategies:
             # Safety: if strategy thinks it's confirmed but no order exists, reset
             if self.trend_follow.raw_state == "confirmed" and not self._pending_order_id:
                 self._log_event(
-                    "⚠ TrendFollow stuck in 'confirmed' but no pending order → reset to idle"
+                    "⚠ SessionTrend stuck in 'confirmed' but no pending order → reset"
                 )
                 self.trend_follow.reset()
 
-            signal = self.trend_follow.evaluate(candle, active_zone, all_zones, False)
+            signal = self.trend_follow.evaluate(candle, active_zone, is_mature)
             if signal and not self._pending_order_id:
                 placed = await self._place_order(signal)
                 if not placed:
-                    # Order was blocked/failed → reset strategy so it doesn't stay in confirmed
                     self.trend_follow.notify_order_cancelled()
                 return
 
-        # Reversion
-        if "reversion" in self.strategies and not self._pending_order_id:
-            if active_zone:
-                signal = self.reversion.evaluate(candle, active_zone)
-                if signal:
-                    if self.reversion_tp_mode == "poc" and active_zone.poc:
-                        signal.tp_price = active_zone.poc
-                    await self._place_order(signal)
-                    return
 
     # ── Order Management ──────────────────────────────────
 
@@ -781,6 +764,18 @@ class LiveTradingEngine:
                             f"滑價={slippage:.2f} pts (${slippage_dollars:.0f})"
                         )
 
+                # Record entry trade for chart markers
+                sig_dir = "buy"
+                if self._pending_signal:
+                    sig_dir = self._pending_signal.direction.value
+                self._trades.append({
+                    "time": datetime.utcnow().isoformat(),
+                    "type": "entry",
+                    "direction": sig_dir,
+                    "price": self._fill_price,
+                    "strategy": "trend_follow",
+                })
+
                 # SL/TP managed by TopstepX bracket
                 if not self._skip_engine_sl_tp:
                     await self._place_sl_tp()
@@ -811,6 +806,7 @@ class LiveTradingEngine:
                 self._trades.append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "closed",
+                    "entry_price": self._fill_price,
                 })
 
                 # Notify strategy

@@ -7,9 +7,6 @@ echo  ========================================
 echo   ancserTPX - NQ Futures Trading System
 echo  ========================================
 echo.
-echo  Starting backend server...
-echo  Web UI: http://localhost:8001
-echo.
 
 cd /d "%~dp0"
 
@@ -21,14 +18,37 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: ── Kill old processes on port 8001 ──
+echo  Cleaning up old processes on port 8001...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8001.*LISTENING" 2^>nul') do (
+    taskkill /F /PID %%a >nul 2>&1
+)
+:: Wait for port to fully release
+timeout /t 2 /nobreak >nul
+
+:: ── Clear Python bytecode cache ──
+echo  Clearing bytecode cache...
+for /d /r "backend" %%d in (__pycache__) do (
+    if exist "%%d" rd /s /q "%%d" >nul 2>&1
+)
+
+:: ── Clear stale zone data ──
+if exist "data\live_zones.json" (
+    echo  Resetting zone cache...
+    echo {"saved_at":"","active_zone_id":null,"zones":[]}> "data\live_zones.json"
+)
+
 :: Install dependencies if needed
-if not exist "backend\__pycache__" (
+if not exist ".deps_installed" (
     echo  Installing dependencies...
     pip install fastapi uvicorn httpx python-dotenv pydantic >nul 2>&1
+    echo done > .deps_installed
 )
 
 :: Start server and open browser
-echo  Server starting on http://localhost:8001
+echo.
+echo  Starting backend server...
+echo  Web UI: http://localhost:8001
 echo  Press Ctrl+C to stop
 echo.
 

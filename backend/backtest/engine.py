@@ -1,16 +1,16 @@
 # ============================================================
 # 文件: backend/backtest/engine.py
-# 狀態: 已完成
-# 問題: 無
+# 狀態: v3.0 — Session-based zone + SessionTrendFollow only
 # 變更:
-#   - Reversion: 10 candle zone, top 90%/bottom 10%, SL $300 TP $900
-#   - TrendFollow: stateful, 4-candle confirm, vol comparison, POC retry
-#   - Zone data includes formed_at for VP drawing
+#   - Removed ConsolidationDetector, ReversionStrategy, TrendFollowStrategy
+#   - Removed run_with_replay()
+#   - Uses SessionZoneDetector + SessionTrendFollow only
+#   - Flatten time: UTC 19:45 (PT 12:45)
 # ============================================================
 """
-回測引擎 v2
+回測引擎 v3 — SessionTrendFollow Only
 
-將歷史 K 線逐根餵入 → 盤整偵測 → 策略評估 → 模擬成交 → 績效計算
+將歷史 1m K 線逐根餵入 → Session Zone 偵測 → SessionTrendFollow 評估 → 模擬成交 → 績效計算
 """
 
 from __future__ import annotations
@@ -24,85 +24,65 @@ from backend.db.models import (
     Metrics, ConsolidationZone, BreakoutAnalysis,
     Direction, ExitReason, StrategyType, ZoneStatus,
 )
-from backend.strategy.consolidation import ConsolidationDetector, ZoneEvent
-from backend.strategy.reversion import ReversionStrategy
-from backend.strategy.trend_follow import TrendFollowStrategy
+from backend.strategy.consolidation import SessionZoneDetector
+from backend.strategy.trend_follow import SessionTrendFollow
 
 logger = logging.getLogger(__name__)
 
 
 class BacktestEngine:
-    """回測引擎 v2"""
+    """回測引擎 v3 — Session Zone + SessionTrendFollow"""
 
     POINT_VALUE = 20.0
     TICK_SIZE = 0.25
-    FLATTEN_TIME = time(15, 5)
+    # PT 12:45 = UTC 19:45
+    FLATTEN_TIME_UTC = time(19, 45)
+    PRE_FLATTEN_UTC = time(19, 30)
 
     def __init__(self, config: Optional[BacktestConfig] = None,
-                 sl_dollars: float = 300.0,
-                 tp_dollars: float = 900.0,
-                 reversion_tp_mode: str = "general",
-                 trend_tp_mode: str = "general",
-                 trend_tp_multiplier: float = 3.0,
                  max_daily_trades: int = 5):
         self.config = config or BacktestConfig()
 
-        sl_pts = sl_dollars / self.POINT_VALUE
-        tp_pts_rev = tp_dollars / self.POINT_VALUE
-        tp_pts_trend = tp_dollars / self.POINT_VALUE
-
-        # Override TP based on mode
-        if trend_tp_mode == "multiplier":
-            tp_pts_trend = sl_pts * trend_tp_multiplier
-
-        self.reversion_tp_mode = reversion_tp_mode  # "general" or "poc"
-
-        self.detector = ConsolidationDetector(
-            min_candles=self.config.min_candles_for_zone,
-            poc_drift_threshold=self.config.poc_drift_threshold,
+        # Session-based zone detector
+        self.detector = SessionZoneDetector(
             value_area_pct=self.config.value_area_pct,
         )
-        self.reversion = ReversionStrategy(
-            sl_points=sl_pts,
-            tp_points=tp_pts_rev,
-            min_zone_candles=10,
-            entry_pct_high=0.90,
-            entry_pct_low=0.10,
-        )
-        self.trend_follow = TrendFollowStrategy(
-            sl_points=sl_pts,
-            tp_points=tp_pts_trend,
-            confirm_candles=4,
-            range_pct=0.90,
-        )
+        # SessionTrendFollow: 5-bar breakout, SL=50tick, TP=3x
+        self.trend_follow = SessionTrendFollow()
 
         # State
         self._capital = self.config.initial_capital
         self._open_position: Optional[Trade] = None
-        self._pending_order: Optional[TradeSignal] = None  # limit order waiting to fill
-        self._pending_age: int = 0  # candles since order placed
-        self._pending_max_age: int = 20  # cancel after N candles
+        self._pending_order: Optional[TradeSignal] = None
+        self._pending_age: int = 0
+        self._pending_max_age: int = 30  # 30 candles (30 min for 1m bars)
         self._trades: List[Trade] = []
         self._equity_curve: List[Tuple[datetime, float]] = []
         self._daily_pnl: Dict[str, float] = {}
         self._daily_trade_count: Dict[str, int] = {}
         self._max_daily_trades: int = max_daily_trades
-        self._last_zone_event: Optional[ZoneEvent] = None
         self._last_closed_trade: Optional[Trade] = None
 
     def run(self, candles: List[Candle]) -> BacktestResult:
-        """執行回測"""
+        """執行回測 (1m candles)"""
         logger.info(
             f"開始回測: {len(candles)} 根 K 線, "
             f"初始資金=${self._capital:,.0f}"
         )
         self._reset()
 
+        # Ensure chronological order (API may return newest-first)
+        candles = sorted(candles, key=lambda c: c.timestamp)
+
         for candle in candles:
             self._process_candle(candle)
 
         if self._open_position:
             self._force_exit(candles[-1], ExitReason.FLATTEN)
+
+        # Close any remaining active zone at end of backtest
+        if candles:
+            self.detector.close_final_zone(candles[-1])
 
         from backend.backtest.metrics import MetricsCalculator
         calc = MetricsCalculator()
@@ -124,213 +104,6 @@ class BacktestEngine:
         )
         return result
 
-    def run_with_replay(self, candles: List[Candle]) -> dict:
-        """
-        Run backtest and capture per-candle snapshots for replay mode.
-
-        Returns dict with:
-          - result: BacktestResult (normal)
-          - snapshots: List[dict] per-candle state
-          - candles: List[dict] raw candle data for chart
-        """
-        logger.info(f"開始回測 (replay mode): {len(candles)} 根 K 線")
-        self._reset()
-
-        from backend.strategy.volume_profile import VolumeProfileCalculator
-        vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=0.80)
-
-        snapshots = []
-        candle_dicts = []
-        prev_open_id = None
-
-        for i, candle in enumerate(candles):
-            # Track trade events on this candle
-            open_before = self._open_position.trade_id if self._open_position else None
-            trades_before = len(self._trades)
-
-            self._process_candle(candle)
-
-            open_after = self._open_position.trade_id if self._open_position else None
-            trades_after = len(self._trades)
-
-            # Detect events
-            events = []
-            if open_after and open_after != open_before:
-                events.append("entry")
-            if trades_after > trades_before:
-                t = self._trades[-1]
-                events.append(f"exit_{t.exit_reason.value}" if t.exit_reason else "exit")
-            if self._pending_order and self._pending_age == 0:
-                events.append("order_placed")
-
-            # Capture zone state
-            active_zone = self.detector.get_active_zone()
-            all_zones = self.detector.get_all_zones()
-
-            # Strategy phase
-            trend_phase = self.trend_follow.get_phase_label()
-            trend_raw = self.trend_follow.raw_state
-
-            if self._open_position:
-                is_new_entry = open_after and open_after != open_before
-                if self._open_position.strategy == StrategyType.REVERSION:
-                    phase = "掛單成交" if is_new_entry else "持倉中"
-                    mode = "邊界回歸POC"
-                else:
-                    phase = "掛單成交" if is_new_entry else "持倉中"
-                    mode = "趨勢突破"
-            elif self._pending_order:
-                # Limit order placed, waiting for fill
-                phase = "掛單中"
-                if self._pending_order.strategy == StrategyType.REVERSION:
-                    mode = "邊界回歸POC"
-                else:
-                    mode = "趨勢突破"
-            elif active_zone and trend_raw == "idle":
-                # In consolidation
-                phase = "盤整"
-                mode = "邊界回歸POC"
-            elif trend_raw != "idle":
-                phase = trend_phase
-                mode = "趨勢突破"
-            else:
-                phase = "等待盤整"
-                mode = "idle"
-
-            # Zone data with VP profiles
-            zone_list = []
-            for z in all_zones:
-                zd = {
-                    "zone_id": z.zone_id,
-                    "poc": z.poc,
-                    "vah_80": z.vah_80,
-                    "val_80": z.val_80,
-                    "high_100": z.high_100,
-                    "low_100": z.low_100,
-                    "status": z.status.value,
-                    "formed_at": z.formed_at.isoformat() if z.formed_at else None,
-                    "left_at": z.left_at.isoformat() if z.left_at else None,
-                    "exit_direction": z.exit_direction,
-                    "num_candles": z.num_candles,
-                    "timeframe": getattr(z, 'timeframe', '5m'),
-                    "parent_zone_id": getattr(z, 'parent_zone_id', None),
-                }
-                # VP profile for current active zone (re-computed)
-                if z.candles and z.status.value == "active":
-                    try:
-                        vp = vp_calc.calculate(z.candles)
-                        max_vol = max(vp.profile.values()) if vp.profile else 1
-                        zd["profile"] = [
-                            {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
-                            for p, v in sorted(vp.profile.items())
-                        ]
-                    except Exception:
-                        zd["profile"] = []
-                else:
-                    zd["profile"] = []
-                zone_list.append(zd)
-
-            # Open trade info
-            open_trade = None
-            if self._open_position:
-                p = self._open_position
-                open_trade = {
-                    "trade_id": p.trade_id,
-                    "strategy": p.strategy.value,
-                    "direction": p.direction.value,
-                    "entry_price": p.entry_price,
-                    "entry_time": p.entry_time.isoformat(),
-                    "sl_price": p.sl_price,
-                    "tp_price": p.tp_price,
-                    "zone_id": p.zone_id,
-                }
-
-            # Pending order info
-            pending_info = None
-            if self._pending_order:
-                po = self._pending_order
-                pending_info = {
-                    "strategy": po.strategy.value,
-                    "direction": po.direction.value,
-                    "entry_price": po.entry_price,
-                    "sl_price": po.sl_price,
-                    "tp_price": po.tp_price,
-                    "zone_id": po.zone_id,
-                    "age": self._pending_age,
-                }
-
-            snapshots.append({
-                "i": i,
-                "phase": phase,
-                "mode": mode,
-                "events": events,
-                "zones": zone_list,
-                "open_trade": open_trade,
-                "pending_order": pending_info,
-                "capital": round(self._capital, 0),
-            })
-
-            candle_dicts.append({
-                "time": candle.timestamp.isoformat(),
-                "open": candle.open,
-                "high": candle.high,
-                "low": candle.low,
-                "close": candle.close,
-                "volume": candle.volume,
-            })
-
-        # Force exit if still open
-        if self._open_position:
-            self._force_exit(candles[-1], ExitReason.FLATTEN)
-
-        from backend.backtest.metrics import MetricsCalculator
-        calc = MetricsCalculator()
-        metrics = calc.calculate_all(self._trades, self.config.initial_capital)
-
-        result = BacktestResult(
-            config=self.config,
-            trades=self._trades,
-            zones=self.detector.get_all_zones(),
-            metrics=metrics,
-            equity_curve=self._equity_curve,
-        )
-
-        # Build trades response
-        trades_resp = []
-        for t in self._trades:
-            risk = abs(t.sl_price - t.entry_price) * self.POINT_VALUE
-            reward = abs(t.tp_price - t.entry_price) * self.POINT_VALUE
-            trades_resp.append({
-                "trade_id": t.trade_id,
-                "strategy": t.strategy.value,
-                "direction": t.direction.value,
-                "entry_price": t.entry_price,
-                "entry_time": t.entry_time.isoformat(),
-                "exit_price": t.exit_price,
-                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
-                "sl_price": t.sl_price,
-                "tp_price": t.tp_price,
-                "pnl": t.pnl,
-                "exit_reason": t.exit_reason.value if t.exit_reason else None,
-                "zone_id": t.zone_id,
-                "risk": risk,
-                "reward": reward,
-            })
-
-        logger.info(
-            f"回測完成 (replay): {metrics.total_trades} 筆交易, "
-            f"勝率={metrics.win_rate:.1%}, PnL=${metrics.total_pnl:,.0f}, "
-            f"snapshots={len(snapshots)}"
-        )
-
-        return {
-            "result": result,
-            "metrics": metrics,
-            "trades": trades_resp,
-            "snapshots": snapshots,
-            "candles": candle_dicts,
-        }
-
     def _reset(self):
         self._capital = self.config.initial_capital
         self._open_position = None
@@ -340,13 +113,15 @@ class BacktestEngine:
         self._equity_curve = []
         self._daily_pnl = {}
         self._daily_trade_count = {}
-        self._last_zone_event = None
         self._last_closed_trade = None
         self.detector.reset()
         self.trend_follow.reset()
 
     def _process_candle(self, candle: Candle):
         self._equity_curve.append((candle.timestamp, self._capital))
+
+        # ── ALWAYS update zone detector first (even during flatten/limits) ──
+        self.detector.update(candle)
 
         # Daily loss limit
         date_str = candle.timestamp.strftime("%Y-%m-%d")
@@ -365,14 +140,28 @@ class BacktestEngine:
                 self._cancel_pending_order()
             return
 
-        # Flatten time
+        # Flatten time (UTC 19:45 = PT 12:45)
+        # Only flatten between 19:45-21:59 UTC (not after 22:00 = new session)
         candle_time = candle.timestamp.time()
-        if candle_time >= self.FLATTEN_TIME:
+        SESSION_START = time(22, 0)  # 22:00 UTC = new session
+
+        in_flatten_window = (
+            candle_time >= self.FLATTEN_TIME_UTC and candle_time < SESSION_START
+        )
+        if in_flatten_window:
             if self._open_position:
                 self._force_exit(candle, ExitReason.FLATTEN)
             if self._pending_order:
                 self._cancel_pending_order()
-            return
+            return  # no new trades during flatten, but detector already updated
+
+        # Pre-flatten: cancel pending (UTC 19:30 = PT 12:30)
+        in_pre_flatten = (
+            candle_time >= self.PRE_FLATTEN_UTC and candle_time < SESSION_START
+        )
+        if in_pre_flatten and self._pending_order:
+            logger.debug("收盤前取消掛單")
+            self._cancel_pending_order()
 
         # Check SL/TP on open position
         if self._open_position:
@@ -384,68 +173,22 @@ class BacktestEngine:
         if self._pending_order and not self._open_position:
             filled = self._check_pending_fill(candle)
             if filled:
-                return  # just filled, done for this candle
+                return
             # Check expiry
             self._pending_age += 1
             if self._pending_age > self._pending_max_age:
                 logger.debug(f"掛單超時取消: {self._pending_order.reason}")
                 self._cancel_pending_order()
 
-        # Update consolidation detector
-        event = self.detector.update(candle)
-        if event:
-            self._last_zone_event = event
+        # ── Strategy evaluation: SessionTrendFollow ──
+        if not self._open_position and not self._pending_order:
+            active_zone = self.detector.get_active_zone()
+            is_mature = self.detector.is_zone_mature
 
-        # ── Cancel pending order if a new (3rd+) zone forms ──
-        if self._pending_order:
-            all_active_or_left = [z for z in self.detector.get_all_zones()
-                                  if z.status in (ZoneStatus.ACTIVE, ZoneStatus.LEFT)]
-            pending_zone = self._pending_order.zone_id
-            # If 2+ newer zones have formed since the pending order's zone
-            newer_zones = [z for z in all_active_or_left if z.zone_id != pending_zone]
-            if len(newer_zones) >= 2:
-                logger.debug(f"掛單取消(新區間形成): {self._pending_order.reason}")
-                self._cancel_pending_order()
-
-        # ── Cancel pending 15 min before flatten ──
-        if self._pending_order:
-            pre_flatten = time(self.FLATTEN_TIME.hour, max(0, self.FLATTEN_TIME.minute - 15))
-            if candle.timestamp.time() >= pre_flatten:
-                logger.debug(f"掛單取消(收盤前): {self._pending_order.reason}")
-                self._cancel_pending_order()
-
-        # ── Always evaluate trend follow (stateful) ──
-        # Check if last closed trade was a trend SL
-        last_trend_sl = False
-        if (self._last_closed_trade
-                and self._last_closed_trade.strategy == StrategyType.TREND_FOLLOW
-                and self._last_closed_trade.exit_reason == ExitReason.SL):
-            last_trend_sl = True
-            self._last_closed_trade = None  # consume
-
-        all_zones = self.detector.get_all_zones()
-        active_zone = self.detector.get_active_zone()
-
-        # Try trend follow first (it needs every candle for state tracking)
-        # Trend follow is always evaluated for state tracking, even with pending order
-        if not self._open_position and "trend_follow" in self.config.strategies:
-            signal = self.trend_follow.evaluate(
-                candle, active_zone, all_zones, last_trend_sl
-            )
-            if signal and not self._pending_order:
+            signal = self.trend_follow.evaluate(candle, active_zone, is_mature)
+            if signal:
                 self._place_pending_order(signal, candle)
                 return
-
-        # Try reversion (skip if already have a pending order)
-        if not self._open_position and not self._pending_order and "reversion" in self.config.strategies:
-            if active_zone:
-                signal = self.reversion.evaluate(candle, active_zone)
-                if signal:
-                    # POC TP mode: set TP to zone POC
-                    if self.reversion_tp_mode == "poc" and active_zone.poc:
-                        signal.tp_price = active_zone.poc
-                    self._place_pending_order(signal, candle)
-                    return
 
     def _check_exit(self, candle: Candle):
         pos = self._open_position
@@ -465,7 +208,7 @@ class BacktestEngine:
 
     def _cancel_pending_order(self):
         """Cancel a pending limit order and notify the strategy."""
-        if self._pending_order and self._pending_order.strategy == StrategyType.TREND_FOLLOW:
+        if self._pending_order:
             self.trend_follow.notify_order_cancelled()
         self._pending_order = None
         self._pending_age = 0
@@ -487,11 +230,9 @@ class BacktestEngine:
 
         filled = False
         if order.direction == Direction.BUY:
-            # BUY limit fills when price drops to or below the limit price
             if candle.low <= order.entry_price:
                 filled = True
         else:
-            # SELL limit fills when price rises to or above the limit price
             if candle.high >= order.entry_price:
                 filled = True
 
@@ -567,8 +308,7 @@ class BacktestEngine:
         self._open_position = None
 
         # Notify strategy of trade close
-        if pos.strategy == StrategyType.TREND_FOLLOW:
-            self.trend_follow.notify_trade_closed(reason.value)
+        self.trend_follow.notify_trade_closed(reason.value)
 
         logger.debug(
             f"出場: {reason.value} @ {exit_price:.2f} | "

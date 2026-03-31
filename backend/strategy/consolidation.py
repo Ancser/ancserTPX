@@ -45,7 +45,7 @@
 
 from __future__ import annotations
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -463,3 +463,318 @@ class ConsolidationDetector:
         self._exit_count = 0
         self._exit_direction = None
         self._zone_counter = 0
+
+
+# ══════════════════════════════════════════════════════════
+# Session-based Zone Detector (for live overnight trading)
+# ══════════════════════════════════════════════════════════
+
+import logging
+_logger = logging.getLogger(__name__)
+
+class SessionZoneDetector:
+    """
+    Quad-session zone detector — 亞盤 (ASIA) + 歐盤/盤前 (PRE) + 早盤 (RTH) + 盤後 (AH).
+
+    四段 Session (每天 4 個區間):
+      - 亞盤 (ASIA): 22:00 UTC (18:00 ET) → 07:00 UTC (03:00 ET)
+      - 盤前 (PRE):  07:00 UTC (03:00 ET) → 13:30 UTC (09:30 ET)
+      - 早盤 (RTH):  13:30 UTC (09:30 ET) → 20:00 UTC (16:00 ET)
+      - 盤後 (AH):   20:00 UTC (16:00 ET) → 22:00 UTC (18:00 ET)
+
+    算法:
+      1. 每段 session 開始收集 K 線
+      2. 最少 MIN_DEV_HOURS 等待發展
+         - 亞盤: 2 小時
+         - 盤前: 1.5 小時
+         - 早盤: 1.5 小時
+         - 盤後: 0.5 小時
+      3. 滿足發展時間後, 若 VAH和VAL 各自漂移 < MAX_DRIFT_TICKS → 成熟區間
+      4. 成熟後由策略負責突破判斷
+
+    Zone 每 5 根 K 線重新計算 VP (POC / VAH / VAL)
+    high_100 / low_100 會持續更新 (反映整個 session 範圍)
+    """
+
+    # Session boundaries (all UTC)
+    ASIA_START_HOUR = 22            # 18:00 ET = 22:00 UTC — 亞盤開始
+    PRE_START_HOUR = 7              # 03:00 ET = 07:00 UTC — 歐盤/盤前開始
+    RTH_START_HOUR = 13             # 09:30 ET = 13:30 UTC — 早盤開始
+    RTH_START_MINUTE = 30
+    AH_START_HOUR = 20              # 16:00 ET = 20:00 UTC — 盤後開始
+
+    # Minimum development hours per session
+    MIN_DEV_HOURS_ASIA = 2.0        # 亞盤最少 2 小時發展
+    MIN_DEV_HOURS_PRE = 1.5         # 盤前最少 1.5 小時發展
+    MIN_DEV_HOURS_RTH = 1.5         # 早盤最少 1.5 小時
+    MIN_DEV_HOURS_AH = 0.5          # 盤後最少 0.5 小時
+
+    # Maturity criteria
+    MATURITY_STABLE_CANDLES = 60    # VAH and VAL 穩定持續 60 根 (1 小時)
+    MATURITY_STABLE_CANDLES_AH = 20 # 盤後只有 ~1hr, 穩定 20 根即可
+    MATURITY_MAX_DRIFT_TICKS = 50   # 50 tick = 12.5 pts 各自波動不超過 50 tick
+    VP_RECALC_INTERVAL = 5         # 每 5 根重算 VP
+
+
+    def __init__(
+        self,
+        value_area_pct: float = 0.80,
+        tick_size: float = 0.25,
+    ):
+        self.vp_calc = VolumeProfileCalculator(tick_size, value_area_pct)
+        self.tick_size = tick_size
+
+        self._active_zone: Optional[ConsolidationZone] = None
+        self._all_zones: List[ConsolidationZone] = []
+        self._zone_counter: int = 0
+        self._zone_mature: bool = False
+        self._vah_history: List[float] = [] # VAH value per candle
+        self._val_history: List[float] = [] # VAL value per candle
+        self._session_date: Optional[str] = None  # "YYYY-MM-DD" of session start day
+        self._candle_count_since_recalc: int = 0
+
+    # ── 公開方法 ──
+
+    def update(self, candle: Candle) -> Optional[ZoneEvent]:
+        """每根 1m K 線調用一次."""
+        # Detect session boundary
+        session_id = self._get_session_id(candle)
+
+        # Debug: log first candle and every transition
+        if self._session_date is None:
+            _logger.info(
+                f"[SessionZone] FIRST candle: ts={candle.timestamp} "
+                f"h={candle.timestamp.hour} m={candle.timestamp.minute} "
+                f"tzinfo={candle.timestamp.tzinfo} → session_id={session_id}"
+            )
+
+        if session_id != self._session_date:
+            if self._session_date is not None:
+                _logger.info(
+                    f"[SessionZone] SESSION CHANGE: {self._session_date} → {session_id} "
+                    f"@ ts={candle.timestamp} (h={candle.timestamp.hour}:{candle.timestamp.minute})"
+                )
+            # New session → close old zone, start fresh
+            event = self._end_session(candle)
+            self._session_date = session_id
+            self._zone_mature = False
+            self._vah_history = []
+            self._val_history = []
+            self._candle_count_since_recalc = 0
+            if event:
+                _logger.info(f"[SessionZone] 新 Session {session_id} | 上個 zone 已關閉")
+            # Start collecting from this candle
+            self._create_zone(candle)
+            return event
+
+        # No active zone yet (shouldn't happen after create, but safety)
+        if not self._active_zone:
+            self._create_zone(candle)
+            return None
+
+        # ── Add candle to zone ──
+        zone = self._active_zone
+        zone.candles.append(candle)
+        zone.num_candles += 1
+        zone.duration_minutes = int(
+            (candle.timestamp - zone.formed_at).total_seconds() / 60
+        )
+
+        # Update 100% boundaries (session range grows)
+        if candle.high > zone.high_100:
+            zone.high_100 = candle.high
+        if candle.low < zone.low_100:
+            zone.low_100 = candle.low
+
+        # ── Recalculate VP periodically ──
+        self._candle_count_since_recalc += 1
+        if self._candle_count_since_recalc >= self.VP_RECALC_INTERVAL:
+            self._candle_count_since_recalc = 0
+            self._recalculate_vp()
+
+        # ── Track VAH and VAL drift for maturity ──
+        self._vah_history.append(zone.vah_80)
+        self._val_history.append(zone.val_80)
+        if len(self._vah_history) > 300:
+            self._vah_history = self._vah_history[-300:]
+            self._val_history = self._val_history[-300:]
+
+        # ── Check maturity ──
+        if not self._zone_mature:
+            was_mature = False
+            self._check_maturity(candle)
+            if self._zone_mature and not was_mature:
+                zone.status = ZoneStatus.ACTIVE
+                zone.mature = True  # permanent flag
+                _logger.info(
+                    f"[SessionZone] 區間成熟! {zone.zone_id} | "
+                    f"POC={zone.poc:.2f} VAH={zone.vah_80:.2f} VAL={zone.val_80:.2f} | "
+                    f"bars={zone.num_candles}"
+                )
+                return ZoneEvent("active", zone, message="區間成熟 — 等待突破")
+
+        return None
+
+    @property
+    def is_zone_mature(self) -> bool:
+        return self._zone_mature
+
+    def get_active_zone(self) -> Optional[ConsolidationZone]:
+        return self._active_zone
+
+    def get_all_zones(self) -> List[ConsolidationZone]:
+        return list(self._all_zones)
+
+    def close_final_zone(self, last_candle: Candle):
+        """Close any remaining active zone at end of backtest."""
+        if self._active_zone:
+            zone = self._active_zone
+            zone.status = ZoneStatus.LEFT
+            zone.left_at = last_candle.timestamp
+            zone.exit_direction = "backtest_end"
+            self._active_zone = None
+
+    def get_last_left_zone(self) -> Optional[ConsolidationZone]:
+        for z in reversed(self._all_zones):
+            if z.status == ZoneStatus.LEFT:
+                return z
+        return None
+
+    def reset(self):
+        self._active_zone = None
+        self._all_zones = []
+        self._zone_counter = 0
+        self._zone_mature = False
+        self._vah_history = []
+        self._val_history = []
+        self._session_date = None
+        self._candle_count_since_recalc = 0
+
+    # ── 內部方法 ──
+
+    def _get_session_id(self, candle: Candle) -> str:
+        """
+        Quad-session ID:
+          - 22:00 UTC → 06:59 UTC  = "YYYY-MM-DD-ASIA" (亞盤)
+          - 07:00 UTC → 13:29 UTC  = "YYYY-MM-DD-PRE"  (盤前)
+          - 13:30 UTC → 19:59 UTC  = "YYYY-MM-DD-RTH"  (早盤)
+          - 20:00 UTC → 21:59 UTC  = "YYYY-MM-DD-AH"   (盤後)
+
+        ASIA date = date when 22:00 UTC occurs
+        """
+        ts = candle.timestamp
+        h, m = ts.hour, ts.minute
+
+        # 22:00+ UTC → ASIA of today's date
+        if h >= self.ASIA_START_HOUR:
+            return ts.strftime("%Y-%m-%d") + "-ASIA"
+
+        # 20:00 ~ 21:59 UTC → AH of today
+        if h >= self.AH_START_HOUR:
+            return ts.strftime("%Y-%m-%d") + "-AH"
+
+        # 13:30 ~ 19:59 UTC → RTH of today
+        if h > self.RTH_START_HOUR or (
+            h == self.RTH_START_HOUR and m >= self.RTH_START_MINUTE
+        ):
+            return ts.strftime("%Y-%m-%d") + "-RTH"
+
+        # 07:00 ~ 13:29 UTC → PRE of today's calendar date
+        if h >= self.PRE_START_HOUR:
+            return ts.strftime("%Y-%m-%d") + "-PRE"
+
+        # 00:00 ~ 06:59 UTC → still ASIA of PREVIOUS date
+        prev = ts - timedelta(days=1)
+        return prev.strftime("%Y-%m-%d") + "-ASIA"
+
+    def _end_session(self, candle: Candle) -> Optional[ZoneEvent]:
+        """Close current session zone."""
+        if not self._active_zone:
+            return None
+        zone = self._active_zone
+        zone.status = ZoneStatus.LEFT
+        zone.left_at = candle.timestamp
+        zone.exit_direction = "session_end"
+        self._active_zone = None
+        return ZoneEvent("left", zone, message=f"Session 結束 — zone {zone.zone_id} 關閉")
+
+    def _create_zone(self, candle: Candle):
+        """Create a new session zone starting from this candle."""
+        self._zone_counter += 1
+        zone_id = f"S{self._zone_counter:04d}"
+        self._active_zone = ConsolidationZone(
+            zone_id=zone_id,
+            formed_at=candle.timestamp,
+            left_at=None,
+            poc=candle.close,
+            vah_80=candle.high,
+            val_80=candle.low,
+            high_100=candle.high,
+            low_100=candle.low,
+            total_volume=candle.volume,
+            duration_minutes=0,
+            num_candles=1,
+            status=ZoneStatus.FORMING,
+            exit_direction=None,
+            candles=[candle],
+        )
+        self._all_zones.append(self._active_zone)
+        _logger.info(f"[SessionZone] 建立 session zone {zone_id} @ {candle.timestamp}")
+
+    def _recalculate_vp(self):
+        """Recalculate VP from all session candles."""
+        zone = self._active_zone
+        if not zone or len(zone.candles) < 3:
+            return
+        try:
+            vp = self.vp_calc.calculate(zone.candles)
+            zone.poc = vp.poc
+            zone.vah_80 = vp.vah
+            zone.val_80 = vp.val
+            zone.total_volume = vp.total_volume
+            # high_100/low_100 already updated per-candle
+        except ValueError:
+            pass
+
+    def _check_maturity(self, candle: Candle):
+        """
+        成熟條件:
+          1. Zone 已發展 ≥ MIN_DEV_HOURS (晚盤 3h, 早盤 1.5h, 盤後 0.5h)
+          2. 最近 N 根 K 線, VAH 與 VAL 各自波動都不超過 MAX_DRIFT_TICKS (50 ticks)
+             (晚盤/早盤: 60 根, 盤後: 20 根)
+        """
+        zone = self._active_zone
+        if not zone:
+            return
+
+        # Determine min dev hours and stable candles based on session type
+        if self._session_date and self._session_date.endswith("-AH"):
+            min_dev_hours = self.MIN_DEV_HOURS_AH
+            stable_candles = self.MATURITY_STABLE_CANDLES_AH
+        elif self._session_date and self._session_date.endswith("-RTH"):
+            min_dev_hours = self.MIN_DEV_HOURS_RTH
+            stable_candles = self.MATURITY_STABLE_CANDLES
+        elif self._session_date and self._session_date.endswith("-PRE"):
+            min_dev_hours = self.MIN_DEV_HOURS_PRE
+            stable_candles = self.MATURITY_STABLE_CANDLES
+        else:
+            min_dev_hours = self.MIN_DEV_HOURS_ASIA
+            stable_candles = self.MATURITY_STABLE_CANDLES
+
+        # Condition 1: age ≥ min dev hours
+        age_minutes = (candle.timestamp - zone.formed_at).total_seconds() / 60
+        if age_minutes < min_dev_hours * 60:
+            return
+
+        # Condition 2: last N candles drift < threshold
+        if len(self._vah_history) < stable_candles:
+            return
+
+        recent_vah = self._vah_history[-stable_candles:]
+        recent_val = self._val_history[-stable_candles:]
+
+        vah_drift_ticks = (max(recent_vah) - min(recent_vah)) / self.tick_size
+        val_drift_ticks = (max(recent_val) - min(recent_val)) / self.tick_size
+
+        if vah_drift_ticks <= self.MATURITY_MAX_DRIFT_TICKS and val_drift_ticks <= self.MATURITY_MAX_DRIFT_TICKS:
+            self._zone_mature = True

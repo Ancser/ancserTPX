@@ -61,20 +61,8 @@ _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API
 # ── Pydantic 請求/回應模型 ────────────────────────────
 
 class BacktestRequest(BaseModel):
-    strategies: List[str] = ["reversion", "trend_follow"]
     initial_capital: float = 50000.0
-    slippage_ticks: int = 1
-    max_daily_loss: float = 2000.0
-    min_candles_for_zone: int = 6
-    poc_drift_threshold: float = 3.0
-    value_area_pct: float = 0.80
-    # Strategy params
-    sl_dollars: float = 300.0
-    tp_dollars: float = 900.0
-    reversion_tp_mode: str = "general"   # "general" | "poc"
-    trend_tp_mode: str = "general"       # "general" | "multiplier"
-    trend_tp_multiplier: float = 4.0     # TP = SL * multiplier
-    max_daily_trades: int = 5             # max entries per day
+    max_daily_trades: int = 5
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -122,6 +110,7 @@ class ZoneResponse(BaseModel):
     profile: Optional[list] = None  # VP histogram data [{price, volume, pct}]
     timeframe: str = "5m"
     parent_zone_id: Optional[str] = None
+    mature: bool = False  # Session zone maturity flag
 
 
 class SubMetricsResponse(BaseModel):
@@ -316,12 +305,10 @@ async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
     if not _historical_candles:
         raise HTTPException(400, "No candles loaded")
 
-    from backend.strategy.consolidation import ConsolidationDetector
+    from backend.strategy.consolidation import SessionZoneDetector
     from backend.strategy.volume_profile import VolumeProfileCalculator
 
-    detector = ConsolidationDetector(
-        min_candles=req.min_candles_for_zone,
-        poc_drift_threshold=req.poc_drift_threshold,
+    detector = SessionZoneDetector(
         value_area_pct=req.value_area_pct,
     )
     vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=req.value_area_pct)
@@ -756,30 +743,17 @@ async def run_backtest(req: BacktestRequest):
         )
 
     config = BacktestConfig(
-        strategies=req.strategies,
+        strategies=["trend_follow"],
         initial_capital=req.initial_capital,
-        slippage_ticks=req.slippage_ticks,
-        max_daily_loss=req.max_daily_loss,
-        min_candles_for_zone=req.min_candles_for_zone,
-        poc_drift_threshold=req.poc_drift_threshold,
-        value_area_pct=req.value_area_pct,
     )
 
     engine = BacktestEngine(
         config,
-        sl_dollars=req.sl_dollars,
-        tp_dollars=req.tp_dollars,
-        reversion_tp_mode=req.reversion_tp_mode,
-        trend_tp_mode=req.trend_tp_mode,
-        trend_tp_multiplier=req.trend_tp_multiplier,
         max_daily_trades=req.max_daily_trades,
     )
 
-    # Aggregate 1m to 5m if needed
-    if _historical_candles and _historical_candles[0].interval in ("1m", "1s"):
-        candles = engine.aggregate_1m_to_5m(_historical_candles)
-    else:
-        candles = _historical_candles
+    # Use 1m candles directly (SessionTrendFollow works on 1m)
+    candles = list(_historical_candles)
 
     result = engine.run(candles)
     _backtest_results.append(result)
@@ -821,6 +795,9 @@ async def run_backtest(req: BacktestRequest):
             except Exception:
                 profile_data = []
 
+        # Zone is mature only if it actually reached maturity during its lifetime
+        is_mature = getattr(z, 'mature', False)
+
         zones_resp.append(ZoneResponse(
             zone_id=z.zone_id,
             formed_at=z.formed_at.isoformat(),
@@ -836,8 +813,9 @@ async def run_backtest(req: BacktestRequest):
             status=z.status.value,
             exit_direction=z.exit_direction,
             profile=profile_data,
-            timeframe=getattr(z, 'timeframe', '5m'),
+            timeframe=getattr(z, 'timeframe', '1m'),
             parent_zone_id=getattr(z, 'parent_zone_id', None),
+            mature=is_mature,
         ))
 
     m = result.metrics
@@ -884,74 +862,6 @@ async def run_backtest(req: BacktestRequest):
     )
 
 
-@router.post("/backtest/run-replay")
-async def run_backtest_replay(req: BacktestRequest):
-    """
-    Run backtest with per-candle snapshots for replay mode.
-    Returns candles + snapshots for animated playback.
-    """
-    global _historical_candles
-
-    if not _historical_candles:
-        raise HTTPException(status_code=400, detail="請先拉取數據")
-
-    config = BacktestConfig(
-        strategies=req.strategies,
-        initial_capital=req.initial_capital,
-        slippage_ticks=req.slippage_ticks,
-        max_daily_loss=req.max_daily_loss,
-        min_candles_for_zone=req.min_candles_for_zone,
-        poc_drift_threshold=req.poc_drift_threshold,
-        value_area_pct=req.value_area_pct,
-    )
-
-    engine = BacktestEngine(
-        config,
-        sl_dollars=req.sl_dollars,
-        tp_dollars=req.tp_dollars,
-        reversion_tp_mode=req.reversion_tp_mode,
-        trend_tp_mode=req.trend_tp_mode,
-        trend_tp_multiplier=req.trend_tp_multiplier,
-        max_daily_trades=req.max_daily_trades,
-    )
-
-    if _historical_candles and _historical_candles[0].interval in ("1m", "1s"):
-        candles = engine.aggregate_1m_to_5m(_historical_candles)
-    else:
-        candles = _historical_candles
-
-    data = engine.run_with_replay(candles)
-
-    m = data["metrics"]
-
-    def _sub_dict(sm):
-        if not sm:
-            return None
-        return {
-            "total_trades": sm.total_trades, "wins": sm.wins, "losses": sm.losses,
-            "win_rate": sm.win_rate, "total_pnl": sm.total_pnl,
-            "profit_factor": sm.profit_factor,
-        }
-
-    return {
-        "metrics": {
-            "total_trades": m.total_trades,
-            "wins": m.wins,
-            "losses": m.losses,
-            "win_rate": m.win_rate,
-            "total_pnl": m.total_pnl,
-            "profit_factor": m.profit_factor,
-            "max_drawdown": m.max_drawdown,
-            "expectancy": m.expectancy,
-            "reversion": _sub_dict(m.reversion_metrics),
-            "trend_follow": _sub_dict(m.trend_follow_metrics),
-        },
-        "trades": data["trades"],
-        "snapshots": data["snapshots"],
-        "candles": data["candles"],
-    }
-
-
 @router.get("/backtest/results")
 async def list_backtests():
     """列出所有回測結果摘要"""
@@ -977,17 +887,8 @@ _live_engine = None
 class LiveStartRequest(BaseModel):
     account_id: int
     contract_id: str = "CON.F.US.ENQ.M26"
-    strategies: List[str] = ["trend_follow"]
-    sl_dollars: float = 300.0
-    tp_dollars: float = 900.0
-    reversion_tp_mode: str = "poc"
-    trend_tp_mode: str = "multiplier"
-    trend_tp_multiplier: float = 4.0
     max_daily_trades: int = 5
-    min_candles_for_zone: int = 6
-    poc_drift_threshold: float = 3.0
     value_area_pct: float = 0.80
-    slippage_ticks: int = 1
 
 
 @router.post("/live/start")
@@ -1062,17 +963,8 @@ async def live_start(req: LiveStartRequest):
         client=_topstepx_client,
         account_id=req.account_id,
         contract_id=req.contract_id,
-        strategies=req.strategies,
-        sl_dollars=req.sl_dollars,
-        tp_dollars=req.tp_dollars,
-        reversion_tp_mode=req.reversion_tp_mode,
-        trend_tp_mode=req.trend_tp_mode,
-        trend_tp_multiplier=req.trend_tp_multiplier,
         max_daily_trades=req.max_daily_trades,
-        min_candles_for_zone=req.min_candles_for_zone,
-        poc_drift_threshold=req.poc_drift_threshold,
         value_area_pct=req.value_area_pct,
-        slippage_ticks=req.slippage_ticks,
         skip_engine_sl_tp=True,  # TopstepX bracket handles SL/TP
     )
 

@@ -764,114 +764,20 @@
 <div class="main">
     <!-- Sidebar -->
     <div class="sidebar">
-        <!-- Backtest Config -->
+        <!-- Backtest Config (SessionTrendFollow only) -->
         <div class="panel" id="backtest-config-panel">
             <div class="panel-title">BACKTEST PARAMS</div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>CAPITAL $</label>
-                    <input type="number" id="initial-capital" value="50000">
-                </div>
-                <div class="form-group">
-                    <label>MAX DAILY LOSS $</label>
-                    <input type="number" id="max-daily-loss" value="2000">
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>SL $</label>
-                    <input type="number" id="sl-dollars" value="300" min="50" step="50">
-                </div>
-                <div class="form-group">
-                    <label>TP $</label>
-                    <input type="number" id="tp-dollars" value="900" min="50" step="50">
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>SLIPPAGE (TICKS)</label>
-                    <input type="number" id="slippage" value="1" min="0" max="5">
-                </div>
-                <div class="form-group">
-                    <label>VALUE AREA %</label>
-                    <select id="va-pct">
-                        <option value="0.70">70%</option>
-                        <option value="0.80" selected>80%</option>
-                        <option value="0.90">90%</option>
-                    </select>
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>MIN CANDLES (ZONE)</label>
-                    <input type="number" id="min-candles" value="6" min="3" max="20">
-                </div>
-                <div class="form-group">
-                    <label>POC DRIFT (PTS)</label>
-                    <input type="number" id="poc-drift" value="3" step="0.5">
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>MAX TRADES/DAY</label>
-                    <input type="number" id="max-daily-trades" value="5" min="1" max="20">
-                </div>
-            </div>
             <div class="form-group">
-                <label>STRATEGY</label>
-                <div style="display:flex;gap:16px;margin-top:6px;">
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;text-transform:none;">
-                        <input type="checkbox" id="strat-reversion"> Reversion
-                    </label>
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;text-transform:none;">
-                        <input type="checkbox" id="strat-trend" checked> Trend Follow
-                    </label>
-                </div>
+                <label>INITIAL CAPITAL $</label>
+                <input type="number" id="initial-capital" value="50000">
             </div>
-            <div style="margin-top:4px;padding-top:4px;border-top:1px solid var(--border);">
-                <div style="font-size:10px;letter-spacing:1.5px;color:var(--amber);margin-bottom:4px;">REVERSION TP</div>
-                <div style="display:flex;gap:12px;">
-                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;text-transform:none;">
-                        <input type="radio" name="rev-tp-mode" value="general"> General
-                    </label>
-                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;text-transform:none;">
-                        <input type="radio" name="rev-tp-mode" value="poc" checked> POC
-                    </label>
-                </div>
+            <div style="font-size:10px;color:var(--text2);margin-top:6px;line-height:1.6;">
+                Strategy: SessionTrendFollow<br>
+                SL: 50 ticks (12.5 pts) | TP: 3× SL<br>
+                Zone: Session overnight (18:00 ET)<br>
+                Flatten: PT 12:45
             </div>
-            <div style="margin-top:4px;padding-top:4px;border-top:1px solid var(--border);">
-                <div style="font-size:10px;letter-spacing:1.5px;color:var(--amber);margin-bottom:4px;">TREND TP</div>
-                <div style="display:flex;gap:12px;align-items:center;">
-                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;text-transform:none;">
-                        <input type="radio" name="trend-tp-mode" value="general"> General
-                    </label>
-                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;text-transform:none;">
-                        <input type="radio" name="trend-tp-mode" value="multiplier" checked> SL ×
-                    </label>
-                    <input type="number" id="trend-tp-mult" value="4" min="1" max="10" step="0.5" style="width:48px;padding:3px 6px;font-size:11px;">
-                </div>
-            </div>
-            <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled style="margin-top:8px;">EXECUTE BACKTEST</button>
-        </div>
-
-        <!-- Playback -->
-        <div class="panel" id="playback-panel">
-            <div class="panel-title">PLAYBACK</div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>IDLE (ms)</label>
-                    <input type="number" id="speed-idle" value="1000" min="1" max="5000" step="100">
-                </div>
-                <div class="form-group">
-                    <label>ENTRY (ms)</label>
-                    <input type="number" id="speed-entry" value="2000" min="50" max="10000" step="100">
-                </div>
-            </div>
-            <div class="form-group" style="margin-top:4px;">
-                <label>BATCH SIZE (idle)</label>
-                <input type="number" id="speed-batch" value="3" min="1" max="20" step="1">
-            </div>
-            <button class="btn" id="btn-replay" onclick="startReplayMode()" disabled style="margin-top:6px;background:var(--amber2);border-color:var(--amber);color:var(--amber);">▶ REPLAY MODE</button>
+            <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled style="margin-top:10px;">EXECUTE BACKTEST</button>
         </div>
 
         <!-- Metrics -->
@@ -886,18 +792,8 @@
                 <div class="panel-title">LIVE PARAMS</div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label>SL $</label>
-                        <input type="number" id="live-sl-dollars" value="300" min="50" max="5000" step="50">
-                    </div>
-                    <div class="form-group">
-                        <label>TP $</label>
-                        <input type="number" id="live-tp-dollars" value="900" min="50" max="10000" step="50">
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>SLIPPAGE (TICKS)</label>
-                        <input type="number" id="live-slippage" value="1" min="0" max="10">
+                        <label>MAX TRADES/DAY</label>
+                        <input type="number" id="live-max-trades" value="5" min="1" max="20">
                     </div>
                     <div class="form-group">
                         <label>VALUE AREA %</label>
@@ -908,55 +804,11 @@
                         </select>
                     </div>
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>MIN CANDLES (ZONE)</label>
-                        <input type="number" id="live-min-candles" value="6" min="3" max="50">
-                    </div>
-                    <div class="form-group">
-                        <label>POC DRIFT (PTS)</label>
-                        <input type="number" id="live-poc-drift" value="3" min="0" max="20" step="0.5">
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>MAX TRADES/DAY</label>
-                        <input type="number" id="live-max-trades" value="5" min="1" max="20">
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label>STRATEGY</label>
-                    <div style="display:flex;gap:16px;margin-top:6px;">
-                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;text-transform:none;">
-                            <input type="checkbox" id="live-strat-reversion"> Reversion
-                        </label>
-                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;text-transform:none;">
-                            <input type="checkbox" id="live-strat-trend" checked> Trend Follow
-                        </label>
-                    </div>
-                </div>
-                <div style="margin-top:4px;padding-top:4px;border-top:1px solid var(--border);">
-                    <div style="font-size:10px;letter-spacing:1.5px;color:var(--amber);margin-bottom:4px;">REVERSION TP</div>
-                    <div style="display:flex;gap:12px;">
-                        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;text-transform:none;">
-                            <input type="radio" name="live-rev-tp-mode" value="general"> General
-                        </label>
-                        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;text-transform:none;">
-                            <input type="radio" name="live-rev-tp-mode" value="poc" checked> POC
-                        </label>
-                    </div>
-                </div>
-                <div style="margin-top:4px;padding-top:4px;border-top:1px solid var(--border);">
-                    <div style="font-size:10px;letter-spacing:1.5px;color:var(--amber);margin-bottom:4px;">TREND TP</div>
-                    <div style="display:flex;gap:12px;align-items:center;">
-                        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;text-transform:none;">
-                            <input type="radio" name="live-trend-tp-mode" value="general"> General
-                        </label>
-                        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:11px;text-transform:none;">
-                            <input type="radio" name="live-trend-tp-mode" value="multiplier" checked> SL ×
-                        </label>
-                        <input type="number" id="live-trend-tp-mult" value="4" min="1" max="10" step="0.5" style="width:48px;padding:3px 6px;font-size:11px;background:var(--bg);color:var(--text);border:1px solid var(--border);font-family:'Share Tech Mono',monospace;">
-                    </div>
+                <div style="font-size:10px;color:var(--text2);margin-top:6px;line-height:1.6;">
+                    Strategy: SessionTrendFollow<br>
+                    SL: 50 ticks (12.5 pts) | TP: 3x SL<br>
+                    Zone: Session overnight (18:00 ET)<br>
+                    Flatten: PT 12:45
                 </div>
             </div>
             <div class="panel">
@@ -1000,19 +852,6 @@
     <div class="content">
         <div id="chart-container">
 
-            <!-- Replay Status Top Bar -->
-            <div id="replay-status" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'Share Tech Mono',monospace;font-size:11px;">
-                <div style="display:flex;align-items:stretch;height:28px;">
-                    <div style="flex:1;display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 8px;">MODE: <span id="rp-mode" style="color:var(--amber);margin-left:6px;">--</span></div>
-                    <div style="flex:1;display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 8px;">PHASE: <span id="rp-phase" style="color:var(--cyan);margin-left:6px;">--</span></div>
-                    <div style="flex:1;display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 8px;">POSITION: <span id="rp-position" style="color:var(--text2);margin-left:6px;">--</span></div>
-                    <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:0 8px;">CAPITAL: <span id="rp-capital" style="color:var(--green);margin-left:6px;">--</span>
-                        <span style="margin-left:12px;color:var(--text3);" id="rp-progress">0 / 0</span>
-                        <span style="margin-left:8px;color:var(--text3);" id="rp-speed">--</span>
-                    </div>
-                </div>
-            </div>
-
             <!-- Live Monitor Top Bar -->
             <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'Share Tech Mono',monospace;font-size:11px;">
                 <div style="display:flex;align-items:stretch;height:28px;">
@@ -1042,14 +881,6 @@
                 </div>
             </div>
 
-            <!-- Replay Controls Bar -->
-            <div id="replay-controls" style="display:none;position:absolute;bottom:4px;left:50%;transform:translateX(-50%);z-index:20;background:rgba(8,9,13,0.94);border:1px solid var(--border-h);padding:5px 14px;display:none;align-items:center;gap:10px;backdrop-filter:blur(8px);font-family:'Share Tech Mono',monospace;font-size:11px;">
-                <button id="rp-prev" style="background:none;border:1px solid var(--border-h);color:var(--cyan);cursor:pointer;padding:3px 10px;font-family:inherit;font-size:12px;" title="Previous trade (←)">◀</button>
-                <button id="rp-play" style="background:none;border:1px solid var(--border-h);color:var(--green);cursor:pointer;padding:3px 14px;font-family:inherit;font-size:12px;" title="Play/Pause (Space)">▶</button>
-                <button id="rp-next" style="background:none;border:1px solid var(--border-h);color:var(--cyan);cursor:pointer;padding:3px 10px;font-family:inherit;font-size:12px;" title="Next trade (→)">▶</button>
-                <span id="rp-bar-info" style="color:var(--text3);min-width:80px;text-align:center;">0/0</span>
-                <button id="rp-exit" style="background:none;border:1px solid var(--red);color:var(--red);cursor:pointer;padding:3px 10px;font-family:inherit;font-size:11px;" title="Exit replay">EXIT</button>
-            </div>
         </div>
 
         <div class="bottom-panel">
@@ -1078,9 +909,9 @@
                         <table>
                             <thead>
                                 <tr>
-                                    <th>ID</th><th>FORMED</th><th>LEFT</th><th>POC</th>
-                                    <th>VAH</th><th>VAL</th><th>100%H</th><th>100%L</th>
-                                    <th>VOL</th><th>BARS</th><th>STATUS</th><th>DIR</th>
+                                    <th>#</th><th>SESSION</th><th>STATUS</th><th>START -> END</th>
+                                    <th>DURATION</th><th>POC</th><th>VAH</th><th>VAL</th>
+                                    <th>VOL</th>
                                 </tr>
                             </thead>
                             <tbody id="zones-tbody"></tbody>
@@ -1169,21 +1000,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const backtestPanels = document.getElementById('backtest-config-panel');
             const metricsPanel = document.getElementById('metrics-panel');
             const livePanel = document.getElementById('live-panel');
-
-            const playbackPanel = document.getElementById('playback-panel');
             const liveTopBar = document.getElementById('live-top-bar');
             if (tab === 'backtest') {
                 backtestPanels.classList.remove('hidden');
-                playbackPanel.classList.remove('hidden');
                 if (metricsPanel.style.display === 'block') metricsPanel.classList.remove('hidden');
                 livePanel.classList.add('hidden');
                 liveTopBar.style.display = 'none';
             } else if (tab === 'live') {
                 backtestPanels.classList.add('hidden');
-                playbackPanel.classList.add('hidden');
                 metricsPanel.classList.add('hidden');
                 livePanel.classList.remove('hidden');
-                // Show live top bar if monitoring is active
                 if (_liveInterval || _liveStatusInterval) liveTopBar.style.display = 'block';
                 updateLiveTopBar();
             }
@@ -1384,8 +1210,6 @@ async function goLive() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                min_candles_for_zone: parseInt(document.getElementById('live-min-candles').value),
-                poc_drift_threshold: parseFloat(document.getElementById('live-poc-drift').value),
                 value_area_pct: parseFloat(document.getElementById('live-value-area').value),
             }),
         });
@@ -1427,27 +1251,11 @@ async function goLive() {
     document.getElementById('btn-flatten').disabled = false;
 
     // ── Call /live/start to start the live trading engine ──
-    const strategies = [];
-    if (document.getElementById('live-strat-reversion').checked) strategies.push('reversion');
-    if (document.getElementById('live-strat-trend').checked) strategies.push('trend_follow');
-
-    const revTPMode = document.querySelector('input[name="live-rev-tp-mode"]:checked')?.value || 'poc';
-    const trendTPMode = document.querySelector('input[name="live-trend-tp-mode"]:checked')?.value || 'multiplier';
-
     const liveParams = {
         account_id: liveAccount.id,
         contract_id: liveAccount.contract_id || 'CON.F.US.ENQ.M26',
-        strategies: strategies,
-        sl_dollars: parseFloat(document.getElementById('live-sl-dollars').value),
-        tp_dollars: parseFloat(document.getElementById('live-tp-dollars').value),
-        reversion_tp_mode: revTPMode,
-        trend_tp_mode: trendTPMode,
-        trend_tp_multiplier: parseFloat(document.getElementById('live-trend-tp-mult').value),
         max_daily_trades: parseInt(document.getElementById('live-max-trades').value),
-        min_candles_for_zone: parseInt(document.getElementById('live-min-candles').value),
-        poc_drift_threshold: parseFloat(document.getElementById('live-poc-drift').value),
         value_area_pct: parseFloat(document.getElementById('live-value-area').value),
-        slippage_ticks: parseInt(document.getElementById('live-slippage').value),
     };
 
     let engineStarted = false;
@@ -1806,32 +1614,66 @@ async function pollLiveStatus() {
             }
         }
 
-        // ── Live trade markers on chart (like backtest) ──
-        if (candleSeries && st.trades && st.trades.length > 0) {
-            const liveMarkers = [];
+        // ── Live trade markers on chart (accumulated history) ──
+        if (candleSeries) {
+            // Accumulate trade history from engine log
+            if (!window._liveTradeMarkers) window._liveTradeMarkers = [];
+
+            // Track new trades from engine (entries + closes)
+            if (st.trades && st.trades.length > (window._lastLiveTradeCount || 0)) {
+                const newTrades = st.trades.slice(window._lastLiveTradeCount || 0);
+                newTrades.forEach(t => {
+                    if (!t.time) return;
+                    const chartTime = isoToChartTime(t.time);
+                    if (t.type === 'entry') {
+                        const isLong = t.direction === 'buy';
+                        window._liveTradeMarkers.push({
+                            time: chartTime,
+                            position: isLong ? 'belowBar' : 'aboveBar',
+                            color: isLong ? '#00e5a0' : '#ff4060',
+                            shape: isLong ? 'arrowUp' : 'arrowDown',
+                            text: (isLong ? 'BUY' : 'SELL') + ' @ ' + (t.price || 0).toFixed(0),
+                        });
+                    } else if (t.type === 'closed') {
+                        window._liveTradeMarkers.push({
+                            time: chartTime,
+                            position: 'aboveBar',
+                            color: '#ffa726',
+                            shape: 'circle',
+                            text: 'EXIT',
+                        });
+                    }
+                });
+                window._lastLiveTradeCount = st.trades.length;
+            }
+
+            const liveMarkers = [...(window._liveTradeMarkers || [])];
+
             // Show pending signal as marker
             if (sig) {
-                const isLong = sig.direction === 'long';
+                const isLong = sig.direction === 'buy';
+                const localOffset = new Date().getTimezoneOffset() * -60;
                 liveMarkers.push({
-                    time: Math.floor(Date.now() / 1000),
+                    time: Math.floor(Date.now() / 1000) + localOffset,
                     position: isLong ? 'belowBar' : 'aboveBar',
-                    color: isLong ? '#00e5a0' : '#ff4060',
+                    color: '#FFD700',
                     shape: isLong ? 'arrowUp' : 'arrowDown',
-                    text: (sig.strategy === 'reversion' ? 'R' : 'T') + ' @ ' + sig.entry_price.toFixed(0),
+                    text: (isLong ? 'BUY' : 'SELL') + ' LIMIT @ ' + sig.entry_price.toFixed(0),
                 });
             }
-            // Show position if filled
-            if (st.position) {
-                const posIsLong = st.position.side === 1;
-                const avgP = st.position.avgPrice || st.position.averagePrice || 0;
+            // Show filled position as marker
+            if (st.position && st.fill_price) {
+                const posIsLong = st.position.side === 0 || st.position.side === 1;
+                const localOffset = new Date().getTimezoneOffset() * -60;
                 liveMarkers.push({
-                    time: Math.floor(Date.now() / 1000),
+                    time: Math.floor(Date.now() / 1000) + localOffset,
                     position: posIsLong ? 'belowBar' : 'aboveBar',
                     color: posIsLong ? '#00e5a0' : '#ff4060',
                     shape: posIsLong ? 'arrowUp' : 'arrowDown',
-                    text: (posIsLong ? 'LONG' : 'SHORT') + ' @ ' + (typeof avgP === 'number' ? avgP.toFixed(0) : avgP),
+                    text: (posIsLong ? 'LONG' : 'SHORT') + ' @ ' + (st.fill_price || 0).toFixed(0),
                 });
             }
+
             if (liveMarkers.length > 0) {
                 liveMarkers.sort((a, b) => a.time - b.time);
                 try { candleSeries.setMarkers(liveMarkers); } catch(e) {}
@@ -2041,6 +1883,8 @@ function drawVolumeProfile(zones) {
 
     // ── PASS 1: Draw zone bodies (histogram, background, VAH/VAL, entry levels) ──
     zones.forEach(z => {
+        // Skip FORMING zones — they haven't matured, no need to draw
+        if (z.status === 'forming') return;
         const is1m = z.timeframe === '1m';
         const isLeft = z.status === 'left';
         const poc = z.poc, vah = z.vah_80, val = z.val_80;
@@ -2057,18 +1901,31 @@ function drawVolumeProfile(zones) {
 
         // Zone X boundaries (histogram + background only within zone time)
         const xStart = timeToX(z.formed_at);
-        const xEnd = z.left_at ? timeToX(z.left_at) : W - 60;
+        const xEnd = z.left_at ? timeToX(z.left_at) : null;
 
-        // Fallback: if formed_at can't resolve (live zone not in chart data), use left edge
-        const x0 = Math.max(0, xStart !== null ? xStart : 0);
-        const x1 = xEnd !== null ? Math.min(W - 60, xEnd) : W - 60;
+        // For LEFT zones: both start and end must resolve, skip if either is null
+        // For ACTIVE zones: end extends to right edge
+        let x0, x1;
+        if (isLeft) {
+            if (xStart === null && xEnd === null) return; // completely off chart
+            x0 = xStart !== null ? xStart : -200;
+            x1 = xEnd !== null ? xEnd : x0 + Math.max(80, (z.num_candles || 60) * 3);
+        } else {
+            x0 = xStart !== null ? xStart : 0;
+            x1 = W - 60;
+        }
+        // Critical: skip if zone is entirely off-screen horizontally
+        if (x1 < 0 || x0 > W) return;
+        // Clamp to visible area
+        x0 = Math.max(-10, x0);
+        x1 = Math.min(W - 60, x1);
         if (x1 <= x0 + 20) return; // too narrow
 
-        // ── VP Histogram at zone start (active zones only) ──
+        // ── VP Histogram at zone start ──
         const histW = 80;
         const histX = x0;
 
-        if (!isLeft && z.profile && z.profile.length > 0 && yH100 >= 0 && yL100 >= 0) {
+        if (z.profile && z.profile.length > 0 && yH100 >= 0 && yL100 >= 0) {
             const maxPct = Math.max(...z.profile.map(p => p.pct));
             z.profile.forEach(p => {
                 const y = priceToY(p.price);
@@ -2088,7 +1945,7 @@ function drawVolumeProfile(zones) {
                 }
                 ctx.fillRect(histX, y - 1, barW, 2);
             });
-        } else if (!isLeft && yVAH >= 0 && yVAL >= 0) {
+        } else if (yVAH >= 0 && yVAL >= 0) {
             const vaTop = Math.min(yVAH, yVAL);
             const vaHeight = Math.abs(yVAL - yVAH);
             const steps = Math.max(8, Math.floor(vaHeight / 3));
@@ -2109,10 +1966,23 @@ function drawVolumeProfile(zones) {
             }
         }
 
-        // ── 100% range background (active zones only) ──
-        if (!isLeft && yH100 >= 0 && yL100 >= 0) {
-            ctx.fillStyle = 'rgba(100, 220, 255, 0.02)';
-            ctx.fillRect(x0, Math.min(yH100, yL100), x1 - x0, Math.abs(yL100 - yH100));
+        // ── 80% VA zone background: VAH→POC green, POC→VAL red ──
+        if (yVAH >= 0 && yVAL >= 0 && yPOC >= 0) {
+            const alpha = isLeft ? 0.06 : 0.10;
+            // VAH to POC — green (bullish zone)
+            const topY = Math.min(yVAH, yPOC);
+            const greenH = Math.abs(yPOC - yVAH);
+            if (greenH > 1) {
+                ctx.fillStyle = `rgba(0, 229, 160, ${alpha})`;
+                ctx.fillRect(x0, topY, x1 - x0, greenH);
+            }
+            // POC to VAL — red (bearish zone)
+            const botY = Math.min(yPOC, yVAL);
+            const redH = Math.abs(yVAL - yPOC);
+            if (redH > 1) {
+                ctx.fillStyle = `rgba(255, 64, 96, ${alpha})`;
+                ctx.fillRect(x0, botY, x1 - x0, redH);
+            }
         }
 
         // ── VAH / VAL dashed lines within zone extent ──
@@ -2144,41 +2014,93 @@ function drawVolumeProfile(zones) {
         }
         ctx.setLineDash([]);
 
-        // ── 90% / 10% entry levels (only for active zones) ──
-        if (!isLeft) {
-            const range100 = h100 - l100;
-            if (range100 > 0) {
-                const sell90 = l100 + 0.9 * range100;
-                const buy10 = l100 + 0.1 * range100;
-                const ySell = priceToY(sell90);
-                const yBuy = priceToY(buy10);
+        // ── SessionTrendFollow entry levels (midpoint entries) ──
+        // BUY entry = (H100 + VAH) / 2, SELL entry = (L100 + VAL) / 2
+        // SL: BUY → VAH - 12.5pts, SELL → VAL + 12.5pts
+        // TP: 3× SL distance
+        if (!isLeft && vah > 0 && val > 0) {
+            const buyEntry = (h100 + vah) / 2;
+            const sellEntry = (l100 + val) / 2;
+            const slPts = 12.5; // 50 ticks × 0.25
+            const buySL = vah - slPts;
+            const sellSL = val + slPts;
+            const buyTP = buyEntry + Math.abs(buyEntry - buySL) * 3;
+            const sellTP = sellEntry - Math.abs(sellEntry - sellSL) * 3;
 
-                ctx.setLineDash([2, 4]);
-                if (ySell >= 0) {
-                    ctx.strokeStyle = 'rgba(255, 64, 96, 0.35)';
-                    ctx.beginPath(); ctx.moveTo(x0, ySell); ctx.lineTo(x1, ySell); ctx.stroke();
-                    ctx.fillStyle = 'rgba(255, 64, 96, 0.4)';
-                    ctx.font = '8px "Share Tech Mono", monospace';
-                    ctx.textAlign = 'right';
-                    ctx.fillText('SELL 90%', x1 - 4, ySell - 2);
-                }
-                if (yBuy >= 0) {
-                    ctx.strokeStyle = 'rgba(0, 229, 160, 0.35)';
-                    ctx.beginPath(); ctx.moveTo(x0, yBuy); ctx.lineTo(x1, yBuy); ctx.stroke();
-                    ctx.fillStyle = 'rgba(0, 229, 160, 0.4)';
-                    ctx.fillText('BUY 10%', x1 - 4, yBuy + 10);
-                }
-                ctx.setLineDash([]);
+            const yBuyEntry = priceToY(buyEntry);
+            const ySellEntry = priceToY(sellEntry);
+            const yBuySL = priceToY(buySL);
+            const ySellSL = priceToY(sellSL);
+            const yBuyTP = priceToY(buyTP);
+            const ySellTP = priceToY(sellTP);
+
+            ctx.setLineDash([2, 4]);
+            ctx.font = '8px "Share Tech Mono", monospace';
+            ctx.textAlign = 'right';
+
+            // BUY entry (green dotted)
+            if (yBuyEntry >= 0 && yBuyEntry <= H) {
+                ctx.strokeStyle = 'rgba(0, 229, 160, 0.45)';
+                ctx.beginPath(); ctx.moveTo(x0, yBuyEntry); ctx.lineTo(x1, yBuyEntry); ctx.stroke();
+                ctx.fillStyle = 'rgba(0, 229, 160, 0.5)';
+                ctx.fillText('BUY ' + buyEntry.toFixed(1), x1 - 4, yBuyEntry + 10);
             }
+            // BUY TP (green faint)
+            if (yBuyTP >= 0 && yBuyTP <= H) {
+                ctx.strokeStyle = 'rgba(0, 229, 160, 0.2)';
+                ctx.beginPath(); ctx.moveTo(x0, yBuyTP); ctx.lineTo(x1, yBuyTP); ctx.stroke();
+                ctx.fillStyle = 'rgba(0, 229, 160, 0.25)';
+                ctx.fillText('TP ' + buyTP.toFixed(0), x1 - 4, yBuyTP - 2);
+            }
+
+            // SELL entry (red dotted)
+            if (ySellEntry >= 0 && ySellEntry <= H) {
+                ctx.strokeStyle = 'rgba(255, 64, 96, 0.45)';
+                ctx.beginPath(); ctx.moveTo(x0, ySellEntry); ctx.lineTo(x1, ySellEntry); ctx.stroke();
+                ctx.fillStyle = 'rgba(255, 64, 96, 0.5)';
+                ctx.fillText('SELL ' + sellEntry.toFixed(1), x1 - 4, ySellEntry - 2);
+            }
+            // SELL TP (red faint)
+            if (ySellTP >= 0 && ySellTP <= H) {
+                ctx.strokeStyle = 'rgba(255, 64, 96, 0.2)';
+                ctx.beginPath(); ctx.moveTo(x0, ySellTP); ctx.lineTo(x1, ySellTP); ctx.stroke();
+                ctx.fillStyle = 'rgba(255, 64, 96, 0.25)';
+                ctx.fillText('TP ' + sellTP.toFixed(0), x1 - 4, ySellTP + 10);
+            }
+
+            // SL lines (orange thin)
+            ctx.strokeStyle = 'rgba(255, 167, 38, 0.25)';
+            if (yBuySL >= 0 && yBuySL <= H) {
+                ctx.beginPath(); ctx.moveTo(x0, yBuySL); ctx.lineTo(x1, yBuySL); ctx.stroke();
+                ctx.fillStyle = 'rgba(255, 167, 38, 0.3)';
+                ctx.fillText('SL', x1 - 4, yBuySL + 10);
+            }
+            if (ySellSL >= 0 && ySellSL <= H) {
+                ctx.beginPath(); ctx.moveTo(x0, ySellSL); ctx.lineTo(x1, ySellSL); ctx.stroke();
+                ctx.fillStyle = 'rgba(255, 167, 38, 0.3)';
+                ctx.fillText('SL', x1 - 4, ySellSL - 2);
+            }
+            ctx.setLineDash([]);
         }
 
-        // ── Zone ID label (active only) ──
+        // ── Zone ID + maturity label ──
         if (!isLeft) {
-            ctx.fillStyle = is1m ? 'rgba(0, 229, 160, 0.4)' : 'rgba(255, 255, 255, 0.3)';
+            const matureTag = z.mature ? ' [MATURE]' : '';
+            const spreadTicks = ((vah - val) / 0.25).toFixed(0);
+            ctx.fillStyle = z.mature ? 'rgba(0, 229, 160, 0.5)' : 'rgba(255, 255, 255, 0.3)';
             ctx.font = '9px "Share Tech Mono", monospace';
             ctx.textAlign = 'left';
             if (yH100 >= 0) {
-                ctx.fillText((is1m ? '[1m] ' : '') + z.zone_id, x0 + 2, Math.min(yH100, yL100) - 4);
+                ctx.fillText(z.zone_id + matureTag + ' | ' + z.num_candles + ' bars | ' + spreadTicks + 'tick', x0 + 2, Math.min(yH100, yL100) - 4);
+            }
+        } else {
+            // Left (ended) zones — show zone ID + POC price
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+            ctx.font = '8px "Share Tech Mono", monospace';
+            ctx.textAlign = 'left';
+            const labelY = (yVAH >= 0 && yVAH <= H) ? yVAH - 4 : ((yH100 >= 0) ? Math.min(yH100, yL100) - 4 : -1);
+            if (labelY >= 0) {
+                ctx.fillText(z.zone_id + ' POC=' + poc.toFixed(0), x0 + 2, labelY);
             }
         }
     });
@@ -2198,17 +2120,19 @@ function drawVolumeProfile(zones) {
         if (yPOC < -100 || yPOC > H + 100) return;
 
         const xStart = timeToX(z.formed_at);
-        // Fallback: if formed_at can't resolve, use left edge for active / skip for left
-        if (xStart === null && isLeft) return;  // left zones without coordinates → skip
-        const x0 = Math.max(0, xStart !== null ? xStart : 0);
-
-        // Left zones: POC stops at left_at (no more extending!)
-        // Active/forming: extends to right edge
-        let x1;
-        if (isLeft && z.left_at) {
-            const xLeft = timeToX(z.left_at);
-            x1 = (xLeft !== null) ? Math.min(rightEdge, xLeft) : rightEdge;
+        // For LEFT zones: resolve both ends, skip if off-screen
+        let x0, x1;
+        if (isLeft) {
+            const xLeft = z.left_at ? timeToX(z.left_at) : null;
+            if (xStart === null && xLeft === null) return;
+            x0 = xStart !== null ? xStart : -200;
+            x1 = xLeft !== null ? Math.min(rightEdge, xLeft) : x0 + Math.max(80, (z.num_candles || 60) * 3);
+            x1 = Math.min(rightEdge, x1);
+            // Skip if entirely off-screen
+            if (x1 < 0 || x0 > W) return;
+            x0 = Math.max(-10, x0);
         } else {
+            x0 = xStart !== null ? xStart : 0;
             x1 = rightEdge;
         }
         if (x1 <= x0 + 5) return;
@@ -2357,7 +2281,7 @@ function drawPositionTools(trades) {
         const rr = risk > 0 ? (reward / risk).toFixed(1) : '0';
         const pnlVal = t.pnl || 0;
         const pnlStr = (pnlVal >= 0 ? '+' : '') + '$' + pnlVal.toFixed(0);
-        const stratLabel = t.strategy === 'reversion' ? 'REV' : 'TRD';
+        const stratLabel = 'TRD';
         const dirLabel = isBuy ? 'LONG' : 'SHORT';
         const isWin = pnlVal >= 0;
 
@@ -2452,14 +2376,8 @@ function drawPendingOrderOverlay(po, idx) {
     const tpY = candleSeries.priceToCoordinate(po.tp_price);
     if (entryY === null) return;
 
-    // Get X from current candle time
-    const curCandle = replay.allCandles[idx];
+    // Get X from chart time scale
     let startX = 0;
-    if (curCandle) {
-        const t = isoToChartTime(curCandle.time);
-        const x = chart.timeScale().timeToCoordinate(t);
-        if (x !== null) startX = x;
-    }
 
     // ── Pending entry limit line (cyan dashed, full width from order candle) ──
     ctx.setLineDash([8, 4]);
@@ -2475,7 +2393,7 @@ function drawPendingOrderOverlay(po, idx) {
     ctx.fillStyle = 'rgba(100, 220, 255, 0.9)';
     ctx.textAlign = 'left';
     const dirLabel = isBuy ? 'BUY' : 'SELL';
-    const stratLabel = po.strategy === 'reversion' ? 'REV' : 'TRD';
+    const stratLabel = 'TRD';
     const labelText = `⏳ ${dirLabel} ${stratLabel} LIMIT @ ${po.entry_price.toFixed(2)}`;
     const lblW = ctx.measureText(labelText).width + 10;
     ctx.fillStyle = 'rgba(100, 220, 255, 0.12)';
@@ -2624,7 +2542,6 @@ async function connectAPI() {
         document.getElementById('conn-trigger').classList.add('connected');
         document.getElementById('data-count').value = data.candles_count + ' bars';
         document.getElementById('btn-backtest').disabled = false;
-        document.getElementById('btn-replay').disabled = false;
 
         log('Connected // Contract: ' + data.contract_id, 'success');
         log('Loaded ' + data.candles_count + ' bars (' + data.interval + ') from ' + data.first + ' to ' + data.last, 'success');
@@ -2737,27 +2654,9 @@ function applyDefaultChartView(chartData, zones) {
 }
 
 function buildBacktestBody() {
-    const strategies = [];
-    if (document.getElementById('strat-reversion').checked) strategies.push('reversion');
-    if (document.getElementById('strat-trend').checked) strategies.push('trend_follow');
-
-    const body = {
-        strategies,
+    return {
         initial_capital: parseFloat(document.getElementById('initial-capital').value),
-        slippage_ticks: parseInt(document.getElementById('slippage').value),
-        max_daily_loss: parseFloat(document.getElementById('max-daily-loss').value),
-        min_candles_for_zone: parseInt(document.getElementById('min-candles').value),
-        poc_drift_threshold: parseFloat(document.getElementById('poc-drift').value),
-        value_area_pct: parseFloat(document.getElementById('va-pct').value),
-        sl_dollars: parseFloat(document.getElementById('sl-dollars').value),
-        tp_dollars: parseFloat(document.getElementById('tp-dollars').value),
-        reversion_tp_mode: document.querySelector('input[name="rev-tp-mode"]:checked').value,
-        trend_tp_mode: document.querySelector('input[name="trend-tp-mode"]:checked').value,
-        trend_tp_multiplier: parseFloat(document.getElementById('trend-tp-mult').value),
-        max_daily_trades: parseInt(document.getElementById('max-daily-trades').value),
     };
-
-    return body;
 }
 
 async function runBacktest() {
@@ -2784,13 +2683,13 @@ async function runBacktest() {
             'Win rate: ' + (backtestData.metrics.win_rate * 100).toFixed(1) + '% // ' +
             'PnL: $' + backtestData.metrics.total_pnl.toFixed(0), 'success');
 
+        // Clear old cached zone overlay before rendering new backtest
+        _cachedVPZones = null;
+
         renderChart(backtestData);
         renderMetrics(backtestData.metrics);
         renderTrades(backtestData.trades);
         renderZones(backtestData.zones);
-
-        // Enable replay button
-        document.getElementById('btn-replay').disabled = false;
 
     } catch(e) {
         log('Backtest failed: ' + e.message, 'error');
@@ -2843,17 +2742,7 @@ function startOverlaySync() {
         const data = _overlaySyncData;
         // Pick a reference price to check if Y coordinate changed
         let refPrice = 0;
-        if (replay.active && replay.currentIndex > 0) {
-            // During replay, get ref price from current snapshot
-            const snap = replay.snapshots[Math.min(replay.currentIndex - 1, replay.snapshots.length - 1)];
-            if (snap && snap.open_trade) {
-                refPrice = snap.open_trade.entry_price;
-            } else if (snap && snap.zones && snap.zones.length > 0) {
-                refPrice = snap.zones[0].poc;
-            } else {
-                refPrice = 0;
-            }
-        } else if (data.zones && data.zones.length > 0) {
+        if (data.zones && data.zones.length > 0) {
             refPrice = data.zones[0].poc;
         } else if (data.trades && data.trades.length > 0) {
             refPrice = data.trades[0].entry_price;
@@ -2861,24 +2750,15 @@ function startOverlaySync() {
         if (refPrice === 0) return;
 
         const curY = candleSeries.priceToCoordinate(refPrice);
-        // Also check X (horizontal scroll)
         const range = chart.timeScale().getVisibleLogicalRange();
         const curX = range ? range.from : null;
 
-        // Only redraw if coordinates changed
         if (curY !== lastCheckY || curX !== lastCheckX) {
             lastCheckY = curY;
             lastCheckX = curX;
-            // In replay mode, redraw from current snapshot
-            if (replay.active && replay.currentIndex > 0) {
-                _replayForceRedraw = true;
-                drawReplayState(replay.currentIndex - 1);
-            } else {
-                // Use cached zones (which includes live zone updates) if available
-                const zonesToDraw = _cachedVPZones || data.zones;
-                if (zonesToDraw) drawVolumeProfile(zonesToDraw);
-                if (data.trades) drawPositionTools(data.trades);
-            }
+            const zonesToDraw = _cachedVPZones || data.zones;
+            if (zonesToDraw) drawVolumeProfile(zonesToDraw);
+            if (data.trades) drawPositionTools(data.trades);
         }
     }
 
@@ -2893,481 +2773,14 @@ function stopOverlaySync() {
     _overlaySyncData = null;
 }
 
-// ============================================================
-// REPLAY CONTROLLER
-// ============================================================
-
-const replay = {
-    allCandles: [],       // raw candle dicts from backend
-    snapshots: [],        // per-candle state snapshots
-    trades: [],           // all trades list
-    tradeEntryIndices: [], // candle indices where entries happen
-    tradeExitIndices: [],  // candle indices where exits happen
-
-    currentIndex: 0,
-    isPlaying: false,
-    timer: null,
-    active: false,        // replay mode active?
-
-    // Speed: ms delay per candle tick
-    speedIdle: 1000,      // ms per candle idle (read from UI)
-    speedEntry: 2000,     // ms per candle near entry (read from UI)
-    batchSize: 3,         // candles per tick at idle (read from UI)
-    nearEntryRange: 5,    // slow down within N candles of entry
-
-    // Animation
-    animating: false,
-    animTarget: -1,
-};
-
-async function startReplayMode() {
-    const btn = document.getElementById('btn-replay');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> LOADING...';
-    log('Starting replay mode...', 'info');
-
-    // Read speed settings from UI
-    replay.speedIdle = parseInt(document.getElementById('speed-idle').value) || 2;
-    replay.speedEntry = parseInt(document.getElementById('speed-entry').value) || 30;
-    replay.batchSize = parseInt(document.getElementById('speed-batch').value) || 3;
-
-    try {
-        const resp = await fetch(API + '/backtest/run-replay', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(buildBacktestBody())
-        });
-
-        if (!resp.ok) throw new Error((await resp.json()).detail || resp.statusText);
-        const data = await resp.json();
-
-        replay.allCandles = data.candles;
-        replay.snapshots = data.snapshots;
-        replay.trades = data.trades;
-        replay.currentIndex = 0;
-        replay.active = true;
-        replay.isPlaying = false;
-
-        // Pre-compute trade entry/exit candle indices
-        replay.tradeEntryIndices = [];
-        replay.tradeExitIndices = [];
-        replay.snapshots.forEach((s, i) => {
-            if (s.events.includes('entry')) replay.tradeEntryIndices.push(i);
-            s.events.forEach(e => { if (e.startsWith('exit')) replay.tradeExitIndices.push(i); });
-        });
-
-        // Clear chart and reset time scale (bar spacing from previous backtest)
-        candleSeries.setData([]);
-        volumeSeries.setData([]);
-        candleSeries.setMarkers([]);
-        chart.timeScale().resetTimeScale();
-        chart.timeScale().applyOptions({ barSpacing: 6, rightOffset: 5 });
-        clearVPOverlay();
-        clearPositionOverlay();
-        stopOverlaySync();
-        _replayPriceCenter = null;
-        _lastReplayDrawIdx = -1;
-
-        // Show replay UI
-        document.getElementById('replay-status').style.display = 'block';
-        document.getElementById('replay-controls').style.display = 'flex';
-
-        // Wire buttons
-        document.getElementById('rp-play').onclick = toggleReplayPlay;
-        document.getElementById('rp-prev').onclick = () => replayJumpTrade(-1);
-        document.getElementById('rp-next').onclick = () => replayJumpTrade(1);
-        document.getElementById('rp-exit').onclick = exitReplayMode;
-
-        // Keyboard
-        document.addEventListener('keydown', replayKeyHandler);
-
-        log(`Replay ready: ${replay.allCandles.length} candles, ${replay.trades.length} trades`, 'success');
-        drawReplayState(0);
-
-        // Start overlay sync for manual scroll during replay
-        _overlaySyncData = { zones: [], trades: [] };
-        startOverlaySync();
-
-        // Auto-start
-        toggleReplayPlay();
-
-    } catch(e) {
-        log('Replay failed: ' + e.message, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = '▶ REPLAY MODE';
-    }
-}
-
-function exitReplayMode() {
-    replay.active = false;
-    replay.isPlaying = false;
-    if (replay.timer) { clearTimeout(replay.timer); replay.timer = null; }
-    replay.animating = false;
-    _lastReplayDrawIdx = -1;
-    _replayPriceCenter = null;
-    // Reset autoscale to default (auto)
-    candleSeries.applyOptions({ autoscaleInfoProvider: undefined });
-
-    document.getElementById('replay-status').style.display = 'none';
-    document.getElementById('replay-controls').style.display = 'none';
-    document.removeEventListener('keydown', replayKeyHandler);
-
-    // Restore full chart with ALL candles from replay data
-    if (replay.allCandles && replay.allCandles.length > 0) {
-        const chartData = [];
-        const volData = [];
-        const seen = new Set();
-        replay.allCandles.forEach(c => {
-            const t = isoToChartTime(c.time);
-            if (seen.has(t)) return;
-            seen.add(t);
-            chartData.push({ time: t, open: c.open, high: c.high, low: c.low, close: c.close });
-            volData.push({ time: t, value: c.volume, color: c.close >= c.open ? 'rgba(0,229,160,0.3)' : 'rgba(255,64,96,0.3)' });
-        });
-        chartData.sort((a, b) => a.time - b.time);
-        volData.sort((a, b) => a.time - b.time);
-        candleSeries.setData(chartData);
-        volumeSeries.setData(volData);
-        chart.timeScale().fitContent();
-    }
-
-    // Restore backtest overlays
-    if (backtestData) {
-        renderChart(backtestData);
-    }
-    log('Exited replay mode', 'info');
-}
-
-function replayKeyHandler(e) {
-    if (!replay.active) return;
-    if (e.code === 'Space') { e.preventDefault(); toggleReplayPlay(); }
-    if (e.code === 'ArrowLeft') { e.preventDefault(); replayJumpTrade(-1); }
-    if (e.code === 'ArrowRight') { e.preventDefault(); replayJumpTrade(1); }
-}
-
-function toggleReplayPlay() {
-    if (replay.animating) return;
-    replay.isPlaying = !replay.isPlaying;
-    document.getElementById('rp-play').textContent = replay.isPlaying ? '⏸' : '▶';
-    if (replay.isPlaying) replayTick();
-}
-
-// Convert ISO time string to UTC seconds for lightweight-charts
+// ── Utility: ISO time string → lightweight-charts UTC seconds ──
 function isoToChartTime(iso) {
-    // Ensure UTC parse: append Z if no timezone
     let s = iso;
     if (!s.endsWith('Z') && !s.includes('+') && !s.includes('-', 10)) s += 'Z';
     const d = new Date(s);
-    // Offset UTC → local browser timezone (lightweight-charts renders UTC)
-    const localOffsetSec = d.getTimezoneOffset() * -60; // getTimezoneOffset returns minutes, negative for west
+    const localOffsetSec = d.getTimezoneOffset() * -60;
     return Math.floor(d.getTime() / 1000) + localOffsetSec;
 }
-
-function replayScrollToIdx(idx) {
-    // Center the current candle at ~60% from left, with 40% empty right
-    const visibleBars = 100;
-    const leftBars = Math.round(visibleBars * 0.6);
-    const rightBars = visibleBars - leftBars;
-    if (idx < leftBars) {
-        chart.timeScale().setVisibleLogicalRange({ from: 0, to: visibleBars });
-    } else {
-        chart.timeScale().setVisibleLogicalRange({ from: idx - leftBars, to: idx + rightBars });
-    }
-}
-
-function replayTick() {
-    if (!replay.isPlaying || !replay.active) return;
-    if (replay.currentIndex >= replay.allCandles.length) {
-        replay.isPlaying = false;
-        document.getElementById('rp-play').textContent = '▶';
-        log('Replay finished', 'info');
-        return;
-    }
-
-    // Determine speed for current position
-    const delay = getReplayDelay(replay.currentIndex);
-    const isIdle = delay <= replay.speedIdle;
-
-    // At idle speed, batch multiple candles per tick for performance
-    const batchSize = isIdle ? replay.batchSize : 1;
-
-    try {
-        for (let b = 0; b < batchSize; b++) {
-            if (replay.currentIndex >= replay.allCandles.length) break;
-            // Check if we should slow down mid-batch
-            if (b > 0 && getReplayDelay(replay.currentIndex) > replay.speedIdle) break;
-
-            const c = replay.allCandles[replay.currentIndex];
-            const t = isoToChartTime(c.time);
-            candleSeries.update({ time: t, open: c.open, high: c.high, low: c.low, close: c.close });
-            volumeSeries.update({ time: t, value: c.volume, color: c.close >= c.open ? 'rgba(0,229,160,0.3)' : 'rgba(255,64,96,0.3)' });
-            replay.currentIndex++;
-        }
-
-        // Scroll once per tick (not per candle)
-        replayScrollToIdx(replay.currentIndex);
-    } catch(e) {
-        console.error('[Replay] candle error at', replay.currentIndex, e);
-    }
-
-    // Draw replay state (wrapped to prevent killing the loop)
-    try {
-        drawReplayState(replay.currentIndex - 1);
-    } catch(e) {
-        console.error('[Replay] drawReplayState error at', replay.currentIndex, e);
-    }
-
-    // Schedule next tick: 16ms minimum for smooth rendering (60fps)
-    const nextDelay = getReplayDelay(replay.currentIndex);
-    replay.timer = setTimeout(replayTick, Math.max(nextDelay, 16));
-}
-
-function getReplayDelay(idx) {
-    // Near an entry or exit? Slow down
-    const near = replay.nearEntryRange;
-    for (const ti of replay.tradeEntryIndices) {
-        if (Math.abs(idx - ti) <= near) return replay.speedEntry;
-    }
-    for (const ti of replay.tradeExitIndices) {
-        if (Math.abs(idx - ti) <= near) return replay.speedEntry;
-    }
-    // Check if position is open or pending order exists
-    if (idx > 0 && idx <= replay.snapshots.length) {
-        const snap = replay.snapshots[Math.min(idx - 1, replay.snapshots.length - 1)];
-        if (snap.open_trade) return replay.speedEntry;
-        if (snap.pending_order) return replay.speedEntry;
-    }
-    return replay.speedIdle;
-}
-
-let _lastReplayDrawIdx = -1;
-let _replayForceRedraw = false;  // set by overlay sync when coordinates change
-let _replayPriceCenter = null;   // current POC center for price scale
-
-function drawReplayState(idx) {
-    if (idx < 0 || idx >= replay.snapshots.length) return;
-    const snap = replay.snapshots[idx];
-    if (!snap) return;
-
-    // ── Status panel (always update — cheap) ──
-    const mode = snap.mode || 'idle';
-    const phase = snap.phase || '--';
-
-    document.getElementById('rp-mode').textContent = mode;
-    document.getElementById('rp-mode').style.color =
-        mode === '趨勢突破' ? 'var(--red)' :
-        mode === '邊界回歸POC' ? 'var(--amber)' : 'var(--text3)';
-
-    document.getElementById('rp-phase').textContent = phase;
-    document.getElementById('rp-phase').style.color =
-        phase === '掛單成交' ? 'var(--green)' :
-        phase === '持倉中' ? 'var(--green)' :
-        phase === '掛單中' ? 'var(--cyan)' :
-        phase === '入場準備' ? 'var(--cyan)' :
-        (phase.indexOf('出界') >= 0) ? 'var(--red)' :
-        phase === '等待POC' ? 'var(--amber)' :
-        phase === '盤整' ? 'var(--amber)' : 'var(--text3)';
-
-    if (snap.open_trade) {
-        const ot = snap.open_trade;
-        const dir = ot.direction === 'buy' ? 'LONG' : 'SHORT';
-        const strat = ot.strategy === 'reversion' ? 'REV' : 'TRD';
-        document.getElementById('rp-position').innerHTML =
-            '<span style="color:' + (ot.direction === 'buy' ? 'var(--green)' : 'var(--red)') + '">' +
-            dir + ' ' + strat + ' @ ' + ot.entry_price.toFixed(2) + '</span>';
-    } else if (snap.pending_order) {
-        const po = snap.pending_order;
-        const dir = po.direction === 'buy' ? 'BUY' : 'SELL';
-        const strat = po.strategy === 'reversion' ? 'REV' : 'TRD';
-        document.getElementById('rp-position').innerHTML =
-            '<span style="color:var(--cyan)">' +
-            '⏳ ' + dir + ' ' + strat + ' LIMIT @ ' + po.entry_price.toFixed(2) + '</span>';
-    } else {
-        document.getElementById('rp-position').textContent = 'FLAT';
-        document.getElementById('rp-position').style.color = 'var(--text3)';
-    }
-
-    document.getElementById('rp-capital').textContent = '$' + (snap.capital || 0).toLocaleString();
-    document.getElementById('rp-progress').textContent = (idx + 1) + ' / ' + replay.allCandles.length;
-    document.getElementById('rp-bar-info').textContent = (idx + 1) + '/' + replay.allCandles.length;
-
-    const delay = getReplayDelay(idx);
-    document.getElementById('rp-speed').textContent = delay <= 2 ? '1000x' : delay <= 25 ? '50x' : '10x';
-
-    // ── Heavy drawing: only on events, every 10th candle, or when near trade ──
-    const hasEvent = snap.events && snap.events.length > 0;
-    const nearTrade = delay >= replay.speedEntry;
-    const everyN = (idx % 10 === 0);
-    const shouldDraw = hasEvent || nearTrade || everyN || idx === 0;
-
-    if (!shouldDraw && !_replayForceRedraw && _lastReplayDrawIdx >= 0) return;
-    _replayForceRedraw = false;
-    _lastReplayDrawIdx = idx;
-
-    // ── VP overlay + price centering ──
-    // Get current candle close for price following
-    const curClose = (replay.currentIndex > 0)
-        ? replay.allCandles[Math.min(replay.currentIndex - 1, replay.allCandles.length - 1)].close
-        : null;
-
-    // Height = 4x VAH-VAL range; fallback 300 pts
-    let halfRange = 150;
-    if (snap.zones && snap.zones.length > 0) {
-        const activeZ = snap.zones.find(z => z.status === 'active');
-        const latestZ = activeZ || snap.zones[snap.zones.length - 1];
-        if (latestZ && latestZ.vah_80 && latestZ.val_80) {
-            const vahValRange = Math.abs(latestZ.vah_80 - latestZ.val_80);
-            if (vahValRange > 0) {
-                halfRange = (vahValRange * 4) / 2;
-            }
-        }
-    }
-
-    if (snap.zones && snap.zones.length > 0) {
-        drawVolumeProfile(snap.zones);
-    } else {
-        clearVPOverlay();
-    }
-
-    // Always center on current price
-    if (curClose) {
-        if (_replayPriceCenter === null || Math.abs(_replayPriceCenter - curClose) > 2.0) {
-            _replayPriceCenter = curClose;
-            candleSeries.applyOptions({
-                autoscaleInfoProvider: () => ({
-                    priceRange: { minValue: curClose - halfRange, maxValue: curClose + halfRange },
-                }),
-            });
-        }
-    }
-
-    // ── Position tools: current trade OR pending order ──
-    clearPositionOverlay();
-    if (snap.open_trade) {
-        drawPositionTools([snap.open_trade]);
-    } else if (snap.pending_order) {
-        drawPendingOrderOverlay(snap.pending_order, idx);
-    }
-
-    // ── Trade markers up to current candle ──
-    const curTs = isoToChartTime(replay.allCandles[idx].time);
-    const visibleTrades = replay.trades.filter(t => {
-        return isoToChartTime(t.entry_time) <= curTs;
-    });
-    if (visibleTrades.length > 0) {
-        const markers = visibleTrades.map(t => ({
-            time: isoToChartTime(t.entry_time),
-            position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
-            color: (t.pnl || 0) > 0 ? '#00e5a0' : (t.pnl !== null ? '#ff4060' : '#64dcff'),
-            shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-            text: (t.strategy === 'reversion' ? 'R' : 'T') + ' ' + ((t.pnl || 0) > 0 ? '+' : '') + '$' + (t.pnl || 0).toFixed(0),
-        }));
-        markers.sort((a, b) => a.time - b.time);
-        try { candleSeries.setMarkers(markers); } catch(e) {}
-    }
-}
-
-// ── Trade Jump (animated smooth scroll) ──
-
-async function replayJumpTrade(direction) {
-    if (replay.animating) return;
-    replay.isPlaying = false;
-    if (replay.timer) { clearTimeout(replay.timer); replay.timer = null; }
-    document.getElementById('rp-play').textContent = '▶';
-
-    // Find target trade index
-    const currentIdx = replay.currentIndex;
-    let targetCandleIdx = -1;
-
-    const indices = replay.tradeEntryIndices;
-    if (direction > 0) {
-        // Next trade
-        for (const ti of indices) {
-            if (ti > currentIdx) { targetCandleIdx = ti; break; }
-        }
-        if (targetCandleIdx < 0) { log('No next trade', 'info'); return; }
-    } else {
-        // Previous trade
-        for (let i = indices.length - 1; i >= 0; i--) {
-            if (indices[i] < currentIdx - 2) { targetCandleIdx = indices[i]; break; }
-        }
-        if (targetCandleIdx < 0) { log('No previous trade', 'info'); return; }
-    }
-
-    replay.animating = true;
-
-    if (direction < 0) {
-        // Going backward — rebuild chart up to a point before target
-        const targetStart = Math.max(0, targetCandleIdx - 5);
-        const sliceCandles = replay.allCandles.slice(0, targetStart + 1);
-        const chartData = sliceCandles.map(c => ({
-            time: isoToChartTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close
-        }));
-        const volData = sliceCandles.map(c => ({
-            time: isoToChartTime(c.time), value: c.volume,
-            color: c.close >= c.open ? 'rgba(0,229,160,0.3)' : 'rgba(255,64,96,0.3)'
-        }));
-        chartData.sort((a, b) => a.time - b.time);
-        volData.sort((a, b) => a.time - b.time);
-        candleSeries.setData(chartData);
-        volumeSeries.setData(volData);
-        chart.timeScale().resetTimeScale();
-        chart.timeScale().applyOptions({ barSpacing: 6, rightOffset: 5 });
-        replayScrollToIdx(targetStart);
-        replay.currentIndex = targetStart + 1;
-    }
-
-    // Animate forward with ease-out speeds
-    const distance = Math.abs(targetCandleIdx - replay.currentIndex);
-    if (distance <= 0) { replay.animating = false; return; }
-
-    const segments = [
-        { pct: 0.4, delay: 0 },
-        { pct: 0.3, delay: 2 },
-        { pct: 0.2, delay: 8 },
-        { pct: 0.1, delay: 20 },
-    ];
-
-    let remaining = distance;
-    for (const seg of segments) {
-        const count = Math.max(1, Math.floor(distance * seg.pct));
-        const actual = Math.min(count, remaining);
-        if (actual <= 0) break;
-
-        for (let i = 0; i < actual; i++) {
-            if (replay.currentIndex >= replay.allCandles.length) break;
-            const c = replay.allCandles[replay.currentIndex];
-            candleSeries.update({ time: isoToChartTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close });
-            volumeSeries.update({ time: isoToChartTime(c.time), value: c.volume, color: c.close >= c.open ? 'rgba(0,229,160,0.3)' : 'rgba(255,64,96,0.3)' });
-            replay.currentIndex++;
-            remaining--;
-        }
-
-        try { drawReplayState(replay.currentIndex - 1); } catch(e) {}
-        replayScrollToIdx(replay.currentIndex);
-
-        if (seg.delay > 0 && remaining > 0) {
-            await new Promise(r => setTimeout(r, seg.delay * actual));
-        }
-    }
-
-    // Land exactly on target
-    while (replay.currentIndex <= targetCandleIdx && replay.currentIndex < replay.allCandles.length) {
-        const c = replay.allCandles[replay.currentIndex];
-        candleSeries.update({ time: isoToChartTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close });
-        volumeSeries.update({ time: isoToChartTime(c.time), value: c.volume, color: c.close >= c.open ? 'rgba(0,229,160,0.3)' : 'rgba(255,64,96,0.3)' });
-        replay.currentIndex++;
-    }
-
-    try { drawReplayState(replay.currentIndex - 1); } catch(e) {}
-    replayScrollToIdx(replay.currentIndex);
-    replay.animating = false;
-}
-
-// ============================================================
-// END REPLAY CONTROLLER
-// ============================================================
 
 
 function drawTradeMarkers(trades) {
@@ -3378,7 +2791,7 @@ function drawTradeMarkers(trades) {
         position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
         color: t.pnl > 0 ? '#00e5a0' : '#ff4060',
         shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-        text: ({reversion:'R',trend_follow:'T'}[t.strategy]||'T') + ' ' + (t.pnl > 0 ? '+' : '') + '$' + (t.pnl||0).toFixed(0),
+        text: 'T' + ' ' + (t.pnl > 0 ? '+' : '') + '$' + (t.pnl||0).toFixed(0),
     }));
 
     markers.sort((a, b) => a.time - b.time);
@@ -3418,8 +2831,7 @@ function renderMetrics(m) {
 
     // ── Per-strategy breakdown (Reversion / Trend) ──
     const subs = [];
-    if (m.reversion) subs.push({ name: 'Reversion', s: m.reversion, color: '#64dcff' });
-    if (m.trend_follow) subs.push({ name: 'Trend Follow', s: m.trend_follow, color: '#ffa726' });
+    if (m.trend_follow) subs.push({ name: 'SessionTrendFollow', s: m.trend_follow, color: '#ffa726' });
 
     if (subs.length > 0) {
         let subHTML = '<div id="strategy-breakdown" style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px;">';
@@ -3454,8 +2866,7 @@ function renderTrades(trades) {
         const pnlClass = (t.pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
         const dirLabel = t.direction === 'buy' ? 'BUY' : 'SELL';
         const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
-        const stratMap = { 'reversion': 'REV', 'trend_follow': 'TREND' };
-        const stratLabel = stratMap[t.strategy] || t.strategy || 'TREND';
+        const stratLabel = 'TREND';
         const exitLabel = t.exit_reason || '--';
         const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', {hour12: false, hour:'2-digit', minute:'2-digit'}) : '--';
 
@@ -3475,32 +2886,62 @@ function renderTrades(trades) {
     }).join('');
 }
 
+function classifyZoneType(z) {
+    if (!z.formed_at) return '-';
+    const d = new Date(z.formed_at);
+    const h = d.getUTCHours();
+    const m = d.getUTCMinutes();
+    if (h >= 22 || h < 7) return '亞盤';
+    if (h >= 7 && (h < 13 || (h === 13 && m < 30))) return '盤前';
+    if ((h === 13 && m >= 30) || (h > 13 && h < 20)) return '早盤';
+    return '盤後';
+}
+
+function zpad(n) { return n < 10 ? '0'+n : n; }
+
 function renderZones(zones) {
     const tbody = document.getElementById('zones-tbody');
     if (!zones || zones.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text2);padding:20px;">NO ZONE DATA</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text2);padding:20px;">NO ZONE DATA</td></tr>';
         return;
     }
 
-    tbody.innerHTML = zones.map(z => {
-        const statusColor = z.status === 'active' ? 'var(--cyan)' : z.status === 'left' ? 'var(--red)' : 'var(--text2)';
-        const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', {hour12:false, hour:'2-digit', minute:'2-digit'}) : '--';
-        const exitLabel = z.exit_direction === 'up' ? 'UP' : z.exit_direction === 'down' ? 'DN' : '--';
+    // Sort chronologically (oldest first) by formed_at
+    const sorted = [...zones].sort((a, b) => new Date(a.formed_at) - new Date(b.formed_at));
+
+    tbody.innerHTML = sorted.map((z, idx) => {
+        const statusColor = z.status === 'active' ? 'var(--cyan)' : z.status === 'left' ? 'var(--text2)' : 'var(--text2)';
+        
+        const formatTime = (iso) => {
+            if (!iso) return 'Active';
+            const d = new Date(iso);
+            return `${d.getMonth()+1}/${d.getDate()} ${zpad(d.getHours())}:${zpad(d.getMinutes())}`;
+        };
+
+        const formedStr = formatTime(z.formed_at);
+        const endedStr = formatTime(z.left_at);
+        const typeStr = classifyZoneType(z);
+
+        // Duration: always positive
+        let durationMin = z.duration_minutes || 0;
+        if (z.formed_at && z.left_at) {
+            durationMin = Math.round((new Date(z.left_at) - new Date(z.formed_at)) / 60000);
+        }
+        if (durationMin < 0) durationMin = Math.abs(durationMin);
+
+        const matureStr = z.mature ? '<span style="background:#00e5a0; color:#0b0e14; padding:1px 4px; font-size:8px; border-radius:2px;">MATURE</span>' : '';
 
         return '<tr>' +
-            '<td style="color:var(--cyan);font-weight:500;">' + z.zone_id + '</td>' +
-            '<td>' + fmtTime(z.formed_at) + '</td>' +
-            '<td>' + fmtTime(z.left_at) + '</td>' +
+            '<td style="color:var(--cyan);font-weight:500;">' + (idx + 1) + ' ' + matureStr + '</td>' +
+            '<td>' + typeStr + '</td>' +
+            '<td style="color:' + statusColor + ';">' + z.status.toUpperCase() + '</td>' +
+            '<td>' + formedStr + ' -> ' + endedStr + '</td>' +
+            '<td>' + durationMin + ' min</td>' +
             '<td style="color:var(--amber);font-weight:500;">' + z.poc.toFixed(2) + '</td>' +
             '<td>' + z.vah_80.toFixed(2) + '</td>' +
             '<td>' + z.val_80.toFixed(2) + '</td>' +
-            '<td style="color:var(--text2);">' + z.high_100.toFixed(2) + '</td>' +
-            '<td style="color:var(--text2);">' + z.low_100.toFixed(2) + '</td>' +
             '<td>' + z.total_volume.toLocaleString() + '</td>' +
-            '<td>' + z.num_candles + '</td>' +
-            '<td style="color:' + statusColor + ';">' + z.status.toUpperCase() + '</td>' +
-            '<td>' + exitLabel + '</td>' +
-        '</tr>';
+            '</tr>';
     }).join('');
 }
 
