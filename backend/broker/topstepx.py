@@ -424,22 +424,22 @@ class TopstepXClient:
                 error_message="[BLOCK] 安全攔截: 禁止在 Funded 帳戶下單（Bot 測試模式）",
             )
 
-        order_types = {1: "Limit", 2: "Market", 3: "Stop"}
+        # ProjectX API enums (integers):
+        #   side:  0=Bid(buy), 1=Ask(sell)
+        #   type:  1=Limit, 2=Market, 3=StopMarket, 4=StopLimit, 5=TrailingStop
+        # Internal convention: side 1=Buy, 2=Sell → convert to API 0/1
+        api_side = 0 if order.side == 1 else 1  # 1(Buy)→0(Bid), 2(Sell)→1(Ask)
+        # Internal convention: type 3=Stop → API type 3=StopMarket (NOT 4=StopLimit)
+        api_type = order.order_type  # 1=Limit, 2=Market, 3=StopMarket — no conversion needed
+
+        order_types = {1: "Limit", 2: "Market", 3: "StopMarket", 4: "StopLimit"}
         order_sides = {1: "BUY", 2: "SELL"}
         logger.info(
             f"[ORDER SEND] {order_sides.get(order.side, '?')} {order_types.get(order.order_type, '?')} "
             f"size={order.size} limit={order.limit_price} stop={order.stop_price} "
             f"account={order.account_id} contract={order.contract_id} "
-            f"(API: side={0 if order.side == 1 else 1}, type={4 if order.order_type == 3 else order.order_type})"
+            f"(API: side={api_side}, type={api_type})"
         )
-
-        # ProjectX API enums (integers):
-        #   side:  0=Bid(buy), 1=Ask(sell)
-        #   type:  1=Limit, 2=Market, 4=Stop, 5=TrailingStop
-        # Internal convention: side 1=Buy, 2=Sell → convert to API 0/1
-        api_side = 0 if order.side == 1 else 1  # 1(Buy)→0(Bid), 2(Sell)→1(Ask)
-        # Internal convention: type 1=Limit, 2=Market, 3=Stop → convert 3→4 for API
-        api_type = 4 if order.order_type == 3 else order.order_type
 
         payload = {
             "accountId": order.account_id,

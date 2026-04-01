@@ -1,39 +1,24 @@
 {
-  "saved_at": "2026-04-01T06:42:06.044109",
+  "saved_at": "2026-04-01T08:50:53.552554",
   "active_zone_id": "S0009",
   "zones": [
     {
       "zone_id": "S0001",
-      "poc": 23391.25,
-      "vah_80": 23406.0,
-      "val_80": 23385.25,
-      "high_100": 23416.0,
-      "low_100": 23381.75,
-      "total_volume": 2299,
-      "duration_minutes": 17,
-      "num_candles": 18,
-      "status": "left",
-      "formed_at": "2026-03-30T06:42:00+00:00",
-      "left_at": "2026-03-30T07:00:00+00:00",
-      "exit_direction": "session_end"
-    },
-    {
-      "zone_id": "S0002",
       "poc": 23505.75,
       "vah_80": 23518.75,
-      "val_80": 23400.0,
+      "val_80": 23411.75,
       "high_100": 23574.0,
-      "low_100": 23360.0,
-      "total_volume": 62423,
-      "duration_minutes": 389,
-      "num_candles": 390,
+      "low_100": 23373.25,
+      "total_volume": 47814,
+      "duration_minutes": 278,
+      "num_candles": 279,
       "status": "left",
-      "formed_at": "2026-03-30T07:00:00+00:00",
+      "formed_at": "2026-03-30T08:51:00+00:00",
       "left_at": "2026-03-30T13:30:00+00:00",
       "exit_direction": "session_end"
     },
     {
-      "zone_id": "S0003",
+      "zone_id": "S0002",
       "poc": 23333.5,
       "vah_80": 23467.25,
       "val_80": 23148.75,
@@ -48,7 +33,7 @@
       "exit_direction": "session_end"
     },
     {
-      "zone_id": "S0004",
+      "zone_id": "S0003",
       "poc": 23100.75,
       "vah_80": 23125.5,
       "val_80": 23091.75,
@@ -63,7 +48,7 @@
       "exit_direction": "session_end"
     },
     {
-      "zone_id": "S0005",
+      "zone_id": "S0004",
       "poc": 23337.5,
       "vah_80": 23404.0,
       "val_80": 23068.75,
@@ -78,7 +63,7 @@
       "exit_direction": "session_end"
     },
     {
-      "zone_id": "S0006",
+      "zone_id": "S0005",
       "poc": 23348.0,
       "vah_80": 23416.0,
       "val_80": 23304.75,
@@ -93,7 +78,7 @@
       "exit_direction": "session_end"
     },
     {
-      "zone_id": "S0007",
+      "zone_id": "S0006",
       "poc": 23804.0,
       "vah_80": 23975.0,
       "val_80": 23491.0,
@@ -108,7 +93,7 @@
       "exit_direction": "session_end"
     },
     {
-      "zone_id": "S0008",
+      "zone_id": "S0007",
       "poc": 23912.0,
       "vah_80": 23939.25,
       "val_80": 23898.75,
@@ -123,17 +108,32 @@
       "exit_direction": "session_end"
     },
     {
-      "zone_id": "S0009",
+      "zone_id": "S0008",
       "poc": 23987.5,
-      "vah_80": 24065.5,
-      "val_80": 23940.25,
-      "high_100": 24167.5,
+      "vah_80": 24071.75,
+      "val_80": 23907.75,
+      "high_100": 24176.75,
       "low_100": 23880.0,
-      "total_volume": 53976,
-      "duration_minutes": 520,
-      "num_candles": 521,
-      "status": "active",
+      "total_volume": 57421,
+      "duration_minutes": 539,
+      "num_candles": 540,
+      "status": "left",
       "formed_at": "2026-03-31T22:00:00+00:00",
+      "left_at": "2026-04-01T07:00:00+00:00",
+      "exit_direction": "session_end"
+    },
+    {
+      "zone_id": "S0009",
+      "poc": 24085.0,
+      "vah_80": 24154.25,
+      "val_80": 24038.0,
+      "high_100": 24181.25,
+      "low_100": 24033.5,
+      "total_volume": 19883,
+      "duration_minutes": 109,
+      "num_candles": 110,
+      "status": "forming",
+      "formed_at": "2026-04-01T07:00:00+00:00",
       "left_at": null,
       "exit_direction": null
     }

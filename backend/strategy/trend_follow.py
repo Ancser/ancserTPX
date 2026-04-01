@@ -400,8 +400,8 @@ class SessionTrendFollow:
 
     規則:
       1. 等待 SessionZoneDetector 報告區間成熟
-      2. 突破上方: 連續 5 根 1m close > VAH → BUY LIMIT @ VAH + 20%×(H100-VAH)
-      3. 突破下方: 連續 5 根 1m close < VAL → SELL LIMIT @ VAL - 20%×(VAL-L100)
+      2. 突破上方: 連續 5 根 1m close > VAH → BUY LIMIT @ VAH + 50%×(H100-VAH)
+      3. 突破下方: 連續 5 根 1m close < VAL → SELL LIMIT @ VAL - 50%×(VAL-L100)
       4. SL: BUY → VAH - 50 tick,  SELL → VAL + 50 tick
       5. TP: entry ± (|entry - SL| × 3)
       6. 30 分鐘未成交取消
@@ -499,14 +499,14 @@ class SessionTrendFollow:
         sl_points = self.SL_TICKS * self.TICK_SIZE  # 50 * 0.25 = 12.5 pts
 
         if direction == "up":
-            # BUY: entry = VAH + 20% × (H100 - VAH), SL = VAH - 12.5
+            # BUY: entry = VAH + 50% × (H100 - VAH), SL = VAH - 12.5
             entry = zone.vah_80 + self.ENTRY_RATIO * (zone.high_100 - zone.vah_80)
             sl = zone.vah_80 - sl_points
             sl_distance = abs(entry - sl)
             tp = entry + sl_distance * self.TP_MULTIPLIER
             trade_dir = Direction.BUY
         else:
-            # SELL: entry = VAL - 20% × (VAL - L100), SL = VAL + 12.5
+            # SELL: entry = VAL - 50% × (VAL - L100), SL = VAL + 12.5
             entry = zone.val_80 - self.ENTRY_RATIO * (zone.val_80 - zone.low_100)
             sl = zone.val_80 + sl_points
             sl_distance = abs(entry - sl)
@@ -533,7 +533,7 @@ class SessionTrendFollow:
             reason=(
                 f"SESSION TREND {direction.upper()} | "
                 f"5-bar breakout {'> VAH' if direction == 'up' else '< VAL'} | "
-                f"entry=20%({'H100-VAH' if direction == 'up' else 'VAL-L100'}) | "
+                f"entry=50%({'H100-VAH' if direction == 'up' else 'VAL-L100'}) | "
                 f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f} (1:{self.TP_MULTIPLIER})"
             ),
             timestamp=candle.timestamp,
