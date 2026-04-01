@@ -2015,12 +2015,12 @@ function drawVolumeProfile(zones) {
         ctx.setLineDash([]);
 
         // ── SessionTrendFollow entry levels (midpoint entries) ──
-        // BUY entry = (H100 + VAH) / 2, SELL entry = (L100 + VAL) / 2
+        // BUY entry = VAH + 20%×(H100-VAH), SELL entry = VAL - 20%×(VAL-L100)
         // SL: BUY → VAH - 12.5pts, SELL → VAL + 12.5pts
         // TP: 3× SL distance
         if (!isLeft && vah > 0 && val > 0) {
-            const buyEntry = (h100 + vah) / 2;
-            const sellEntry = (l100 + val) / 2;
+            const buyEntry = vah + 0.5 * (h100 - vah);
+            const sellEntry = val - 0.5 * (val - l100);
             const slPts = 12.5; // 50 ticks × 0.25
             const buySL = vah - slPts;
             const sellSL = val + slPts;

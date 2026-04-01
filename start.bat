@@ -54,6 +54,9 @@ echo.
 
 start "" http://localhost:8001
 
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8001 --reload
+:: NOTE: --reload REMOVED for safety. Auto-reload kills live engine state
+:: (pending orders, SL/TP, position tracking) when .py files change.
+:: Restart manually with start.bat after code changes.
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8001
 
 pause
