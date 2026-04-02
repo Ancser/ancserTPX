@@ -99,6 +99,7 @@ class LiveTradingEngine:
         self._sl_order_id: Optional[int] = None
         self._tp_order_id: Optional[int] = None
         self._active_signal: Optional[TradeSignal] = None  # preserved after fill for SL/TP
+        self._position_just_closed: bool = False  # skip strategy eval on same tick as close
         self._daily_trade_count: int = 0
         self._daily_pnl: float = 0.0
         self._today: str = ""
@@ -436,6 +437,11 @@ class LiveTradingEngine:
 
         # Check position status from API (ALWAYS, even without new candle)
         await self._sync_position()
+
+        # Skip strategy evaluation on the same tick a position was just closed
+        if self._position_just_closed:
+            self._position_just_closed = False
+            return
 
         # Get latest 1m candle
         candle = await self._fetch_latest_candle(unit_number=1)
@@ -853,22 +859,40 @@ class LiveTradingEngine:
                 if self._fill_price:
                     pnl_info = f" | entry_fill={self._fill_price:.2f}"
 
-                self._log_event(f"持倉已平 (SL/TP 觸發){pnl_info}")
-
-                # Cancel the OTHER order (if TP hit → cancel SL, if SL hit → cancel TP)
+                # Detect which order hit: the one we can't cancel is the one that filled
+                exit_reason = "unknown"
+                sl_cancelled = False
+                tp_cancelled = False
                 if self._sl_order_id:
-                    self._log_event(f"取消殘留 SL #{self._sl_order_id}")
-                    await self.client.cancel_order(self._sl_order_id)
+                    sl_cancelled = await self.client.cancel_order(self._sl_order_id)
+                    if sl_cancelled:
+                        self._log_event(f"取消殘留 SL #{self._sl_order_id}")
+                    else:
+                        exit_reason = "sl"
                 if self._tp_order_id:
-                    self._log_event(f"取消殘留 TP #{self._tp_order_id}")
-                    await self.client.cancel_order(self._tp_order_id)
+                    tp_cancelled = await self.client.cancel_order(self._tp_order_id)
+                    if tp_cancelled:
+                        self._log_event(f"取消殘留 TP #{self._tp_order_id}")
+                    else:
+                        exit_reason = "tp"
+
+                # If both cancelled (manual close) or neither, default to "tp"
+                if exit_reason == "unknown":
+                    exit_reason = "tp"
+
+                self._log_event(
+                    f"持倉已平 ({exit_reason.upper()} 觸發){pnl_info}"
+                )
 
                 self._sl_order_id = None
                 self._tp_order_id = None
                 self._fill_price = None
                 self._active_signal = None  # clear SL/TP reference
 
-                # Also clear pending state in case it wasn't cleared
+                # Cancel any pending entry order
+                if self._pending_order_id:
+                    self._log_event(f"取消殘留掛單 #{self._pending_order_id}")
+                    await self.client.cancel_order(self._pending_order_id)
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
@@ -879,8 +903,9 @@ class LiveTradingEngine:
                     "entry_price": self._fill_price,
                 })
 
-                # Notify strategy
-                self.trend_follow.notify_trade_closed("tp")
+                # Notify strategy with actual exit reason
+                self.trend_follow.notify_trade_closed(exit_reason)
+                self._position_just_closed = True  # skip new entry this tick
 
             # Update capital
             accounts = await self.client.get_accounts()
