@@ -35,10 +35,12 @@ NQ (Nasdaq 100 E-mini) futures auto-trading system on **TopstepX** (ProjectX API
 ### 2. Get ProjectX API Key
 
 1. Go to https://dashboard.projectx.com/dashboard
-2. Sign in with your TopstepX account
-3. Navigate to **API Keys** section
-4. Click **Generate API Key**
-5. Copy the key (you won't see it again)
+2. Make new account
+3. Buy ProjectX API Access (50% off coupon: topstep)
+4. Link to Topstep X account
+5. Go to https://topstepx.com/settings
+6. Navigate to **API** section
+8. Copy the key to .env
 
 
 ### 3. Configure `.env`
