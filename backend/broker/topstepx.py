@@ -426,13 +426,13 @@ class TopstepXClient:
 
         # ProjectX API enums (integers):
         #   side:  0=Bid(buy), 1=Ask(sell)
-        #   type:  1=Limit, 2=Market, 3=StopMarket, 4=StopLimit, 5=TrailingStop
+        #   type:  1=Limit, 2=Market, 4=Stop, 5=TrailingStop (NO type 3!)
         # Internal convention: side 1=Buy, 2=Sell → convert to API 0/1
         api_side = 0 if order.side == 1 else 1  # 1(Buy)→0(Bid), 2(Sell)→1(Ask)
-        # Internal convention: type 3=Stop → API type 3=StopMarket (NOT 4=StopLimit)
-        api_type = order.order_type  # 1=Limit, 2=Market, 3=StopMarket — no conversion needed
+        # Internal convention: type 3=Stop → API type 4=Stop (API skips 3)
+        api_type = 4 if order.order_type == 3 else order.order_type
 
-        order_types = {1: "Limit", 2: "Market", 3: "StopMarket", 4: "StopLimit"}
+        order_types = {1: "Limit", 2: "Market", 3: "Stop(internal)", 4: "Stop(API)"}
         order_sides = {1: "BUY", 2: "SELL"}
         logger.info(
             f"[ORDER SEND] {order_sides.get(order.side, '?')} {order_types.get(order.order_type, '?')} "
@@ -484,15 +484,20 @@ class TopstepXClient:
         return resp
 
     async def cancel_order(self, order_id: int) -> bool:
-        """取消訂單"""
+        """取消訂單 (returns False if already filled/cancelled — not an error)"""
         logger.info(f"[ORDER CANCEL] order_id={order_id}")
-        data = await self._request(
-            "POST", "/api/Order/cancel",
-            json={"orderId": order_id}
-        )
-        success = data.get("success", False)
-        logger.info(f"[ORDER CANCEL RESP] order_id={order_id} success={success} raw={data}")
-        return success
+        try:
+            data = await self._request(
+                "POST", "/api/Order/cancel",
+                json={"orderId": order_id}
+            )
+            success = data.get("success", False)
+            logger.info(f"[ORDER CANCEL RESP] order_id={order_id} success={success}")
+            return success
+        except Exception as e:
+            # 400 = order already filled/cancelled — normal, not an error
+            logger.info(f"[ORDER CANCEL] order_id={order_id} already gone (400): {e}")
+            return False
 
     async def get_orders(self, account_id: int) -> List[Dict]:
         """查詢所有訂單 (open + filled + cancelled)"""

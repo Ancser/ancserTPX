@@ -524,13 +524,19 @@ class LiveTradingEngine:
 
         # ── If position open, verify SL/TP are in place ──
         if self._open_position:
-            if not self._skip_engine_sl_tp and self._active_signal:
-                if not self._sl_order_id and not self._tp_order_id:
-                    self._log_event("⚠ 持倉中但無 SL/TP → 補掛 SL/TP", "error")
-                    # Temporarily restore signal for _place_sl_tp
-                    self._pending_signal = self._active_signal
-                    await self._place_sl_tp()
-                    self._pending_signal = None
+            if not self._skip_engine_sl_tp:
+                if self._active_signal:
+                    if not self._sl_order_id and not self._tp_order_id:
+                        self._log_event("⚠ 持倉中但無 SL/TP → 補掛 SL/TP", "error")
+                        self._pending_signal = self._active_signal
+                        await self._place_sl_tp()
+                        self._pending_signal = None
+                else:
+                    if not self._sl_order_id and not self._tp_order_id:
+                        self._log_event(
+                            "⚠ 持倉中無 SL/TP 且無 signal（重啟後或手動入場）→ 需手動設定 SL/TP",
+                            "error"
+                        )
             return
 
         # ── Strategy evaluation ──
@@ -649,11 +655,11 @@ class LiveTradingEngine:
         """Cancel the pending limit order."""
         if not self._pending_order_id:
             return
-        try:
-            await self.client.cancel_order(self._pending_order_id)
+        success = await self.client.cancel_order(self._pending_order_id)
+        if success:
             self._log_event(f"取消掛單 #{self._pending_order_id}")
-        except Exception as e:
-            self._log_event(f"取消失敗: {e}", "error")
+        else:
+            self._log_event(f"取消掛單 #{self._pending_order_id} (已成交或已取消)")
 
         if self._pending_signal:
             if self._pending_signal.strategy == StrategyType.TREND_FOLLOW:
@@ -686,14 +692,27 @@ class LiveTradingEngine:
         Also retried in _tick if SL/TP orders are missing.
         """
         if not self._pending_signal or not self._open_position:
+            self._log_event(
+                f"[SL/TP] _place_sl_tp 跳過: signal={self._pending_signal is not None} "
+                f"position={self._open_position is not None}",
+                "error"
+            )
             return
 
         sig = self._pending_signal
+        # SL/TP side = opposite of entry direction (close the position)
         sl_side = 2 if sig.direction == Direction.BUY else 1
+        side_label = "SELL" if sl_side == 2 else "BUY"
+
+        self._log_event(
+            f"[SL/TP] 下單中: {side_label} SL(StopMarket)@{sig.sl_price:.2f} "
+            f"TP(Limit)@{sig.tp_price:.2f} | contract={self.contract_id}"
+        )
+
         sl_order = OrderRequest(
             account_id=self.account_id,
             contract_id=self.contract_id,
-            order_type=3,  # Stop
+            order_type=3,  # Internal 3 → broker converts to API type 4 (Stop)
             side=sl_side,
             size=1,
             stop_price=sig.sl_price,
@@ -707,25 +726,33 @@ class LiveTradingEngine:
             limit_price=sig.tp_price,
         )
 
+        # Place SL order
         try:
             sl_resp = await self.client.place_order(sl_order)
             if sl_resp.success:
                 self._sl_order_id = sl_resp.order_id
-                self._log_event(f"SL 掛單 #{sl_resp.order_id} @ {sig.sl_price:.2f}")
+                self._log_event(f"✅ SL 掛單成功 #{sl_resp.order_id} @ {sig.sl_price:.2f}")
             else:
-                self._log_event(f"SL 掛單失敗: {sl_resp.error_message}", "error")
+                self._log_event(
+                    f"❌ SL 掛單失敗: code={sl_resp.error_code} msg={sl_resp.error_message}",
+                    "error"
+                )
         except Exception as e:
-            self._log_event(f"SL 下單異常: {e}", "error")
+            self._log_event(f"❌ SL 下單異常: {e}", "error")
 
+        # Place TP order
         try:
             tp_resp = await self.client.place_order(tp_order)
             if tp_resp.success:
                 self._tp_order_id = tp_resp.order_id
-                self._log_event(f"TP 掛單 #{tp_resp.order_id} @ {sig.tp_price:.2f}")
+                self._log_event(f"✅ TP 掛單成功 #{tp_resp.order_id} @ {sig.tp_price:.2f}")
             else:
-                self._log_event(f"TP 掛單失敗: {tp_resp.error_message}", "error")
+                self._log_event(
+                    f"❌ TP 掛單失敗: code={tp_resp.error_code} msg={tp_resp.error_message}",
+                    "error"
+                )
         except Exception as e:
-            self._log_event(f"TP 下單異常: {e}", "error")
+            self._log_event(f"❌ TP 下單異常: {e}", "error")
 
     async def _sync_position(self):
         """Sync position state from exchange.
@@ -785,20 +812,40 @@ class LiveTradingEngine:
                 })
 
                 # Place SL/TP protection orders
-                if not self._skip_engine_sl_tp:
-                    await self._place_sl_tp()
+                if not self._skip_engine_sl_tp and self._pending_signal:
                     self._log_event(
-                        f"[SL/TP] 引擎管理 SL={self._pending_signal.sl_price:.2f} "
-                        f"TP={self._pending_signal.tp_price:.2f}"
+                        f"[SL/TP] 準備下單 SL={self._pending_signal.sl_price:.2f} "
+                        f"TP={self._pending_signal.tp_price:.2f} "
+                        f"dir={self._pending_signal.direction.value}"
                     )
-                else:
+                    await self._place_sl_tp()
+                elif self._skip_engine_sl_tp:
                     self._log_event("[SL/TP] 由 TopstepX Position Bracket 管理")
+                else:
+                    self._log_event("⚠ [SL/TP] 無 pending_signal 無法下 SL/TP!", "error")
 
                 # Save signal for SL/TP retry, then clear pending state
                 self._active_signal = self._pending_signal  # keep for SL/TP reference
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
+
+            # ── Transition 1b: Position exists but engine didn't place it ──
+            # (restart scenario or manual entry — still need SL/TP)
+            elif has_position and not was_open and not self._pending_order_id:
+                fill_price_raw = positions[0].get('averagePrice', positions[0].get('avgPrice'))
+                try:
+                    self._fill_price = float(fill_price_raw) if fill_price_raw else None
+                except (ValueError, TypeError):
+                    self._fill_price = None
+
+                pos_side = positions[0].get('side', 0)
+                self._log_event(
+                    f"⚠ 偵測到未追蹤的持倉 | fill={self._fill_price} | "
+                    f"side={'LONG' if pos_side == 0 else 'SHORT'} | "
+                    f"無 pending_order → 可能是手動入場或重啟後",
+                    "error"
+                )
 
             # ── Transition 2: Position CLOSED (SL/TP hit) ──
             if was_open and not has_position:
@@ -807,6 +854,15 @@ class LiveTradingEngine:
                     pnl_info = f" | entry_fill={self._fill_price:.2f}"
 
                 self._log_event(f"持倉已平 (SL/TP 觸發){pnl_info}")
+
+                # Cancel the OTHER order (if TP hit → cancel SL, if SL hit → cancel TP)
+                if self._sl_order_id:
+                    self._log_event(f"取消殘留 SL #{self._sl_order_id}")
+                    await self.client.cancel_order(self._sl_order_id)
+                if self._tp_order_id:
+                    self._log_event(f"取消殘留 TP #{self._tp_order_id}")
+                    await self.client.cancel_order(self._tp_order_id)
+
                 self._sl_order_id = None
                 self._tp_order_id = None
                 self._fill_price = None
@@ -824,11 +880,7 @@ class LiveTradingEngine:
                 })
 
                 # Notify strategy
-                if self._pending_signal:
-                    if self._pending_signal.strategy == StrategyType.TREND_FOLLOW:
-                        self.trend_follow.notify_trade_closed("tp")
-                else:
-                    self.trend_follow.notify_trade_closed("tp")
+                self.trend_follow.notify_trade_closed("tp")
 
             # Update capital
             accounts = await self.client.get_accounts()
@@ -845,7 +897,8 @@ class LiveTradingEngine:
                     break
 
         except Exception as e:
-            logger.error(f"[SYNC] position sync failed: {e}")
+            self._log_event(f"[SYNC ERROR] {e}", "error")
+            logger.error(f"[SYNC] position sync failed: {e}", exc_info=True)
 
     async def _fetch_latest_candle(self, unit_number: int = 5) -> Optional[Candle]:
         """Fetch the most recent candle from TopstepX API."""

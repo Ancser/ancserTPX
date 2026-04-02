@@ -931,7 +931,8 @@
 // ancserTPX Frontend
 // ============================================
 
-const API = 'http://localhost:8001/api';
+// Auto-detect port from current page URL (supports dynamic port in start.bat)
+const API = window.location.origin + '/api';
 let chart = null;
 let candleSeries = null;
 let volumeSeries = null;
@@ -1380,7 +1381,7 @@ async function fetchRealState() {
                 orders.forEach(o => {
                     const side = o.side === 1 ? 'BUY' : (o.side === 2 ? 'SELL' : o.side);
                     const sideColor = o.side === 1 ? 'var(--green)' : 'var(--red)';
-                    const typeMap = {1:'Limit', 2:'Market', 3:'StopMarket', 4:'StopLimit'};
+                    const typeMap = {1:'Limit', 2:'Market', 4:'Stop', 5:'TrailingStop'};
                     const oType = typeMap[o.type] || o.type || '?';
                     const status = o.status || '?';
                     const statusColor = status === 'Filled' ? 'var(--green)' : (status === 'Open' || status === 'Working' ? 'var(--amber)' : 'var(--text3)');
