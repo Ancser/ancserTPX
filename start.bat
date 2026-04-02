@@ -1,5 +1,5 @@
 @echo off
-title ancserTPX - NQ Futures Trading System
+title ancserTPX
 color 0A
 
 echo.
