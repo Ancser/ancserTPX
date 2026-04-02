@@ -52,10 +52,10 @@ TOPSTEPX_USERNAME=your_email@example.com
 TOPSTEPX_API_KEY=your_api_key_here
 ```
 
-Optional (auto-detected if not set):
+Default Trade Account/Contract
 
 ```env
-TOPSTEPX_ACCOUNT_ID=0
+TOPSTEPX_ACCOUNT_NAME=your_practice_account_name
 TOPSTEPX_CONTRACT_ID=CON.F.US.ENQ.M26
 ```
 
