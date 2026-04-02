@@ -24,7 +24,7 @@
     <title>ancserTPX</title>
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+TC:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root {
@@ -84,10 +84,10 @@
             opacity: 0.3;
         }
         .header h1 {
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 20px;
-            font-weight: 700;
-            letter-spacing: 3px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 16px;
+            font-weight: 400;
+            letter-spacing: 4px;
             color: var(--white);
         }
         .header h1 .sys-tag {
@@ -133,33 +133,38 @@
         /* ── Tabs ── */
         .tabs {
             display: flex;
-            gap: 0;
-            background: var(--bg2);
+            gap: 24px;
+            background: transparent;
             border-bottom: 1px solid var(--border);
+            padding: 0 16px;
         }
         .tab {
-            padding: 10px 28px;
+            padding: 12px 4px 10px;
             cursor: pointer;
-            color: var(--text3);
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 13px;
-            font-weight: 600;
-            letter-spacing: 2px;
+            color: var(--text2);
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            font-weight: 400;
+            letter-spacing: 1.5px;
             text-transform: uppercase;
             border-bottom: 2px solid transparent;
-            transition: all 0.25s ease;
+            transition: all 0.3s ease;
             position: relative;
         }
-        .tab:hover { color: var(--text); background: var(--cyan3); }
+        .tab:hover { color: var(--text); }
         .tab.active {
-            color: var(--cyan);
-            border-bottom-color: var(--cyan);
-            background: var(--cyan3);
+            color: var(--white);
+            border-bottom-color: var(--white);
         }
-        .tab.active::before {
-            content: '//';
-            margin-right: 6px;
-            opacity: 0.5;
+        .tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 6px;
+            background: linear-gradient(to top, rgba(255,255,255,0.15), transparent);
+            pointer-events: none;
         }
 
         /* ── Layout ── */
@@ -190,10 +195,10 @@
             opacity: 0.15;
         }
         .panel-title {
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 11px;
-            font-weight: 600;
-            color: var(--cyan);
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            font-weight: 400;
+            color: var(--white);
             text-transform: uppercase;
             letter-spacing: 3px;
             margin-bottom: 14px;
@@ -460,6 +465,8 @@
         }
         .log::-webkit-scrollbar { width: 2px; }
         .log::-webkit-scrollbar-thumb { background: var(--border-h); }
+        #tpx-real-state::-webkit-scrollbar { width: 2px; }
+        #tpx-real-state::-webkit-scrollbar-thumb { background: var(--border-h); }
         .log-entry { color: var(--text3); }
         .log-entry.info { color: var(--cyan); }
         .log-entry.success { color: var(--green); }
@@ -477,24 +484,39 @@
         }
         .bottom-tabs {
             display: flex;
-            gap: 0;
+            gap: 24px;
             border-bottom: 1px solid var(--border);
             flex-shrink: 0;
+            padding: 0 12px;
         }
         .bottom-tab {
-            padding: 7px 20px;
+            padding: 8px 4px 6px;
             cursor: pointer;
             color: var(--text3);
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 11px;
-            font-weight: 600;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            font-weight: 400;
             letter-spacing: 2px;
             text-transform: uppercase;
             border-bottom: 2px solid transparent;
-            transition: all 0.2s;
+            transition: all 0.3s ease;
+            position: relative;
         }
-        .bottom-tab:hover { color: var(--text2); }
-        .bottom-tab.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+        .bottom-tab:hover { color: var(--text); }
+        .bottom-tab.active {
+            color: var(--white);
+            border-bottom-color: var(--white);
+        }
+        .bottom-tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            left: 0;
+            right: 0;
+            height: 6px;
+            background: linear-gradient(to top, rgba(255,255,255,0.15), transparent);
+            pointer-events: none;
+        }
         .bottom-content { flex: 1; overflow-y: auto; padding: 0; }
 
         /* ── Scanline Effect ── */
@@ -671,6 +693,27 @@
             animation: spin 0.6s linear infinite;
         }
         @keyframes spin { to { transform: rotate(360deg); } }
+        .think-dots {
+            display: inline-flex;
+            gap: 4px;
+            vertical-align: middle;
+            margin-right: 6px;
+        }
+        .think-dots span {
+            display: inline-block;
+            width: 6px; height: 6px;
+            background: var(--text3);
+            opacity: 0.3;
+            animation: think-pulse 1.2s ease-in-out infinite;
+        }
+        .think-dots span:nth-child(1) { animation-delay: 0s; }
+        .think-dots span:nth-child(2) { animation-delay: 0.3s; }
+        .think-dots span:nth-child(3) { animation-delay: 0.6s; }
+        .think-dots span:nth-child(4) { animation-delay: 0.9s; }
+        @keyframes think-pulse {
+            0%, 100% { opacity: 0.15; background: var(--text3); }
+            50% { opacity: 1; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
+        }
 
         /* ── Select Styling ── */
         select {
@@ -754,8 +797,8 @@
 </div>
 
 <div class="tabs">
-    <div class="tab active" data-tab="backtest">BACKTEST</div>
-    <div class="tab" data-tab="live">LIVE MONITOR</div>
+    <div class="tab active" data-tab="backtest">Backtest</div>
+    <div class="tab" data-tab="live">Live Monitor</div>
 </div>
 
 <div class="main">
@@ -2660,7 +2703,7 @@ function buildBacktestBody() {
 async function runBacktest() {
     const btn = document.getElementById('btn-backtest');
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> PROCESSING...';
+    btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
     log('Running backtest...', 'info');
 
     try {
