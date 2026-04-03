@@ -2,26 +2,22 @@
 # ================================
 
 # Web Framework
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+fastapi>=0.115
+uvicorn[standard]>=0.34
 
 # TopstepX API
-httpx==0.28.1                   # Async HTTP client (REST)
-signalrcore==0.9.5              # SignalR WebSocket client
-websockets==14.1
+httpx>=0.28                      # Async HTTP client (REST)
+signalrcore>=0.9.5               # SignalR WebSocket client
+websockets>=14.0
 
 # Data Processing
-pandas==2.2.3
-numpy==2.2.1
+pandas>=2.2
+numpy>=2.1
 
 # Database
-aiosqlite==0.21.0               # Async SQLite
+aiosqlite>=0.21                  # Async SQLite
 
 # Utilities
-python-dotenv==1.0.1
-pydantic==2.10.4
-pydantic-settings==2.7.1
-
-# Dev / Testing
-pytest==8.3.4
-pytest-asyncio==0.25.0
+python-dotenv>=1.0
+pydantic>=2.10
+pydantic-settings>=2.7

@@ -1,2 +1,10 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Force LF line endings for shell scripts (Mac/Linux)
+*.sh text eol=lf
+Makefile text eol=lf
+
+# Force CRLF for Windows batch files
+*.bat text eol=crlf
+*.ps1 text eol=crlf
