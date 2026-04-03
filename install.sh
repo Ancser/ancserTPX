@@ -19,7 +19,13 @@ else
     echo "       or: sudo apt install python3 python3-pip  (Linux)"
     exit 1
 fi
+PY_VER=$($PY -c "import sys; print(sys.version_info.minor)")
 echo "        $($PY --version)"
+if [ "$PY_VER" -gt 13 ] 2>/dev/null; then
+    echo "  [ERROR] Python 3.14+ is not supported (packages have no pre-built wheels)"
+    echo "  Install Python 3.13: brew install python@3.13"
+    exit 1
+fi
 
 # ── Check pip ──
 echo "  [2/4] Checking pip..."

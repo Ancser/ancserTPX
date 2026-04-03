@@ -28,8 +28,10 @@ NQ (Nasdaq 100 E-mini) futures auto-trading system on **TopstepX** (ProjectX API
 
 ### 1. Prerequisites
 
-- **Python 3.10+** — [python.org/downloads](https://www.python.org/downloads/)
-  - Check "Add Python to PATH" during install
+- **Python 3.10 ~ 3.13** — [python.org/downloads](https://www.python.org/downloads/)
+  - Do NOT use 3.14 (beta, packages not supported yet)
+  - Windows: check "Add Python to PATH" during install
+  - macOS: `brew install python@3.13` or download from python.org
 - **Git** (optional) — for cloning the repo
 
 ### 2. ProjectX API set up
