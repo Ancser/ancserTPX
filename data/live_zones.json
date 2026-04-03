@@ -1,5 +1,5 @@
 {
-  "saved_at": "2026-04-03T01:18:01.272403",
+  "saved_at": "2026-04-03T02:48:02.592054",
   "active_zone_id": "S0009",
   "zones": [
     {
@@ -124,14 +124,14 @@
     },
     {
       "zone_id": "S0009",
-      "poc": 24212.25,
-      "vah_80": 24234.75,
-      "val_80": 24193.0,
+      "poc": 24198.0,
+      "vah_80": 24238.0,
+      "val_80": 24191.5,
       "high_100": 24255.0,
-      "low_100": 24177.5,
-      "total_volume": 9577,
-      "duration_minutes": 192,
-      "num_candles": 197,
+      "low_100": 24155.0,
+      "total_volume": 13078,
+      "duration_minutes": 282,
+      "num_candles": 287,
       "status": "active",
       "formed_at": "2026-04-02T22:00:00+00:00",
       "left_at": null,

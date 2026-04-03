@@ -143,11 +143,14 @@ class TopstepXClient:
             client = await self._ensure_http()
             resp = await client.request(method, path, **kwargs)
 
-        # Rate limit
+        # Rate limit — exponential backoff
         if resp.status_code == 429:
-            logger.warning("Rate limited, 等待 5 秒...")
-            await asyncio.sleep(5)
-            resp = await client.request(method, path, **kwargs)
+            for wait in (3, 5, 10):
+                logger.warning(f"Rate limited (429), 等待 {wait}s...")
+                await asyncio.sleep(wait)
+                resp = await client.request(method, path, **kwargs)
+                if resp.status_code != 429:
+                    break
 
         resp.raise_for_status()
         return resp.json()
