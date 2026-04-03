@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import time as time_mod
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional
 
@@ -108,6 +109,7 @@ class LiveTradingEngine:
         self._skip_engine_sl_tp: bool = skip_engine_sl_tp
         self._last_market_price: Optional[float] = None
         self._last_candle_time: Optional[str] = None
+        self._last_pnl_check: float = 0.0  # timestamp of last PNL check
         self._trades: List[Dict] = []
         self._log: List[str] = []
         self._last_status_log_minute: int = -1  # track minute for periodic status log
@@ -657,6 +659,22 @@ class LiveTradingEngine:
             self._log_event(f"下單異常: {e}", "error")
             return False
 
+    async def _cancel_with_retry(self, order_id: Optional[int], label: str):
+        """Cancel an order with retry. Handles 400 errors by retrying once."""
+        if not order_id:
+            return
+        success = await self.client.cancel_order(order_id)
+        if success:
+            self._log_event(f"取消殘留 {label} #{order_id}")
+            return
+        # First attempt failed (400) — wait and retry once
+        await asyncio.sleep(1)
+        success = await self.client.cancel_order(order_id)
+        if success:
+            self._log_event(f"取消殘留 {label} #{order_id} (重試成功)")
+        else:
+            self._log_event(f"取消 {label} #{order_id} 失敗 (可能已成交)")
+
     async def _cancel_pending(self):
         """Cancel the pending limit order."""
         if not self._pending_order_id:
@@ -859,30 +877,27 @@ class LiveTradingEngine:
                 if self._fill_price:
                     pnl_info = f" | entry_fill={self._fill_price:.2f}"
 
-                # Detect which order hit: the one we can't cancel is the one that filled
+                # Detect exit reason by comparing market price to SL/TP levels
                 exit_reason = "unknown"
-                sl_cancelled = False
-                tp_cancelled = False
-                if self._sl_order_id:
-                    sl_cancelled = await self.client.cancel_order(self._sl_order_id)
-                    if sl_cancelled:
-                        self._log_event(f"取消殘留 SL #{self._sl_order_id}")
-                    else:
+                if self._active_signal and self._last_market_price:
+                    sl_p = self._active_signal.sl_price
+                    tp_p = self._active_signal.tp_price
+                    mkt = self._last_market_price
+                    # Whichever level is closer to current market price is the one that hit
+                    if abs(mkt - sl_p) < abs(mkt - tp_p):
                         exit_reason = "sl"
-                if self._tp_order_id:
-                    tp_cancelled = await self.client.cancel_order(self._tp_order_id)
-                    if tp_cancelled:
-                        self._log_event(f"取消殘留 TP #{self._tp_order_id}")
                     else:
                         exit_reason = "tp"
-
-                # If both cancelled (manual close) or neither, default to "tp"
                 if exit_reason == "unknown":
                     exit_reason = "tp"
 
                 self._log_event(
                     f"持倉已平 ({exit_reason.upper()} 觸發){pnl_info}"
                 )
+
+                # Cancel residual orders with retry
+                await self._cancel_with_retry(self._sl_order_id, "SL")
+                await self._cancel_with_retry(self._tp_order_id, "TP")
 
                 self._sl_order_id = None
                 self._tp_order_id = None
@@ -892,7 +907,7 @@ class LiveTradingEngine:
                 # Cancel any pending entry order
                 if self._pending_order_id:
                     self._log_event(f"取消殘留掛單 #{self._pending_order_id}")
-                    await self.client.cancel_order(self._pending_order_id)
+                    await self._cancel_with_retry(self._pending_order_id, "ENTRY")
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
@@ -907,19 +922,22 @@ class LiveTradingEngine:
                 self.trend_follow.notify_trade_closed(exit_reason)
                 self._position_just_closed = True  # skip new entry this tick
 
-            # Update capital
-            accounts = await self.client.get_accounts()
-            for acc in accounts:
-                if acc.get("id") == self.account_id:
-                    new_balance = acc.get("balance", self._capital)
-                    if self._capital > 0:
-                        pnl_change = new_balance - self._capital
-                        if abs(pnl_change - self._daily_pnl) > 1.0:
-                            self._log_event(
-                                f"[PNL] balance={new_balance:.2f} daily_pnl={pnl_change:.2f}"
-                            )
-                        self._daily_pnl = pnl_change
-                    break
+            # Update capital (every 60s to reduce API calls)
+            now_ts = time_mod.time()
+            if now_ts - self._last_pnl_check >= 60:
+                self._last_pnl_check = now_ts
+                accounts = await self.client.get_accounts()
+                for acc in accounts:
+                    if acc.get("id") == self.account_id:
+                        new_balance = acc.get("balance", self._capital)
+                        if self._capital > 0:
+                            pnl_change = new_balance - self._capital
+                            if abs(pnl_change - self._daily_pnl) > 1.0:
+                                self._log_event(
+                                    f"[PNL] balance={new_balance:.2f} daily_pnl={pnl_change:.2f}"
+                                )
+                            self._daily_pnl = pnl_change
+                        break
 
         except Exception as e:
             self._log_event(f"[SYNC ERROR] {e}", "error")
