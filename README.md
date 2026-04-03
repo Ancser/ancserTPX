@@ -60,18 +60,20 @@ TOPSTEPX_CONTRACT_ID=CON.F.US.ENQ.M26
 
 ### 4. Install & Run
 
-**One-click install + start:**
+**Windows:**
 
 ```
-install.bat        # first time only — installs Python dependencies
+install.bat        # first time — installs Python dependencies
 start.bat          # launches server + opens browser
 ```
 
-Or manually:
+**macOS / Linux:**
+
+Open **Terminal** (Spotlight search "Terminal" or `Cmd+Space` → type "Terminal"), `cd` to the project folder, then:
 
 ```bash
-pip install -r backend/requirements.txt
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8001
+make install       # first time — installs Python dependencies
+make start         # launches server + opens browser
 ```
 
 ---
@@ -110,9 +112,10 @@ ancserTPX/
 ├── frontend/
 │   └── static/index.html    # Single-page trading UI
 ├── .env                     # Credentials (not committed)
-├── start.bat                # One-click launch
-├── install.bat              # One-click environment setup
-└── kill_old.ps1             # Cleanup zombie processes
+├── .env.example             # Template for .env
+├── install.bat / install.sh # One-click environment setup
+├── start.bat / start.sh     # One-click launch
+└── kill_old.ps1             # Cleanup zombie processes (Windows)
 ```
 
 ---
