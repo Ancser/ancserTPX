@@ -32,15 +32,16 @@ NQ (Nasdaq 100 E-mini) futures auto-trading system on **TopstepX** (ProjectX API
   - Check "Add Python to PATH" during install
 - **Git** (optional) — for cloning the repo
 
-### 2. Get ProjectX API Key
+### 2. ProjectX API set up
 
-1. Go to **[TopstepX API Portal](https://platform.projectx.com)**
-2. Sign in with your TopstepX account
-3. Navigate to **API Keys** section
-4. Click **Generate API Key**
-5. Copy the key (you won't see it again)
+1. Go to https://dashboard.projectx.com/dashboard
+2. Make new account
+3. Buy ProjectX API Access (50% off coupon: topstep)
+4. Link to Topstep X account
+5. Go to https://topstepx.com/settings
+6. Navigate to **API** section
+8. Copy the key to .env
 
-> ProjectX API docs: [https://projectxapi.com](https://projectxapi.com)
 
 ### 3. Configure `.env`
 
@@ -51,10 +52,10 @@ TOPSTEPX_USERNAME=your_email@example.com
 TOPSTEPX_API_KEY=your_api_key_here
 ```
 
-Optional (auto-detected if not set):
+Default Trade Account/Contract
 
 ```env
-TOPSTEPX_ACCOUNT_ID=0
+TOPSTEPX_ACCOUNT_NAME=your_practice_account_name
 TOPSTEPX_CONTRACT_ID=CON.F.US.ENQ.M26
 ```
 
@@ -83,13 +84,12 @@ make start         # launches server + opens browser
 ### Backtest
 
 1. Open browser (auto-opens at `http://localhost:8001`)
-2. Click **CONNECT** (loads .env credentials)
-3. Select date range (default: last 10 trading days)
-4. Click **RUN BACKTEST** — draws zones + trade signals on chart
+2. Click **CONNECT** (auto-connected from .env)
+3. Click **RUN BACKTEST** — draws zones + trade signals on chart
 
 ### Live Trading
 
-1. Connect to API (same as above)
+1. Connect to API (auto-connected from .env)
 2. Switch to **LIVE MONITOR** tab
 3. Select your trading account from the dropdown
 4. Click **START LIVE** — engine monitors market and auto-trades
