@@ -35,6 +35,7 @@ from typing import Dict, List, Optional
 from backend.db.models import (
     Candle, TradeSignal, OrderRequest, OrderResponse,
     ConsolidationZone, Direction, StrategyType, ZoneStatus, BarUnit,
+    StrategyParams,
 )
 from backend.strategy.consolidation import SessionZoneDetector
 from backend.strategy.trend_follow import SessionTrendFollow
@@ -65,6 +66,8 @@ class LiveTradingEngine:
         slippage_ticks: int = 1,
         # Engine manages SL/TP — MUST be False to protect positions
         skip_engine_sl_tp: bool = False,
+        # Configurable strategy params
+        strategy_params: Optional[StrategyParams] = None,
         # Legacy params (ignored, kept for API compatibility)
         strategies: List[str] = None,
         sl_dollars: float = 300.0,
@@ -81,13 +84,14 @@ class LiveTradingEngine:
         self.strategies = ["trend_follow"]  # Only SessionTrendFollow
         self.slippage_ticks = slippage_ticks
         self.max_daily_trades = max_daily_trades
+        self.strategy_params = strategy_params or StrategyParams()
 
         # Session-based zone detector (overnight zone with maturity)
         self.detector = SessionZoneDetector(
             value_area_pct=value_area_pct,
         )
-        # Session-based trend follow (5-bar breakout, SL=50tick, TP=3x)
-        self.trend_follow = SessionTrendFollow()
+        # SessionTrendFollow with configurable params
+        self.trend_follow = SessionTrendFollow(params=self.strategy_params)
 
         # Live state
         self._running = False
@@ -101,6 +105,8 @@ class LiveTradingEngine:
         self._tp_order_id: Optional[int] = None
         self._active_signal: Optional[TradeSignal] = None  # preserved after fill for SL/TP
         self._position_just_closed: bool = False  # skip strategy eval on same tick as close
+        self._position_age: int = 0              # candles since position opened
+        self._tp_timeout_triggered: bool = False  # prevent re-triggering
         self._daily_trade_count: int = 0
         self._daily_pnl: float = 0.0
         self._today: str = ""
@@ -407,6 +413,48 @@ class LiveTradingEngine:
         except Exception as e:
             self._log_event(f"緊急平倉失敗: {e}", "error")
 
+    async def _recalc_tp_live(self, new_factor: int):
+        """Recalculate TP with new factor: cancel old TP, place new one."""
+        if not self._active_signal or not self._active_signal.breakout_range:
+            self._log_event("TP recalc skipped — no breakout_range", "warn")
+            return
+
+        sig = self._active_signal
+        br = sig.breakout_range
+        if sig.direction == Direction.BUY:
+            new_tp = sig.entry_price + new_factor * br
+        else:
+            new_tp = sig.entry_price - new_factor * br
+
+        # Cancel existing TP order
+        if self._tp_order_id:
+            try:
+                await self.client.cancel_order(self.account_id, self._tp_order_id)
+                self._log_event(f"舊 TP 取消 (order {self._tp_order_id})")
+            except Exception as e:
+                self._log_event(f"取消 TP 失敗: {e}", "error")
+            self._tp_order_id = None
+
+        # Place new TP limit order
+        try:
+            tp_side = 2 if sig.direction == Direction.BUY else 1  # sell to close / buy to close
+            tp_order = OrderRequest(
+                account_id=self.account_id,
+                contract_id=self.contract_id,
+                order_type=1,  # Limit
+                side=tp_side,
+                size=1,
+                limit_price=new_tp,
+            )
+            resp = await self.client.place_order(tp_order)
+            if resp and resp.success:
+                self._tp_order_id = resp.order_id
+                self._log_event(f"新 TP @ {new_tp:.2f} ({new_factor}x) order={resp.order_id}")
+            else:
+                self._log_event(f"新 TP 下單失敗: {resp}", "error")
+        except Exception as e:
+            self._log_event(f"新 TP 下單失敗: {e}", "error")
+
     # ── Main Loop ──────────────────────────────────────────
 
     async def _main_loop(self):
@@ -526,8 +574,9 @@ class LiveTradingEngine:
                 self._pending_age = 0
                 return
             self._pending_age += 1
-            if self._pending_age > 30:  # 30 candles = 30 min timeout
-                self._log_event("掛單超時 30 分鐘取消")
+            timeout = self.trend_follow.PENDING_TIMEOUT_CANDLES
+            if self._pending_age > timeout:
+                self._log_event(f"掛單超時 {timeout} 分鐘取消")
                 await self._cancel_pending()
 
         # ── If position open, verify SL/TP are in place ──
@@ -545,6 +594,20 @@ class LiveTradingEngine:
                             "⚠ 持倉中無 SL/TP 且無 signal（重啟後或手動入場）→ 需手動設定 SL/TP",
                             "error"
                         )
+
+            # ── TP Timeout check ──
+            self._position_age += 1
+            tp_timeout = self.trend_follow.TP_TIMEOUT_CANDLES
+            if tp_timeout > 0 and not self._tp_timeout_triggered and self._position_age >= tp_timeout:
+                self._tp_timeout_triggered = True
+                action = self.trend_follow.TP_TIMEOUT_ACTION
+                if action == "flat":
+                    self._log_event(f"TP timeout ({tp_timeout} min) → flat close", "warn")
+                    await self.flatten_now()
+                else:
+                    new_factor = int(action)
+                    self._log_event(f"TP timeout ({tp_timeout} min) → TP factor → {new_factor}x", "warn")
+                    await self._recalc_tp_live(new_factor)
             return
 
         # ── Strategy evaluation ──
@@ -853,6 +916,8 @@ class LiveTradingEngine:
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
+                self._position_age = 0
+                self._tp_timeout_triggered = False
 
             # ── Transition 1b: Position exists but engine didn't place it ──
             # (restart scenario or manual entry — still need SL/TP)
