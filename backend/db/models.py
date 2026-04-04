@@ -195,6 +195,7 @@ class TradeSignal:
     timestamp: Optional[datetime] = None
     vol_ratio: Optional[float] = None  # 趨勢跟隨時的成交量比率
     is_big_trend: bool = False
+    breakout_range: Optional[float] = None  # |H100-VAH| or |VAL-L100|, for TP recalc
 
     @property
     def sl_points(self) -> float:
@@ -238,6 +239,7 @@ class Trade:
     contracts: int = 1
     vol_ratio: Optional[float] = None
     is_big_trend: bool = False
+    breakout_range: Optional[float] = None  # for TP timeout recalc
 
     @property
     def is_open(self) -> bool:
@@ -275,6 +277,20 @@ class BreakoutAnalysis:
     def is_big_trend(self) -> bool:
         """成交量比率 ≥ 2.0 → 大趨勢模式 ($600:$1800)"""
         return self.vol_ratio >= 2.0
+
+
+# ── 策略參數 ──────────────────────────────────────────
+
+@dataclass
+class StrategyParams:
+    """可配置的策略參數 (SessionTrendFollow)"""
+    strategy: str = "trend"              # "trend" | "reversion"
+    entry_mode: str = "50RE"             # "50RE" | "100RE"
+    tp_factor: int = 3                   # 1, 2, 3, 4
+    sl_ticks: int = 50                   # 0, 25, 50, 75, 100
+    entry_timeout_minutes: int = 30      # 10, 20, 30
+    tp_timeout_minutes: int = 0          # 0 (OFF), 30, 60
+    tp_timeout_action: str = "flat"      # "flat", "3", "2", "1"
 
 
 # ── 回測 ──────────────────────────────────────────────

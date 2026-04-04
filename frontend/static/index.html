@@ -840,11 +840,84 @@
                 <label>INITIAL CAPITAL $</label>
                 <input type="number" id="initial-capital" value="50000">
             </div>
-            <div style="font-size:10px;color:var(--text2);margin-top:6px;line-height:1.6;">
-                Strategy: SessionTrendFollow<br>
-                SL: 50 ticks (12.5 pts) | TP: 3× SL<br>
-                Zone: Session overnight (18:00 ET)<br>
-                Flatten: PT 12:45
+
+            <!-- Strategy Params -->
+            <div class="form-row" style="margin-top:8px;">
+                <div class="form-group" style="flex:2">
+                    <label>PRESET</label>
+                    <select id="preset-bt" onchange="loadPreset('bt')">
+                        <option value="default">Default</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;display:flex;align-items:flex-end;">
+                    <button class="btn btn-outline" onclick="savePreset('bt')" style="padding:7px 6px;font-size:10px;">SAVE</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>STRATEGY</label>
+                <select id="strategy-bt">
+                    <option value="trend" selected>Trend Follow</option>
+                    <option value="reversion" disabled>Reversion (coming soon)</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>ENTRY</label>
+                <select id="entry-mode-bt">
+                    <option value="50RE" selected>50% Retracement</option>
+                    <option value="100RE">100% RE (at VAH/VAL)</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>TP FACTOR</label>
+                    <select id="tp-factor-bt">
+                        <option value="1">1x</option>
+                        <option value="2">2x</option>
+                        <option value="3" selected>3x</option>
+                        <option value="4">4x</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>SL BUFFER</label>
+                    <select id="sl-ticks-bt">
+                        <option value="0">0 tick</option>
+                        <option value="25">25 tick</option>
+                        <option value="50" selected>50 tick</option>
+                        <option value="75">75 tick</option>
+                        <option value="100">100 tick</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>ENTRY TIMEOUT</label>
+                <select id="entry-timeout-bt">
+                    <option value="10">10 min</option>
+                    <option value="20">20 min</option>
+                    <option value="30" selected>30 min</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>TP TIMEOUT</label>
+                    <select id="tp-timeout-bt" onchange="toggleTpAction('bt')">
+                        <option value="0" selected>OFF</option>
+                        <option value="30">30 min</option>
+                        <option value="60">60 min</option>
+                    </select>
+                </div>
+                <div class="form-group" id="tp-action-group-bt" style="display:none">
+                    <label>ACTION</label>
+                    <select id="tp-action-bt">
+                        <option value="flat" selected>Flat</option>
+                        <option value="3">TP→3x</option>
+                        <option value="2">TP→2x</option>
+                        <option value="1">TP→1x</option>
+                    </select>
+                </div>
+            </div>
+
+            <div style="font-size:10px;color:var(--text3);margin-top:4px;line-height:1.6;">
+                Zone: Session overnight (18:00 ET) | Flatten: PT 12:45
             </div>
             <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled style="margin-top:10px;">EXECUTE BACKTEST</button>
         </div>
@@ -866,18 +939,91 @@
                     </div>
                     <div class="form-group">
                         <label>VALUE AREA %</label>
-                        <select id="live-value-area" style="background:var(--bg);color:var(--text);border:1px solid var(--border);padding:6px 8px;font-family:'Share Tech Mono',monospace;font-size:12px;">
+                        <select id="live-value-area">
                             <option value="0.70">70%</option>
                             <option value="0.80" selected>80%</option>
                             <option value="0.90">90%</option>
                         </select>
                     </div>
                 </div>
-                <div style="font-size:10px;color:var(--text2);margin-top:6px;line-height:1.6;">
-                    Strategy: SessionTrendFollow<br>
-                    SL: 50 ticks (12.5 pts) | TP: 3x SL<br>
-                    Zone: Session overnight (18:00 ET)<br>
-                    Flatten: PT 12:45
+
+                <!-- Strategy Params -->
+                <div class="form-row" style="margin-top:8px;">
+                    <div class="form-group" style="flex:2">
+                        <label>PRESET</label>
+                        <select id="preset-live" onchange="loadPreset('live')">
+                            <option value="default">Default</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;display:flex;align-items:flex-end;">
+                        <button class="btn btn-outline" onclick="savePreset('live')" style="padding:7px 6px;font-size:10px;">SAVE</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>STRATEGY</label>
+                    <select id="strategy-live">
+                        <option value="trend" selected>Trend Follow</option>
+                        <option value="reversion" disabled>Reversion (coming soon)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>ENTRY</label>
+                    <select id="entry-mode-live">
+                        <option value="50RE" selected>50% Retracement</option>
+                        <option value="100RE">100% RE (at VAH/VAL)</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>TP FACTOR</label>
+                        <select id="tp-factor-live">
+                            <option value="1">1x</option>
+                            <option value="2">2x</option>
+                            <option value="3" selected>3x</option>
+                            <option value="4">4x</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>SL BUFFER</label>
+                        <select id="sl-ticks-live">
+                            <option value="0">0 tick</option>
+                            <option value="25">25 tick</option>
+                            <option value="50" selected>50 tick</option>
+                            <option value="75">75 tick</option>
+                            <option value="100">100 tick</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>ENTRY TIMEOUT</label>
+                    <select id="entry-timeout-live">
+                        <option value="10">10 min</option>
+                        <option value="20">20 min</option>
+                        <option value="30" selected>30 min</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>TP TIMEOUT</label>
+                        <select id="tp-timeout-live" onchange="toggleTpAction('live')">
+                            <option value="0" selected>OFF</option>
+                            <option value="30">30 min</option>
+                            <option value="60">60 min</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="tp-action-group-live" style="display:none">
+                        <label>ACTION</label>
+                        <select id="tp-action-live">
+                            <option value="flat" selected>Flat</option>
+                            <option value="3">TP→3x</option>
+                            <option value="2">TP→2x</option>
+                            <option value="1">TP→1x</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="font-size:10px;color:var(--text3);margin-top:4px;line-height:1.6;">
+                    Zone: Session overnight (18:00 ET) | Flatten: PT 12:45
                 </div>
             </div>
             <div class="panel">
@@ -1013,6 +1159,104 @@ let allAccounts = [];
 let pocLine = null;
 let vahLine = null;
 let valLine = null;
+
+// -- Strategy Params & Presets ----------------------
+
+const DEFAULT_STRATEGY_PARAMS = {
+    strategy: 'trend',
+    entry_mode: '50RE',
+    tp_factor: 3,
+    sl_ticks: 50,
+    entry_timeout_minutes: 30,
+    tp_timeout_minutes: 0,
+    tp_timeout_action: 'flat',
+};
+
+function collectStrategyParams(mode) {
+    return {
+        strategy: document.getElementById('strategy-' + mode).value,
+        entry_mode: document.getElementById('entry-mode-' + mode).value,
+        tp_factor: parseInt(document.getElementById('tp-factor-' + mode).value),
+        sl_ticks: parseInt(document.getElementById('sl-ticks-' + mode).value),
+        entry_timeout_minutes: parseInt(document.getElementById('entry-timeout-' + mode).value),
+        tp_timeout_minutes: parseInt(document.getElementById('tp-timeout-' + mode).value),
+        tp_timeout_action: document.getElementById('tp-action-' + mode) ?
+            document.getElementById('tp-action-' + mode).value : 'flat',
+    };
+}
+
+function applyStrategyParams(mode, params) {
+    const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params);
+    document.getElementById('strategy-' + mode).value = p.strategy;
+    document.getElementById('entry-mode-' + mode).value = p.entry_mode;
+    document.getElementById('tp-factor-' + mode).value = p.tp_factor;
+    document.getElementById('sl-ticks-' + mode).value = p.sl_ticks;
+    document.getElementById('entry-timeout-' + mode).value = p.entry_timeout_minutes;
+    document.getElementById('tp-timeout-' + mode).value = p.tp_timeout_minutes;
+    toggleTpAction(mode);
+    if (document.getElementById('tp-action-' + mode)) {
+        document.getElementById('tp-action-' + mode).value = p.tp_timeout_action;
+    }
+}
+
+function toggleTpAction(mode) {
+    const val = document.getElementById('tp-timeout-' + mode).value;
+    const group = document.getElementById('tp-action-group-' + mode);
+    if (group) group.style.display = val === '0' ? 'none' : '';
+}
+
+function getPresets() {
+    try { return JSON.parse(localStorage.getItem('ancserTPX_presets') || '{}'); }
+    catch(e) { return {}; }
+}
+
+function savePreset(mode) {
+    const name = prompt('Preset name:');
+    if (!name || !name.trim()) return;
+    const presets = getPresets();
+    presets[name.trim()] = collectStrategyParams(mode);
+    localStorage.setItem('ancserTPX_presets', JSON.stringify(presets));
+    refreshPresetDropdowns();
+    log('Preset "' + name.trim() + '" saved', 'success');
+}
+
+function loadPreset(mode) {
+    const sel = document.getElementById('preset-' + mode);
+    const name = sel.value;
+    if (name === 'default') {
+        applyStrategyParams(mode, DEFAULT_STRATEGY_PARAMS);
+        return;
+    }
+    const presets = getPresets();
+    if (presets[name]) {
+        applyStrategyParams(mode, presets[name]);
+        log('Preset "' + name + '" loaded', 'info');
+    }
+}
+
+function refreshPresetDropdowns() {
+    const presets = getPresets();
+    const names = Object.keys(presets);
+    ['bt', 'live'].forEach(function(mode) {
+        const sel = document.getElementById('preset-' + mode);
+        if (!sel) return;
+        const current = sel.value;
+        sel.innerHTML = '<option value="default">Default</option>';
+        names.forEach(function(n) {
+            const opt = document.createElement('option');
+            opt.value = n;
+            opt.textContent = n;
+            sel.appendChild(opt);
+        });
+        // Restore selection if it still exists
+        if (current && (current === 'default' || presets[current])) {
+            sel.value = current;
+        }
+    });
+}
+
+// Initialize preset dropdowns on load
+document.addEventListener('DOMContentLoaded', refreshPresetDropdowns);
 
 // -- Connection Dropdown ----------------------------
 
@@ -1321,11 +1565,13 @@ async function goLive() {
     document.getElementById('btn-flatten').disabled = false;
 
     // ── Call /live/start to start the live trading engine ──
+    const stratParams = collectStrategyParams('live');
     const liveParams = {
         account_id: liveAccount.id,
         contract_id: liveAccount.contract_id || 'CON.F.US.ENQ.M26',
         max_daily_trades: parseInt(document.getElementById('live-max-trades').value),
         value_area_pct: parseFloat(document.getElementById('live-value-area').value),
+        ...stratParams,
     };
 
     let engineStarted = false;
@@ -2724,8 +2970,10 @@ function applyDefaultChartView(chartData, zones) {
 }
 
 function buildBacktestBody() {
+    const params = collectStrategyParams('bt');
     return {
         initial_capital: parseFloat(document.getElementById('initial-capital').value),
+        ...params,
     };
 }
 
