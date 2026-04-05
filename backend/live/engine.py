@@ -414,17 +414,19 @@ class LiveTradingEngine:
             self._log_event(f"緊急平倉失敗: {e}", "error")
 
     async def _recalc_tp_live(self, new_factor: int):
-        """Recalculate TP with new factor: cancel old TP, place new one."""
-        if not self._active_signal or not self._active_signal.breakout_range:
-            self._log_event("TP recalc skipped — no breakout_range", "warn")
+        """Recalculate TP with new factor: cancel old TP, place new one.
+        Uses SL distance as base: TP = entry ± |entry - SL| × new_factor
+        """
+        if not self._active_signal:
+            self._log_event("TP recalc skipped — no active signal", "warn")
             return
 
         sig = self._active_signal
-        br = sig.breakout_range
+        sl_distance = abs(sig.entry_price - sig.sl_price)
         if sig.direction == Direction.BUY:
-            new_tp = sig.entry_price + new_factor * br
+            new_tp = sig.entry_price + sl_distance * new_factor
         else:
-            new_tp = sig.entry_price - new_factor * br
+            new_tp = sig.entry_price - sl_distance * new_factor
 
         # Cancel existing TP order
         if self._tp_order_id:
