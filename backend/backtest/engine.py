@@ -297,15 +297,18 @@ class BacktestEngine:
         )
 
     def _recalc_tp(self, new_factor: int):
-        """Recalculate TP price with a new tp_factor (for TP timeout)."""
+        """Recalculate TP price with a new tp_factor (for TP timeout).
+        Uses SL distance as base: TP = entry ± |entry - SL| × new_factor
+        """
         pos = self._open_position
-        if not pos or not pos.breakout_range:
+        if not pos:
             return
+        sl_distance = abs(pos.entry_price - pos.sl_price)
         if pos.direction == Direction.BUY:
-            pos.tp_price = pos.entry_price + new_factor * pos.breakout_range
+            pos.tp_price = pos.entry_price + sl_distance * new_factor
         else:
-            pos.tp_price = pos.entry_price - new_factor * pos.breakout_range
-        logger.debug(f"TP recalculated: new TP={pos.tp_price:.2f} ({new_factor}x)")
+            pos.tp_price = pos.entry_price - sl_distance * new_factor
+        logger.debug(f"TP recalculated: new TP={pos.tp_price:.2f} ({new_factor}x SL)")
 
     def _execute_exit(self, candle: Candle, exit_price: float, reason: ExitReason):
         pos = self._open_position

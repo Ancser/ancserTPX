@@ -504,7 +504,7 @@ class SessionTrendFollow:
 
         Entry = VAH/VAL + entry_ratio × breakout_range
         SL    = VAH/VAL ± sl_ticks × tick_size
-        TP    = entry ± tp_factor × breakout_range
+        TP    = entry ± |entry - SL| × tp_factor
         """
         sl_points = self.SL_TICKS * self.TICK_SIZE
 
@@ -512,13 +512,19 @@ class SessionTrendFollow:
             breakout_range = zone.high_100 - zone.vah_80
             entry = zone.vah_80 + self.ENTRY_RATIO * breakout_range
             sl = zone.vah_80 - sl_points
-            tp = entry + self.TP_FACTOR * breakout_range
+            sl_distance = abs(entry - sl)
+            tp = entry + sl_distance * self.TP_FACTOR
+            # Alternative: TP based on breakout range instead of SL distance
+            # tp = entry + self.TP_FACTOR * breakout_range
             trade_dir = Direction.BUY
         else:
             breakout_range = zone.val_80 - zone.low_100
             entry = zone.val_80 - self.ENTRY_RATIO * breakout_range
             sl = zone.val_80 + sl_points
-            tp = entry - self.TP_FACTOR * breakout_range
+            sl_distance = abs(entry - sl)
+            tp = entry - sl_distance * self.TP_FACTOR
+            # Alternative: TP based on breakout range instead of SL distance
+            # tp = entry - self.TP_FACTOR * breakout_range
             trade_dir = Direction.SELL
 
         sl_dollars = abs(entry - sl) * POINT_VALUE
