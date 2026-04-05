@@ -38,7 +38,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.db.models import BacktestConfig, BarUnit, Candle
+from backend.db.models import BacktestConfig, BarUnit, Candle, StrategyParams
 from backend.backtest.engine import BacktestEngine
 from backend.strategy.volume_profile import VolumeProfileCalculator
 
@@ -63,6 +63,14 @@ _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API
 class BacktestRequest(BaseModel):
     initial_capital: float = 50000.0
     max_daily_trades: int = 5
+    # Strategy params
+    strategy: str = "trend"
+    entry_mode: str = "50RE"
+    tp_factor: int = 3
+    sl_ticks: int = 50
+    entry_timeout_minutes: int = 30
+    tp_timeout_minutes: int = 0
+    tp_timeout_action: str = "flat"
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -747,9 +755,20 @@ async def run_backtest(req: BacktestRequest):
         initial_capital=req.initial_capital,
     )
 
+    strategy_params = StrategyParams(
+        strategy=req.strategy,
+        entry_mode=req.entry_mode,
+        tp_factor=req.tp_factor,
+        sl_ticks=req.sl_ticks,
+        entry_timeout_minutes=req.entry_timeout_minutes,
+        tp_timeout_minutes=req.tp_timeout_minutes,
+        tp_timeout_action=req.tp_timeout_action,
+    )
+
     engine = BacktestEngine(
         config,
         max_daily_trades=req.max_daily_trades,
+        strategy_params=strategy_params,
     )
 
     # Use 1m candles directly (SessionTrendFollow works on 1m)
@@ -889,6 +908,14 @@ class LiveStartRequest(BaseModel):
     contract_id: str = "CON.F.US.ENQ.M26"
     max_daily_trades: int = 5
     value_area_pct: float = 0.80
+    # Strategy params
+    strategy: str = "trend"
+    entry_mode: str = "50RE"
+    tp_factor: int = 3
+    sl_ticks: int = 50
+    entry_timeout_minutes: int = 30
+    tp_timeout_minutes: int = 0
+    tp_timeout_action: str = "flat"
 
 
 @router.post("/live/start")
@@ -959,6 +986,16 @@ async def live_start(req: LiveStartRequest):
     except Exception as e:
         logger.error(f"[LIVE START] Failed to fetch fresh candles: {e} — using existing data")
 
+    live_strategy_params = StrategyParams(
+        strategy=req.strategy,
+        entry_mode=req.entry_mode,
+        tp_factor=req.tp_factor,
+        sl_ticks=req.sl_ticks,
+        entry_timeout_minutes=req.entry_timeout_minutes,
+        tp_timeout_minutes=req.tp_timeout_minutes,
+        tp_timeout_action=req.tp_timeout_action,
+    )
+
     _live_engine = LiveTradingEngine(
         client=_topstepx_client,
         account_id=req.account_id,
@@ -966,6 +1003,7 @@ async def live_start(req: LiveStartRequest):
         max_daily_trades=req.max_daily_trades,
         value_area_pct=req.value_area_pct,
         skip_engine_sl_tp=False,  # Engine places SL/TP after fill
+        strategy_params=live_strategy_params,
     )
 
     # Log candle date range

@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Tuple
 
 from backend.db.models import (
     Candle, Trade, TradeSignal, BacktestConfig, BacktestResult,
-    Metrics, ConsolidationZone, BreakoutAnalysis,
+    Metrics, ConsolidationZone, BreakoutAnalysis, StrategyParams,
     Direction, ExitReason, StrategyType, ZoneStatus,
 )
 from backend.strategy.consolidation import SessionZoneDetector
@@ -40,28 +40,33 @@ class BacktestEngine:
     PRE_FLATTEN_UTC = time(19, 30)
 
     def __init__(self, config: Optional[BacktestConfig] = None,
-                 max_daily_trades: int = 5):
+                 max_daily_trades: int = 5,
+                 strategy_params: Optional[StrategyParams] = None):
         self.config = config or BacktestConfig()
+        self.strategy_params = strategy_params or StrategyParams()
 
         # Session-based zone detector
         self.detector = SessionZoneDetector(
             value_area_pct=self.config.value_area_pct,
         )
-        # SessionTrendFollow: 5-bar breakout, SL=50tick, TP=3x
-        self.trend_follow = SessionTrendFollow()
+        # SessionTrendFollow with configurable params
+        self.trend_follow = SessionTrendFollow(params=self.strategy_params)
 
         # State
         self._capital = self.config.initial_capital
         self._open_position: Optional[Trade] = None
         self._pending_order: Optional[TradeSignal] = None
         self._pending_age: int = 0
-        self._pending_max_age: int = 30  # 30 candles (30 min for 1m bars)
+        self._pending_max_age: int = self.trend_follow.PENDING_TIMEOUT_CANDLES
         self._trades: List[Trade] = []
         self._equity_curve: List[Tuple[datetime, float]] = []
         self._daily_pnl: Dict[str, float] = {}
         self._daily_trade_count: Dict[str, int] = {}
         self._max_daily_trades: int = max_daily_trades
         self._last_closed_trade: Optional[Trade] = None
+        # TP timeout state
+        self._position_age: int = 0
+        self._tp_timeout_triggered: bool = False
 
     def run(self, candles: List[Candle]) -> BacktestResult:
         """執行回測 (1m candles)"""
@@ -114,6 +119,8 @@ class BacktestEngine:
         self._daily_pnl = {}
         self._daily_trade_count = {}
         self._last_closed_trade = None
+        self._position_age = 0
+        self._tp_timeout_triggered = False
         self.detector.reset()
         self.trend_follow.reset()
 
@@ -167,7 +174,21 @@ class BacktestEngine:
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
-                return  # still open, don't open new
+                # ── TP Timeout check ──
+                self._position_age += 1
+                tp_timeout = self.trend_follow.TP_TIMEOUT_CANDLES
+                if tp_timeout > 0 and not self._tp_timeout_triggered and self._position_age >= tp_timeout:
+                    self._tp_timeout_triggered = True
+                    action = self.trend_follow.TP_TIMEOUT_ACTION
+                    if action == "flat":
+                        logger.debug(f"TP timeout ({tp_timeout} min) → flat close")
+                        self._force_exit(candle, ExitReason.FLATTEN)
+                    else:
+                        new_factor = int(action)
+                        self._recalc_tp(new_factor)
+                        logger.debug(f"TP timeout ({tp_timeout} min) → TP factor → {new_factor}x")
+                if self._open_position:
+                    return  # still open, don't open new
 
         # ── Check if pending limit order fills on this candle ──
         if self._pending_order and not self._open_position:
@@ -263,14 +284,31 @@ class BacktestEngine:
             contracts=1,
             vol_ratio=signal.vol_ratio,
             is_big_trend=signal.is_big_trend,
+            breakout_range=signal.breakout_range,
         )
         self._open_position = trade
+        self._position_age = 0
+        self._tp_timeout_triggered = False
         date_str = candle.timestamp.strftime("%Y-%m-%d")
         self._daily_trade_count[date_str] = self._daily_trade_count.get(date_str, 0) + 1
         logger.debug(
             f"入場: {trade.strategy.value} {trade.direction.value} "
             f"@ {fill_price:.2f} | SL={trade.sl_price:.2f} TP={trade.tp_price:.2f}"
         )
+
+    def _recalc_tp(self, new_factor: int):
+        """Recalculate TP price with a new tp_factor (for TP timeout).
+        Uses SL distance as base: TP = entry ± |entry - SL| × new_factor
+        """
+        pos = self._open_position
+        if not pos:
+            return
+        sl_distance = abs(pos.entry_price - pos.sl_price)
+        if pos.direction == Direction.BUY:
+            pos.tp_price = pos.entry_price + sl_distance * new_factor
+        else:
+            pos.tp_price = pos.entry_price - sl_distance * new_factor
+        logger.debug(f"TP recalculated: new TP={pos.tp_price:.2f} ({new_factor}x SL)")
 
     def _execute_exit(self, candle: Candle, exit_price: float, reason: ExitReason):
         pos = self._open_position
