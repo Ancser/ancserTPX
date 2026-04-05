@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 from backend.db.models import (
-    Candle, ConsolidationZone, TradeSignal,
+    Candle, ConsolidationZone, TradeSignal, StrategyParams,
     Direction, StrategyType, ZoneStatus
 )
 
@@ -400,21 +400,26 @@ class SessionTrendFollow:
 
     規則:
       1. 等待 SessionZoneDetector 報告區間成熟
-      2. 突破上方: 連續 5 根 1m close > VAH → BUY LIMIT @ VAH + 50%×(H100-VAH)
-      3. 突破下方: 連續 5 根 1m close < VAL → SELL LIMIT @ VAL - 50%×(VAL-L100)
-      4. SL: BUY → VAH - 50 tick,  SELL → VAL + 50 tick
-      5. TP: entry ± (|entry - SL| × 3)
-      6. 30 分鐘未成交取消
+      2. 突破上方: 連續 5 根 1m close > VAH → BUY LIMIT
+      3. 突破下方: 連續 5 根 1m close < VAL → SELL LIMIT
+      4. Entry: VAH/VAL + entry_ratio × breakout_range (50%RE=0.5, 100%RE=0.0)
+      5. SL: VAH/VAL ± sl_ticks × tick_size (buffer from VA edge)
+      6. TP: entry ± tp_factor × breakout_range
+      7. 掛單超時取消 (entry_timeout)
     """
 
-    BREAKOUT_CONFIRM_CANDLES = 5   # 連續 5 根 close 在外
-    ENTRY_RATIO = 0.5              # entry = VAH/VAL + 50% × (extreme - edge)
-    SL_TICKS = 50                  # 50 tick = 12.5 pts
-    TP_MULTIPLIER = 3              # TP = SL × 3
-    TICK_SIZE = 0.25
-    PENDING_TIMEOUT_CANDLES = 30   # 30 根 1m = 30 min
+    BREAKOUT_CONFIRM_CANDLES = 5   # 連續 5 根 close 在外 (fixed)
+    TICK_SIZE = 0.25               # NQ tick size (fixed)
 
-    def __init__(self):
+    def __init__(self, params: Optional[StrategyParams] = None):
+        p = params or StrategyParams()
+        self.ENTRY_RATIO = 0.5 if p.entry_mode == "50RE" else 0.0
+        self.SL_TICKS = p.sl_ticks
+        self.TP_FACTOR = p.tp_factor
+        self.PENDING_TIMEOUT_CANDLES = p.entry_timeout_minutes  # 1:1 for 1m bars
+        self.TP_TIMEOUT_CANDLES = p.tp_timeout_minutes           # 1:1 for 1m bars
+        self.TP_TIMEOUT_ACTION = p.tp_timeout_action
+
         self._state = "idle"  # idle | watching | confirmed | in_trade
         self._consecutive_outside: int = 0
         self._breakout_direction: Optional[str] = None  # "up" | "down"
@@ -495,30 +500,40 @@ class SessionTrendFollow:
         zone: ConsolidationZone,
         direction: str,
     ) -> TradeSignal:
-        """Generate entry signal with SL/TP."""
-        sl_points = self.SL_TICKS * self.TICK_SIZE  # 50 * 0.25 = 12.5 pts
+        """Generate entry signal with SL/TP.
+
+        Entry = VAH/VAL + entry_ratio × breakout_range
+        SL    = VAH/VAL ± sl_ticks × tick_size
+        TP    = entry ± |entry - SL| × tp_factor
+        """
+        sl_points = self.SL_TICKS * self.TICK_SIZE
 
         if direction == "up":
-            # BUY: entry = VAH + 50% × (H100 - VAH), SL = VAH - 12.5
-            entry = zone.vah_80 + self.ENTRY_RATIO * (zone.high_100 - zone.vah_80)
+            breakout_range = zone.high_100 - zone.vah_80
+            entry = zone.vah_80 + self.ENTRY_RATIO * breakout_range
             sl = zone.vah_80 - sl_points
             sl_distance = abs(entry - sl)
-            tp = entry + sl_distance * self.TP_MULTIPLIER
+            tp = entry + sl_distance * self.TP_FACTOR
+            # Alternative: TP based on breakout range instead of SL distance
+            # tp = entry + self.TP_FACTOR * breakout_range
             trade_dir = Direction.BUY
         else:
-            # SELL: entry = VAL - 50% × (VAL - L100), SL = VAL + 12.5
-            entry = zone.val_80 - self.ENTRY_RATIO * (zone.val_80 - zone.low_100)
+            breakout_range = zone.val_80 - zone.low_100
+            entry = zone.val_80 - self.ENTRY_RATIO * breakout_range
             sl = zone.val_80 + sl_points
             sl_distance = abs(entry - sl)
-            tp = entry - sl_distance * self.TP_MULTIPLIER
+            tp = entry - sl_distance * self.TP_FACTOR
+            # Alternative: TP based on breakout range instead of SL distance
+            # tp = entry - self.TP_FACTOR * breakout_range
             trade_dir = Direction.SELL
 
-        sl_dollars = sl_distance * POINT_VALUE
-        tp_dollars = sl_distance * self.TP_MULTIPLIER * POINT_VALUE
+        sl_dollars = abs(entry - sl) * POINT_VALUE
+        tp_dollars = abs(tp - entry) * POINT_VALUE
+        entry_label = "50%RE" if self.ENTRY_RATIO == 0.5 else "100%RE"
 
         logger.info(
             f"[SessionTrend] BREAKOUT {direction.upper()} confirmed | "
-            f"entry={(entry):.2f} SL={sl:.2f} TP={tp:.2f} | "
+            f"entry={entry:.2f} SL={sl:.2f} TP={tp:.2f} | "
             f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f} | "
             f"zone={zone.zone_id}"
         )
@@ -533,10 +548,11 @@ class SessionTrendFollow:
             reason=(
                 f"SESSION TREND {direction.upper()} | "
                 f"5-bar breakout {'> VAH' if direction == 'up' else '< VAL'} | "
-                f"entry=50%({'H100-VAH' if direction == 'up' else 'VAL-L100'}) | "
-                f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f} (1:{self.TP_MULTIPLIER})"
+                f"entry={entry_label} | "
+                f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f} ({self.TP_FACTOR}x)"
             ),
             timestamp=candle.timestamp,
+            breakout_range=breakout_range,
         )
 
     def notify_trade_closed(self, exit_reason: str):
