@@ -182,3 +182,4 @@ cython_debug/
 *.json
 *.py
 data/live_zones.json
+data/live_zones.json

@@ -783,14 +783,31 @@ class LiveTradingEngine:
             self._log_event(f"取消 {label} #{order_id} 失敗 (可能已成交)")
 
     async def _cancel_pending(self):
-        """Cancel the pending limit order."""
+        """Cancel the pending limit order. Retries up to 3 times."""
         if not self._pending_order_id:
             return
-        success = await self.client.cancel_order(self._pending_order_id)
-        if success:
-            self._log_event(f"取消掛單 #{self._pending_order_id}")
-        else:
-            self._log_event(f"取消掛單 #{self._pending_order_id} (已成交或已取消)")
+        oid = self._pending_order_id
+        cancelled = False
+        for attempt in range(3):
+            try:
+                success = await self.client.cancel_order(oid)
+                if success:
+                    self._log_event(f"取消掛單 #{oid} (attempt {attempt+1})")
+                    cancelled = True
+                    break
+                else:
+                    self._log_event(
+                        f"取消掛單 #{oid} 失敗 attempt {attempt+1}/3",
+                        "error"
+                    )
+            except Exception as e:
+                self._log_event(f"取消掛單 #{oid} 異常 attempt {attempt+1}/3: {e}", "error")
+            if attempt < 2:
+                await asyncio.sleep(1)
+
+        if not cancelled:
+            self._log_event(f"⚠ 取消掛單 #{oid} 3次均失敗! 下個 tick 再試", "error")
+            return  # DON'T clear state — retry next tick
 
         if self._pending_signal:
             if self._pending_signal.strategy == StrategyType.TREND_FOLLOW:

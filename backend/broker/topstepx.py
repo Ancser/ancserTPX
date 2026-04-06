@@ -487,19 +487,42 @@ class TopstepXClient:
         return resp
 
     async def cancel_order(self, order_id: int) -> bool:
-        """取消訂單 (returns False if already filled/cancelled — not an error)"""
+        """取消訂單 — uses direct HTTP to handle 400 properly (like place_order)."""
         logger.info(f"[ORDER CANCEL] order_id={order_id}")
         try:
-            data = await self._request(
+            client = await self._ensure_http()
+            raw_resp = await client.request(
                 "POST", "/api/Order/cancel",
                 json={"orderId": order_id}
             )
+
+            # Token expired → retry
+            if raw_resp.status_code == 401:
+                await self.authenticate()
+                client = await self._ensure_http()
+                raw_resp = await client.request(
+                    "POST", "/api/Order/cancel",
+                    json={"orderId": order_id}
+                )
+
+            data = raw_resp.json()
             success = data.get("success", False)
-            logger.info(f"[ORDER CANCEL RESP] order_id={order_id} success={success}")
+
+            if raw_resp.status_code >= 400:
+                # 400 usually means already filled/cancelled
+                logger.info(
+                    f"[ORDER CANCEL] order_id={order_id} HTTP {raw_resp.status_code} | "
+                    f"response={data} (order may be already filled/cancelled)"
+                )
+                return True  # treat as success — order is gone from active orders
+
+            logger.info(
+                f"[ORDER CANCEL RESP] order_id={order_id} success={success} "
+                f"HTTP={raw_resp.status_code} response={data}"
+            )
             return success
         except Exception as e:
-            # 400 = order already filled/cancelled — normal, not an error
-            logger.info(f"[ORDER CANCEL] order_id={order_id} already gone (400): {e}")
+            logger.error(f"[ORDER CANCEL] order_id={order_id} exception: {e}")
             return False
 
     async def get_orders(self, account_id: int) -> List[Dict]:
