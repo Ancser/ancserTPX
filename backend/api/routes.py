@@ -957,9 +957,9 @@ async def live_start(req: LiveStartRequest):
 
     from backend.live.engine import LiveTradingEngine
 
-    # ── CRITICAL: Re-fetch fresh candles for warm-up ──
-    # Don't use stale _historical_candles from CONNECT (could be days old).
-    # Fetch last 2 days of 1-min candles for accurate zone detection.
+    # ── Fetch fresh candles for live warm-up (separate from backtest data) ──
+    # Don't overwrite _historical_candles — backtest needs the full dataset.
+    live_warmup_candles = list(_historical_candles)  # fallback: use existing data
     try:
         from datetime import datetime, timedelta
         now = datetime.utcnow()
@@ -975,8 +975,7 @@ async def live_start(req: LiveStartRequest):
             end_time=fresh_end,
         )
         if fresh_candles and len(fresh_candles) > 0:
-            _historical_candles.clear()
-            _historical_candles.extend(fresh_candles)
+            live_warmup_candles = fresh_candles
             logger.info(
                 f"[LIVE START] Fresh candles loaded: {len(fresh_candles)} | "
                 f"range: {fresh_candles[0].timestamp} ~ {fresh_candles[-1].timestamp}"
@@ -1007,17 +1006,17 @@ async def live_start(req: LiveStartRequest):
     )
 
     # Log candle date range
-    if _historical_candles:
-        first_ts = _historical_candles[0].timestamp
-        last_ts = _historical_candles[-1].timestamp
+    if live_warmup_candles:
+        first_ts = live_warmup_candles[0].timestamp
+        last_ts = live_warmup_candles[-1].timestamp
         logger.info(
-            f"[LIVE START] {len(_historical_candles)} candles | "
+            f"[LIVE START] {len(live_warmup_candles)} warmup candles | "
             f"range: {first_ts} ~ {last_ts}"
         )
     else:
-        logger.warning("[LIVE START] NO historical candles loaded!")
+        logger.warning("[LIVE START] NO warmup candles!")
     try:
-        await _live_engine.start(_historical_candles)
+        await _live_engine.start(live_warmup_candles)
         logger.info(f"[LIVE START] Engine started successfully")
     except Exception as e:
         logger.error(f"[LIVE START] Engine start failed: {e}")
@@ -1036,6 +1035,15 @@ async def live_stop():
 
     await _live_engine.stop()
     return {"success": True, "message": "Live engine stopped"}
+
+
+@router.post("/live/cancel-pending")
+async def live_cancel_pending():
+    """取消掛單"""
+    if not _live_engine:
+        raise HTTPException(400, "Live engine not started")
+    cancelled = await _live_engine.cancel_pending_now()
+    return {"success": cancelled, "message": "Pending order cancelled" if cancelled else "No pending order"}
 
 
 @router.post("/live/flatten")
@@ -1121,3 +1129,78 @@ async def live_account_state():
 
     except Exception as e:
         raise HTTPException(500, f"Failed to read account state: {e}")
+
+
+# ── Presets (JSON file) ────────────────────────────────
+
+import json as _json
+
+_PRESETS_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "data", "presets.json"
+)
+
+
+def _load_presets_file() -> dict:
+    try:
+        if os.path.exists(_PRESETS_FILE):
+            with open(_PRESETS_FILE, "r", encoding="utf-8") as f:
+                return _json.load(f)
+    except Exception:
+        pass
+    return {"presets": {}, "last_used_bt": "default", "last_used_live": "default"}
+
+
+def _save_presets_file(data: dict):
+    os.makedirs(os.path.dirname(_PRESETS_FILE), exist_ok=True)
+    with open(_PRESETS_FILE, "w", encoding="utf-8") as f:
+        _json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+@router.get("/presets")
+async def get_presets():
+    """列出所有 presets + last used"""
+    return _load_presets_file()
+
+
+class PresetSaveRequest(BaseModel):
+    name: str
+    params: dict
+
+
+@router.post("/presets/save")
+async def save_preset(req: PresetSaveRequest):
+    """儲存 preset"""
+    data = _load_presets_file()
+    data["presets"][req.name] = req.params
+    _save_presets_file(data)
+    return {"success": True, "name": req.name}
+
+
+class PresetUseRequest(BaseModel):
+    name: str
+    mode: str  # "bt" or "live"
+
+
+@router.post("/presets/use")
+async def use_preset(req: PresetUseRequest):
+    """記錄 last used preset"""
+    data = _load_presets_file()
+    key = "last_used_bt" if req.mode == "bt" else "last_used_live"
+    data[key] = req.name
+    _save_presets_file(data)
+    return {"success": True}
+
+
+@router.delete("/presets/{name}")
+async def delete_preset(name: str):
+    """刪除 preset"""
+    data = _load_presets_file()
+    if name in data["presets"]:
+        del data["presets"][name]
+        if data.get("last_used_bt") == name:
+            data["last_used_bt"] = "default"
+        if data.get("last_used_live") == name:
+            data["last_used_live"] = "default"
+        _save_presets_file(data)
+    return {"success": True}
