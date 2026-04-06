@@ -181,3 +181,4 @@ cython_debug/
 .cursorindexingignore
 *.json
 *.py
+data/live_zones.json
