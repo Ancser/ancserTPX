@@ -836,11 +836,6 @@
         <!-- Backtest Config (SessionTrendFollow only) -->
         <div class="panel" id="backtest-config-panel">
             <div class="panel-title">BACKTEST PARAMS</div>
-            <div class="form-group">
-                <label>INITIAL CAPITAL $</label>
-                <input type="number" id="initial-capital" value="50000">
-            </div>
-
             <!-- Strategy Params -->
             <div class="form-row" style="margin-top:8px;">
                 <div class="form-group" style="flex:2">
@@ -933,21 +928,6 @@
         <div id="live-panel" class="hidden">
             <div class="panel">
                 <div class="panel-title">LIVE PARAMS</div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>MAX TRADES/DAY</label>
-                        <input type="number" id="live-max-trades" value="5" min="1" max="20">
-                    </div>
-                    <div class="form-group">
-                        <label>VALUE AREA %</label>
-                        <select id="live-value-area">
-                            <option value="0.70">70%</option>
-                            <option value="0.80" selected>80%</option>
-                            <option value="0.90">90%</option>
-                        </select>
-                    </div>
-                </div>
-
                 <!-- Strategy Params -->
                 <div class="form-row" style="margin-top:8px;">
                     <div class="form-group" style="flex:2">
@@ -1207,38 +1187,62 @@ function toggleTpAction(mode) {
     if (group) group.style.display = val === '0' ? 'none' : '';
 }
 
-function getPresets() {
-    try { return JSON.parse(localStorage.getItem('ancserTPX_presets') || '{}'); }
-    catch(e) { return {}; }
+// ── Preset system (server-side JSON) ──
+let _presetsCache = { presets: {}, last_used_bt: 'default', last_used_live: 'default' };
+
+async function fetchPresets() {
+    try {
+        const resp = await fetch(API + '/presets');
+        if (resp.ok) _presetsCache = await resp.json();
+    } catch(e) { /* server offline, use cache */ }
+    return _presetsCache;
 }
 
-function savePreset(mode) {
+async function savePreset(mode) {
     const name = prompt('Preset name:');
     if (!name || !name.trim()) return;
-    const presets = getPresets();
-    presets[name.trim()] = collectStrategyParams(mode);
-    localStorage.setItem('ancserTPX_presets', JSON.stringify(presets));
-    refreshPresetDropdowns();
-    log('Preset "' + name.trim() + '" saved', 'success');
+    const params = collectStrategyParams(mode);
+    try {
+        await fetch(API + '/presets/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim(), params: params }),
+        });
+        await fetch(API + '/presets/use', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim(), mode: mode }),
+        });
+        await fetchPresets();
+        refreshPresetDropdowns();
+        document.getElementById('preset-' + mode).value = name.trim();
+        log('Preset "' + name.trim() + '" saved', 'success');
+    } catch(e) {
+        log('Preset save error: ' + e.message, 'error');
+    }
 }
 
-function loadPreset(mode) {
+async function loadPreset(mode) {
     const sel = document.getElementById('preset-' + mode);
     const name = sel.value;
     if (name === 'default') {
         applyStrategyParams(mode, DEFAULT_STRATEGY_PARAMS);
-        return;
-    }
-    const presets = getPresets();
-    if (presets[name]) {
-        applyStrategyParams(mode, presets[name]);
+    } else if (_presetsCache.presets[name]) {
+        applyStrategyParams(mode, _presetsCache.presets[name]);
         log('Preset "' + name + '" loaded', 'info');
     }
+    // Record last used
+    try {
+        await fetch(API + '/presets/use', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, mode: mode }),
+        });
+    } catch(e) { /* ignore */ }
 }
 
 function refreshPresetDropdowns() {
-    const presets = getPresets();
-    const names = Object.keys(presets);
+    const names = Object.keys(_presetsCache.presets || {});
     ['bt', 'live'].forEach(function(mode) {
         const sel = document.getElementById('preset-' + mode);
         if (!sel) return;
@@ -1250,15 +1254,35 @@ function refreshPresetDropdowns() {
             opt.textContent = n;
             sel.appendChild(opt);
         });
-        // Restore selection if it still exists
-        if (current && (current === 'default' || presets[current])) {
+        if (current && (current === 'default' || _presetsCache.presets[current])) {
             sel.value = current;
         }
     });
 }
 
-// Initialize preset dropdowns on load
-document.addEventListener('DOMContentLoaded', refreshPresetDropdowns);
+async function initPresets() {
+    await fetchPresets();
+    refreshPresetDropdowns();
+    // Auto-load last used preset for each mode
+    const lastBt = _presetsCache.last_used_bt || 'default';
+    const lastLive = _presetsCache.last_used_live || 'default';
+    const btSel = document.getElementById('preset-bt');
+    const liveSel = document.getElementById('preset-live');
+    if (btSel) {
+        btSel.value = lastBt;
+        if (lastBt !== 'default' && _presetsCache.presets[lastBt]) {
+            applyStrategyParams('bt', _presetsCache.presets[lastBt]);
+        }
+    }
+    if (liveSel) {
+        liveSel.value = lastLive;
+        if (lastLive !== 'default' && _presetsCache.presets[lastLive]) {
+            applyStrategyParams('live', _presetsCache.presets[lastLive]);
+        }
+    }
+}
+
+document.addEventListener('DOMContentLoaded', initPresets);
 
 // -- Connection Dropdown ----------------------------
 
@@ -1491,8 +1515,7 @@ function updateLiveTopBar() {
     const elM = document.getElementById('lv-market-session');
     if (elM) { elM.textContent = session.label; elM.style.color = session.color; }
 
-    const maxTrades = parseInt(document.getElementById('live-max-trades').value) || 5;
-    document.getElementById('lv-max-trades').textContent = maxTrades;
+    document.getElementById('lv-max-trades').textContent = 5;
     document.getElementById('lv-trade-count').textContent = _liveTradeCount;
 
     // Timeframe
@@ -1526,7 +1549,7 @@ async function goLive() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                value_area_pct: parseFloat(document.getElementById('live-value-area').value),
+                value_area_pct: 0.80,
             }),
         });
         if (zoneResp.ok) {
@@ -1571,8 +1594,8 @@ async function goLive() {
     const liveParams = {
         account_id: liveAccount.id,
         contract_id: liveAccount.contract_id || 'CON.F.US.ENQ.M26',
-        max_daily_trades: parseInt(document.getElementById('live-max-trades').value),
-        value_area_pct: parseFloat(document.getElementById('live-value-area').value),
+        max_daily_trades: 5,
+        value_area_pct: 0.80,
         ...stratParams,
     };
 
@@ -1832,7 +1855,9 @@ async function pollLiveStatus() {
             posEl.textContent = side + ' ' + qty + ' @ ' + avg;
             posEl.style.color = st.position.side === 1 ? 'var(--green)' : 'var(--red)';
         } else if (st.pending_order_id) {
-            posEl.textContent = '掛單中';
+            const age = st.pending_age || 0;
+            const timeout = st.pending_timeout || 30;
+            posEl.textContent = '掛單中(' + age + '/' + timeout + 'min)';
             posEl.style.color = 'var(--amber)';
         } else {
             posEl.textContent = 'FLAT';
@@ -1881,10 +1906,13 @@ async function pollLiveStatus() {
             document.getElementById('lv-sig-tp').textContent = sig.tp_price.toFixed(2);
             const sigStatus = document.getElementById('lv-sig-status');
             if (st.position) {
-                sigStatus.textContent = 'FILLED ✓';
-                sigStatus.style.color = 'var(--green)';
+                const hasSLTP = st.sl_order_id && st.tp_order_id;
+                sigStatus.textContent = hasSLTP ? 'FILLED ✓ SL/TP SET' : 'FILLED ✓ SL/TP...';
+                sigStatus.style.color = hasSLTP ? 'var(--green)' : 'var(--amber)';
             } else if (st.pending_order_id) {
-                sigStatus.textContent = 'PENDING...';
+                const age = st.pending_age || 0;
+                const timeout = st.pending_timeout || 30;
+                sigStatus.textContent = 'PENDING(' + age + '/' + timeout + 'min)';
                 sigStatus.style.color = 'var(--amber)';
             } else {
                 sigStatus.textContent = 'WILL SET';
@@ -2974,7 +3002,7 @@ function applyDefaultChartView(chartData, zones) {
 function buildBacktestBody() {
     const params = collectStrategyParams('bt');
     return {
-        initial_capital: parseFloat(document.getElementById('initial-capital').value),
+        initial_capital: 50000,
         ...params,
     };
 }
