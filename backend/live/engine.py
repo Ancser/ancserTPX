@@ -416,6 +416,30 @@ class LiveTradingEngine:
         await self._cancel_pending()
         return True
 
+    async def _emergency_market_close(self, side: int, reason: str):
+        """Place a market order to close position when SL/TP placement fails.
+        Called when Stop order is rejected (price already past SL level).
+        """
+        self._log_event(f"⚠ [{reason}] 緊急 Market 平倉 side={'SELL' if side == 2 else 'BUY'}")
+        try:
+            mkt_order = OrderRequest(
+                account_id=self.account_id,
+                contract_id=self.contract_id,
+                order_type=2,  # Market
+                side=side,
+                size=1,
+            )
+            resp = await self.client.place_order(mkt_order)
+            if resp.success:
+                self._log_event(f"✅ Market 平倉成功 #{resp.order_id}")
+            else:
+                self._log_event(
+                    f"❌ Market 平倉失敗: {resp.error_message} → 需手動平倉!",
+                    "error"
+                )
+        except Exception as e:
+            self._log_event(f"❌ Market 平倉異常: {e} → 需手動平倉!", "error")
+
     async def flatten_now(self):
         """Emergency flatten all positions."""
         try:
@@ -875,11 +899,17 @@ class LiveTradingEngine:
                     self._log_event(f"✅ SL 掛單成功 #{sl_resp.order_id} @ {sig.sl_price:.2f}")
                 else:
                     self._log_event(
-                        f"❌ SL 掛單失敗: code={sl_resp.error_code} msg={sl_resp.error_message}",
+                        f"❌ SL 掛單失敗: code={sl_resp.error_code} msg={sl_resp.error_message}"
+                        f" → 價格可能已跌破 SL, 嘗試 Market 平倉",
                         "error"
                     )
+                    # SL rejected (price already past SL) → market close immediately
+                    await self._emergency_market_close(sl_side, "SL_REJECTED")
+                    return  # skip TP — position is being closed
             except Exception as e:
-                self._log_event(f"❌ SL 下單異常: {e}", "error")
+                self._log_event(f"❌ SL 下單異常: {e} → 嘗試 Market 平倉", "error")
+                await self._emergency_market_close(sl_side, "SL_EXCEPTION")
+                return
 
         # Place TP order (skip if already placed)
         if not self._tp_order_id:
