@@ -221,6 +221,8 @@ class LiveTradingEngine:
 
     def get_status(self) -> Dict:
         """Return current engine state for frontend."""
+        # Use active_signal (after fill) or pending_signal (before fill)
+        sig = self._pending_signal or self._active_signal
         return {
             "engine_version": ENGINE_VERSION,
             "running": self._running,
@@ -229,12 +231,16 @@ class LiveTradingEngine:
             "position": self._open_position,
             "pending_order_id": self._pending_order_id,
             "pending_signal": {
-                "direction": self._pending_signal.direction.value,
-                "entry_price": self._pending_signal.entry_price,
-                "sl_price": self._pending_signal.sl_price,
-                "tp_price": self._pending_signal.tp_price,
-                "strategy": self._pending_signal.strategy.value,
-            } if self._pending_signal else None,
+                "direction": sig.direction.value,
+                "entry_price": sig.entry_price,
+                "sl_price": sig.sl_price,
+                "tp_price": sig.tp_price,
+                "strategy": sig.strategy.value,
+            } if sig else None,
+            "pending_age": self._pending_age,
+            "pending_timeout": self.trend_follow.PENDING_TIMEOUT_CANDLES,
+            "sl_order_id": self._sl_order_id,
+            "tp_order_id": self._tp_order_id,
             "daily_trades": self._daily_trade_count,
             "max_daily_trades": self.max_daily_trades,
             "daily_pnl": self._daily_pnl,
@@ -402,6 +408,14 @@ class LiveTradingEngine:
 
         self._log_event("引擎已停止")
 
+    async def cancel_pending_now(self):
+        """Cancel pending order from UI. Returns True if cancelled."""
+        if not self._pending_order_id:
+            self._log_event("無掛單可取消")
+            return False
+        await self._cancel_pending()
+        return True
+
     async def flatten_now(self):
         """Emergency flatten all positions."""
         try:
@@ -431,7 +445,7 @@ class LiveTradingEngine:
         # Cancel existing TP order
         if self._tp_order_id:
             try:
-                await self.client.cancel_order(self.account_id, self._tp_order_id)
+                await self.client.cancel_order(self._tp_order_id)
                 self._log_event(f"舊 TP 取消 (order {self._tp_order_id})")
             except Exception as e:
                 self._log_event(f"取消 TP 失敗: {e}", "error")
@@ -585,13 +599,21 @@ class LiveTradingEngine:
         if self._open_position:
             if not self._skip_engine_sl_tp:
                 if self._active_signal:
-                    if not self._sl_order_id and not self._tp_order_id:
-                        self._log_event("⚠ 持倉中但無 SL/TP → 補掛 SL/TP", "error")
+                    if not self._sl_order_id or not self._tp_order_id:
+                        missing = []
+                        if not self._sl_order_id:
+                            missing.append("SL")
+                        if not self._tp_order_id:
+                            missing.append("TP")
+                        self._log_event(
+                            f"⚠ 持倉中缺少 {'+'.join(missing)} → 補掛",
+                            "error"
+                        )
                         self._pending_signal = self._active_signal
                         await self._place_sl_tp()
                         self._pending_signal = None
                 else:
-                    if not self._sl_order_id and not self._tp_order_id:
+                    if not self._sl_order_id or not self._tp_order_id:
                         self._log_event(
                             "⚠ 持倉中無 SL/TP 且無 signal（重啟後或手動入場）→ 需手動設定 SL/TP",
                             "error"
@@ -794,54 +816,56 @@ class LiveTradingEngine:
         side_label = "SELL" if sl_side == 2 else "BUY"
 
         self._log_event(
-            f"[SL/TP] 下單中: {side_label} SL(StopMarket)@{sig.sl_price:.2f} "
-            f"TP(Limit)@{sig.tp_price:.2f} | contract={self.contract_id}"
+            f"[SL/TP] 下單中: {side_label} SL(Stop)@{sig.sl_price:.2f} "
+            f"TP(Limit)@{sig.tp_price:.2f} | contract={self.contract_id} "
+            f"| existing SL=#{self._sl_order_id} TP=#{self._tp_order_id}"
         )
 
-        sl_order = OrderRequest(
-            account_id=self.account_id,
-            contract_id=self.contract_id,
-            order_type=3,  # Internal 3 → broker converts to API type 4 (Stop)
-            side=sl_side,
-            size=1,
-            stop_price=sig.sl_price,
-        )
-        tp_order = OrderRequest(
-            account_id=self.account_id,
-            contract_id=self.contract_id,
-            order_type=1,  # Limit
-            side=sl_side,
-            size=1,
-            limit_price=sig.tp_price,
-        )
+        # Place SL order (skip if already placed)
+        if not self._sl_order_id:
+            sl_order = OrderRequest(
+                account_id=self.account_id,
+                contract_id=self.contract_id,
+                order_type=3,  # Internal 3 → broker converts to API type 4 (Stop)
+                side=sl_side,
+                size=1,
+                stop_price=sig.sl_price,
+            )
+            try:
+                sl_resp = await self.client.place_order(sl_order)
+                if sl_resp.success:
+                    self._sl_order_id = sl_resp.order_id
+                    self._log_event(f"✅ SL 掛單成功 #{sl_resp.order_id} @ {sig.sl_price:.2f}")
+                else:
+                    self._log_event(
+                        f"❌ SL 掛單失敗: code={sl_resp.error_code} msg={sl_resp.error_message}",
+                        "error"
+                    )
+            except Exception as e:
+                self._log_event(f"❌ SL 下單異常: {e}", "error")
 
-        # Place SL order
-        try:
-            sl_resp = await self.client.place_order(sl_order)
-            if sl_resp.success:
-                self._sl_order_id = sl_resp.order_id
-                self._log_event(f"✅ SL 掛單成功 #{sl_resp.order_id} @ {sig.sl_price:.2f}")
-            else:
-                self._log_event(
-                    f"❌ SL 掛單失敗: code={sl_resp.error_code} msg={sl_resp.error_message}",
-                    "error"
-                )
-        except Exception as e:
-            self._log_event(f"❌ SL 下單異常: {e}", "error")
-
-        # Place TP order
-        try:
-            tp_resp = await self.client.place_order(tp_order)
-            if tp_resp.success:
-                self._tp_order_id = tp_resp.order_id
-                self._log_event(f"✅ TP 掛單成功 #{tp_resp.order_id} @ {sig.tp_price:.2f}")
-            else:
-                self._log_event(
-                    f"❌ TP 掛單失敗: code={tp_resp.error_code} msg={tp_resp.error_message}",
-                    "error"
-                )
-        except Exception as e:
-            self._log_event(f"❌ TP 下單異常: {e}", "error")
+        # Place TP order (skip if already placed)
+        if not self._tp_order_id:
+            tp_order = OrderRequest(
+                account_id=self.account_id,
+                contract_id=self.contract_id,
+                order_type=1,  # Limit
+                side=sl_side,
+                size=1,
+                limit_price=sig.tp_price,
+            )
+            try:
+                tp_resp = await self.client.place_order(tp_order)
+                if tp_resp.success:
+                    self._tp_order_id = tp_resp.order_id
+                    self._log_event(f"✅ TP 掛單成功 #{tp_resp.order_id} @ {sig.tp_price:.2f}")
+                else:
+                    self._log_event(
+                        f"❌ TP 掛單失敗: code={tp_resp.error_code} msg={tp_resp.error_message}",
+                        "error"
+                    )
+            except Exception as e:
+                self._log_event(f"❌ TP 下單異常: {e}", "error")
 
     async def _sync_position(self):
         """Sync position state from exchange.
