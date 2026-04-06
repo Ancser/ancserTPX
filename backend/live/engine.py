@@ -399,7 +399,7 @@ class LiveTradingEngine:
 
         if self._pending_order_id:
             try:
-                await self.client.cancel_order(self._pending_order_id)
+                await self.client.cancel_order(self.account_id, self._pending_order_id)
                 self._log_event(f"取消掛單 #{self._pending_order_id}")
             except Exception as e:
                 self._log_event(f"取消掛單失敗: {e}", "error")
@@ -445,7 +445,7 @@ class LiveTradingEngine:
         # Cancel existing TP order
         if self._tp_order_id:
             try:
-                await self.client.cancel_order(self._tp_order_id)
+                await self.client.cancel_order(self.account_id, self._tp_order_id)
                 self._log_event(f"舊 TP 取消 (order {self._tp_order_id})")
             except Exception as e:
                 self._log_event(f"取消 TP 失敗: {e}", "error")
@@ -767,16 +767,16 @@ class LiveTradingEngine:
             return False
 
     async def _cancel_with_retry(self, order_id: Optional[int], label: str):
-        """Cancel an order with retry. Handles 400 errors by retrying once."""
+        """Cancel an order with retry."""
         if not order_id:
             return
-        success = await self.client.cancel_order(order_id)
+        success = await self.client.cancel_order(self.account_id, order_id)
         if success:
             self._log_event(f"取消殘留 {label} #{order_id}")
             return
-        # First attempt failed (400) — wait and retry once
+        # First attempt failed — wait and retry once
         await asyncio.sleep(1)
-        success = await self.client.cancel_order(order_id)
+        success = await self.client.cancel_order(self.account_id, order_id)
         if success:
             self._log_event(f"取消殘留 {label} #{order_id} (重試成功)")
         else:
@@ -790,7 +790,7 @@ class LiveTradingEngine:
         cancelled = False
         for attempt in range(3):
             try:
-                success = await self.client.cancel_order(oid)
+                success = await self.client.cancel_order(self.account_id, oid)
                 if success:
                     self._log_event(f"取消掛單 #{oid} (attempt {attempt+1})")
                     cancelled = True
