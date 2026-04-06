@@ -612,6 +612,26 @@ class LiveTradingEngine:
                     await self._recalc_tp_live(new_factor)
             return
 
+        # ── Safety: cancel orphaned SL/TP if FLAT ──
+        if not self._open_position and not self._pending_order_id:
+            if self._sl_order_id or self._tp_order_id:
+                self._log_event(
+                    f"⚠ FLAT 但有殘留單 SL=#{self._sl_order_id} TP=#{self._tp_order_id} → 清除",
+                    "error"
+                )
+                for oid, label in [
+                    (self._sl_order_id, "SL"),
+                    (self._tp_order_id, "TP"),
+                ]:
+                    if oid:
+                        try:
+                            await self._cancel_with_retry(oid, label)
+                        except Exception as e:
+                            self._log_event(f"清除 {label} #{oid} 失敗: {e}", "error")
+                self._sl_order_id = None
+                self._tp_order_id = None
+                self._active_signal = None
+
         # ── Strategy evaluation ──
         active_zone = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
@@ -958,23 +978,34 @@ class LiveTradingEngine:
                 if exit_reason == "unknown":
                     exit_reason = "tp"
 
+                entry_fill = self._fill_price  # save before clearing
                 self._log_event(
                     f"持倉已平 ({exit_reason.upper()} 觸發){pnl_info}"
                 )
 
-                # Cancel residual orders with retry
-                await self._cancel_with_retry(self._sl_order_id, "SL")
-                await self._cancel_with_retry(self._tp_order_id, "TP")
-
+                # Cancel residual orders — each in own try/except so one failure
+                # doesn't block the other
+                sl_id = self._sl_order_id
+                tp_id = self._tp_order_id
                 self._sl_order_id = None
                 self._tp_order_id = None
                 self._fill_price = None
-                self._active_signal = None  # clear SL/TP reference
+                self._active_signal = None
+
+                for oid, label in [(sl_id, "SL"), (tp_id, "TP")]:
+                    if oid:
+                        try:
+                            await self._cancel_with_retry(oid, label)
+                        except Exception as e:
+                            self._log_event(f"取消 {label} #{oid} 異常: {e}", "error")
 
                 # Cancel any pending entry order
                 if self._pending_order_id:
                     self._log_event(f"取消殘留掛單 #{self._pending_order_id}")
-                    await self._cancel_with_retry(self._pending_order_id, "ENTRY")
+                    try:
+                        await self._cancel_with_retry(self._pending_order_id, "ENTRY")
+                    except Exception as e:
+                        self._log_event(f"取消 ENTRY 異常: {e}", "error")
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
@@ -982,7 +1013,7 @@ class LiveTradingEngine:
                 self._trades.append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "closed",
-                    "entry_price": self._fill_price,
+                    "entry_price": entry_fill,
                 })
 
                 # Notify strategy with actual exit reason
