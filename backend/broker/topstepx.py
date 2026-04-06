@@ -416,17 +416,7 @@ class TopstepXClient:
         type: 1=Limit, 2=Market, 3=Stop
         side: 1=Buy, 2=Sell
 
-        [WARN] 安全檢查：自動攔截 Funded 帳戶下單
         """
-        # ── 安全檢查：只允許 Practice 帳戶 ──
-        if not await self.verify_practice_account(order.account_id):
-            return OrderResponse(
-                order_id=0,
-                success=False,
-                error_code=-999,
-                error_message="[BLOCK] 安全攔截: 禁止在 Funded 帳戶下單（Bot 測試模式）",
-            )
-
         # ProjectX API enums (integers):
         #   side:  0=Bid(buy), 1=Ask(sell)
         #   type:  1=Limit, 2=Market, 4=Stop, 5=TrailingStop (NO type 3!)

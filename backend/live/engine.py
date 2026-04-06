@@ -255,29 +255,43 @@ class LiveTradingEngine:
             "log": self._log[-20:],
         }
 
-    def _get_phase(self) -> str:
-        if self._open_position:
-            return "持倉中"
-        if self._pending_order_id:
-            return "掛單中"
-
+    def _get_zone_phase(self) -> str:
+        """Zone status: 發展中/穩定/無"""
         active = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
-
-        trend_state = self.trend_follow.raw_state
-        if trend_state == "watching":
-            return self.trend_follow.get_phase_label()
-        if trend_state == "confirmed":
-            return "入場準備"
-
         if active and is_mature:
-            return "成熟區間"
+            return "穩定"
         if active:
             age_min = active.duration_minutes
             hours = age_min // 60
             mins = age_min % 60
-            return f"區間發展中({hours}h{mins:02d}m)"
-        return "等待晚盤"
+            return f"發展({hours}h{mins:02d}m)"
+        return "無"
+
+    def _get_order_phase(self) -> str:
+        """Order status: 等待突破/確認突破中/掛單中/持倉中"""
+        if self._open_position:
+            age = self._position_age
+            hours = age // 60
+            mins = age % 60
+            return f"持倉中({hours}h{mins:02d}m)" if age > 0 else "持倉中"
+        if self._pending_order_id:
+            age = self._pending_age
+            timeout = self.trend_follow.PENDING_TIMEOUT_CANDLES
+            return f"掛單中({age}/{timeout}min)"
+
+        trend_state = self.trend_follow.raw_state
+        if trend_state == "watching":
+            count = self.trend_follow._consecutive_outside
+            total = self.trend_follow.BREAKOUT_CONFIRM_CANDLES
+            return f"確認突破中({count}/{total}min)"
+        if trend_state == "confirmed":
+            return "入場準備"
+        return "等待突破"
+
+    def _get_phase(self) -> str:
+        """Combined phase for frontend display."""
+        return f"區間:{self._get_zone_phase()} | 訂單:{self._get_order_phase()}"
 
     def _get_zone_summary(self) -> List[Dict]:
         zones = self.detector.get_all_zones()
@@ -306,9 +320,9 @@ class LiveTradingEngine:
         if len(self._log) > 100:
             self._log = self._log[-50:]
         if level == "error":
-            logger.error(f"[LIVE] {msg}")
+            logger.error(msg)
         else:
-            logger.info(f"[LIVE] {msg}")
+            logger.info(msg)
 
     async def start(self, historical_candles: List[Candle]):
         """Start the live engine. Feed historical candles first for zone state."""
@@ -317,10 +331,48 @@ class LiveTradingEngine:
 
         self._running = True
         self._today = datetime.utcnow().strftime("%Y-%m-%d")
-        self._daily_trade_count = 0
         self._daily_pnl = 0.0
         self._trades = []
         self._log = []
+
+        # Recover daily trade count from TopstepX filled orders
+        self._daily_trade_count = 0
+        try:
+            orders = await self.client.get_orders(self.account_id)
+            if orders:
+                # Log first order keys to understand API format
+                self._log_event(f"[ORDERS] sample keys: {list(orders[0].keys())}")
+
+            today_fills = 0
+            for o in orders:
+                # Look for filled orders — status field varies by API version
+                status = o.get("status", 0)
+                # TopstepX status: 2=Filled (numeric) or "Filled" (string)
+                is_filled = status in (2, "2", "Filled", "filled")
+                if not is_filled:
+                    continue
+                # Check timestamp is today (try common field names)
+                ts = str(
+                    o.get("timestamp", "")
+                    or o.get("createdAt", "")
+                    or o.get("updateTimestamp", "")
+                    or ""
+                )
+                if self._today not in ts:
+                    continue
+                today_fills += 1
+
+            # Each round-trip trade = 2 fills (entry + exit), so trades = fills / 2
+            # But if position is still open, there's an odd fill
+            has_pos = 1 if self._open_position else 0
+            trade_count = (today_fills + has_pos) // 2
+            self._daily_trade_count = trade_count
+            self._log_event(
+                f"恢復今日交易計數: {trade_count} trades "
+                f"(fills={today_fills}, open={has_pos})"
+            )
+        except Exception as e:
+            self._log_event(f"無法恢復交易計數: {e} → 從 0 開始", "error")
 
         # Log candle date range
         if historical_candles:
@@ -555,29 +607,15 @@ class LiveTradingEngine:
         # ── ALWAYS update zone detector first (even during flatten/limits) ──
         self.detector.update(candle)
 
-        # ── Periodic status log every minute (POC/VAH/VAL) ──
+        # ── Periodic status log every minute ──
         current_minute = now.minute
         if current_minute != self._last_status_log_minute:
             self._last_status_log_minute = current_minute
-            active = self.detector.get_active_zone()
-            is_mature = self.detector.is_zone_mature
-            phase = self._get_phase()
-            if active:
-                spread_ticks = (active.vah_80 - active.val_80) / TICK_SIZE
-                self._log_event(
-                    f"狀態={phase} | "
-                    f"{'🟢成熟' if is_mature else '🟡發展中'} | "
-                    f"POC={active.poc:.2f} | "
-                    f"VAH={active.vah_80:.2f} | "
-                    f"VAL={active.val_80:.2f} | "
-                    f"spread={spread_ticks:.0f}tick | "
-                    f"市價={self._last_market_price or 0:.2f}"
-                )
-            else:
-                self._log_event(
-                    f"狀態={phase} | 無活躍區間 | "
-                    f"市價={self._last_market_price or 0:.2f}"
-                )
+            self._log_event(
+                f"區間:{self._get_zone_phase()} | "
+                f"訂單:{self._get_order_phase()} | "
+                f"市價={self._last_market_price or 0:.2f}"
+            )
 
         # Use UTC directly for time checks
         utc_time = now.time()
