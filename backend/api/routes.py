@@ -946,8 +946,6 @@ async def live_start(req: LiveStartRequest):
             avail_ids = [a.get("id") for a in accounts]
             raise HTTPException(400, f"Account {req.account_id} not found. Available: {avail_ids}")
         name = target.get("name", "")
-        if "PRAC" not in name.upper():
-            raise HTTPException(403, f"BLOCKED: Only practice accounts allowed. Account name='{name}'")
         logger.info(f"[LIVE START] account verified: {name} (id={req.account_id})")
     except HTTPException:
         raise

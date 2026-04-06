@@ -39,8 +39,11 @@ load_dotenv(_project_root / ".env")
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    format="%(asctime)s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
 )
+# Suppress noisy httpx request logs (we have our own broker logs)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -94,4 +97,13 @@ app = create_app()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8001)
+    # Suppress verbose uvicorn access log (IP, port etc.)
+    log_config = uvicorn.config.LOGGING_CONFIG
+    log_config["formatters"]["access"]["fmt"] = '%(asctime)s %(message)s'
+    log_config["formatters"]["access"]["datefmt"] = '%H:%M:%S'
+    log_config["formatters"]["default"]["fmt"] = '%(asctime)s %(message)s'
+    log_config["formatters"]["default"]["datefmt"] = '%H:%M:%S'
+    uvicorn.run(
+        "backend.main:app", host="0.0.0.0", port=8001,
+        log_config=log_config,
+    )
