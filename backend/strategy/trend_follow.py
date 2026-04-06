@@ -562,12 +562,17 @@ class SessionTrendFollow:
         self._breakout_direction = None
 
     def notify_order_cancelled(self):
-        """Called by engine when pending order is cancelled/timeout."""
+        """Called by engine when pending order is cancelled/timeout.
+        Keep breakout counter — just go back to watching so next candle
+        can re-confirm immediately with updated VAH/VAL.
+        """
         if self._state == "confirmed":
-            logger.info("[SessionTrend] Order cancelled → reset")
-        self._state = "idle"
-        self._consecutive_outside = 0
-        self._breakout_direction = None
+            logger.info(
+                f"[SessionTrend] Order cancelled → watching "
+                f"(keep count={self._consecutive_outside}, dir={self._breakout_direction})"
+            )
+        self._state = "watching"
+        # Keep _consecutive_outside and _breakout_direction — don't reset
 
     def get_phase_label(self) -> str:
         if self._state == "idle":
