@@ -14,7 +14,7 @@
 #   - TopstepXClient.search_contracts(text) -> list
 #   - TopstepXClient.get_historical_bars(contract_id, unit, num, start, end) -> List[Candle]
 #   - TopstepXClient.place_order(order) -> OrderResponse
-#   - TopstepXClient.cancel_order(order_id) -> bool
+#   - TopstepXClient.cancel_order(account_id, order_id) -> bool
 #   - TopstepXClient.get_positions(account_id) -> list
 #   - TopstepXClient.close_position(account_id, contract_id) -> OrderResponse
 #   - TopstepXClient.connect_market_ws() -> SignalR connection
@@ -486,14 +486,14 @@ class TopstepXClient:
         )
         return resp
 
-    async def cancel_order(self, order_id: int) -> bool:
-        """取消訂單 — uses direct HTTP to handle 400 properly (like place_order)."""
-        logger.info(f"[ORDER CANCEL] order_id={order_id}")
+    async def cancel_order(self, account_id: int, order_id: int) -> bool:
+        """取消訂單 — requires both accountId and orderId per TopstepX API."""
+        logger.info(f"[ORDER CANCEL] account={account_id} order_id={order_id}")
         try:
+            payload = {"accountId": account_id, "orderId": order_id}
             client = await self._ensure_http()
             raw_resp = await client.request(
-                "POST", "/api/Order/cancel",
-                json={"orderId": order_id}
+                "POST", "/api/Order/cancel", json=payload
             )
 
             # Token expired → retry
@@ -501,24 +501,22 @@ class TopstepXClient:
                 await self.authenticate()
                 client = await self._ensure_http()
                 raw_resp = await client.request(
-                    "POST", "/api/Order/cancel",
-                    json={"orderId": order_id}
+                    "POST", "/api/Order/cancel", json=payload
                 )
 
             data = raw_resp.json()
             success = data.get("success", False)
 
             if raw_resp.status_code >= 400:
-                # 400 usually means already filled/cancelled
-                logger.info(
-                    f"[ORDER CANCEL] order_id={order_id} HTTP {raw_resp.status_code} | "
-                    f"response={data} (order may be already filled/cancelled)"
+                logger.error(
+                    f"[ORDER CANCEL ERROR] order_id={order_id} HTTP {raw_resp.status_code} | "
+                    f"payload={payload} | response={data}"
                 )
-                return True  # treat as success — order is gone from active orders
+                return False
 
             logger.info(
                 f"[ORDER CANCEL RESP] order_id={order_id} success={success} "
-                f"HTTP={raw_resp.status_code} response={data}"
+                f"HTTP={raw_resp.status_code}"
             )
             return success
         except Exception as e:
