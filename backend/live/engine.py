@@ -91,7 +91,7 @@ class LiveTradingEngine:
         self.detector = SessionZoneDetector(
             value_area_pct=value_area_pct,
         )
-        # SessionTrendFollow with configurable params
+        # Strategy
         self.trend_follow = SessionTrendFollow(params=self.strategy_params)
 
         # Live state
@@ -289,6 +289,9 @@ class LiveTradingEngine:
             age_min = active.duration_minutes
             hours = age_min // 60
             mins = age_min % 60
+            prev = self.detector.get_last_left_zone()
+            if prev:
+                return f"發展({hours}h{mins:02d}m)|用前區間"
             return f"發展({hours}h{mins:02d}m)"
         return "無"
 
@@ -306,8 +309,8 @@ class LiveTradingEngine:
 
         trend_state = self.trend_follow.raw_state
         if trend_state == "watching":
-            count = self.trend_follow._consecutive_outside
-            total = self.trend_follow.BREAKOUT_CONFIRM_CANDLES
+            count = getattr(self.trend_follow, '_consecutive_outside', 0)
+            total = getattr(self.trend_follow, 'BREAKOUT_CONFIRM_CANDLES', 5)
             return f"確認突破中({count}/{total}min)"
         if trend_state == "confirmed":
             return "入場準備"
@@ -383,8 +386,7 @@ class LiveTradingEngine:
         self._candles_processed = len(historical_candles)
 
         # Reset strategy after warm-up (prevent stale state)
-        if "trend_follow" in self.strategies:
-            self.trend_follow.reset()
+        self.trend_follow.reset()
 
         active = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
@@ -492,20 +494,20 @@ class LiveTradingEngine:
         except Exception as e:
             self._log_event(f"緊急平倉失敗: {e}", "error")
 
-    async def _recalc_tp_live(self, new_factor: int):
-        """Recalculate TP with new factor: cancel old TP, place new one.
-        Uses SL distance as base: TP = entry ± |entry - SL| × new_factor
+    async def _recalc_tp_live(self, new_tp_ticks: int):
+        """Recalculate TP with new tick count: cancel old TP, place new one.
+        TP = entry ± new_tp_ticks × tick_size
         """
         if not self._active_signal:
             self._log_event("TP recalc skipped — no active signal", "warn")
             return
 
         sig = self._active_signal
-        sl_distance = abs(sig.entry_price - sig.sl_price)
+        tp_points = new_tp_ticks * TICK_SIZE
         if sig.direction == Direction.BUY:
-            new_tp = sig.entry_price + sl_distance * new_factor
+            new_tp = sig.entry_price + tp_points
         else:
-            new_tp = sig.entry_price - sl_distance * new_factor
+            new_tp = sig.entry_price - tp_points
 
         # Cancel existing TP order
         if self._tp_order_id:
@@ -530,7 +532,7 @@ class LiveTradingEngine:
             resp = await self.client.place_order(tp_order)
             if resp and resp.success:
                 self._tp_order_id = resp.order_id
-                self._log_event(f"新 TP @ {new_tp:.2f} ({new_factor}x) order={resp.order_id}")
+                self._log_event(f"新 TP @ {new_tp:.2f} ({new_tp_ticks}t) order={resp.order_id}")
             else:
                 self._log_event(f"新 TP 下單失敗: {resp}", "error")
         except Exception as e:
@@ -681,9 +683,9 @@ class LiveTradingEngine:
                     self._log_event(f"TP timeout ({tp_timeout} min) → flat close", "warn")
                     await self.flatten_now()
                 else:
-                    new_factor = int(action)
-                    self._log_event(f"TP timeout ({tp_timeout} min) → TP factor → {new_factor}x", "warn")
-                    await self._recalc_tp_live(new_factor)
+                    new_tp_ticks = int(action)
+                    self._log_event(f"TP timeout ({tp_timeout} min) → TP → {new_tp_ticks}t", "warn")
+                    await self._recalc_tp_live(new_tp_ticks)
             return
 
         # ── Safety: cancel orphaned SL/TP if FLAT ──
@@ -710,21 +712,31 @@ class LiveTradingEngine:
         active_zone = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
 
-        # Session Trend Follow (primary strategy)
-        if "trend_follow" in self.strategies:
-            # Safety: if strategy thinks it's confirmed but no order exists, reset
-            if self.trend_follow.raw_state == "confirmed" and not self._pending_order_id:
-                self._log_event(
-                    "⚠ SessionTrend stuck in 'confirmed' but no pending order → reset"
-                )
-                self.trend_follow.reset()
+        # If current zone not mature, use last completed zone for continuity
+        eval_zone = active_zone
+        eval_mature = is_mature
+        if not is_mature:
+            prev = self.detector.get_last_left_zone()
+            if prev:
+                eval_zone = prev
+                eval_mature = True
 
-            signal = self.trend_follow.evaluate(candle, active_zone, is_mature)
-            if signal and not self._pending_order_id:
-                placed = await self._place_order(signal)
-                if not placed:
-                    self.trend_follow.notify_order_cancelled()
-                return
+        # Strategy evaluation
+        strat = self.trend_follow
+        # Safety: if strategy thinks it's confirmed but no order exists, reset
+        if strat.raw_state == "confirmed" and not self._pending_order_id:
+            self._log_event(
+                f"⚠ Strategy stuck in 'confirmed' but no pending order → reset"
+            )
+            strat.reset()
+
+        signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
+
+        if signal and not self._pending_order_id:
+            placed = await self._place_order(signal)
+            if not placed:
+                strat.notify_order_cancelled()
+            return
 
 
     # ── Order Management ──────────────────────────────────
@@ -862,8 +874,7 @@ class LiveTradingEngine:
             return  # DON'T clear state — retry next tick
 
         if self._pending_signal:
-            if self._pending_signal.strategy == StrategyType.TREND_FOLLOW:
-                self.trend_follow.notify_order_cancelled()
+            self.trend_follow.notify_order_cancelled()
 
         self._pending_order_id = None
         self._pending_signal = None
@@ -1042,7 +1053,8 @@ class LiveTradingEngine:
                 self._tp_timeout_triggered = False
 
             # ── Transition 1b: Position exists but engine didn't place it ──
-            # (restart scenario or manual entry — still need SL/TP)
+            # Double-fill scenario: both SL and TP filled in rapid succession,
+            # leaving a rogue position. Flatten immediately.
             elif has_position and not was_open and not self._pending_order_id:
                 fill_price_raw = positions[0].get('averagePrice', positions[0].get('avgPrice'))
                 try:
@@ -1051,12 +1063,25 @@ class LiveTradingEngine:
                     self._fill_price = None
 
                 pos_side = positions[0].get('side', 0)
-                self._log_event(
-                    f"⚠ 偵測到未追蹤的持倉 | fill={self._fill_price} | "
-                    f"side={'LONG' if pos_side == 0 else 'SHORT'} | "
-                    f"無 pending_order → 可能是手動入場或重啟後",
-                    "error"
-                )
+
+                if self._position_just_closed:
+                    # Double-fill: position just closed but a new one appeared
+                    # (the residual SL/TP order filled after the first one closed us)
+                    close_side = 2 if pos_side == 0 else 1  # opposite side to close
+                    self._log_event(
+                        f"⚠ DOUBLE-FILL 偵測! SL/TP 同時成交 → 緊急平倉 | "
+                        f"rogue side={'LONG' if pos_side == 0 else 'SHORT'} | "
+                        f"fill={self._fill_price}",
+                        "error"
+                    )
+                    await self._emergency_market_close(close_side, "DOUBLE_FILL")
+                else:
+                    self._log_event(
+                        f"⚠ 偵測到未追蹤的持倉 | fill={self._fill_price} | "
+                        f"side={'LONG' if pos_side == 0 else 'SHORT'} | "
+                        f"無 pending_order → 可能是手動入場或重啟後",
+                        "error"
+                    )
 
             # ── Transition 2: Position CLOSED (SL/TP hit) ──
             if was_open and not has_position:

@@ -770,7 +770,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX</h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.6.10</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -864,19 +864,17 @@
             </div>
             <div class="form-row">
                 <div class="form-group">
-                    <label>TP FACTOR</label>
-                    <select id="tp-factor-bt">
-                        <option value="1">1x SL</option>
-                        <option value="2">2x SL</option>
-                        <option value="3" selected>3x SL</option>
-                        <option value="4">4x SL</option>
-                        <option value="5">5x SL</option>
+                    <label>TP</label>
+                    <select id="tp-ticks-bt">
+                        <option value="25">25 tick</option>
+                        <option value="50" selected>50 tick</option>
+                        <option value="75">75 tick</option>
+                        <option value="100">100 tick</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>SL BUFFER</label>
+                    <label>SL</label>
                     <select id="sl-ticks-bt">
-                        <option value="0">0 tick</option>
                         <option value="25">25 tick</option>
                         <option value="50" selected>50 tick</option>
                         <option value="75">75 tick</option>
@@ -905,9 +903,9 @@
                     <label>ACTION</label>
                     <select id="tp-action-bt">
                         <option value="flat" selected>Flat</option>
-                        <option value="3">TP→3x</option>
-                        <option value="2">TP→2x</option>
-                        <option value="1">TP→1x</option>
+                        <option value="25">TP→25t</option>
+                        <option value="15">TP→15t</option>
+                        <option value="10">TP→10t</option>
                     </select>
                 </div>
             </div>
@@ -956,19 +954,17 @@
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label>TP FACTOR</label>
-                        <select id="tp-factor-live">
-                            <option value="1">1x SL</option>
-                            <option value="2">2x SL</option>
-                            <option value="3" selected>3x SL</option>
-                            <option value="4">4x SL</option>
-                            <option value="5">5x SL</option>
+                        <label>TP</label>
+                        <select id="tp-ticks-live">
+                            <option value="25">25 tick</option>
+                            <option value="50" selected>50 tick</option>
+                            <option value="75">75 tick</option>
+                            <option value="100">100 tick</option>
                         </select>
                     </div>
                     <div class="form-group">
-                        <label>SL BUFFER</label>
+                        <label>SL</label>
                         <select id="sl-ticks-live">
-                            <option value="0">0 tick</option>
                             <option value="25">25 tick</option>
                             <option value="50" selected>50 tick</option>
                             <option value="75">75 tick</option>
@@ -997,9 +993,9 @@
                         <label>ACTION</label>
                         <select id="tp-action-live">
                             <option value="flat" selected>Flat</option>
-                            <option value="3">TP→3x</option>
-                            <option value="2">TP→2x</option>
-                            <option value="1">TP→1x</option>
+                            <option value="25">TP→25t</option>
+                            <option value="15">TP→15t</option>
+                            <option value="10">TP→10t</option>
                         </select>
                     </div>
                 </div>
@@ -1147,7 +1143,7 @@ let valLine = null;
 const DEFAULT_STRATEGY_PARAMS = {
     strategy: 'trend',
     entry_mode: '50RE',
-    tp_factor: 3,
+    tp_ticks: 50,
     sl_ticks: 50,
     entry_timeout_minutes: 30,
     tp_timeout_minutes: 0,
@@ -1158,7 +1154,7 @@ function collectStrategyParams(mode) {
     return {
         strategy: document.getElementById('strategy-' + mode).value,
         entry_mode: document.getElementById('entry-mode-' + mode).value,
-        tp_factor: parseInt(document.getElementById('tp-factor-' + mode).value),
+        tp_ticks: parseInt(document.getElementById('tp-ticks-' + mode).value),
         sl_ticks: parseInt(document.getElementById('sl-ticks-' + mode).value),
         entry_timeout_minutes: parseInt(document.getElementById('entry-timeout-' + mode).value),
         tp_timeout_minutes: parseInt(document.getElementById('tp-timeout-' + mode).value),
@@ -1171,7 +1167,7 @@ function applyStrategyParams(mode, params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params);
     document.getElementById('strategy-' + mode).value = p.strategy;
     document.getElementById('entry-mode-' + mode).value = p.entry_mode;
-    document.getElementById('tp-factor-' + mode).value = p.tp_factor;
+    document.getElementById('tp-ticks-' + mode).value = p.tp_ticks;
     document.getElementById('sl-ticks-' + mode).value = p.sl_ticks;
     document.getElementById('entry-timeout-' + mode).value = p.entry_timeout_minutes;
     document.getElementById('tp-timeout-' + mode).value = p.tp_timeout_minutes;
