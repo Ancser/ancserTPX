@@ -415,7 +415,7 @@ class SessionTrendFollow:
         p = params or StrategyParams()
         self.ENTRY_RATIO = 0.5 if p.entry_mode == "50RE" else 0.0
         self.SL_TICKS = p.sl_ticks
-        self.TP_FACTOR = p.tp_factor
+        self.TP_TICKS = p.tp_ticks
         self.PENDING_TIMEOUT_CANDLES = p.entry_timeout_minutes  # 1:1 for 1m bars
         self.TP_TIMEOUT_CANDLES = p.tp_timeout_minutes           # 1:1 for 1m bars
         self.TP_TIMEOUT_ACTION = p.tp_timeout_action
@@ -445,11 +445,8 @@ class SessionTrendFollow:
             zone:      active session zone (from SessionZoneDetector)
             is_mature: whether zone is mature
         """
-        # Need a mature zone to trade
+        # No mature zone — keep breakout count during session transitions
         if not zone or not is_mature:
-            if self._state == "watching":
-                self._state = "idle"
-                self._consecutive_outside = 0
             return None
 
         # No operation on AH (After Hours 20:00 - 22:00 UTC)
@@ -504,27 +501,22 @@ class SessionTrendFollow:
 
         Entry = VAH/VAL + entry_ratio × breakout_range
         SL    = VAH/VAL ± sl_ticks × tick_size
-        TP    = entry ± |entry - SL| × tp_factor
+        TP    = entry ± tp_ticks × tick_size
         """
         sl_points = self.SL_TICKS * self.TICK_SIZE
+        tp_points = self.TP_TICKS * self.TICK_SIZE
 
         if direction == "up":
             breakout_range = zone.high_100 - zone.vah_80
             entry = zone.vah_80 + self.ENTRY_RATIO * breakout_range
-            sl = zone.vah_80 - sl_points
-            sl_distance = abs(entry - sl)
-            tp = entry + sl_distance * self.TP_FACTOR
-            # Alternative: TP based on breakout range instead of SL distance
-            # tp = entry + self.TP_FACTOR * breakout_range
+            sl = entry - sl_points
+            tp = entry + tp_points
             trade_dir = Direction.BUY
         else:
             breakout_range = zone.val_80 - zone.low_100
             entry = zone.val_80 - self.ENTRY_RATIO * breakout_range
-            sl = zone.val_80 + sl_points
-            sl_distance = abs(entry - sl)
-            tp = entry - sl_distance * self.TP_FACTOR
-            # Alternative: TP based on breakout range instead of SL distance
-            # tp = entry - self.TP_FACTOR * breakout_range
+            sl = entry + sl_points
+            tp = entry - tp_points
             trade_dir = Direction.SELL
 
         sl_dollars = abs(entry - sl) * POINT_VALUE
@@ -549,7 +541,7 @@ class SessionTrendFollow:
                 f"SESSION TREND {direction.upper()} | "
                 f"5-bar breakout {'> VAH' if direction == 'up' else '< VAL'} | "
                 f"entry={entry_label} | "
-                f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f} ({self.TP_FACTOR}x)"
+                f"SL {self.SL_TICKS}t(${sl_dollars:.0f}) TP {self.TP_TICKS}t(${tp_dollars:.0f})"
             ),
             timestamp=candle.timestamp,
             breakout_range=breakout_range,

@@ -201,12 +201,21 @@ class BacktestEngine:
                 logger.debug(f"掛單超時取消: {self._pending_order.reason}")
                 self._cancel_pending_order()
 
-        # ── Strategy evaluation: SessionTrendFollow ──
+        # ── Strategy evaluation ──
         if not self._open_position and not self._pending_order:
             active_zone = self.detector.get_active_zone()
             is_mature = self.detector.is_zone_mature
 
-            signal = self.trend_follow.evaluate(candle, active_zone, is_mature)
+            # If current zone not mature, use last completed zone
+            eval_zone = active_zone
+            eval_mature = is_mature
+            if not is_mature:
+                prev = self.detector.get_last_left_zone()
+                if prev:
+                    eval_zone = prev
+                    eval_mature = True
+
+            signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
             if signal:
                 self._place_pending_order(signal, candle)
                 return

@@ -66,7 +66,7 @@ class BacktestRequest(BaseModel):
     # Strategy params
     strategy: str = "trend"
     entry_mode: str = "50RE"
-    tp_factor: int = 3
+    tp_ticks: int = 50
     sl_ticks: int = 50
     entry_timeout_minutes: int = 30
     tp_timeout_minutes: int = 0
@@ -758,7 +758,7 @@ async def run_backtest(req: BacktestRequest):
     strategy_params = StrategyParams(
         strategy=req.strategy,
         entry_mode=req.entry_mode,
-        tp_factor=req.tp_factor,
+        tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
         entry_timeout_minutes=req.entry_timeout_minutes,
         tp_timeout_minutes=req.tp_timeout_minutes,
@@ -911,7 +911,7 @@ class LiveStartRequest(BaseModel):
     # Strategy params
     strategy: str = "trend"
     entry_mode: str = "50RE"
-    tp_factor: int = 3
+    tp_ticks: int = 50
     sl_ticks: int = 50
     entry_timeout_minutes: int = 30
     tp_timeout_minutes: int = 0
@@ -986,7 +986,7 @@ async def live_start(req: LiveStartRequest):
     live_strategy_params = StrategyParams(
         strategy=req.strategy,
         entry_mode=req.entry_mode,
-        tp_factor=req.tp_factor,
+        tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
         entry_timeout_minutes=req.entry_timeout_minutes,
         tp_timeout_minutes=req.tp_timeout_minutes,
