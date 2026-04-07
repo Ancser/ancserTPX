@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 ENGINE_VERSION = "v4.0-session-2026-03-29"  # Session-based overnight zone
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
+TRADE_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "trade_state.json")
 
 
 class LiveTradingEngine:
@@ -127,6 +128,29 @@ class LiveTradingEngine:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    def _load_trade_count(self):
+        """Load today's trade count from local file."""
+        try:
+            with open(TRADE_STATE_FILE, "r") as f:
+                state = json.load(f)
+            if state.get("date") == self._today:
+                self._daily_trade_count = state.get("trade_count", 0)
+                self._log_event(f"恢復今日交易計數: {self._daily_trade_count} (from file)")
+            else:
+                self._log_event("交易狀態檔日期不符, 從 0 開始")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            self._log_event(f"讀取交易狀態失敗: {e}", "error")
+
+    def _save_trade_count(self):
+        """Persist today's trade count to local file."""
+        try:
+            with open(TRADE_STATE_FILE, "w") as f:
+                json.dump({"date": self._today, "trade_count": self._daily_trade_count}, f)
+        except Exception as e:
+            logger.error(f"[TRADE STATE] save failed: {e}")
 
     def _save_zones(self):
         """Persist current zones to disk so they survive restart."""
@@ -335,44 +359,9 @@ class LiveTradingEngine:
         self._trades = []
         self._log = []
 
-        # Recover daily trade count from TopstepX filled orders
+        # Recover daily trade count from local file
         self._daily_trade_count = 0
-        try:
-            orders = await self.client.get_orders(self.account_id)
-            if orders:
-                # Log first order keys to understand API format
-                self._log_event(f"[ORDERS] sample keys: {list(orders[0].keys())}")
-
-            today_fills = 0
-            for o in orders:
-                # Look for filled orders — status field varies by API version
-                status = o.get("status", 0)
-                # TopstepX status: 2=Filled (numeric) or "Filled" (string)
-                is_filled = status in (2, "2", "Filled", "filled")
-                if not is_filled:
-                    continue
-                # Check timestamp is today (try common field names)
-                ts = str(
-                    o.get("timestamp", "")
-                    or o.get("createdAt", "")
-                    or o.get("updateTimestamp", "")
-                    or ""
-                )
-                if self._today not in ts:
-                    continue
-                today_fills += 1
-
-            # Each round-trip trade = 2 fills (entry + exit), so trades = fills / 2
-            # But if position is still open, there's an odd fill
-            has_pos = 1 if self._open_position else 0
-            trade_count = (today_fills + has_pos) // 2
-            self._daily_trade_count = trade_count
-            self._log_event(
-                f"恢復今日交易計數: {trade_count} trades "
-                f"(fills={today_fills}, open={has_pos})"
-            )
-        except Exception as e:
-            self._log_event(f"無法恢復交易計數: {e} → 從 0 開始", "error")
+        self._load_trade_count()
 
         # Log candle date range
         if historical_candles:
@@ -575,6 +564,7 @@ class LiveTradingEngine:
             self._today = today_str
             self._daily_trade_count = 0
             self._daily_pnl = 0.0
+            self._save_trade_count()
             self._log_event("新交易日 — 重置計數")
 
         # Check position status from API (ALWAYS, even without new candle)
@@ -995,6 +985,7 @@ class LiveTradingEngine:
                     self._fill_price = None
 
                 self._daily_trade_count += 1
+                self._save_trade_count()
                 self._log_event(
                     f"掛單成交! #{self._pending_order_id} | "
                     f"fill={self._fill_price} | size={positions[0].get('size', '?')} | "
