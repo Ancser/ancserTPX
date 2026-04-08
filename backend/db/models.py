@@ -305,6 +305,7 @@ class BacktestConfig:
     end_date: str = ""
     initial_capital: float = 50000.0
     slippage_ticks: int = 1         # 滑價 tick 數
+    commission_rt: float = 1.0      # 往返佣金 (Mini: $1.00, Micro: $0.50)
     max_daily_loss: float = 2000.0
     flatten_time: str = "15:05"     # CT
     # 盤整偵測參數

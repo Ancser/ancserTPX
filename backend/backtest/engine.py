@@ -341,6 +341,9 @@ class BacktestEngine:
         else:
             pnl = (pos.entry_price - exit_price) * self.POINT_VALUE * pos.contracts
 
+        # Deduct round-turn commission (Mini NQ: $1.00 per contract)
+        pnl -= self.config.commission_rt * pos.contracts
+
         pos.exit_price = exit_price
         pos.exit_time = candle.timestamp
         pos.pnl = pnl
