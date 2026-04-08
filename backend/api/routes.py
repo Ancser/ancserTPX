@@ -1053,6 +1053,17 @@ async def live_flatten():
     return {"success": True, "message": "Flatten executed"}
 
 
+@router.post("/live/reset-trade-count")
+async def live_reset_trade_count():
+    """手動重置每日交易計數 (覆寫 trade_state.json)"""
+    if not _live_engine:
+        raise HTTPException(400, "Live engine not started")
+    _live_engine._daily_trade_count = 0
+    _live_engine._save_trade_count()
+    _live_engine._log_event("手動重置每日交易計數 → 0")
+    return {"success": True, "count": 0}
+
+
 @router.get("/live/status")
 async def live_status():
     """取得即時交易狀態"""

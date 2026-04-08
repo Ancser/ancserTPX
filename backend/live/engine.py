@@ -297,6 +297,11 @@ class LiveTradingEngine:
 
     def _get_order_phase(self) -> str:
         """Order status: 等待突破/確認突破中/掛單中/持倉中"""
+        # Daily limit reached — show clearly
+        if (self._daily_trade_count >= self.max_daily_trades
+                and not self._open_position
+                and not self._pending_order_id):
+            return f"每日上限({self._daily_trade_count}/{self.max_daily_trades})"
         if self._open_position:
             age = self._position_age
             hours = age // 60
@@ -629,11 +634,10 @@ class LiveTradingEngine:
             self._log_event("PT 12:30 收盤前取消掛單")
             await self._cancel_pending()
 
-        # ── Daily trade limit ──
-        if self._daily_trade_count >= self.max_daily_trades and not self._open_position:
-            if self._pending_order_id:
-                await self._cancel_pending()
-            return
+        # ── Daily trade limit — cancel pending but still run strategy for visibility ──
+        daily_limit_reached = self._daily_trade_count >= self.max_daily_trades
+        if daily_limit_reached and not self._open_position and self._pending_order_id:
+            await self._cancel_pending()
 
         # ── Check if pending order filled ──
         if self._pending_order_id and not self._open_position:
@@ -733,6 +737,14 @@ class LiveTradingEngine:
         signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
 
         if signal and not self._pending_order_id:
+            if daily_limit_reached:
+                self._log_event(
+                    f"⛔ 達每日交易上限 {self._daily_trade_count}/{self.max_daily_trades} "
+                    f"— signal 產生但不下單 ({signal.direction.value}@{signal.entry_price:.2f})",
+                    "warn"
+                )
+                strat.notify_order_cancelled()
+                return
             placed = await self._place_order(signal)
             if not placed:
                 strat.notify_order_cancelled()
@@ -1167,7 +1179,11 @@ class LiveTradingEngine:
             logger.error(f"[SYNC] position sync failed: {e}", exc_info=True)
 
     async def _fetch_latest_candle(self, unit_number: int = 5) -> Optional[Candle]:
-        """Fetch the most recent candle from TopstepX API."""
+        """Fetch the most recent candle from TopstepX API.
+
+        Note: TopstepX API returns bars newest-first, so candles[-1] is the
+        OLDEST. Must sort by timestamp to get the actual newest.
+        """
         try:
             candles = await self.client.get_historical_bars(
                 contract_id=self.contract_id,
@@ -1176,6 +1192,8 @@ class LiveTradingEngine:
                 limit=5,
             )
             if candles:
+                # Sort chronologically — API returns newest-first
+                candles.sort(key=lambda c: c.timestamp)
                 try:
                     from backend.api.routes import _historical_candles
                     last_stored = _historical_candles[-1] if _historical_candles else None
@@ -1184,7 +1202,7 @@ class LiveTradingEngine:
                             _historical_candles.append(c)
                 except Exception:
                     pass
-                return candles[-1]
+                return candles[-1]  # newest after sorting
         except Exception as e:
             self._log_event(f"取得K線失敗: {e}", "error")
         return None
