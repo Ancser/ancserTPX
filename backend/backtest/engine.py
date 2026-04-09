@@ -40,7 +40,6 @@ class BacktestEngine:
     PRE_FLATTEN_UTC = time(19, 30)
 
     def __init__(self, config: Optional[BacktestConfig] = None,
-                 max_daily_trades: int = 5,
                  strategy_params: Optional[StrategyParams] = None):
         self.config = config or BacktestConfig()
         self.strategy_params = strategy_params or StrategyParams()
@@ -61,8 +60,6 @@ class BacktestEngine:
         self._trades: List[Trade] = []
         self._equity_curve: List[Tuple[datetime, float]] = []
         self._daily_pnl: Dict[str, float] = {}
-        self._daily_trade_count: Dict[str, int] = {}
-        self._max_daily_trades: int = max_daily_trades
         self._last_closed_trade: Optional[Trade] = None
         # TP timeout state
         self._position_age: int = 0
@@ -117,7 +114,6 @@ class BacktestEngine:
         self._trades = []
         self._equity_curve = []
         self._daily_pnl = {}
-        self._daily_trade_count = {}
         self._last_closed_trade = None
         self._position_age = 0
         self._tp_timeout_triggered = False
@@ -136,13 +132,6 @@ class BacktestEngine:
         if daily <= -self.config.max_daily_loss:
             if self._open_position:
                 self._force_exit(candle, ExitReason.FLATTEN)
-            if self._pending_order:
-                self._cancel_pending_order()
-            return
-
-        # Daily trade limit
-        daily_trades = self._daily_trade_count.get(date_str, 0)
-        if daily_trades >= self._max_daily_trades and not self._open_position:
             if self._pending_order:
                 self._cancel_pending_order()
             return
@@ -298,8 +287,6 @@ class BacktestEngine:
         self._open_position = trade
         self._position_age = 0
         self._tp_timeout_triggered = False
-        date_str = candle.timestamp.strftime("%Y-%m-%d")
-        self._daily_trade_count[date_str] = self._daily_trade_count.get(date_str, 0) + 1
         logger.debug(
             f"入場: {trade.strategy.value} {trade.direction.value} "
             f"@ {fill_price:.2f} | SL={trade.sl_price:.2f} TP={trade.tp_price:.2f}"

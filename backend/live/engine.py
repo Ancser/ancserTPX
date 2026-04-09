@@ -20,7 +20,7 @@
 Live Trading Engine
 
 每 30 秒輪詢 1m K 線 → 盤整偵測 → 策略評估 → 下真實 limit order
-支援：掛單 / 取消 / SL-TP / 收盤前平倉 / 每日交易上限
+支援：掛單 / 取消 / SL-TP / 收盤前平倉
 """
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ logger = logging.getLogger(__name__)
 ENGINE_VERSION = "v4.0-session-2026-03-29"  # Session-based overnight zone
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
-TRADE_STATE_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "data", "trade_state.json")
 
 
 class LiveTradingEngine:
@@ -62,7 +61,6 @@ class LiveTradingEngine:
         account_id: int,
         contract_id: str,
         # Strategy params (simplified — SessionTrendFollow only)
-        max_daily_trades: int = 5,
         value_area_pct: float = 0.80,
         slippage_ticks: int = 1,
         # Engine manages SL/TP — MUST be False to protect positions
@@ -84,7 +82,6 @@ class LiveTradingEngine:
         self.contract_id = contract_id
         self.strategies = ["trend_follow"]  # Only SessionTrendFollow
         self.slippage_ticks = slippage_ticks
-        self.max_daily_trades = max_daily_trades
         self.strategy_params = strategy_params or StrategyParams()
 
         # Session-based zone detector (overnight zone with maturity)
@@ -108,7 +105,6 @@ class LiveTradingEngine:
         self._position_just_closed: bool = False  # skip strategy eval on same tick as close
         self._position_age: int = 0              # candles since position opened
         self._tp_timeout_triggered: bool = False  # prevent re-triggering
-        self._daily_trade_count: int = 0
         self._daily_pnl: float = 0.0
         self._today: str = ""
         self._capital: float = 0.0
@@ -128,29 +124,6 @@ class LiveTradingEngine:
     @property
     def is_running(self) -> bool:
         return self._running
-
-    def _load_trade_count(self):
-        """Load today's trade count from local file."""
-        try:
-            with open(TRADE_STATE_FILE, "r") as f:
-                state = json.load(f)
-            if state.get("date") == self._today:
-                self._daily_trade_count = state.get("trade_count", 0)
-                self._log_event(f"恢復今日交易計數: {self._daily_trade_count} (from file)")
-            else:
-                self._log_event("交易狀態檔日期不符, 從 0 開始")
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            self._log_event(f"讀取交易狀態失敗: {e}", "error")
-
-    def _save_trade_count(self):
-        """Persist today's trade count to local file."""
-        try:
-            with open(TRADE_STATE_FILE, "w") as f:
-                json.dump({"date": self._today, "trade_count": self._daily_trade_count}, f)
-        except Exception as e:
-            logger.error(f"[TRADE STATE] save failed: {e}")
 
     def _save_zones(self):
         """Persist current zones to disk so they survive restart."""
@@ -265,8 +238,6 @@ class LiveTradingEngine:
             "pending_timeout": self.trend_follow.PENDING_TIMEOUT_CANDLES,
             "sl_order_id": self._sl_order_id,
             "tp_order_id": self._tp_order_id,
-            "daily_trades": self._daily_trade_count,
-            "max_daily_trades": self.max_daily_trades,
             "daily_pnl": self._daily_pnl,
             "capital": self._capital,
             "candles_processed": self._candles_processed,
@@ -297,11 +268,6 @@ class LiveTradingEngine:
 
     def _get_order_phase(self) -> str:
         """Order status: 等待突破/確認突破中/掛單中/持倉中"""
-        # Daily limit reached — show clearly
-        if (self._daily_trade_count >= self.max_daily_trades
-                and not self._open_position
-                and not self._pending_order_id):
-            return f"每日上限({self._daily_trade_count}/{self.max_daily_trades})"
         if self._open_position:
             age = self._position_age
             hours = age // 60
@@ -366,10 +332,6 @@ class LiveTradingEngine:
         self._daily_pnl = 0.0
         self._trades = []
         self._log = []
-
-        # Recover daily trade count from local file
-        self._daily_trade_count = 0
-        self._load_trade_count()
 
         # Log candle date range
         if historical_candles:
@@ -569,10 +531,8 @@ class LiveTradingEngine:
         today_str = now.strftime("%Y-%m-%d")
         if today_str != self._today:
             self._today = today_str
-            self._daily_trade_count = 0
             self._daily_pnl = 0.0
-            self._save_trade_count()
-            self._log_event("新交易日 — 重置計數")
+            self._log_event("新交易日 — 重置每日 PnL")
 
         # Check position status from API (ALWAYS, even without new candle)
         await self._sync_position()
@@ -632,11 +592,6 @@ class LiveTradingEngine:
         # ── Pre-flatten: cancel pending (PT 12:30 = UTC 19:30) ──
         if utc_time >= self.PRE_FLATTEN_UTC and utc_time < session_start and self._pending_order_id:
             self._log_event("PT 12:30 收盤前取消掛單")
-            await self._cancel_pending()
-
-        # ── Daily trade limit — cancel pending but still run strategy for visibility ──
-        daily_limit_reached = self._daily_trade_count >= self.max_daily_trades
-        if daily_limit_reached and not self._open_position and self._pending_order_id:
             await self._cancel_pending()
 
         # ── Check if pending order filled ──
@@ -737,14 +692,6 @@ class LiveTradingEngine:
         signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
 
         if signal and not self._pending_order_id:
-            if daily_limit_reached:
-                self._log_event(
-                    f"⛔ 達每日交易上限 {self._daily_trade_count}/{self.max_daily_trades} "
-                    f"— signal 產生但不下單 ({signal.direction.value}@{signal.entry_price:.2f})",
-                    "warn"
-                )
-                strat.notify_order_cancelled()
-                return
             placed = await self._place_order(signal)
             if not placed:
                 strat.notify_order_cancelled()
@@ -1007,8 +954,6 @@ class LiveTradingEngine:
                 except (ValueError, TypeError):
                     self._fill_price = None
 
-                self._daily_trade_count += 1
-                self._save_trade_count()
                 self._log_event(
                     f"掛單成交! #{self._pending_order_id} | "
                     f"fill={self._fill_price} | size={positions[0].get('size', '?')} | "
