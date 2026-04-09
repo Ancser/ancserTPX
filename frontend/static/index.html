@@ -368,6 +368,70 @@
             box-shadow: 0 0 0 1px rgba(100, 220, 255, 0.1);
         }
 
+        /* ── Range Slider ── */
+        .slider-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .slider-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .slider-value {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+            color: var(--cyan);
+            min-width: 54px;
+            text-align: right;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            padding: 3px 6px;
+        }
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            flex: 1;
+            height: 4px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 0;
+            outline: none;
+            cursor: pointer;
+        }
+        input[type="range"]:hover {
+            border-color: var(--border-h);
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 12px;
+            height: 14px;
+            background: var(--cyan);
+            border: none;
+            border-radius: 0;
+            cursor: pointer;
+            box-shadow: 0 0 4px rgba(100, 220, 255, 0.4);
+        }
+        input[type="range"]::-moz-range-thumb {
+            width: 12px;
+            height: 14px;
+            background: var(--cyan);
+            border: none;
+            border-radius: 0;
+            cursor: pointer;
+            box-shadow: 0 0 4px rgba(100, 220, 255, 0.4);
+        }
+        input[type="range"]::-webkit-slider-runnable-track {
+            height: 4px;
+            background: var(--bg3);
+        }
+        input[type="range"]::-moz-range-track {
+            height: 4px;
+            background: var(--bg3);
+        }
+
         /* ── Radio ── */
         input[type="radio"] {
             appearance: none;
@@ -770,7 +834,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.6.11</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.6.12</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -862,24 +926,18 @@
                     <option value="100RE">100% RE (at VAH/VAL)</option>
                 </select>
             </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>TP</label>
-                    <select id="tp-ticks-bt">
-                        <option value="25">25 tick</option>
-                        <option value="50" selected>50 tick</option>
-                        <option value="75">75 tick</option>
-                        <option value="100">100 tick</option>
-                    </select>
+            <div class="form-group slider-group">
+                <label>TP <span id="tp-ticks-bt-val" class="slider-value">50 tick</span></label>
+                <div class="slider-row">
+                    <input type="range" id="tp-ticks-bt" min="25" max="600" step="25" value="50"
+                           oninput="document.getElementById('tp-ticks-bt-val').textContent = this.value + ' tick'">
                 </div>
-                <div class="form-group">
-                    <label>SL</label>
-                    <select id="sl-ticks-bt">
-                        <option value="25">25 tick</option>
-                        <option value="50" selected>50 tick</option>
-                        <option value="75">75 tick</option>
-                        <option value="100">100 tick</option>
-                    </select>
+            </div>
+            <div class="form-group slider-group">
+                <label>SL <span id="sl-ticks-bt-val" class="slider-value">50 tick</span></label>
+                <div class="slider-row">
+                    <input type="range" id="sl-ticks-bt" min="25" max="600" step="25" value="50"
+                           oninput="document.getElementById('sl-ticks-bt-val').textContent = this.value + ' tick'">
                 </div>
             </div>
             <div class="form-group">
@@ -952,24 +1010,18 @@
                         <option value="100RE">100% RE (at VAH/VAL)</option>
                     </select>
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>TP</label>
-                        <select id="tp-ticks-live">
-                            <option value="25">25 tick</option>
-                            <option value="50" selected>50 tick</option>
-                            <option value="75">75 tick</option>
-                            <option value="100">100 tick</option>
-                        </select>
+                <div class="form-group slider-group">
+                    <label>TP <span id="tp-ticks-live-val" class="slider-value">50 tick</span></label>
+                    <div class="slider-row">
+                        <input type="range" id="tp-ticks-live" min="25" max="600" step="25" value="50"
+                               oninput="document.getElementById('tp-ticks-live-val').textContent = this.value + ' tick'">
                     </div>
-                    <div class="form-group">
-                        <label>SL</label>
-                        <select id="sl-ticks-live">
-                            <option value="25">25 tick</option>
-                            <option value="50" selected>50 tick</option>
-                            <option value="75">75 tick</option>
-                            <option value="100">100 tick</option>
-                        </select>
+                </div>
+                <div class="form-group slider-group">
+                    <label>SL <span id="sl-ticks-live-val" class="slider-value">50 tick</span></label>
+                    <div class="slider-row">
+                        <input type="range" id="sl-ticks-live" min="25" max="600" step="25" value="50"
+                               oninput="document.getElementById('sl-ticks-live-val').textContent = this.value + ' tick'">
                     </div>
                 </div>
                 <div class="form-group">
@@ -1169,6 +1221,10 @@ function applyStrategyParams(mode, params) {
     document.getElementById('entry-mode-' + mode).value = p.entry_mode;
     document.getElementById('tp-ticks-' + mode).value = p.tp_ticks;
     document.getElementById('sl-ticks-' + mode).value = p.sl_ticks;
+    const tpValEl = document.getElementById('tp-ticks-' + mode + '-val');
+    const slValEl = document.getElementById('sl-ticks-' + mode + '-val');
+    if (tpValEl) tpValEl.textContent = p.tp_ticks + ' tick';
+    if (slValEl) slValEl.textContent = p.sl_ticks + ' tick';
     document.getElementById('entry-timeout-' + mode).value = p.entry_timeout_minutes;
     document.getElementById('tp-timeout-' + mode).value = p.tp_timeout_minutes;
     toggleTpAction(mode);
