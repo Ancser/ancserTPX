@@ -834,7 +834,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.6.12</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.6.13</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -1076,7 +1076,6 @@
                         STATUS: <span id="live-status-text" style="color:var(--text3);letter-spacing:1px;">OFFLINE</span>
                     </div>
                     <div style="padding-left:14px;">PHASE: <span id="live-position-text" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">TRADES: <span id="lv-trade-count" style="color:var(--cyan);">0</span> / <span id="lv-max-trades" style="color:var(--text3);">5</span></div>
                     <div style="padding-left:14px;">MARKET: <span id="lv-market-session" style="color:var(--text3);">--</span></div>
                     <div style="padding-left:14px;">DAILY PNL: <span id="live-pnl-text" style="color:var(--text3);">--</span></div>
                 </div>
@@ -1509,7 +1508,6 @@ function onLiveAccountSwitch() {
 
 let _liveInterval = null;
 let _liveStatusInterval = null;
-let _liveTradeCount = 0;
 
 function getMarketSession() {
     // NQ CME Globex — all times converted to ET (New York)
@@ -1566,9 +1564,6 @@ function updateLiveTopBar() {
     if (el) { el.textContent = session.label; el.style.color = session.color; }
     const elM = document.getElementById('lv-market-session');
     if (elM) { elM.textContent = session.label; elM.style.color = session.color; }
-
-    document.getElementById('lv-max-trades').textContent = 5;
-    document.getElementById('lv-trade-count').textContent = _liveTradeCount;
 
     // Timeframe
     const tfEl = document.getElementById('lv-timeframe');
@@ -1646,7 +1641,6 @@ async function goLive() {
     const liveParams = {
         account_id: liveAccount.id,
         contract_id: liveAccount.contract_id || 'CON.F.US.ENQ.M26',
-        max_daily_trades: 5,
         value_area_pct: 0.80,
         ...stratParams,
     };
@@ -1893,10 +1887,6 @@ async function pollLiveStatus() {
         } else if (zoneRow) {
             zoneRow.style.display = 'none';
         }
-
-        // ── Left panel: Trade count ──
-        document.getElementById('lv-trade-count').textContent = st.daily_trades || 0;
-        document.getElementById('lv-max-trades').textContent = st.max_daily_trades || 5;
 
         // ── Top bar: Position ──
         const posEl = document.getElementById('lv-position');
@@ -3207,6 +3197,38 @@ function renderMetrics(m) {
     if (oldSub) oldSub.remove();
 
     const grid = document.getElementById('metrics-grid');
+
+    // ── Topstep-style pass/fail checks ──
+    // Daily PnL series sorted by date
+    const dailyEntries = Object.entries(m.daily_pnl || {}).sort((a, b) => a[0].localeCompare(b[0]));
+    const dailyPnls = dailyEntries.map(e => e[1]);
+
+    // Check 1 (Topstep Consistency XFA): 3 consecutive winning days each ≥ +$150
+    let streak = 0;
+    let maxStreak = 0;
+    for (const p of dailyPnls) {
+        if (p >= 150) {
+            streak += 1;
+            if (streak > maxStreak) maxStreak = streak;
+        } else {
+            streak = 0;
+        }
+    }
+    const consec3Pass = maxStreak >= 3;
+
+    // Check 2 (Topstep Consistency XFA): max single-day profit < 40% of total PnL
+    const maxDayPnl = dailyPnls.length ? Math.max(...dailyPnls) : 0;
+    const totalPos = m.total_pnl > 0;
+    const maxDayPass = totalPos && maxDayPnl < (m.total_pnl * 0.4);
+
+    // 150K combine: above 2 checks + total > 9000 + maxDD < 4500
+    const pass150k = consec3Pass && maxDayPass && m.total_pnl > 9000 && m.max_drawdown < 4500;
+    // 50K combine: above 2 checks + total > 3000 + maxDD < 2000
+    const pass50k = consec3Pass && maxDayPass && m.total_pnl > 3000 && m.max_drawdown < 2000;
+
+    const passVal = (ok) => ok ? 'PASS' : 'NO';
+    const passCls = (ok) => ok ? 'pos' : 'neg';
+
     const items = [
         { label: 'TOTAL PNL', value: '$' + m.total_pnl.toFixed(0), cls: m.total_pnl >= 0 ? 'pos' : 'neg' },
         { label: 'WIN RATE', value: (m.win_rate * 100).toFixed(1) + '%', cls: m.win_rate >= 0.5 ? 'pos' : 'neg' },
@@ -3215,11 +3237,13 @@ function renderMetrics(m) {
         { label: 'AVG WIN', value: '$' + m.avg_win.toFixed(0), cls: 'pos' },
         { label: 'AVG LOSS', value: '$' + m.avg_loss.toFixed(0), cls: 'neg' },
         { label: 'RR RATIO', value: m.avg_rr_ratio.toFixed(2), cls: m.avg_rr_ratio >= 2 ? 'pos' : '' },
-        { label: 'EXPECTANCY', value: '$' + m.expectancy.toFixed(0), cls: m.expectancy >= 0 ? 'pos' : 'neg' },
         { label: 'MAX DD', value: '$' + m.max_drawdown.toFixed(0), cls: 'neg' },
-        { label: 'MAX DD %', value: (m.max_drawdown_pct * 100).toFixed(1) + '%', cls: 'neg' },
         { label: 'SHARPE', value: m.sharpe_ratio.toFixed(2), cls: m.sharpe_ratio >= 1 ? 'pos' : '' },
         { label: 'PROFIT FACTOR', value: m.profit_factor === Infinity ? 'INF' : m.profit_factor.toFixed(2), cls: m.profit_factor >= 1.5 ? 'pos' : '' },
+        { label: '3D × +$150', value: consec3Pass ? 'PASS' : (maxStreak + 'd'), cls: passCls(consec3Pass) },
+        { label: 'MAX DAY < 40%', value: passVal(maxDayPass), cls: passCls(maxDayPass) },
+        { label: '150K', value: passVal(pass150k), cls: passCls(pass150k) },
+        { label: '50K', value: passVal(pass50k), cls: passCls(pass50k) },
     ];
 
     grid.innerHTML = items.map(i => `

@@ -62,7 +62,6 @@ _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API
 
 class BacktestRequest(BaseModel):
     initial_capital: float = 50000.0
-    max_daily_trades: int = 5
     # Strategy params
     strategy: str = "trend"
     entry_mode: str = "50RE"
@@ -767,7 +766,6 @@ async def run_backtest(req: BacktestRequest):
 
     engine = BacktestEngine(
         config,
-        max_daily_trades=req.max_daily_trades,
         strategy_params=strategy_params,
     )
 
@@ -906,7 +904,6 @@ _live_engine = None
 class LiveStartRequest(BaseModel):
     account_id: int
     contract_id: str = "CON.F.US.ENQ.M26"
-    max_daily_trades: int = 5
     value_area_pct: float = 0.80
     # Strategy params
     strategy: str = "trend"
@@ -997,7 +994,6 @@ async def live_start(req: LiveStartRequest):
         client=_topstepx_client,
         account_id=req.account_id,
         contract_id=req.contract_id,
-        max_daily_trades=req.max_daily_trades,
         value_area_pct=req.value_area_pct,
         skip_engine_sl_tp=False,  # Engine places SL/TP after fill
         strategy_params=live_strategy_params,
@@ -1051,17 +1047,6 @@ async def live_flatten():
         raise HTTPException(400, "Live engine not started")
     await _live_engine.flatten_now()
     return {"success": True, "message": "Flatten executed"}
-
-
-@router.post("/live/reset-trade-count")
-async def live_reset_trade_count():
-    """手動重置每日交易計數 (覆寫 trade_state.json)"""
-    if not _live_engine:
-        raise HTTPException(400, "Live engine not started")
-    _live_engine._daily_trade_count = 0
-    _live_engine._save_trade_count()
-    _live_engine._log_event("手動重置每日交易計數 → 0")
-    return {"success": True, "count": 0}
 
 
 @router.get("/live/status")
