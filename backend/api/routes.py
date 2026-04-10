@@ -33,7 +33,7 @@ from __future__ import annotations
 import os
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -146,6 +146,7 @@ class MetricsResponse(BaseModel):
     profit_factor: float
     max_consecutive_losses: int
     total_pnl: float
+    daily_pnl: Dict[str, float] = {}
     # Per-strategy breakdown
     reversion: Optional[SubMetricsResponse] = None
     trend_follow: Optional[SubMetricsResponse] = None
@@ -862,6 +863,7 @@ async def run_backtest(req: BacktestRequest):
         profit_factor=m.profit_factor,
         max_consecutive_losses=m.max_consecutive_losses,
         total_pnl=m.total_pnl,
+        daily_pnl=m.daily_pnl or {},
         reversion=_sub_resp(m.reversion_metrics),
         trend_follow=_sub_resp(m.trend_follow_metrics),
     )
