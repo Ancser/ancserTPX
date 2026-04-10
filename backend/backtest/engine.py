@@ -210,20 +210,66 @@ class BacktestEngine:
                 return
 
     def _check_exit(self, candle: Candle):
+        """Check SL/TP exit with open-price heuristic for same-candle ambiguity.
+
+        When a single candle hits BOTH SL and TP, we use the open price
+        to infer which was hit first:
+          - Open closer to SL → price likely moved away from SL first → TP hit first
+          - Open closer to TP → price likely moved away from TP first → SL hit first
+        When only one side is hit, there's no ambiguity.
+        """
         pos = self._open_position
         if not pos:
             return
 
         if pos.direction == Direction.BUY:
+            hit_sl = candle.low <= pos.sl_price
+            hit_tp = candle.high >= pos.tp_price
+            if hit_sl and hit_tp:
+                # Ambiguous — use open to decide
+                dist_sl = abs(candle.open - pos.sl_price)
+                dist_tp = abs(candle.open - pos.tp_price)
+                if dist_sl <= dist_tp:
+                    # Open near SL → likely went up first → TP hit first
+                    self._execute_exit(candle, pos.tp_price, ExitReason.TP)
+                else:
+                    # Open near TP → likely went down first → SL hit first
+                    self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+            elif hit_sl:
+                self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+            elif hit_tp:
+                self._execute_exit(candle, pos.tp_price, ExitReason.TP)
+        else:  # SELL
+            hit_sl = candle.high >= pos.sl_price
+            hit_tp = candle.low <= pos.tp_price
+            if hit_sl and hit_tp:
+                dist_sl = abs(candle.open - pos.sl_price)
+                dist_tp = abs(candle.open - pos.tp_price)
+                if dist_sl <= dist_tp:
+                    self._execute_exit(candle, pos.tp_price, ExitReason.TP)
+                else:
+                    self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+            elif hit_sl:
+                self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+            elif hit_tp:
+                self._execute_exit(candle, pos.tp_price, ExitReason.TP)
+
+    def _check_sl_only(self, candle: Candle):
+        """Entry candle: only check SL, skip TP.
+
+        Limit buy fills when price drops to entry — the candle's high
+        may be entirely pre-fill, so TP check would be false positive.
+        Only SL (further drop after fill) is valid on entry candle.
+        """
+        pos = self._open_position
+        if not pos:
+            return
+        if pos.direction == Direction.BUY:
             if candle.low <= pos.sl_price:
                 self._execute_exit(candle, pos.sl_price, ExitReason.SL)
-            elif candle.high >= pos.tp_price:
-                self._execute_exit(candle, pos.tp_price, ExitReason.TP)
-        else:
+        else:  # SELL
             if candle.high >= pos.sl_price:
                 self._execute_exit(candle, pos.sl_price, ExitReason.SL)
-            elif candle.low <= pos.tp_price:
-                self._execute_exit(candle, pos.tp_price, ExitReason.TP)
 
     def _cancel_pending_order(self):
         """Cancel a pending limit order and notify the strategy."""
@@ -259,6 +305,13 @@ class BacktestEngine:
             self._execute_entry(order, candle)
             self._pending_order = None
             self._pending_age = 0
+            # On the ENTRY candle, only check SL — never TP.
+            # Reason: limit buy fills when price DROPS to entry.
+            # The candle's high might be BEFORE the fill (pre-entry).
+            # TP requires price to move in our favor AFTER entry,
+            # which we can only confirm on the NEXT candle.
+            if self._open_position:
+                self._check_sl_only(candle)
             return True
 
         return False

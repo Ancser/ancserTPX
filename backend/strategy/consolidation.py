@@ -503,11 +503,11 @@ class SessionZoneDetector:
     RTH_START_MINUTE = 30
     AH_START_HOUR = 20              # 16:00 ET = 20:00 UTC — 盤後開始
 
-    # Minimum development hours per session
-    MIN_DEV_HOURS_ASIA = 2.0        # 亞盤最少 2 小時發展
-    MIN_DEV_HOURS_PRE = 1.5         # 盤前最少 1.5 小時發展
-    MIN_DEV_HOURS_RTH = 1.5         # 早盤最少 1.5 小時
-    MIN_DEV_HOURS_AH = 0.5          # 盤後最少 0.5 小時
+    # Minimum development hours per session (方案C: 統一 0.5h 快速交易)
+    MIN_DEV_HOURS_ASIA = 0.5
+    MIN_DEV_HOURS_PRE = 0.5
+    MIN_DEV_HOURS_RTH = 0.5
+    MIN_DEV_HOURS_AH = 0.5
 
     # Maturity criteria
     MATURITY_STABLE_CANDLES = 60    # VAH and VAL 穩定持續 60 根 (1 小時)
