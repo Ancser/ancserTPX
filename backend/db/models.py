@@ -285,10 +285,10 @@ class BreakoutAnalysis:
 class StrategyParams:
     """可配置的策略參數 (SessionTrendFollow)"""
     strategy: str = "trend"              # "trend" | "reversion"
-    entry_mode: str = "50RE"             # "50RE" | "100RE"
-    tp_ticks: int = 50                   # 25, 50, 75, 100
-    sl_ticks: int = 50                   # 25, 50, 75, 100
-    entry_timeout_minutes: int = 30      # 10, 20, 30
+    entry_mode: str = "100RE"            # "50RE" | "100RE"
+    tp_ticks: int = 75                   # 25-600 tick
+    sl_ticks: int = 50                   # 25-600 tick
+    entry_timeout_minutes: int = 10      # 10, 20, 30
     tp_timeout_minutes: int = 0          # 0 (OFF), 30, 60
     tp_timeout_action: str = "flat"      # "flat", "3", "2", "1"
 
