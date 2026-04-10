@@ -834,7 +834,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.6.13</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.6.14</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -3203,7 +3203,7 @@ function renderMetrics(m) {
     const dailyEntries = Object.entries(m.daily_pnl || {}).sort((a, b) => a[0].localeCompare(b[0]));
     const dailyPnls = dailyEntries.map(e => e[1]);
 
-    // Check 1 (Topstep Consistency XFA): 3 consecutive winning days each ≥ +$150
+    // Check 1 (Topstep Consistency XFA): 3 consecutive profitable days (net ≥ $150)
     let streak = 0;
     let maxStreak = 0;
     for (const p of dailyPnls) {
@@ -3221,10 +3221,16 @@ function renderMetrics(m) {
     const totalPos = m.total_pnl > 0;
     const maxDayPass = totalPos && maxDayPnl < (m.total_pnl * 0.4);
 
-    // 150K combine: above 2 checks + total > 9000 + maxDD < 4500
-    const pass150k = consec3Pass && maxDayPass && m.total_pnl > 9000 && m.max_drawdown < 4500;
-    // 50K combine: above 2 checks + total > 3000 + maxDD < 2000
-    const pass50k = consec3Pass && maxDayPass && m.total_pnl > 3000 && m.max_drawdown < 2000;
+    // Project to 30 days from backtest sample
+    const tradingDays = dailyPnls.length || 1;
+    const dailyAvg = m.total_pnl / tradingDays;
+    const projected30 = dailyAvg * 30;
+    const projectedDD = m.max_drawdown;  // DD doesn't scale — use actual
+
+    // 150K combine: above 2 checks + projected 30d total > 9000 + maxDD < 4500
+    const pass150k = consec3Pass && maxDayPass && projected30 > 9000 && projectedDD < 4500;
+    // 50K combine: above 2 checks + projected 30d total > 3000 + maxDD < 2000
+    const pass50k = consec3Pass && maxDayPass && projected30 > 3000 && projectedDD < 2000;
 
     const passVal = (ok) => ok ? 'PASS' : 'NO';
     const passCls = (ok) => ok ? 'pos' : 'neg';
@@ -3240,7 +3246,7 @@ function renderMetrics(m) {
         { label: 'MAX DD', value: '$' + m.max_drawdown.toFixed(0), cls: 'neg' },
         { label: 'SHARPE', value: m.sharpe_ratio.toFixed(2), cls: m.sharpe_ratio >= 1 ? 'pos' : '' },
         { label: 'PROFIT FACTOR', value: m.profit_factor === Infinity ? 'INF' : m.profit_factor.toFixed(2), cls: m.profit_factor >= 1.5 ? 'pos' : '' },
-        { label: '3D × +$150', value: consec3Pass ? 'PASS' : (maxStreak + 'd'), cls: passCls(consec3Pass) },
+        { label: '3D連勝', value: consec3Pass ? 'PASS' : (maxStreak + '天連勝'), cls: passCls(consec3Pass) },
         { label: 'MAX DAY < 40%', value: passVal(maxDayPass), cls: passCls(maxDayPass) },
         { label: '150K', value: passVal(pass150k), cls: passCls(pass150k) },
         { label: '50K', value: passVal(pass50k), cls: passCls(pass50k) },
