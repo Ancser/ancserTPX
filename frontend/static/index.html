@@ -834,7 +834,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.7.1</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.8.1</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -2102,7 +2102,7 @@ async function pollLiveCandle() {
                 volumeSeries.update({
                     time: t,
                     value: c.volume || 0,
-                    color: c.close >= c.open ? 'rgba(0,229,160,0.3)' : 'rgba(255,64,96,0.3)',
+                    color: c.close >= c.open ? 'rgba(136,136,136,0.3)' : 'rgba(85,85,85,0.3)',
                 });
             }
             updated++;
@@ -2165,12 +2165,12 @@ function initChart() {
     });
 
     candleSeries = chart.addCandlestickSeries({
-        upColor: '#00e5a0',
-        downColor: '#ff4060',
-        borderDownColor: '#ff4060',
-        borderUpColor: '#00e5a0',
-        wickDownColor: '#ff4060',
-        wickUpColor: '#00e5a0',
+        upColor: '#888888',
+        downColor: '#555555',
+        borderDownColor: '#555555',
+        borderUpColor: '#888888',
+        wickDownColor: '#555555',
+        wickUpColor: '#888888',
     });
 
     volumeSeries = chart.addHistogramSeries({
@@ -2195,6 +2195,7 @@ function initChart() {
             clearPositionOverlay();
             drawPositionTools(backtestData.trades);
         }
+        if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
     }).observe(container);
 
     // Redraw VP overlay on scroll / zoom — continuous following via rAF
@@ -2208,6 +2209,7 @@ function initChart() {
                 clearPositionOverlay();
                 drawPositionTools(backtestData.trades);
             }
+            if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
         });
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(_redrawOverlays);
@@ -2744,6 +2746,117 @@ function drawPositionTools(trades) {
     });
 }
 
+function drawLiveTrades(trades) {
+    if (!trades || trades.length === 0) return;
+
+    const canvas = createPosToolCanvas();
+    const container = document.getElementById('chart-container');
+    const dpr = window.devicePixelRatio || 1;
+    const ctx = canvas.getContext('2d');
+    const chartW = container.clientWidth;
+    const chartH = container.clientHeight;
+
+    let drawn = 0;
+    const maxDraw = 30;
+
+    trades.forEach((t) => {
+        if (drawn >= maxDraw) return;
+
+        const isBuy = t.direction === 'buy';
+        const entryY = candleSeries.priceToCoordinate(t.entry_price);
+        if (entryY === null) return;
+        if (entryY < -50 || entryY > chartH + 50) return;
+
+        const entryTime = isoToChartTime(t.entry_time);
+        const entryX = chart.timeScale().timeToCoordinate(entryTime);
+        if (entryX === null) return;
+        if (entryX < -200 || entryX > chartW + 50) return;
+
+        let exitX = entryX + 100;
+        if (t.exit_time) {
+            const exitTime = isoToChartTime(t.exit_time);
+            const ex = chart.timeScale().timeToCoordinate(exitTime);
+            if (ex !== null && ex > entryX) exitX = ex;
+        }
+
+        const width = Math.min(Math.max(60, exitX - entryX), chartW - entryX);
+        const right = entryX + width;
+
+        const pnlVal = t.pnl || 0;
+        const pnlStr = (pnlVal >= 0 ? '+' : '') + '$' + Math.abs(pnlVal).toFixed(0);
+        const isWin = pnlVal >= 0;
+
+        // Exit price line (if available)
+        const exitY = t.exit_price ? candleSeries.priceToCoordinate(t.exit_price) : null;
+
+        // ── Background zone between entry and exit ──
+        if (exitY !== null) {
+            const zoneTop = Math.min(entryY, exitY);
+            const zoneH = Math.max(Math.abs(exitY - entryY), 2);
+            ctx.fillStyle = isWin ? 'rgba(255, 255, 255, 0.05)' : 'rgba(255, 255, 255, 0.03)';
+            ctx.fillRect(entryX, zoneTop, width, zoneH);
+            // Exit line (dashed white)
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(entryX, exitY);
+            ctx.lineTo(right, exitY);
+            ctx.stroke();
+        }
+
+        // ── SL/TP lines if available (from engine-tracked trades) ──
+        if (t.sl_price && t.tp_price) {
+            const slY = candleSeries.priceToCoordinate(t.sl_price);
+            const tpY = candleSeries.priceToCoordinate(t.tp_price);
+            if (slY !== null) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([3, 4]);
+                ctx.beginPath();
+                ctx.moveTo(entryX, slY);
+                ctx.lineTo(right, slY);
+                ctx.stroke();
+            }
+            if (tpY !== null) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+                ctx.setLineDash([3, 4]);
+                ctx.beginPath();
+                ctx.moveTo(entryX, tpY);
+                ctx.lineTo(right, tpY);
+                ctx.stroke();
+            }
+        }
+
+        // ── Entry line (solid white) ──
+        ctx.setLineDash([]);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(entryX, entryY);
+        ctx.lineTo(right, entryY);
+        ctx.stroke();
+
+        // ── PnL label ──
+        const dirLabel = isBuy ? 'LONG' : 'SHORT';
+        const labelText = dirLabel + ' ' + pnlStr;
+        ctx.font = '10px "Share Tech Mono", monospace';
+        const lblW = ctx.measureText(labelText).width + 10;
+        const lblX = entryX + 4;
+        const lblY = entryY - 18;
+        ctx.fillStyle = isWin ? 'rgba(0, 229, 160, 0.15)' : 'rgba(255, 64, 96, 0.15)';
+        ctx.fillRect(lblX, lblY, lblW, 15);
+        ctx.strokeStyle = isWin ? 'rgba(0, 229, 160, 0.4)' : 'rgba(255, 64, 96, 0.4)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(lblX, lblY, lblW, 15);
+        ctx.fillStyle = isWin ? 'rgba(0, 229, 160, 0.9)' : 'rgba(255, 64, 96, 0.9)';
+        ctx.textAlign = 'left';
+        ctx.fillText(labelText, lblX + 4, lblY + 11);
+
+        drawn++;
+    });
+}
+
 function drawPendingOrderOverlay(po, idx) {
     const canvas = createPosToolCanvas();
     const container = document.getElementById('chart-container');
@@ -2943,6 +3056,9 @@ async function connectAPI() {
         // Fetch and display chart data
         await fetchAndShowChart(barUnitRaw === '30s' ? '30s' : unitNumber + 'm');
 
+        // Fetch trade history from TopstepX (refresh from API)
+        fetchAndDrawTradeHistory(true);
+
     } catch(e) {
         setStatus('err', 'FAILED');
         log('Connection failed: ' + e.message, 'error');
@@ -2978,7 +3094,7 @@ function showCandleData(candles) {
         if (seen.has(t)) return;
         seen.add(t);
         chartData.push({ time: t, open: c.open, high: c.high, low: c.low, close: c.close });
-        volData.push({ time: t, value: c.volume, color: c.close >= c.open ? 'rgba(0,229,160,0.3)' : 'rgba(255,64,96,0.3)' });
+        volData.push({ time: t, value: c.volume, color: c.close >= c.open ? 'rgba(136,136,136,0.3)' : 'rgba(85,85,85,0.3)' });
     });
 
     chartData.sort((a, b) => a.time - b.time);
@@ -3081,11 +3197,30 @@ async function runBacktest() {
         renderTrades(backtestData.trades);
         renderZones(backtestData.zones);
 
+        // Overlay real trade history from TopstepX
+        fetchAndDrawTradeHistory(false);
+
     } catch(e) {
         log('Backtest failed: ' + e.message, 'error');
     } finally {
         btn.disabled = false;
         btn.textContent = 'EXECUTE BACKTEST';
+    }
+}
+
+async function fetchAndDrawTradeHistory(refresh) {
+    try {
+        const url = API + '/live/trade-history' + (refresh ? '?refresh=true' : '');
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.trades && data.trades.length > 0) {
+            window._liveCompletedTrades = data.trades;
+            drawLiveTrades(data.trades);
+            log('[HISTORY] ' + data.count + ' trades loaded (' + data.source + ')', 'info');
+        }
+    } catch(e) {
+        // silent fail — cache may not exist yet
     }
 }
 
@@ -3149,6 +3284,7 @@ function startOverlaySync() {
             const zonesToDraw = _cachedVPZones || data.zones;
             if (zonesToDraw) drawVolumeProfile(zonesToDraw);
             if (data.trades) drawPositionTools(data.trades);
+            if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
         }
     }
 
@@ -3221,17 +3357,6 @@ function renderMetrics(m) {
     const totalPos = m.total_pnl > 0;
     const maxDayPass = totalPos && maxDayPnl < (m.total_pnl * 0.4);
 
-    // Project to 30 days from backtest sample
-    const tradingDays = dailyPnls.length || 1;
-    const dailyAvg = m.total_pnl / tradingDays;
-    const projected30 = dailyAvg * 30;
-    const projectedDD = m.max_drawdown;  // DD doesn't scale — use actual
-
-    // 150K combine: above 2 checks + projected 30d total > 9000 + maxDD < 4500
-    const pass150k = consec3Pass && maxDayPass && projected30 > 9000 && projectedDD < 4500;
-    // 50K combine: above 2 checks + projected 30d total > 3000 + maxDD < 2000
-    const pass50k = consec3Pass && maxDayPass && projected30 > 3000 && projectedDD < 2000;
-
     const passVal = (ok) => ok ? 'PASS' : 'NO';
     const passCls = (ok) => ok ? 'pos' : 'neg';
 
@@ -3248,8 +3373,6 @@ function renderMetrics(m) {
         { label: 'PROFIT FACTOR', value: m.profit_factor === Infinity ? 'INF' : m.profit_factor.toFixed(2), cls: m.profit_factor >= 1.5 ? 'pos' : '' },
         { label: '3D連勝', value: consec3Pass ? 'PASS' : (maxStreak + '天連勝'), cls: passCls(consec3Pass) },
         { label: 'MAX DAY < 40%', value: passVal(maxDayPass), cls: passCls(maxDayPass) },
-        { label: '150K', value: passVal(pass150k), cls: passCls(pass150k) },
-        { label: '50K', value: passVal(pass50k), cls: passCls(pass50k) },
     ];
 
     grid.innerHTML = items.map(i => `

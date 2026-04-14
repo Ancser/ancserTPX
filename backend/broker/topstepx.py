@@ -528,6 +528,16 @@ class TopstepXClient:
         logger.info(f"[ORDER SEARCH] parsed {len(orders)} orders")
         return orders
 
+    async def get_trade_history(self, account_id: int) -> List[Dict]:
+        """查詢已完成交易歷史 (Trades tab in TopstepX)"""
+        data = await self._request(
+            "POST", "/api/Trade/search",
+            json={"accountId": account_id}
+        )
+        trades = data.get("trades", data if isinstance(data, list) else [])
+        logger.info(f"[TRADE HISTORY] account={account_id} | {len(trades)} trades")
+        return trades
+
     async def get_open_orders(self, account_id: int) -> List[Dict]:
         """查詢未成交掛單 (使用 searchOpen 端點)"""
         data = await self._request(

@@ -424,12 +424,14 @@ class SessionTrendFollow:
         self._consecutive_outside: int = 0
         self._breakout_direction: Optional[str] = None  # "up" | "down"
         self._ref_zone = None  # snapshot of zone at breakout
+        self._recent_candles: List[Candle] = []  # lookback buffer
 
     def reset(self):
         self._state = "idle"
         self._consecutive_outside = 0
         self._breakout_direction = None
         self._ref_zone = None
+        self._recent_candles = []
 
     def evaluate(
         self,
@@ -439,13 +441,15 @@ class SessionTrendFollow:
     ) -> Optional[TradeSignal]:
         """
         每根 1m K 線調用一次.
-
-        Args:
-            candle:    current 1m candle
-            zone:      active session zone (from SessionZoneDetector)
-            is_mature: whether zone is mature
+        Lookback 模式: 不用累進 +1 計數器, 而是直接看最近 5 根 K 線
+        是否全部 close 在 VAH/VAL 之外. 這樣重啟腳本也能立即判定.
         """
-        # No mature zone — keep breakout count during session transitions
+        # Keep sliding window of recent candles
+        self._recent_candles.append(candle)
+        if len(self._recent_candles) > 20:
+            self._recent_candles = self._recent_candles[-20:]
+
+        # No mature zone — keep buffer but don't evaluate
         if not zone or not is_mature:
             return None
 
@@ -461,33 +465,43 @@ class SessionTrendFollow:
         vah = zone.vah_80
         val = zone.val_80
 
-        # ── Check breakout direction ──
-        if candle.close > vah:
-            current_dir = "up"
-        elif candle.close < val:
-            current_dir = "down"
+        # ── Lookback: check last N candles for consecutive breakout ──
+        n = self.BREAKOUT_CONFIRM_CANDLES
+        recent = self._recent_candles[-n:] if len(self._recent_candles) >= n else self._recent_candles
+
+        # Count consecutive candles outside from the END (most recent)
+        up_count = 0
+        down_count = 0
+        for c in reversed(recent):
+            if c.close > vah:
+                if down_count > 0:
+                    break  # direction changed
+                up_count += 1
+            elif c.close < val:
+                if up_count > 0:
+                    break  # direction changed
+                down_count += 1
+            else:
+                break  # inside VA
+
+        self._consecutive_outside = max(up_count, down_count)
+
+        if up_count > 0:
+            self._breakout_direction = "up"
+        elif down_count > 0:
+            self._breakout_direction = "down"
         else:
-            # Inside VA → reset
-            self._consecutive_outside = 0
             self._breakout_direction = None
             self._state = "idle"
             return None
 
-        # ── Count consecutive outside ──
-        if current_dir == self._breakout_direction:
-            self._consecutive_outside += 1
-        else:
-            # Direction changed
-            self._breakout_direction = current_dir
-            self._consecutive_outside = 1
-
         self._state = "watching"
 
         # ── 5 consecutive → confirmed breakout ──
-        if self._consecutive_outside >= self.BREAKOUT_CONFIRM_CANDLES:
+        if self._consecutive_outside >= n:
             self._state = "confirmed"
             self._ref_zone = zone
-            return self._generate_signal(candle, zone, current_dir)
+            return self._generate_signal(candle, zone, self._breakout_direction)
 
         return None
 

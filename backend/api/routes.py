@@ -1127,9 +1127,96 @@ async def live_account_state():
         raise HTTPException(500, f"Failed to read account state: {e}")
 
 
-# ── Presets (JSON file) ────────────────────────────────
+# ── Trade History (from TopstepX API, cached to disk) ──
 
 import json as _json
+
+_TRADE_HISTORY_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "data", "trade_history.json"
+)
+
+
+def _load_trade_history_cache() -> List[dict]:
+    try:
+        if os.path.exists(_TRADE_HISTORY_FILE):
+            with open(_TRADE_HISTORY_FILE, "r", encoding="utf-8") as f:
+                return _json.load(f)
+    except Exception:
+        pass
+    return []
+
+
+def _save_trade_history_cache(trades: List[dict]):
+    os.makedirs(os.path.dirname(_TRADE_HISTORY_FILE), exist_ok=True)
+    with open(_TRADE_HISTORY_FILE, "w", encoding="utf-8") as f:
+        _json.dump(trades, f, indent=2)
+
+
+def _normalize_topstep_trade(t: dict) -> dict:
+    """Convert TopstepX trade record to our chart-drawable format."""
+    # TopstepX fields: id, entryTime, exitTime, entryPrice, exitPrice,
+    #   pnl, side (0=Long,1=Short), contractId, size, commission, fees
+    side = t.get("side", 0)
+    direction = "buy" if side == 0 else "sell"
+    entry_price = t.get("entryPrice", 0)
+    exit_price = t.get("exitPrice", 0)
+    pnl = t.get("pnl", 0)
+    return {
+        "trade_id": t.get("id", ""),
+        "direction": direction,
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "entry_time": t.get("entryTime", ""),
+        "exit_time": t.get("exitTime", ""),
+        "sl_price": 0,
+        "tp_price": 0,
+        "pnl": pnl,
+        "exit_reason": "tp" if pnl >= 0 else "sl",
+        "source": "topstep",
+    }
+
+
+@router.get("/live/trade-history")
+async def live_trade_history(refresh: bool = False):
+    """
+    Get trade history. Returns cached data by default.
+    Pass ?refresh=true to re-fetch from TopstepX API.
+    """
+    if not refresh:
+        cached = _load_trade_history_cache()
+        if cached:
+            return {"trades": cached, "source": "cache", "count": len(cached)}
+
+    if not _topstepx_client:
+        # Return cache or empty if no client
+        cached = _load_trade_history_cache()
+        return {"trades": cached, "source": "cache", "count": len(cached)}
+
+    try:
+        accounts = await _topstepx_client.get_accounts()
+        all_trades = []
+        for acc in accounts:
+            acc_id = acc.get("id")
+            try:
+                raw_trades = await _topstepx_client.get_trade_history(acc_id)
+                for t in raw_trades:
+                    all_trades.append(_normalize_topstep_trade(t))
+            except Exception as e:
+                logger.warning(f"[TRADE HISTORY] account {acc_id} failed: {e}")
+
+        if all_trades:
+            _save_trade_history_cache(all_trades)
+
+        return {"trades": all_trades, "source": "api", "count": len(all_trades)}
+
+    except Exception as e:
+        logger.error(f"[TRADE HISTORY] failed: {e}")
+        cached = _load_trade_history_cache()
+        return {"trades": cached, "source": "cache_fallback", "count": len(cached)}
+
+
+# ── Presets (JSON file) ────────────────────────────────
 
 _PRESETS_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),

@@ -48,6 +48,7 @@ POINT_VALUE = 20.0
 TICK_SIZE = 0.25
 
 
+
 class LiveTradingEngine:
     """即時交易引擎 — Session 模式 (1m K 線, 晚盤 overnight zone)"""
 
@@ -978,8 +979,9 @@ class LiveTradingEngine:
 
                 # Record entry trade for chart markers
                 sig_dir = "buy"
-                if self._pending_signal:
-                    sig_dir = self._pending_signal.direction.value
+                sig = self._pending_signal
+                if sig:
+                    sig_dir = sig.direction.value
                 self._trades.append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "entry",
