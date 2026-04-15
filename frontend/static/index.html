@@ -834,7 +834,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.8.1</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.8.2</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -1361,6 +1361,9 @@ document.addEventListener('DOMContentLoaded', () => {
     loadEnvConfig();
     updateClock();
     setInterval(updateClock, 1000);
+
+    // Load trade history from cache on page init (no API call)
+    setTimeout(() => fetchAndDrawTradeHistory(false), 500);
 
     // Auto-set date range: last 7 days → today
     const today = new Date();
@@ -2196,6 +2199,7 @@ function initChart() {
             drawPositionTools(backtestData.trades);
         }
         if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
+        drawSessionDividers();
     }).observe(container);
 
     // Redraw VP overlay on scroll / zoom — continuous following via rAF
@@ -2210,6 +2214,7 @@ function initChart() {
                 drawPositionTools(backtestData.trades);
             }
             if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
+            drawSessionDividers();
         });
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(_redrawOverlays);
@@ -2239,6 +2244,94 @@ function createVPOverlay() {
     container.appendChild(canvas);
     vpOverlayCanvas = canvas;
     return canvas;
+}
+
+let sessionDividerCanvas = null;
+function createSessionDividerCanvas() {
+    if (sessionDividerCanvas) return sessionDividerCanvas;
+    const container = document.getElementById('chart-container');
+    const canvas = document.createElement('canvas');
+    canvas.id = 'session-divider-overlay';
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2;';
+    container.appendChild(canvas);
+    sessionDividerCanvas = canvas;
+    return canvas;
+}
+
+// Session boundaries in UTC (hour, minute, label)
+// ASIA 22:00 → EURO 07:00 → PRE 11:00 → RTH 13:30 → AH 20:00 → ASIA 22:00
+const SESSION_BOUNDARIES = [
+    { h: 22, m: 0,  label: 'ASIA' },
+    { h: 7,  m: 0,  label: 'EURO' },
+    { h: 11, m: 0,  label: 'PRE'  },
+    { h: 13, m: 30, label: 'RTH'  },
+    { h: 20, m: 0,  label: 'AH'   },
+];
+
+function drawSessionDividers() {
+    if (!candleSeries || !chart) return;
+    const canvas = createSessionDividerCanvas();
+    const container = document.getElementById('chart-container');
+    const dpr = window.devicePixelRatio || 1;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    // Get visible time range
+    const range = chart.timeScale().getVisibleRange();
+    if (!range || !range.from || !range.to) return;
+
+    // Iterate over each calendar day in the visible range, find each session boundary
+    const fromMs = range.from * 1000;
+    const toMs = range.to * 1000;
+    const dayMs = 86400000;
+
+    // Start one day earlier to catch boundaries that may be visible
+    const startDay = new Date(fromMs - dayMs);
+    startDay.setUTCHours(0, 0, 0, 0);
+    const endMs = toMs + dayMs;
+
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.font = '9px "Share Tech Mono", monospace';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.textAlign = 'left';
+
+    for (let d = startDay.getTime(); d <= endMs; d += dayMs) {
+        const day = new Date(d);
+        SESSION_BOUNDARIES.forEach(b => {
+            const boundary = new Date(Date.UTC(
+                day.getUTCFullYear(),
+                day.getUTCMonth(),
+                day.getUTCDate(),
+                b.h, b.m, 0
+            ));
+            const bMs = boundary.getTime();
+            if (bMs < fromMs - dayMs || bMs > toMs + dayMs) return;
+
+            // Convert to lightweight-charts time (local offset hack used elsewhere)
+            const localOffset = new Date().getTimezoneOffset() * -60;
+            const chartTime = Math.floor(bMs / 1000) + localOffset;
+            const x = chart.timeScale().timeToCoordinate(chartTime);
+            if (x === null || x < 0 || x > W) return;
+
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, H);
+            ctx.stroke();
+
+            // Label at top
+            ctx.fillText(b.label, x + 3, 11);
+        });
+    }
 }
 
 function drawVolumeProfile(zones) {
@@ -2757,7 +2850,13 @@ function drawLiveTrades(trades) {
     const chartH = container.clientHeight;
 
     let drawn = 0;
-    const maxDraw = 30;
+    const maxDraw = 50;
+
+    // LIVE/HISTORY palette — cyan (distinct from backtest green/red and gray candles)
+    const LIVE_LINE = 'rgba(100, 220, 255, 0.85)';
+    const LIVE_FILL_WIN = 'rgba(100, 220, 255, 0.10)';
+    const LIVE_FILL_LOSS = 'rgba(100, 220, 255, 0.05)';
+    const LIVE_DIM = 'rgba(100, 220, 255, 0.35)';
 
     trades.forEach((t) => {
         if (drawn >= maxDraw) return;
@@ -2793,10 +2892,10 @@ function drawLiveTrades(trades) {
         if (exitY !== null) {
             const zoneTop = Math.min(entryY, exitY);
             const zoneH = Math.max(Math.abs(exitY - entryY), 2);
-            ctx.fillStyle = isWin ? 'rgba(255, 255, 255, 0.05)' : 'rgba(255, 255, 255, 0.03)';
+            ctx.fillStyle = isWin ? LIVE_FILL_WIN : LIVE_FILL_LOSS;
             ctx.fillRect(entryX, zoneTop, width, zoneH);
-            // Exit line (dashed white)
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            // Exit line (cyan dashed)
+            ctx.strokeStyle = LIVE_DIM;
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 3]);
             ctx.beginPath();
@@ -2805,37 +2904,29 @@ function drawLiveTrades(trades) {
             ctx.stroke();
         }
 
-        // ── SL/TP lines if available (from engine-tracked trades) ──
-        if (t.sl_price && t.tp_price) {
-            const slY = candleSeries.priceToCoordinate(t.sl_price);
-            const tpY = candleSeries.priceToCoordinate(t.tp_price);
-            if (slY !== null) {
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-                ctx.lineWidth = 1;
-                ctx.setLineDash([3, 4]);
-                ctx.beginPath();
-                ctx.moveTo(entryX, slY);
-                ctx.lineTo(right, slY);
-                ctx.stroke();
-            }
-            if (tpY !== null) {
-                ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-                ctx.setLineDash([3, 4]);
-                ctx.beginPath();
-                ctx.moveTo(entryX, tpY);
-                ctx.lineTo(right, tpY);
-                ctx.stroke();
-            }
-        }
-
-        // ── Entry line (solid white) ──
+        // ── Entry line (solid cyan) ──
         ctx.setLineDash([]);
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+        ctx.strokeStyle = LIVE_LINE;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(entryX, entryY);
         ctx.lineTo(right, entryY);
         ctx.stroke();
+
+        // Direction arrow at entry
+        ctx.fillStyle = LIVE_LINE;
+        ctx.beginPath();
+        if (isBuy) {
+            ctx.moveTo(entryX, entryY);
+            ctx.lineTo(entryX - 6, entryY + 6);
+            ctx.lineTo(entryX - 6, entryY - 6);
+        } else {
+            ctx.moveTo(entryX, entryY);
+            ctx.lineTo(entryX - 6, entryY - 6);
+            ctx.lineTo(entryX - 6, entryY + 6);
+        }
+        ctx.closePath();
+        ctx.fill();
 
         // ── PnL label ──
         const dirLabel = isBuy ? 'LONG' : 'SHORT';
@@ -2844,12 +2935,12 @@ function drawLiveTrades(trades) {
         const lblW = ctx.measureText(labelText).width + 10;
         const lblX = entryX + 4;
         const lblY = entryY - 18;
-        ctx.fillStyle = isWin ? 'rgba(0, 229, 160, 0.15)' : 'rgba(255, 64, 96, 0.15)';
+        ctx.fillStyle = 'rgba(100, 220, 255, 0.18)';
         ctx.fillRect(lblX, lblY, lblW, 15);
-        ctx.strokeStyle = isWin ? 'rgba(0, 229, 160, 0.4)' : 'rgba(255, 64, 96, 0.4)';
+        ctx.strokeStyle = LIVE_LINE;
         ctx.lineWidth = 1;
         ctx.strokeRect(lblX, lblY, lblW, 15);
-        ctx.fillStyle = isWin ? 'rgba(0, 229, 160, 0.9)' : 'rgba(255, 64, 96, 0.9)';
+        ctx.fillStyle = isWin ? 'rgba(0, 229, 160, 0.95)' : 'rgba(255, 64, 96, 0.95)';
         ctx.textAlign = 'left';
         ctx.fillText(labelText, lblX + 4, lblY + 11);
 
@@ -3105,6 +3196,7 @@ function showCandleData(candles) {
     window._lastChartData = chartData;
 
     applyDefaultChartView(chartData);
+    drawSessionDividers();
 }
 
 function applyDefaultChartView(chartData, zones) {
@@ -3285,6 +3377,7 @@ function startOverlaySync() {
             if (zonesToDraw) drawVolumeProfile(zonesToDraw);
             if (data.trades) drawPositionTools(data.trades);
             if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
+            drawSessionDividers();
         }
     }
 

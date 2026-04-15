@@ -528,14 +528,24 @@ class TopstepXClient:
         logger.info(f"[ORDER SEARCH] parsed {len(orders)} orders")
         return orders
 
-    async def get_trade_history(self, account_id: int) -> List[Dict]:
-        """查詢已完成交易歷史 (Trades tab in TopstepX)"""
-        data = await self._request(
-            "POST", "/api/Trade/search",
-            json={"accountId": account_id}
-        )
+    async def get_trade_history(
+        self, account_id: int, days: int = 60
+    ) -> List[Dict]:
+        """查詢已完成交易歷史 (Trades tab in TopstepX) — last `days` days."""
+        from datetime import datetime, timedelta
+        end = datetime.utcnow()
+        start = end - timedelta(days=days)
+        payload = {
+            "accountId": account_id,
+            "startTimestamp": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "endTimestamp": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        data = await self._request("POST", "/api/Trade/search", json=payload)
         trades = data.get("trades", data if isinstance(data, list) else [])
-        logger.info(f"[TRADE HISTORY] account={account_id} | {len(trades)} trades")
+        logger.info(
+            f"[TRADE HISTORY] account={account_id} | {len(trades)} trades "
+            f"(window: {payload['startTimestamp']} → {payload['endTimestamp']})"
+        )
         return trades
 
     async def get_open_orders(self, account_id: int) -> List[Dict]:
