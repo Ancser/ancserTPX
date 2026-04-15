@@ -672,7 +672,7 @@ class LiveTradingEngine:
         active_zone = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
 
-        # If current zone not mature, use last completed zone for continuity
+        # Default: use current zone if mature, fall back to last LEFT
         eval_zone = active_zone
         eval_mature = is_mature
         if not is_mature:

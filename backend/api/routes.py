@@ -1153,67 +1153,241 @@ def _save_trade_history_cache(trades: List[dict]):
         _json.dump(trades, f, indent=2)
 
 
-def _normalize_topstep_trade(t: dict) -> dict:
-    """Convert TopstepX trade record to our chart-drawable format."""
-    # TopstepX fields: id, entryTime, exitTime, entryPrice, exitPrice,
-    #   pnl, side (0=Long,1=Short), contractId, size, commission, fees
-    side = t.get("side", 0)
-    direction = "buy" if side == 0 else "sell"
-    entry_price = t.get("entryPrice", 0)
-    exit_price = t.get("exitPrice", 0)
-    pnl = t.get("pnl", 0)
+def _normalize_topstep_fill(t: dict) -> dict:
+    """
+    Convert TopstepX raw fill (ProjectX Gateway /api/Trade/search item)
+    to a normalized intermediate format.
+
+    Raw TopstepX fill fields (defensive — API may evolve):
+      id, accountId, contractId, creationTimestamp, price,
+      profitAndLoss (null for openers, non-null for closers),
+      fees, side (0=Buy/Long, 1=Sell/Short), size, voided, orderId
+    """
+    # side → direction with multiple possible keys
+    side = t.get("side")
+    if side is None:
+        side = t.get("Side", 0)
+    if isinstance(side, str):
+        direction = "buy" if side.lower() in ("buy", "long", "0") else "sell"
+    else:
+        direction = "buy" if side == 0 else "sell"
+
+    # Price — try several field names
+    price = (
+        t.get("price")
+        or t.get("Price")
+        or t.get("fillPrice")
+        or t.get("averagePrice")
+        or 0
+    )
+
+    # PnL — openers have null/0
+    pnl_raw = t.get("profitAndLoss")
+    if pnl_raw is None:
+        pnl_raw = t.get("ProfitAndLoss")
+    if pnl_raw is None:
+        pnl_raw = t.get("pnl")
+    is_close = pnl_raw is not None and pnl_raw != 0
+    pnl = pnl_raw if pnl_raw is not None else 0
+
+    # Timestamp — try several field names
+    ts = (
+        t.get("creationTimestamp")
+        or t.get("CreationTimestamp")
+        or t.get("createdAt")
+        or t.get("timestamp")
+        or t.get("fillTime")
+        or ""
+    )
+
     return {
-        "trade_id": t.get("id", ""),
+        "fill_id": t.get("id") or t.get("Id") or t.get("tradeId"),
+        "account_id": t.get("accountId") or t.get("AccountId"),
+        "contract_id": t.get("contractId") or t.get("ContractId") or "",
+        "time": ts,
+        "price": float(price) if price else 0.0,
         "direction": direction,
-        "entry_price": entry_price,
-        "exit_price": exit_price,
-        "entry_time": t.get("entryTime", ""),
-        "exit_time": t.get("exitTime", ""),
-        "sl_price": 0,
-        "tp_price": 0,
-        "pnl": pnl,
-        "exit_reason": "tp" if pnl >= 0 else "sl",
-        "source": "topstep",
+        "size": t.get("size") or t.get("Size") or 0,
+        "pnl": float(pnl) if pnl else 0.0,
+        "fees": t.get("fees") or 0,
+        "is_close": is_close,
+        "order_id": t.get("orderId") or t.get("OrderId"),
     }
 
 
+def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
+    """
+    Pair opening fills with closing fills into round-trip trades per
+    (account_id, contract_id) using FIFO. Unpaired fills become
+    single-point entries so nothing is dropped.
+    """
+    # Sort by time (ISO strings sort chronologically)
+    fills_sorted = sorted(fills, key=lambda f: f.get("time") or "")
+
+    # FIFO queue of open fills per (account, contract)
+    open_legs: Dict[tuple, list] = {}
+    trades: List[dict] = []
+
+    for f in fills_sorted:
+        key = (f.get("account_id"), f.get("contract_id"))
+        if not f["is_close"]:
+            open_legs.setdefault(key, []).append(f)
+            continue
+
+        # Closing fill — pair with earliest matching opener of opposite side
+        queue = open_legs.get(key) or []
+        opener = None
+        for i, o in enumerate(queue):
+            if o["direction"] != f["direction"]:
+                opener = queue.pop(i)
+                break
+
+        if opener is not None:
+            trades.append({
+                "trade_id": str(opener["fill_id"]) + "_" + str(f["fill_id"]),
+                "direction": opener["direction"],
+                "entry_price": opener["price"],
+                "exit_price": f["price"],
+                "entry_time": opener["time"],
+                "exit_time": f["time"],
+                "sl_price": 0,
+                "tp_price": 0,
+                "pnl": f["pnl"],
+                "exit_reason": "tp" if f["pnl"] >= 0 else "sl",
+                "account_id": f.get("account_id"),
+                "contract_id": f.get("contract_id"),
+                "source": "topstep",
+            })
+        else:
+            # Orphan closer — draw as single point
+            trades.append({
+                "trade_id": str(f["fill_id"]),
+                "direction": f["direction"],
+                "entry_price": f["price"],
+                "exit_price": f["price"],
+                "entry_time": f["time"],
+                "exit_time": f["time"],
+                "sl_price": 0,
+                "tp_price": 0,
+                "pnl": f["pnl"],
+                "exit_reason": "tp" if f["pnl"] >= 0 else "sl",
+                "account_id": f.get("account_id"),
+                "contract_id": f.get("contract_id"),
+                "source": "topstep",
+            })
+
+    # Remaining unpaired openers → single-point markers
+    for queue in open_legs.values():
+        for o in queue:
+            trades.append({
+                "trade_id": str(o["fill_id"]),
+                "direction": o["direction"],
+                "entry_price": o["price"],
+                "exit_price": o["price"],
+                "entry_time": o["time"],
+                "exit_time": o["time"],
+                "sl_price": 0,
+                "tp_price": 0,
+                "pnl": 0,
+                "exit_reason": "tp",
+                "account_id": o.get("account_id"),
+                "contract_id": o.get("contract_id"),
+                "source": "topstep",
+            })
+
+    return trades
+
+
 @router.get("/live/trade-history")
-async def live_trade_history(refresh: bool = False):
+async def live_trade_history(refresh: bool = False, account_id: int = 0):
     """
     Get trade history. Returns cached data by default.
     Pass ?refresh=true to re-fetch from TopstepX API.
+    Pass ?account_id=N to only return trades for that account
+    (defaults to the active live engine's account, else all accounts).
     """
+    # Pick the filter account: explicit > live engine > none
+    filter_acc_id = account_id or (
+        getattr(_live_engine, "account_id", 0) if _live_engine else 0
+    )
+
     if not refresh:
         cached = _load_trade_history_cache()
         if cached:
-            return {"trades": cached, "source": "cache", "count": len(cached)}
+            if filter_acc_id:
+                cached = [t for t in cached if t.get("account_id") == filter_acc_id]
+            return {
+                "trades": cached,
+                "source": "cache",
+                "count": len(cached),
+                "account_id": filter_acc_id,
+            }
 
     if not _topstepx_client:
-        # Return cache or empty if no client
         cached = _load_trade_history_cache()
-        return {"trades": cached, "source": "cache", "count": len(cached)}
+        if filter_acc_id:
+            cached = [t for t in cached if t.get("account_id") == filter_acc_id]
+        return {
+            "trades": cached,
+            "source": "cache",
+            "count": len(cached),
+            "account_id": filter_acc_id,
+        }
 
     try:
         accounts = await _topstepx_client.get_accounts()
-        all_trades = []
+        all_fills: List[dict] = []
+        logged_sample = False
         for acc in accounts:
             acc_id = acc.get("id")
             try:
                 raw_trades = await _topstepx_client.get_trade_history(acc_id)
+                if raw_trades and not logged_sample:
+                    logger.info(
+                        f"[TRADE HISTORY] raw sample from acc {acc_id}: "
+                        f"keys={list(raw_trades[0].keys())} | "
+                        f"sample={str(raw_trades[0])[:400]}"
+                    )
+                    logged_sample = True
                 for t in raw_trades:
-                    all_trades.append(_normalize_topstep_trade(t))
+                    norm = _normalize_topstep_fill(t)
+                    # Ensure account_id is set even if missing in raw
+                    if not norm.get("account_id"):
+                        norm["account_id"] = acc_id
+                    all_fills.append(norm)
             except Exception as e:
                 logger.warning(f"[TRADE HISTORY] account {acc_id} failed: {e}")
+
+        all_trades = _pair_fills_to_trades(all_fills)
+        logger.info(
+            f"[TRADE HISTORY] {len(all_fills)} fills → {len(all_trades)} trades"
+        )
 
         if all_trades:
             _save_trade_history_cache(all_trades)
 
-        return {"trades": all_trades, "source": "api", "count": len(all_trades)}
+        out = all_trades
+        if filter_acc_id:
+            out = [t for t in out if t.get("account_id") == filter_acc_id]
+
+        return {
+            "trades": out,
+            "source": "api",
+            "count": len(out),
+            "account_id": filter_acc_id,
+        }
 
     except Exception as e:
         logger.error(f"[TRADE HISTORY] failed: {e}")
         cached = _load_trade_history_cache()
-        return {"trades": cached, "source": "cache_fallback", "count": len(cached)}
+        if filter_acc_id:
+            cached = [t for t in cached if t.get("account_id") == filter_acc_id]
+        return {
+            "trades": cached,
+            "source": "cache_fallback",
+            "count": len(cached),
+            "account_id": filter_acc_id,
+        }
 
 
 # ── Presets (JSON file) ────────────────────────────────

@@ -474,11 +474,12 @@ _logger = logging.getLogger(__name__)
 
 class SessionZoneDetector:
     """
-    Quad-session zone detector — 亞盤 (ASIA) + 歐盤/盤前 (PRE) + 早盤 (RTH) + 盤後 (AH).
+    Penta-session zone detector — 亞盤 (ASIA) + 歐盤 (EURO) + 盤前 (PRE) + 早盤 (RTH) + 盤後 (AH).
 
-    四段 Session (每天 4 個區間):
+    五段 Session (每天 5 個區間):
       - 亞盤 (ASIA): 22:00 UTC (18:00 ET) → 07:00 UTC (03:00 ET)
-      - 盤前 (PRE):  07:00 UTC (03:00 ET) → 13:30 UTC (09:30 ET)
+      - 歐盤 (EURO): 07:00 UTC (03:00 ET) → 11:00 UTC (07:00 ET / 04:00 PT)
+      - 盤前 (PRE):  11:00 UTC (07:00 ET / 04:00 PT) → 13:30 UTC (09:30 ET / 06:30 PT)
       - 早盤 (RTH):  13:30 UTC (09:30 ET) → 20:00 UTC (16:00 ET)
       - 盤後 (AH):   20:00 UTC (16:00 ET) → 22:00 UTC (18:00 ET)
 
@@ -498,13 +499,15 @@ class SessionZoneDetector:
 
     # Session boundaries (all UTC)
     ASIA_START_HOUR = 22            # 18:00 ET = 22:00 UTC — 亞盤開始
-    PRE_START_HOUR = 7              # 03:00 ET = 07:00 UTC — 歐盤/盤前開始
+    EURO_START_HOUR = 7              # 03:00 ET = 07:00 UTC — 歐盤開始
+    PRE_START_HOUR = 11             # 07:00 ET / 04:00 PT = 11:00 UTC — NY 盤前開始
     RTH_START_HOUR = 13             # 09:30 ET = 13:30 UTC — 早盤開始
     RTH_START_MINUTE = 30
     AH_START_HOUR = 20              # 16:00 ET = 20:00 UTC — 盤後開始
 
     # Minimum development hours per session (方案C: 統一 0.5h 快速交易)
     MIN_DEV_HOURS_ASIA = 0.5
+    MIN_DEV_HOURS_EURO = 0.5
     MIN_DEV_HOURS_PRE = 0.5
     MIN_DEV_HOURS_RTH = 0.5
     MIN_DEV_HOURS_AH = 0.5
@@ -654,9 +657,10 @@ class SessionZoneDetector:
 
     def _get_session_id(self, candle: Candle) -> str:
         """
-        Quad-session ID:
+        Penta-session ID:
           - 22:00 UTC → 06:59 UTC  = "YYYY-MM-DD-ASIA" (亞盤)
-          - 07:00 UTC → 13:29 UTC  = "YYYY-MM-DD-PRE"  (盤前)
+          - 07:00 UTC → 10:59 UTC  = "YYYY-MM-DD-EURO" (歐盤)
+          - 11:00 UTC → 13:29 UTC  = "YYYY-MM-DD-PRE"  (NY 盤前)
           - 13:30 UTC → 19:59 UTC  = "YYYY-MM-DD-RTH"  (早盤)
           - 20:00 UTC → 21:59 UTC  = "YYYY-MM-DD-AH"   (盤後)
 
@@ -679,9 +683,13 @@ class SessionZoneDetector:
         ):
             return ts.strftime("%Y-%m-%d") + "-RTH"
 
-        # 07:00 ~ 13:29 UTC → PRE of today's calendar date
+        # 11:00 ~ 13:29 UTC → NY PRE of today
         if h >= self.PRE_START_HOUR:
             return ts.strftime("%Y-%m-%d") + "-PRE"
+
+        # 07:00 ~ 10:59 UTC → EURO of today
+        if h >= self.EURO_START_HOUR:
+            return ts.strftime("%Y-%m-%d") + "-EURO"
 
         # 00:00 ~ 06:59 UTC → still ASIA of PREVIOUS date
         prev = ts - timedelta(days=1)
@@ -756,6 +764,9 @@ class SessionZoneDetector:
             stable_candles = self.MATURITY_STABLE_CANDLES
         elif self._session_date and self._session_date.endswith("-PRE"):
             min_dev_hours = self.MIN_DEV_HOURS_PRE
+            stable_candles = self.MATURITY_STABLE_CANDLES
+        elif self._session_date and self._session_date.endswith("-EURO"):
+            min_dev_hours = self.MIN_DEV_HOURS_EURO
             stable_candles = self.MATURITY_STABLE_CANDLES
         else:
             min_dev_hours = self.MIN_DEV_HOURS_ASIA
