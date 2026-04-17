@@ -175,7 +175,7 @@
         /* ── Layout ── */
         .main { display: flex; height: calc(100vh - 48px); }
         .sidebar {
-            width: 320px;
+            width: 400px;
             background: var(--bg2);
             border-right: 1px solid var(--border);
             overflow-y: auto;
@@ -495,6 +495,12 @@
         }
         .metric-card .value.pos { color: var(--green); }
         .metric-card .value.neg { color: var(--red); }
+        .metric-card .metric-real {
+            font-size: 12px;
+            color: var(--text2);
+            opacity: 0.85;
+            margin-left: 4px;
+        }
         .metric-card:has(.value.pos)::before {
             background: var(--green);
         }
@@ -518,9 +524,9 @@
 
         /* ── Zone Legend ── */
         /* ── Tables ── */
-        .trade-table-wrap { overflow-y: auto; max-height: 300px; }
-        .trade-table-wrap::-webkit-scrollbar { width: 2px; }
-        .trade-table-wrap::-webkit-scrollbar-thumb { background: var(--border-h); }
+        /* No inner scroll — let .bottom-content handle scrolling so sticky thead
+           works against that container without two nested scrollbars. */
+        .trade-table-wrap { }
         table { width: 100%; border-collapse: collapse; }
         th {
             background: var(--bg3);
@@ -529,6 +535,7 @@
             text-align: left;
             position: sticky;
             top: 0;
+            z-index: 3;
             font-family: 'Rajdhani', sans-serif;
             font-size: 11px;
             font-weight: 600;
@@ -612,6 +619,9 @@
             pointer-events: none;
         }
         .bottom-content { flex: 1; overflow-y: auto; padding: 0; }
+        .bottom-content::-webkit-scrollbar { width: 2px; }
+        .bottom-content::-webkit-scrollbar-thumb { background: var(--border-h); }
+        .bottom-content::-webkit-scrollbar-track { background: transparent; }
 
         /* ── Scanline Effect ── */
         body::before {
@@ -777,7 +787,7 @@
         .conn-panel .btn { width: 100%; margin-top: 4px; }
 
         /* ── Misc ── */
-        @media (max-width: 1200px) { .sidebar { width: 280px; } }
+        @media (max-width: 1200px) { .sidebar { width: 350px; } }
         .hidden { display: none !important; }
         .spinner {
             display: inline-block;
@@ -834,7 +844,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:var(--text3);font-weight:normal;">0.8.2</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.8.4</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -1129,8 +1139,8 @@
 
         <div class="bottom-panel">
             <div class="bottom-tabs">
-                <div class="bottom-tab active" data-btab="trades">TRADES</div>
-                <div class="bottom-tab" data-btab="zones">ZONES</div>
+                <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
+                <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
@@ -1139,26 +1149,44 @@
                         <table>
                             <thead>
                                 <tr>
-                                    <th>#</th><th>TIME</th><th>STRATEGY</th><th>DIR</th>
-                                    <th>ENTRY</th><th>EXIT</th><th>SL</th><th>TP</th>
-                                    <th>PNL</th><th>REASON</th><th>ZONE</th>
+                                    <th>ID</th>
+                                    <th style="width:48px;">SYMBOL</th>
+                                    <th style="width:36px;">SIZE</th>
+                                    <th>ENTRY TIME</th>
+                                    <th>EXIT TIME</th>
+                                    <th>DURATION</th>
+                                    <th>ENTRY</th>
+                                    <th>EXIT</th>
+                                    <th>P&amp;L</th>
+                                    <th>COMMISSION</th>
+                                    <th>FEES</th>
+                                    <th>DIR</th>
                                 </tr>
                             </thead>
                             <tbody id="trades-tbody"></tbody>
                         </table>
                     </div>
                 </div>
-                <div id="btab-zones" class="hidden">
+                <div id="btab-execute" class="hidden">
                     <div class="trade-table-wrap">
                         <table>
                             <thead>
                                 <tr>
-                                    <th>#</th><th>SESSION</th><th>STATUS</th><th>START -> END</th>
-                                    <th>DURATION</th><th>POC</th><th>VAH</th><th>VAL</th>
-                                    <th>VOL</th>
+                                    <th>ID</th>
+                                    <th style="width:48px;">SYMBOL</th>
+                                    <th style="width:36px;">SIZE</th>
+                                    <th>ENTRY TIME</th>
+                                    <th>EXIT TIME</th>
+                                    <th>DURATION</th>
+                                    <th>ENTRY</th>
+                                    <th>EXIT</th>
+                                    <th>P&amp;L</th>
+                                    <th>COMMISSION</th>
+                                    <th>FEES</th>
+                                    <th>DIR</th>
                                 </tr>
                             </thead>
-                            <tbody id="zones-tbody"></tbody>
+                            <tbody id="execute-tbody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -1362,9 +1390,6 @@ document.addEventListener('DOMContentLoaded', () => {
     updateClock();
     setInterval(updateClock, 1000);
 
-    // Load trade history from cache on page init (no API call)
-    setTimeout(() => fetchAndDrawTradeHistory(false), 500);
-
     // Auto-set date range: last 7 days → today
     const today = new Date();
     const endStr = today.toISOString().slice(0, 10);
@@ -1414,7 +1439,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
             t.classList.add('active');
             const tab = t.dataset.btab;
-            ['trades','zones','log'].forEach(id => {
+            ['trades','execute','log'].forEach(id => {
                 document.getElementById('btab-' + id).classList.toggle('hidden', id !== tab);
             });
         };
@@ -1935,7 +1960,7 @@ async function pollLiveStatus() {
         // ── Left panel: PnL ──
         const pnlEl = document.getElementById('live-pnl-text');
         const pnl = st.daily_pnl || 0;
-        pnlEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
+        pnlEl.textContent = '$' + (pnl >= 0 ? '+' : '-') + Math.abs(pnl).toFixed(0);
         pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
 
         // ── Top bar: Signal row (show on pending signal or position) ──
@@ -2194,8 +2219,8 @@ function initChart() {
         // Redraw VP overlay on resize
         const zones = (backtestData && backtestData.zones) || _cachedVPZones;
         if (zones) drawVolumeProfile(zones);
+        clearPositionOverlay();
         if (backtestData && backtestData.trades) {
-            clearPositionOverlay();
             drawPositionTools(backtestData.trades);
         }
         if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
@@ -2209,8 +2234,10 @@ function initChart() {
         _vpRafId = requestAnimationFrame(() => {
             _vpRafId = null;
             if (_cachedVPZones) drawVolumeProfile(_cachedVPZones);
+            // Always clear the position overlay before repainting — otherwise
+            // live-trade triangles accumulate on every pan when no backtest is loaded.
+            clearPositionOverlay();
             if (backtestData && backtestData.trades) {
-                clearPositionOverlay();
                 drawPositionTools(backtestData.trades);
             }
             if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
@@ -2387,15 +2414,23 @@ function drawVolumeProfile(zones) {
         const xEnd = z.left_at ? timeToX(z.left_at) : null;
 
         // For LEFT zones: both start and end must resolve, skip if either is null
-        // For ACTIVE zones: end extends to right edge
+        // For ACTIVE zones: end extends to the last loaded candle (NOT the
+        // full canvas width — otherwise old backtest POCs extend forever
+        // across days/weeks of later chart data).
         let x0, x1;
         if (isLeft) {
             if (xStart === null && xEnd === null) return; // completely off chart
             x0 = xStart !== null ? xStart : -200;
-            x1 = xEnd !== null ? xEnd : x0 + Math.max(80, (z.num_candles || 60) * 3);
+            x1 = xEnd !== null ? xEnd : x0 + Math.min(400, Math.max(80, (z.num_candles || 60) * 3));
         } else {
             x0 = xStart !== null ? xStart : 0;
-            x1 = W - 60;
+            // Cap active-zone extent at the last candle's X coordinate
+            let lastBarX = null;
+            const cd = window._lastChartData;
+            if (cd && cd.length > 0) {
+                try { lastBarX = chart.timeScale().timeToCoordinate(cd[cd.length - 1].time); } catch(_) {}
+            }
+            x1 = lastBarX !== null ? lastBarX : (W - 60);
         }
         // Critical: skip if zone is entirely off-screen horizontally
         if (x1 < 0 || x0 > W) return;
@@ -2449,22 +2484,22 @@ function drawVolumeProfile(zones) {
             }
         }
 
-        // ── 80% VA zone background: VAH→POC green, POC→VAL red ──
+        // ── 80% VA zone background: VAH→POC white, POC→VAL gray ──
         if (yVAH >= 0 && yVAL >= 0 && yPOC >= 0) {
-            const alpha = isLeft ? 0.06 : 0.10;
-            // VAH to POC — green (bullish zone)
+            const alpha = isLeft ? 0.04 : 0.07;
+            // VAH to POC — light white
             const topY = Math.min(yVAH, yPOC);
-            const greenH = Math.abs(yPOC - yVAH);
-            if (greenH > 1) {
-                ctx.fillStyle = `rgba(0, 229, 160, ${alpha})`;
-                ctx.fillRect(x0, topY, x1 - x0, greenH);
+            const whiteH = Math.abs(yPOC - yVAH);
+            if (whiteH > 1) {
+                ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+                ctx.fillRect(x0, topY, x1 - x0, whiteH);
             }
-            // POC to VAL — red (bearish zone)
+            // POC to VAL — gray
             const botY = Math.min(yPOC, yVAL);
-            const redH = Math.abs(yVAL - yPOC);
-            if (redH > 1) {
-                ctx.fillStyle = `rgba(255, 64, 96, ${alpha})`;
-                ctx.fillRect(x0, botY, x1 - x0, redH);
+            const grayH = Math.abs(yVAL - yPOC);
+            if (grayH > 1) {
+                ctx.fillStyle = `rgba(160, 170, 190, ${alpha})`;
+                ctx.fillRect(x0, botY, x1 - x0, grayH);
             }
         }
 
@@ -2589,9 +2624,18 @@ function drawVolumeProfile(zones) {
     });
 
     // ── PASS 2: Draw POC lines ──
-    // Active zones: POC from formed_at → right edge (bright)
+    // Active zones: POC from formed_at → last loaded candle (NOT canvas edge)
     // Left zones: POC from formed_at → left_at ONLY (confirmed break = stop expanding)
-    const rightEdge = W - 60;
+    let rightEdge = W - 60;
+    {
+        const cd = window._lastChartData;
+        if (cd && cd.length > 0) {
+            try {
+                const lastX = chart.timeScale().timeToCoordinate(cd[cd.length - 1].time);
+                if (lastX !== null) rightEdge = Math.min(rightEdge, lastX);
+            } catch(_) {}
+        }
+    }
     const pocLabels = [];  // collect for right-edge price tags (active only)
 
     zones.forEach(z => {
@@ -2609,7 +2653,8 @@ function drawVolumeProfile(zones) {
             const xLeft = z.left_at ? timeToX(z.left_at) : null;
             if (xStart === null && xLeft === null) return;
             x0 = xStart !== null ? xStart : -200;
-            x1 = xLeft !== null ? Math.min(rightEdge, xLeft) : x0 + Math.max(80, (z.num_candles || 60) * 3);
+            // Cap left-zone POC width: use resolved xLeft, or a bounded fallback (max 400px)
+            x1 = xLeft !== null ? Math.min(rightEdge, xLeft) : x0 + Math.min(400, Math.max(80, (z.num_candles || 60) * 3));
             x1 = Math.min(rightEdge, x1);
             // Skip if entirely off-screen
             if (x1 < 0 || x0 > W) return;
@@ -2768,184 +2813,154 @@ function drawPositionTools(trades) {
         const dirLabel = isBuy ? 'LONG' : 'SHORT';
         const isWin = pnlVal >= 0;
 
-        // ── TP zone (green background) ──
+        // ── TP zone (green background only, no lines) ──
         const tpTop = Math.min(entryY, tpY);
         const tpH = Math.abs(tpY - entryY);
         ctx.fillStyle = 'rgba(0, 229, 160, 0.06)';
         ctx.fillRect(entryX, tpTop, width, tpH);
-        // TP border line (local)
-        ctx.strokeStyle = 'rgba(0, 229, 160, 0.4)';
-        ctx.lineWidth = 1;
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath();
-        ctx.moveTo(entryX, tpY);
-        ctx.lineTo(right, tpY);
-        ctx.stroke();
 
-        // ── SL zone (red background) ──
+        // ── SL zone (red background only, no lines) ──
         const slTop = Math.min(entryY, slY);
         const slH = Math.abs(slY - entryY);
         ctx.fillStyle = 'rgba(255, 64, 96, 0.06)';
         ctx.fillRect(entryX, slTop, width, slH);
-        // SL border line (local)
-        ctx.strokeStyle = 'rgba(255, 64, 96, 0.4)';
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath();
-        ctx.moveTo(entryX, slY);
-        ctx.lineTo(right, slY);
-        ctx.stroke();
-
-        // ── Full-width TP/SL yellow dashed lines for ACTIVE position (no exit yet) ──
-        if (!t.exit_time) {
-            // TP full-width yellow dashed
-            ctx.strokeStyle = 'rgba(255, 200, 40, 0.85)';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([8, 5]);
-            ctx.beginPath();
-            ctx.moveTo(0, tpY);
-            ctx.lineTo(chartW, tpY);
-            ctx.stroke();
-            // TP price tag
-            ctx.font = '10px "Share Tech Mono", monospace';
-            ctx.fillStyle = 'rgba(255, 200, 40, 0.9)';
-            ctx.textAlign = 'right';
-            ctx.fillText('TP ' + t.tp_price.toFixed(2), chartW - 6, tpY - 4);
-
-            // SL full-width yellow dashed
-            ctx.strokeStyle = 'rgba(255, 200, 40, 0.85)';
-            ctx.lineWidth = 1.5;
-            ctx.setLineDash([8, 5]);
-            ctx.beginPath();
-            ctx.moveTo(0, slY);
-            ctx.lineTo(chartW, slY);
-            ctx.stroke();
-            // SL price tag
-            ctx.fillStyle = 'rgba(255, 200, 40, 0.9)';
-            ctx.fillText('SL ' + t.sl_price.toFixed(2), chartW - 6, slY + 12);
-        }
-
-        // ── Entry line (solid) ──
-        ctx.setLineDash([]);
-        ctx.strokeStyle = isBuy ? 'rgba(0, 229, 160, 0.8)' : 'rgba(255, 64, 96, 0.8)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(entryX, entryY);
-        ctx.lineTo(right, entryY);
-        ctx.stroke();
-
-        // (Entry arrow marker drawn by lightweight-charts, no label box needed)
 
         drawn++;
     });
 }
 
+// ── Actual TopstepX trade overlay — pink (loss) / blue (win) zones ──
 function drawLiveTrades(trades) {
     if (!trades || trades.length === 0) return;
+    if (!chart) return;
 
     const canvas = createPosToolCanvas();
     const container = document.getElementById('chart-container');
     const dpr = window.devicePixelRatio || 1;
-    const ctx = canvas.getContext('2d');
     const chartW = container.clientWidth;
     const chartH = container.clientHeight;
 
-    let drawn = 0;
-    const maxDraw = 50;
+    // Ensure canvas is sized (don't clear — drawPositionTools already cleared,
+    // or we're the only drawer and caller is clearPositionOverlay-aware)
+    if (canvas.width <= 300) {
+        canvas.width = Math.round(chartW * dpr);
+        canvas.height = Math.round(chartH * dpr);
+        canvas.style.width = chartW + 'px';
+        canvas.style.height = chartH + 'px';
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // LIVE/HISTORY palette — cyan (distinct from backtest green/red and gray candles)
-    const LIVE_LINE = 'rgba(100, 220, 255, 0.85)';
-    const LIVE_FILL_WIN = 'rgba(100, 220, 255, 0.10)';
-    const LIVE_FILL_LOSS = 'rgba(100, 220, 255, 0.05)';
-    const LIVE_DIM = 'rgba(100, 220, 255, 0.35)';
+    // Filter trades to those whose entry_time falls within loaded chart data.
+    // `timeToCoordinate` extrapolates for out-of-range times → all would
+    // stack at the last bar position. Filter explicitly.
+    let minTime = null, maxTime = null;
+    const cd = window._lastChartData;
+    if (cd && cd.length > 0) {
+        minTime = cd[0].time;
+        maxTime = cd[cd.length - 1].time;
+    }
+
+    // Orange triangle markers for every executed trade
+    const ORANGE       = '#ffa726';
+    const ORANGE_GLOW  = 'rgba(255, 167, 38, 0.35)';
+    const TRI_SIZE     = 7;    // half-width of triangle
+    const TRI_OFFSET   = 55;   // distance below/above candle — clears backtest signal arrows
+
+    ctx.font = '10px "Share Tech Mono", monospace';
+    ctx.textAlign = 'center';
 
     trades.forEach((t) => {
-        if (drawn >= maxDraw) return;
+        const entryTC = isoToChartTime(t.entry_time);
+        // Hard filter by chart data time range (prevents stacking)
+        if (minTime !== null && (entryTC < minTime || entryTC > maxTime)) return;
+
+        const entryX = chart.timeScale().timeToCoordinate(entryTC);
+        if (entryX === null || entryX < -20 || entryX > chartW + 20) return;
+
+        let entryY = null;
+        try {
+            entryY = candleSeries ? candleSeries.priceToCoordinate(t.entry_price) : null;
+        } catch(_) {}
+        if (entryY === null) return;
 
         const isBuy = t.direction === 'buy';
-        const entryY = candleSeries.priceToCoordinate(t.entry_price);
-        if (entryY === null) return;
-        if (entryY < -50 || entryY > chartH + 50) return;
-
-        const entryTime = isoToChartTime(t.entry_time);
-        const entryX = chart.timeScale().timeToCoordinate(entryTime);
-        if (entryX === null) return;
-        if (entryX < -200 || entryX > chartW + 50) return;
-
-        let exitX = entryX + 100;
-        if (t.exit_time) {
-            const exitTime = isoToChartTime(t.exit_time);
-            const ex = chart.timeScale().timeToCoordinate(exitTime);
-            if (ex !== null && ex > entryX) exitX = ex;
-        }
-
-        const width = Math.min(Math.max(60, exitX - entryX), chartW - entryX);
-        const right = entryX + width;
-
         const pnlVal = t.pnl || 0;
-        const pnlStr = (pnlVal >= 0 ? '+' : '') + '$' + Math.abs(pnlVal).toFixed(0);
-        const isWin = pnlVal >= 0;
+        const sign = pnlVal >= 0 ? '+' : '-';
+        // "$" before sign, e.g. $+252 / $-252
+        const pnlStr = '$' + sign + Math.abs(pnlVal).toFixed(0);
 
-        // Exit price line (if available)
-        const exitY = t.exit_price ? candleSeries.priceToCoordinate(t.exit_price) : null;
+        // Triangle: up-pointing below bar for buys, down-pointing above bar for sells
+        const tipY   = isBuy ? entryY + TRI_OFFSET            : entryY - TRI_OFFSET;
+        const baseY  = isBuy ? entryY + TRI_OFFSET + TRI_SIZE*1.6 : entryY - TRI_OFFSET - TRI_SIZE*1.6;
 
-        // ── Background zone between entry and exit ──
-        if (exitY !== null) {
-            const zoneTop = Math.min(entryY, exitY);
-            const zoneH = Math.max(Math.abs(exitY - entryY), 2);
-            ctx.fillStyle = isWin ? LIVE_FILL_WIN : LIVE_FILL_LOSS;
-            ctx.fillRect(entryX, zoneTop, width, zoneH);
-            // Exit line (cyan dashed)
-            ctx.strokeStyle = LIVE_DIM;
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 3]);
-            ctx.beginPath();
-            ctx.moveTo(entryX, exitY);
-            ctx.lineTo(right, exitY);
-            ctx.stroke();
-        }
-
-        // ── Entry line (solid cyan) ──
-        ctx.setLineDash([]);
-        ctx.strokeStyle = LIVE_LINE;
-        ctx.lineWidth = 1.5;
+        // Glow
+        ctx.fillStyle = ORANGE_GLOW;
         ctx.beginPath();
-        ctx.moveTo(entryX, entryY);
-        ctx.lineTo(right, entryY);
-        ctx.stroke();
-
-        // Direction arrow at entry
-        ctx.fillStyle = LIVE_LINE;
-        ctx.beginPath();
-        if (isBuy) {
-            ctx.moveTo(entryX, entryY);
-            ctx.lineTo(entryX - 6, entryY + 6);
-            ctx.lineTo(entryX - 6, entryY - 6);
-        } else {
-            ctx.moveTo(entryX, entryY);
-            ctx.lineTo(entryX - 6, entryY - 6);
-            ctx.lineTo(entryX - 6, entryY + 6);
-        }
+        ctx.moveTo(entryX, tipY);
+        ctx.lineTo(entryX - TRI_SIZE - 2, baseY);
+        ctx.lineTo(entryX + TRI_SIZE + 2, baseY);
         ctx.closePath();
         ctx.fill();
 
-        // ── PnL label ──
-        const dirLabel = isBuy ? 'LONG' : 'SHORT';
-        const labelText = dirLabel + ' ' + pnlStr;
-        ctx.font = '10px "Share Tech Mono", monospace';
-        const lblW = ctx.measureText(labelText).width + 10;
-        const lblX = entryX + 4;
-        const lblY = entryY - 18;
-        ctx.fillStyle = 'rgba(100, 220, 255, 0.18)';
-        ctx.fillRect(lblX, lblY, lblW, 15);
-        ctx.strokeStyle = LIVE_LINE;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(lblX, lblY, lblW, 15);
-        ctx.fillStyle = isWin ? 'rgba(0, 229, 160, 0.95)' : 'rgba(255, 64, 96, 0.95)';
-        ctx.textAlign = 'left';
-        ctx.fillText(labelText, lblX + 4, lblY + 11);
+        // Solid triangle
+        ctx.fillStyle = ORANGE;
+        ctx.beginPath();
+        ctx.moveTo(entryX, tipY);
+        ctx.lineTo(entryX - TRI_SIZE, baseY);
+        ctx.lineTo(entryX + TRI_SIZE, baseY);
+        ctx.closePath();
+        ctx.fill();
 
-        drawn++;
+        // PnL label
+        const labelY = isBuy ? baseY + 11 : baseY - 4;
+        ctx.fillStyle = ORANGE;
+        ctx.fillText(pnlStr, entryX, labelY);
     });
+    ctx.restore();
+}
+
+async function fetchAndDrawTradeHistory(refresh, accountId) {
+    try {
+        const params = new URLSearchParams();
+        if (refresh) params.set('refresh', 'true');
+        if (accountId) params.set('account_id', accountId);
+        const qs = params.toString();
+        const url = API + '/live/trade-history' + (qs ? '?' + qs : '');
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.trades && data.trades.length > 0) {
+            window._liveCompletedTrades = data.trades;
+            log('[HISTORY] ' + data.count + ' live trades loaded (' + data.source + ') acct=' +
+                (data.account_id || 'all'), 'info');
+
+            renderExecuteTrades(data.trades);
+
+            // Re-render metrics comparison if backtest already ran
+            if (backtestData && backtestData.metrics) {
+                renderMetrics(backtestData.metrics, backtestData.trades);
+            }
+
+            // Force overlay redraw so trades appear immediately
+            if (_overlaySyncData) {
+                const sd = _overlaySyncData;
+                if (_cachedVPZones) drawVolumeProfile(_cachedVPZones);
+                if (sd.trades) drawPositionTools(sd.trades);
+                drawLiveTrades(data.trades);
+                drawSessionDividers();
+            } else {
+                drawLiveTrades(data.trades);
+            }
+        } else {
+            window._liveCompletedTrades = [];
+            renderExecuteTrades([]);
+            log('[HISTORY] No live trades found (' + data.source + ')', 'info');
+        }
+    } catch(e) {
+        // silent fail — cache may not exist yet
+    }
 }
 
 function drawPendingOrderOverlay(po, idx) {
@@ -3141,14 +3156,15 @@ async function connectAPI() {
         // Close connection dropdown
         toggleConnDropdown(false);
 
-        // Load accounts after successful connect
-        loadAccounts();
+        // Load accounts after successful connect (await so account is ready)
+        await loadAccounts();
 
         // Fetch and display chart data
         await fetchAndShowChart(barUnitRaw === '30s' ? '30s' : unitNumber + 'm');
 
-        // Fetch trade history from TopstepX (refresh from API)
-        fetchAndDrawTradeHistory(true);
+        // Fetch actual trades from TopstepX (refresh cache) for the active account
+        const accId = currentAccount ? currentAccount.id : 0;
+        await fetchAndDrawTradeHistory(true, accId);
 
     } catch(e) {
         setStatus('err', 'FAILED');
@@ -3285,34 +3301,14 @@ async function runBacktest() {
         _cachedVPZones = null;
 
         renderChart(backtestData);
-        renderMetrics(backtestData.metrics);
+        renderMetrics(backtestData.metrics, backtestData.trades);
         renderTrades(backtestData.trades);
-        renderZones(backtestData.zones);
-
-        // Overlay real trade history from TopstepX
-        fetchAndDrawTradeHistory(false);
 
     } catch(e) {
         log('Backtest failed: ' + e.message, 'error');
     } finally {
         btn.disabled = false;
         btn.textContent = 'EXECUTE BACKTEST';
-    }
-}
-
-async function fetchAndDrawTradeHistory(refresh) {
-    try {
-        const url = API + '/live/trade-history' + (refresh ? '?refresh=true' : '');
-        const resp = await fetch(url);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data.trades && data.trades.length > 0) {
-            window._liveCompletedTrades = data.trades;
-            drawLiveTrades(data.trades);
-            log('[HISTORY] ' + data.count + ' trades loaded (' + data.source + ')', 'info');
-        }
-    } catch(e) {
-        // silent fail — cache may not exist yet
     }
 }
 
@@ -3327,7 +3323,7 @@ function renderChart(data) {
     // Draw zones (VP overlay + legend)
     drawBacktestZones(data.zones);
 
-    // Draw position tools (TradingView-style SL/TP zones) + arrow markers
+    // Draw position tools (TradingView-style SL/TP zones) + PnL markers
     drawPositionTools(data.trades);
     drawTradeMarkers(data.trades);
 
@@ -3375,6 +3371,7 @@ function startOverlaySync() {
             lastCheckX = curX;
             const zonesToDraw = _cachedVPZones || data.zones;
             if (zonesToDraw) drawVolumeProfile(zonesToDraw);
+            clearPositionOverlay();
             if (data.trades) drawPositionTools(data.trades);
             if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
             drawSessionDividers();
@@ -3410,16 +3407,125 @@ function drawTradeMarkers(trades) {
         position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
         color: t.pnl > 0 ? '#00e5a0' : '#ff4060',
         shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-        text: 'T' + ' ' + (t.pnl > 0 ? '+' : '') + '$' + (t.pnl||0).toFixed(0),
+        text: (t.pnl > 0 ? '+' : '') + '$' + (t.pnl||0).toFixed(0),
     }));
 
     markers.sort((a, b) => a.time - b.time);
     candleSeries.setMarkers(markers);
 }
 
-function renderMetrics(m) {
+// Compute summary metrics from a list of trades (used for backtest-day-span and live comparison)
+function _computeTradeStats(trades) {
+    if (!trades || trades.length === 0) {
+        return {
+            total_pnl: 0, trades: 0, wins: 0, losses: 0,
+            win_rate: 0, avg_win: 0, avg_loss: 0, profit_factor: 0,
+            rr_ratio: 0, max_dd: 0, sharpe: 0,
+            days: 0, daily_pnl: {}, consec3Pass: false, maxStreak: 0,
+            maxDayPnl: 0, maxDayPass: false, maxDayPct: 0,
+        };
+    }
+    let total = 0;
+    const wins = [], losses = [];
+    const daily = {};
+    // Sort chronologically for equity curve / max DD
+    const sorted = [...trades].sort((a,b) => {
+        const ta = a.entry_time ? new Date(a.entry_time).getTime() : 0;
+        const tb = b.entry_time ? new Date(b.entry_time).getTime() : 0;
+        return ta - tb;
+    });
+
+    let cum = 0, peak = 0, maxDD = 0;
+    const pnlsAll = [];
+    for (const t of sorted) {
+        const p = t.pnl || 0;
+        total += p;
+        pnlsAll.push(p);
+        cum += p;
+        if (cum > peak) peak = cum;
+        const dd = peak - cum;
+        if (dd > maxDD) maxDD = dd;
+        if (p > 0) wins.push(p);
+        else if (p < 0) losses.push(p);
+        if (t.entry_time) {
+            const d = new Date(t.entry_time);
+            const key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+            daily[key] = (daily[key] || 0) + p;
+        }
+    }
+    const count = sorted.length;
+    const winRate = count ? wins.length / count : 0;
+    const avgWin = wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0;
+    const avgLoss = losses.length ? losses.reduce((a,b)=>a+b,0) / losses.length : 0;
+    const grossProfit = wins.reduce((a,b)=>a+b, 0);
+    const grossLoss = Math.abs(losses.reduce((a,b)=>a+b, 0));
+    const pf = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? Infinity : 0);
+    const rr = Math.abs(avgLoss) > 0 ? Math.abs(avgWin / avgLoss) : 0;
+
+    // Per-trade Sharpe ratio (annualized assuming ~252 trading days)
+    let sharpe = 0;
+    if (count >= 2) {
+        const mean = pnlsAll.reduce((a,b)=>a+b,0) / count;
+        const variance = pnlsAll.reduce((acc, x) => acc + (x - mean) * (x - mean), 0) / count;
+        const std = Math.sqrt(variance);
+        if (std > 0) sharpe = (mean / std) * Math.sqrt(count);
+    }
+
+    const dailyEntries = Object.entries(daily).sort((a,b)=>a[0].localeCompare(b[0]));
+    const dailyPnls = dailyEntries.map(e=>e[1]);
+    let streak = 0, maxStreak = 0;
+    for (const p of dailyPnls) {
+        if (p >= 150) { streak += 1; if (streak > maxStreak) maxStreak = streak; }
+        else { streak = 0; }
+    }
+    const maxDayPnl = dailyPnls.length ? Math.max(...dailyPnls) : 0;
+    const maxDayPct = total > 0 ? (maxDayPnl / total) * 100 : 0;
+    const maxDayPass = total > 0 && maxDayPct < 40;
+
+    return {
+        total_pnl: total,
+        trades: count,
+        wins: wins.length,
+        losses: losses.length,
+        win_rate: winRate,
+        avg_win: avgWin,
+        avg_loss: avgLoss,
+        profit_factor: pf,
+        rr_ratio: rr,
+        max_dd: maxDD,
+        sharpe: sharpe,
+        days: Object.keys(daily).length,
+        daily_pnl: daily,
+        consec3Pass: maxStreak >= 3,
+        maxStreak: maxStreak,
+        maxDayPnl: maxDayPnl,
+        maxDayPct: maxDayPct,
+        maxDayPass: maxDayPass,
+    };
+}
+
+// Filter backtest trades to only those days present in the live trade history
+function _alignBacktestToLiveDays(backtestTrades, liveStats) {
+    if (!liveStats || !backtestTrades) return backtestTrades || [];
+    const liveDates = new Set(Object.keys(liveStats.daily_pnl));
+    if (liveDates.size === 0) return backtestTrades;
+    return backtestTrades.filter(t => {
+        if (!t.entry_time) return false;
+        const d = new Date(t.entry_time);
+        const key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+        return liveDates.has(key);
+    });
+}
+
+function renderMetrics(m, backtestTrades) {
     const panel = document.getElementById('metrics-panel');
+    // Defensive: ensure panel is visible even if a prior tab switch added .hidden
+    panel.classList.remove('hidden');
     panel.style.display = 'block';
+    // Scroll the sidebar so the newly-rendered panel is actually in view
+    setTimeout(() => {
+        try { panel.scrollIntoView({behavior: 'smooth', block: 'nearest'}); } catch(_){}
+    }, 0);
 
     // Clean up old per-strategy breakdown
     const oldSub = document.getElementById('strategy-breakdown');
@@ -3427,45 +3533,109 @@ function renderMetrics(m) {
 
     const grid = document.getElementById('metrics-grid');
 
-    // ── Topstep-style pass/fail checks ──
-    // Daily PnL series sorted by date
-    const dailyEntries = Object.entries(m.daily_pnl || {}).sort((a, b) => a[0].localeCompare(b[0]));
-    const dailyPnls = dailyEntries.map(e => e[1]);
+    // Real-trade stats first, so we can align backtest to live day-span
+    const live = window._liveCompletedTrades;
+    const liveStats = (live && live.length > 0) ? _computeTradeStats(live) : null;
 
-    // Check 1 (Topstep Consistency XFA): 3 consecutive profitable days (net ≥ $150)
-    let streak = 0;
-    let maxStreak = 0;
-    for (const p of dailyPnls) {
-        if (p >= 150) {
-            streak += 1;
-            if (streak > maxStreak) maxStreak = streak;
-        } else {
-            streak = 0;
+    // If live exists, filter backtest to same calendar days — apples to apples
+    const alignedBt = liveStats
+        ? _alignBacktestToLiveDays(backtestTrades || [], liveStats)
+        : (backtestTrades || []);
+    const btStats = _computeTradeStats(alignedBt);
+
+    // When live exists, prefer the day-aligned frontend-computed stats over the
+    // raw backend `m` (which covers the full backtest range, not just live days).
+    const useBt = liveStats && btStats.trades > 0;
+
+    const total_pnl   = useBt ? btStats.total_pnl   : m.total_pnl;
+    const win_rate    = useBt ? btStats.win_rate    : m.win_rate;
+    const total_trades= useBt ? btStats.trades      : m.total_trades;
+    const wins        = useBt ? btStats.wins        : m.wins;
+    const losses      = useBt ? btStats.losses      : m.losses;
+    const avg_win     = useBt ? btStats.avg_win     : m.avg_win;
+    const avg_loss    = useBt ? btStats.avg_loss    : m.avg_loss;
+    const rr_ratio    = useBt ? btStats.rr_ratio    : m.avg_rr_ratio;
+    const max_dd      = useBt ? btStats.max_dd      : m.max_drawdown;
+    const sharpe      = useBt ? btStats.sharpe      : m.sharpe_ratio;
+    const profit_factor = useBt ? btStats.profit_factor : m.profit_factor;
+    const consec3Pass = useBt ? btStats.consec3Pass : false;
+    const maxStreak   = useBt ? btStats.maxStreak   : 0;
+    const maxDayPct   = useBt ? btStats.maxDayPct   : 0;
+    const maxDayPass  = useBt ? btStats.maxDayPass  : false;
+
+    // Fallback consistency metrics when no live data: compute from backend daily_pnl
+    let consec3PassFallback = consec3Pass;
+    let maxStreakFallback   = maxStreak;
+    let maxDayPctFallback   = maxDayPct;
+    let maxDayPassFallback  = maxDayPass;
+    if (!useBt) {
+        const dailyEntries = Object.entries(m.daily_pnl || {}).sort((a, b) => a[0].localeCompare(b[0]));
+        const dailyPnls = dailyEntries.map(e => e[1]);
+        let streak = 0, mStreak = 0;
+        for (const p of dailyPnls) {
+            if (p >= 150) { streak += 1; if (streak > mStreak) mStreak = streak; }
+            else { streak = 0; }
         }
+        consec3PassFallback = mStreak >= 3;
+        maxStreakFallback   = mStreak;
+        const maxDayPnlLocal = dailyPnls.length ? Math.max(...dailyPnls) : 0;
+        maxDayPctFallback  = m.total_pnl > 0 ? (maxDayPnlLocal / m.total_pnl) * 100 : 0;
+        maxDayPassFallback = m.total_pnl > 0 && maxDayPctFallback < 40;
     }
-    const consec3Pass = maxStreak >= 3;
+    const consec3PassFinal = useBt ? consec3Pass : consec3PassFallback;
+    const maxStreakFinal   = useBt ? maxStreak   : maxStreakFallback;
+    const maxDayPctFinal   = useBt ? maxDayPct   : maxDayPctFallback;
+    const maxDayPassFinal  = useBt ? maxDayPass  : maxDayPassFallback;
 
-    // Check 2 (Topstep Consistency XFA): max single-day profit < 40% of total PnL
-    const maxDayPnl = dailyPnls.length ? Math.max(...dailyPnls) : 0;
-    const totalPos = m.total_pnl > 0;
-    const maxDayPass = totalPos && maxDayPnl < (m.total_pnl * 0.4);
-
-    const passVal = (ok) => ok ? 'PASS' : 'NO';
     const passCls = (ok) => ok ? 'pos' : 'neg';
 
+    // Day span — prefer aligned-to-live count when live exists
+    const daySpan = useBt ? btStats.days : _computeTradeStats(backtestTrades || []).days;
+    const totalPnlLabel = daySpan > 0 ? ('TOTAL PNL (' + daySpan + 'd)') : 'TOTAL PNL';
+
+    const paren = (v) => liveStats ? ' <span class="metric-real">(' + v + ')</span>' : '';
+    const fmtPF = (x) => x === Infinity ? 'INF' : (x || 0).toFixed(2);
+
     const items = [
-        { label: 'TOTAL PNL', value: '$' + m.total_pnl.toFixed(0), cls: m.total_pnl >= 0 ? 'pos' : 'neg' },
-        { label: 'WIN RATE', value: (m.win_rate * 100).toFixed(1) + '%', cls: m.win_rate >= 0.5 ? 'pos' : 'neg' },
-        { label: 'TRADES', value: m.total_trades, cls: '' },
-        { label: 'W / L', value: m.wins + ' / ' + m.losses, cls: '' },
-        { label: 'AVG WIN', value: '$' + m.avg_win.toFixed(0), cls: 'pos' },
-        { label: 'AVG LOSS', value: '$' + m.avg_loss.toFixed(0), cls: 'neg' },
-        { label: 'RR RATIO', value: m.avg_rr_ratio.toFixed(2), cls: m.avg_rr_ratio >= 2 ? 'pos' : '' },
-        { label: 'MAX DD', value: '$' + m.max_drawdown.toFixed(0), cls: 'neg' },
-        { label: 'SHARPE', value: m.sharpe_ratio.toFixed(2), cls: m.sharpe_ratio >= 1 ? 'pos' : '' },
-        { label: 'PROFIT FACTOR', value: m.profit_factor === Infinity ? 'INF' : m.profit_factor.toFixed(2), cls: m.profit_factor >= 1.5 ? 'pos' : '' },
-        { label: '3D連勝', value: consec3Pass ? 'PASS' : (maxStreak + '天連勝'), cls: passCls(consec3Pass) },
-        { label: 'MAX DAY < 40%', value: passVal(maxDayPass), cls: passCls(maxDayPass) },
+        { label: totalPnlLabel,
+          // Header already shows day count — don't repeat it in the value
+          value: '$' + total_pnl.toFixed(0) + paren(liveStats ? '$' + liveStats.total_pnl.toFixed(0) : ''),
+          cls: total_pnl >= 0 ? 'pos' : 'neg' },
+        { label: 'WIN RATE',
+          value: (win_rate * 100).toFixed(1) + '%' + paren(liveStats ? (liveStats.win_rate * 100).toFixed(1) + '%' : ''),
+          cls: win_rate >= 0.5 ? 'pos' : 'neg' },
+        { label: 'TRADES',
+          value: total_trades + paren(liveStats ? liveStats.trades : ''),
+          cls: '' },
+        { label: 'W / L',
+          value: wins + ' / ' + losses + paren(liveStats ? liveStats.wins + ' / ' + liveStats.losses : ''),
+          cls: '' },
+        { label: 'AVG WIN',
+          value: '$' + avg_win.toFixed(0) + paren(liveStats ? '$' + liveStats.avg_win.toFixed(0) : ''),
+          cls: 'pos' },
+        { label: 'AVG LOSS',
+          value: '$' + avg_loss.toFixed(0) + paren(liveStats ? '$' + liveStats.avg_loss.toFixed(0) : ''),
+          cls: 'neg' },
+        { label: 'RR RATIO',
+          value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
+          cls: rr_ratio >= 2 ? 'pos' : '' },
+        { label: 'MAX DD',
+          value: '$' + max_dd.toFixed(0) + paren(liveStats ? '$' + liveStats.max_dd.toFixed(0) : ''),
+          cls: 'neg' },
+        { label: 'SHARPE',
+          value: sharpe.toFixed(2) + paren(liveStats ? liveStats.sharpe.toFixed(2) : ''),
+          cls: sharpe >= 1 ? 'pos' : '' },
+        { label: 'PROFIT FACTOR',
+          value: fmtPF(profit_factor) + paren(liveStats ? fmtPF(liveStats.profit_factor) : ''),
+          cls: profit_factor >= 1.5 ? 'pos' : '' },
+        { label: 'Consistency',
+          value: (consec3PassFinal ? 'PASS' : (maxStreakFinal + ' Days')) +
+                 paren(liveStats ? (liveStats.consec3Pass ? 'PASS' : (liveStats.maxStreak + ' Days')) : ''),
+          cls: passCls(consec3PassFinal) },
+        { label: 'MAX DAY < 40%',
+          value: maxDayPctFinal.toFixed(1) + '%' +
+                 paren(liveStats ? liveStats.maxDayPct.toFixed(1) + '%' : ''),
+          cls: passCls(maxDayPassFinal) },
     ];
 
     grid.innerHTML = items.map(i => `
@@ -3504,30 +3674,131 @@ function renderMetrics(m) {
 function renderTrades(trades) {
     const tbody = document.getElementById('trades-tbody');
     if (!trades || trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
         return;
     }
 
-    tbody.innerHTML = trades.map((t, i) => {
-        const pnlClass = (t.pnl || 0) >= 0 ? 'pnl-pos' : 'pnl-neg';
-        const dirLabel = t.direction === 'buy' ? 'BUY' : 'SELL';
+    // Sort newest → oldest, like TopstepX journal
+    const sorted = [...trades].sort((a, b) => {
+        const ta = a.entry_time ? new Date(a.entry_time).getTime() : 0;
+        const tb = b.entry_time ? new Date(b.entry_time).getTime() : 0;
+        return tb - ta;
+    });
+    const totalN = sorted.length;
+
+    const fmtTime = (iso) => {
+        if (!iso) return '--';
+        const d = new Date(iso);
+        // YYYY-MM-DD HH:MM:SS (drop microseconds)
+        const p = (n) => n < 10 ? '0' + n : '' + n;
+        return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) +
+            ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    };
+
+    const fmtDuration = (entryIso, exitIso) => {
+        if (!entryIso || !exitIso) return '--';
+        const diffMs = new Date(exitIso).getTime() - new Date(entryIso).getTime();
+        if (diffMs < 0) return '--';
+        const totalSec = Math.floor(diffMs / 1000);
+        const hh = Math.floor(totalSec / 3600);
+        const mm = Math.floor((totalSec % 3600) / 60);
+        const ss = totalSec % 60;
+        const p = (n) => n < 10 ? '0' + n : '' + n;
+        return p(hh) + ':' + p(mm) + ':' + p(ss);
+    };
+
+    tbody.innerHTML = sorted.map((t, i) => {
+        const netPnl = t.pnl || 0;
+        const commission = (t.commission != null) ? t.commission : 1.0;
+        const fees = (t.fees != null) ? t.fees : 2.80;
+        // Gross P&L (matches TopstepX P&L column — before costs)
+        const grossPnl = netPnl + commission + fees;
+        const pnlClass = grossPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+        const dirLabel = t.direction === 'buy' ? 'Long' : 'Short';
         const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
-        const stratLabel = 'TREND';
-        const exitLabel = t.exit_reason || '--';
-        const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString('en-US', {hour12: false, hour:'2-digit', minute:'2-digit'}) : '--';
+        const symbol = t.symbol || '/NQ';
+        const size = t.size || t.contracts || 1;
+        // Short trade ID (last 6 chars) so column stays narrow
+        const id = t.trade_id ? String(t.trade_id).slice(-6) : (totalN - i);
+        const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
 
         return '<tr>' +
-            '<td>' + (i+1) + '</td>' +
-            '<td>' + fmtTime(t.entry_time) + '</td>' +
-            '<td>' + stratLabel + (t.is_big_trend ? ' [BIG]' : '') + '</td>' +
-            '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
+            '<td style="color:var(--text2);">' + id + '</td>' +
+            '<td style="width:48px;">' + symbol + '</td>' +
+            '<td style="width:36px;text-align:right;">' + size + '</td>' +
+            '<td style="font-family:\'Share Tech Mono\',monospace;">' + fmtTime(t.entry_time) + '</td>' +
+            '<td style="font-family:\'Share Tech Mono\',monospace;">' + fmtTime(t.exit_time) + '</td>' +
+            '<td>' + fmtDuration(t.entry_time, t.exit_time) + '</td>' +
             '<td>' + t.entry_price.toFixed(2) + '</td>' +
             '<td>' + (t.exit_price ? t.exit_price.toFixed(2) : '--') + '</td>' +
-            '<td>' + t.sl_price.toFixed(2) + '</td>' +
-            '<td>' + t.tp_price.toFixed(2) + '</td>' +
-            '<td class="' + pnlClass + '">$' + ((t.pnl||0) >= 0 ? '+' : '') + (t.pnl||0).toFixed(0) + '</td>' +
-            '<td>' + exitLabel + '</td>' +
-            '<td style="color:var(--text2);">' + t.zone_id + '</td>' +
+            '<td class="' + pnlClass + '">' + grossStr + '</td>' +
+            '<td class="pnl-neg">$-' + commission.toFixed(2) + '</td>' +
+            '<td class="pnl-neg">$-' + fees.toFixed(2) + '</td>' +
+            '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
+        '</tr>';
+    }).join('');
+}
+
+// Render real TopstepX trade history in the EXECUTE TRADES bottom tab
+function renderExecuteTrades(trades) {
+    const tbody = document.getElementById('execute-tbody');
+    if (!tbody) return;
+    if (!trades || trades.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text2);padding:20px;">NO EXECUTE TRADE DATA</td></tr>';
+        return;
+    }
+
+    const sorted = [...trades].sort((a, b) => {
+        const ta = a.entry_time ? new Date(a.entry_time).getTime() : 0;
+        const tb = b.entry_time ? new Date(b.entry_time).getTime() : 0;
+        return tb - ta;
+    });
+
+    const fmtTime = (iso) => {
+        if (!iso) return '--';
+        const d = new Date(iso);
+        const p = (n) => n < 10 ? '0' + n : '' + n;
+        return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) +
+            ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+    };
+    const fmtDuration = (entryIso, exitIso) => {
+        if (!entryIso || !exitIso) return '--';
+        const diffMs = new Date(exitIso).getTime() - new Date(entryIso).getTime();
+        if (diffMs < 0) return '--';
+        const totalSec = Math.floor(diffMs / 1000);
+        const hh = Math.floor(totalSec / 3600);
+        const mm = Math.floor((totalSec % 3600) / 60);
+        const ss = totalSec % 60;
+        const p = (n) => n < 10 ? '0' + n : '' + n;
+        return p(hh) + ':' + p(mm) + ':' + p(ss);
+    };
+
+    tbody.innerHTML = sorted.map((t) => {
+        const netPnl = t.pnl || 0;
+        const commission = (t.commission != null) ? t.commission : 1.0;
+        const fees = (t.fees != null) ? t.fees : 2.80;
+        const grossPnl = netPnl + commission + fees;
+        const pnlClass = grossPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+        const dirLabel = t.direction === 'buy' ? 'Long' : 'Short';
+        const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
+        const symbol = '/NQ';
+        const size = t.size || 1;
+        const id = t.trade_id ? String(t.trade_id).split('_')[0].slice(-6) : '--';
+        const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
+
+        return '<tr>' +
+            '<td style="color:var(--text2);">' + id + '</td>' +
+            '<td style="width:48px;">' + symbol + '</td>' +
+            '<td style="width:36px;text-align:right;">' + size + '</td>' +
+            '<td style="font-family:\'Share Tech Mono\',monospace;">' + fmtTime(t.entry_time) + '</td>' +
+            '<td style="font-family:\'Share Tech Mono\',monospace;">' + fmtTime(t.exit_time) + '</td>' +
+            '<td>' + fmtDuration(t.entry_time, t.exit_time) + '</td>' +
+            '<td>' + (t.entry_price != null ? Number(t.entry_price).toFixed(2) : '--') + '</td>' +
+            '<td>' + (t.exit_price != null ? Number(t.exit_price).toFixed(2) : '--') + '</td>' +
+            '<td class="' + pnlClass + '">' + grossStr + '</td>' +
+            '<td class="pnl-neg">$-' + commission.toFixed(2) + '</td>' +
+            '<td class="pnl-neg">$-' + fees.toFixed(2) + '</td>' +
+            '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
         '</tr>';
     }).join('');
 }

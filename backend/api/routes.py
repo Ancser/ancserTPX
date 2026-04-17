@@ -86,6 +86,8 @@ class FetchHistoricalRequest(BaseModel):
 class TradeResponse(BaseModel):
     trade_id: str
     strategy: str
+    symbol: str = "/NQ"
+    size: int = 1
     direction: str
     entry_price: float
     entry_time: str
@@ -93,7 +95,9 @@ class TradeResponse(BaseModel):
     exit_time: Optional[str]
     sl_price: float
     tp_price: float
-    pnl: Optional[float]
+    pnl: Optional[float]            # NET (after commission + fees)
+    commission: float = 0.0
+    fees: float = 0.0
     exit_reason: Optional[str]
     zone_id: str
     vol_ratio: Optional[float]
@@ -619,13 +623,16 @@ async def get_accounts():
 
         result = []
         for acc in accounts:
+            # Only show active (canTrade) accounts — skip closed/blown ones
+            if not acc.get("canTrade", False):
+                continue
             name = acc.get("name", "")
             is_practice = "PRAC" in name
             result.append({
                 "id": acc["id"],
                 "name": name,
                 "balance": acc.get("balance", 0),
-                "can_trade": acc.get("canTrade", False),
+                "can_trade": True,
                 "is_practice": is_practice,
                 "type": "PRACTICE" if is_practice else "FUNDED",
             })
@@ -778,10 +785,13 @@ async def run_backtest(req: BacktestRequest):
 
     # 轉換為回應格式
     trades_resp = []
+    symbol_label = "/" + config.symbol   # TopstepX-style "/NQ"
     for t in result.trades:
         trades_resp.append(TradeResponse(
             trade_id=t.trade_id,
             strategy=t.strategy.value,
+            symbol=symbol_label,
+            size=t.contracts,
             direction=t.direction.value,
             entry_price=t.entry_price,
             entry_time=t.entry_time.isoformat(),
@@ -790,6 +800,8 @@ async def run_backtest(req: BacktestRequest):
             sl_price=t.sl_price,
             tp_price=t.tp_price,
             pnl=t.pnl,
+            commission=t.commission,
+            fees=t.fees,
             exit_reason=t.exit_reason.value if t.exit_reason else None,
             zone_id=t.zone_id,
             vol_ratio=t.vol_ratio,
@@ -1154,16 +1166,8 @@ def _save_trade_history_cache(trades: List[dict]):
 
 
 def _normalize_topstep_fill(t: dict) -> dict:
-    """
-    Convert TopstepX raw fill (ProjectX Gateway /api/Trade/search item)
-    to a normalized intermediate format.
-
-    Raw TopstepX fill fields (defensive — API may evolve):
-      id, accountId, contractId, creationTimestamp, price,
-      profitAndLoss (null for openers, non-null for closers),
-      fees, side (0=Buy/Long, 1=Sell/Short), size, voided, orderId
-    """
-    # side → direction with multiple possible keys
+    """Convert TopstepX raw fill (ProjectX Gateway /api/Trade/search item)
+    to a normalized intermediate format."""
     side = t.get("side")
     if side is None:
         side = t.get("Side", 0)
@@ -1172,7 +1176,6 @@ def _normalize_topstep_fill(t: dict) -> dict:
     else:
         direction = "buy" if side == 0 else "sell"
 
-    # Price — try several field names
     price = (
         t.get("price")
         or t.get("Price")
@@ -1181,7 +1184,6 @@ def _normalize_topstep_fill(t: dict) -> dict:
         or 0
     )
 
-    # PnL — openers have null/0
     pnl_raw = t.get("profitAndLoss")
     if pnl_raw is None:
         pnl_raw = t.get("ProfitAndLoss")
@@ -1190,7 +1192,6 @@ def _normalize_topstep_fill(t: dict) -> dict:
     is_close = pnl_raw is not None and pnl_raw != 0
     pnl = pnl_raw if pnl_raw is not None else 0
 
-    # Timestamp — try several field names
     ts = (
         t.get("creationTimestamp")
         or t.get("CreationTimestamp")
@@ -1207,7 +1208,7 @@ def _normalize_topstep_fill(t: dict) -> dict:
         "time": ts,
         "price": float(price) if price else 0.0,
         "direction": direction,
-        "size": t.get("size") or t.get("Size") or 0,
+        "size": t.get("size") or t.get("Size") or 1,
         "pnl": float(pnl) if pnl else 0.0,
         "fees": t.get("fees") or 0,
         "is_close": is_close,
@@ -1216,15 +1217,11 @@ def _normalize_topstep_fill(t: dict) -> dict:
 
 
 def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
-    """
-    Pair opening fills with closing fills into round-trip trades per
-    (account_id, contract_id) using FIFO. Unpaired fills become
-    single-point entries so nothing is dropped.
-    """
-    # Sort by time (ISO strings sort chronologically)
+    """Pair opening fills with closing fills into round-trip trades per
+    (account_id, contract_id) using FIFO. Unpaired fills become single-point
+    entries so nothing is dropped."""
     fills_sorted = sorted(fills, key=lambda f: f.get("time") or "")
 
-    # FIFO queue of open fills per (account, contract)
     open_legs: Dict[tuple, list] = {}
     trades: List[dict] = []
 
@@ -1234,7 +1231,6 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
             open_legs.setdefault(key, []).append(f)
             continue
 
-        # Closing fill — pair with earliest matching opener of opposite side
         queue = open_legs.get(key) or []
         opener = None
         for i, o in enumerate(queue):
@@ -1246,30 +1242,32 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
             trades.append({
                 "trade_id": str(opener["fill_id"]) + "_" + str(f["fill_id"]),
                 "direction": opener["direction"],
+                "size": opener.get("size") or f.get("size") or 1,
                 "entry_price": opener["price"],
                 "exit_price": f["price"],
                 "entry_time": opener["time"],
                 "exit_time": f["time"],
-                "sl_price": 0,
-                "tp_price": 0,
                 "pnl": f["pnl"],
+                "commission": 1.0,         # TopstepX Mini NQ round-turn
+                "fees": 2.80,              # exchange + regulatory
                 "exit_reason": "tp" if f["pnl"] >= 0 else "sl",
                 "account_id": f.get("account_id"),
                 "contract_id": f.get("contract_id"),
                 "source": "topstep",
             })
         else:
-            # Orphan closer — draw as single point
+            # Orphan closer — keep as single point so nothing is lost
             trades.append({
                 "trade_id": str(f["fill_id"]),
                 "direction": f["direction"],
+                "size": f.get("size") or 1,
                 "entry_price": f["price"],
                 "exit_price": f["price"],
                 "entry_time": f["time"],
                 "exit_time": f["time"],
-                "sl_price": 0,
-                "tp_price": 0,
                 "pnl": f["pnl"],
+                "commission": 1.0,
+                "fees": 2.80,
                 "exit_reason": "tp" if f["pnl"] >= 0 else "sl",
                 "account_id": f.get("account_id"),
                 "contract_id": f.get("contract_id"),
@@ -1282,14 +1280,15 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
             trades.append({
                 "trade_id": str(o["fill_id"]),
                 "direction": o["direction"],
+                "size": o.get("size") or 1,
                 "entry_price": o["price"],
                 "exit_price": o["price"],
                 "entry_time": o["time"],
                 "exit_time": o["time"],
-                "sl_price": 0,
-                "tp_price": 0,
                 "pnl": 0,
-                "exit_reason": "tp",
+                "commission": 0,
+                "fees": 0,
+                "exit_reason": "open",
                 "account_id": o.get("account_id"),
                 "contract_id": o.get("contract_id"),
                 "source": "topstep",
@@ -1300,13 +1299,9 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
 
 @router.get("/live/trade-history")
 async def live_trade_history(refresh: bool = False, account_id: int = 0):
-    """
-    Get trade history. Returns cached data by default.
+    """Get trade history. Returns cached data by default.
     Pass ?refresh=true to re-fetch from TopstepX API.
-    Pass ?account_id=N to only return trades for that account
-    (defaults to the active live engine's account, else all accounts).
-    """
-    # Pick the filter account: explicit > live engine > none
+    Pass ?account_id=N to only return trades for that account."""
     filter_acc_id = account_id or (
         getattr(_live_engine, "account_id", 0) if _live_engine else 0
     )
@@ -1336,22 +1331,17 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
 
     try:
         accounts = await _topstepx_client.get_accounts()
+        active_accounts = [a for a in accounts if a.get("canTrade", False)]
+        logger.info(
+            f"[TRADE HISTORY] {len(active_accounts)}/{len(accounts)} active accounts"
+        )
         all_fills: List[dict] = []
-        logged_sample = False
-        for acc in accounts:
+        for acc in active_accounts:
             acc_id = acc.get("id")
             try:
                 raw_trades = await _topstepx_client.get_trade_history(acc_id)
-                if raw_trades and not logged_sample:
-                    logger.info(
-                        f"[TRADE HISTORY] raw sample from acc {acc_id}: "
-                        f"keys={list(raw_trades[0].keys())} | "
-                        f"sample={str(raw_trades[0])[:400]}"
-                    )
-                    logged_sample = True
                 for t in raw_trades:
                     norm = _normalize_topstep_fill(t)
-                    # Ensure account_id is set even if missing in raw
                     if not norm.get("account_id"):
                         norm["account_id"] = acc_id
                     all_fills.append(norm)
