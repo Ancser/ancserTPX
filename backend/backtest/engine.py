@@ -377,16 +377,20 @@ class BacktestEngine:
                 exit_price += slippage
 
         if pos.direction == Direction.BUY:
-            pnl = (exit_price - pos.entry_price) * self.POINT_VALUE * pos.contracts
+            gross_pnl = (exit_price - pos.entry_price) * self.POINT_VALUE * pos.contracts
         else:
-            pnl = (pos.entry_price - exit_price) * self.POINT_VALUE * pos.contracts
+            gross_pnl = (pos.entry_price - exit_price) * self.POINT_VALUE * pos.contracts
 
-        # Deduct round-turn commission (Mini NQ: $1.00 per contract)
-        pnl -= self.config.commission_rt * pos.contracts
+        # Deduct round-turn commission + exchange/regulatory fees per contract
+        commission = self.config.commission_rt * pos.contracts
+        fees = self.config.fees_rt * pos.contracts
+        pnl = gross_pnl - commission - fees
 
         pos.exit_price = exit_price
         pos.exit_time = candle.timestamp
-        pos.pnl = pnl
+        pos.pnl = pnl                 # NET (gross − commission − fees)
+        pos.commission = commission
+        pos.fees = fees
         pos.exit_reason = reason
 
         self._capital += pnl

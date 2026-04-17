@@ -233,7 +233,9 @@ class Trade:
     exit_time: Optional[datetime] = None
     sl_price: float = 0.0
     tp_price: float = 0.0
-    pnl: Optional[float] = None
+    pnl: Optional[float] = None        # NET PnL (after commission + fees)
+    commission: float = 0.0            # round-turn commission deducted
+    fees: float = 0.0                  # round-turn fees deducted
     exit_reason: Optional[ExitReason] = None
     zone_id: str = ""
     contracts: int = 1
@@ -304,8 +306,9 @@ class BacktestConfig:
     start_date: str = ""
     end_date: str = ""
     initial_capital: float = 50000.0
-    slippage_ticks: int = 1         # 滑價 tick 數
+    slippage_ticks: int = 0         # 滑價 tick 數 (0 = clean fill @ signal price)
     commission_rt: float = 1.0      # 往返佣金 (Mini: $1.00, Micro: $0.50)
+    fees_rt: float = 2.80           # 交易所/監管費 — TopstepX Mini NQ 每輪 $2.80
     max_daily_loss: float = 2000.0
     flatten_time: str = "15:05"     # CT
     # 盤整偵測參數

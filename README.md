@@ -52,14 +52,10 @@ Create a `.env` file in the project root:
 ```env
 TOPSTEPX_USERNAME=your_email@example.com
 TOPSTEPX_API_KEY=your_api_key_here
-```
-
-Default Trade Account/Contract
-
-```env
-TOPSTEPX_ACCOUNT_NAME=your_practice_account_name
 TOPSTEPX_CONTRACT_ID=CON.F.US.ENQ.M26
 ```
+
+Accounts are auto-detected from the API — only active (`canTrade`) accounts are shown.
 
 ### 4. Install & Run
 
