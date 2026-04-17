@@ -76,7 +76,21 @@ class BacktestEngine:
         # Ensure chronological order (API may return newest-first)
         candles = sorted(candles, key=lambda c: c.timestamp)
 
-        for candle in candles:
+        # Live-edge guard: cancel pending + block new signals for the last N candles.
+        # Prevents phantom 0/1-min trades when the backtest reaches real-time and
+        # there is not enough future data for a trade to develop normally.
+        _live_edge_guard = self._pending_max_age + 2
+        total = len(candles)
+
+        for i, candle in enumerate(candles):
+            remaining = total - i - 1
+            if not self._near_data_end and remaining < _live_edge_guard:
+                self._near_data_end = True
+                if self._pending_order:
+                    logger.debug(
+                        f"[LiveEdge] 距末尾 {remaining} 根K線，取消掛單，封鎖新信號"
+                    )
+                    self._cancel_pending_order()
             self._process_candle(candle)
 
         if self._open_position:
@@ -117,6 +131,7 @@ class BacktestEngine:
         self._last_closed_trade = None
         self._position_age = 0
         self._tp_timeout_triggered = False
+        self._near_data_end = False   # live-edge guard flag
         self.detector.reset()
         self.trend_follow.reset()
 
@@ -192,6 +207,8 @@ class BacktestEngine:
 
         # ── Strategy evaluation ──
         if not self._open_position and not self._pending_order:
+            if self._near_data_end:
+                return   # no new entries near live edge
             active_zone = self.detector.get_active_zone()
             is_mature = self.detector.is_zone_mature
 
