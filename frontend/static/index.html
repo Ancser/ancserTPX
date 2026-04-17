@@ -844,7 +844,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.8.4</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.8.5</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -2223,7 +2223,6 @@ function initChart() {
         if (backtestData && backtestData.trades) {
             drawPositionTools(backtestData.trades);
         }
-        if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
         drawSessionDividers();
     }).observe(container);
 
@@ -2234,13 +2233,10 @@ function initChart() {
         _vpRafId = requestAnimationFrame(() => {
             _vpRafId = null;
             if (_cachedVPZones) drawVolumeProfile(_cachedVPZones);
-            // Always clear the position overlay before repainting — otherwise
-            // live-trade triangles accumulate on every pan when no backtest is loaded.
             clearPositionOverlay();
             if (backtestData && backtestData.trades) {
                 drawPositionTools(backtestData.trades);
             }
-            if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
             drawSessionDividers();
         });
     };
@@ -2852,71 +2848,64 @@ function drawLiveTrades(trades) {
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Filter trades to those whose entry_time falls within loaded chart data.
-    // `timeToCoordinate` extrapolates for out-of-range times → all would
-    // stack at the last bar position. Filter explicitly.
-    let minTime = null, maxTime = null;
-    const cd = window._lastChartData;
-    if (cd && cd.length > 0) {
-        minTime = cd[0].time;
-        maxTime = cd[cd.length - 1].time;
-    }
-
-    // Orange triangle markers for every executed trade
-    const ORANGE       = '#ffa726';
-    const ORANGE_GLOW  = 'rgba(255, 167, 38, 0.35)';
-    const TRI_SIZE     = 7;    // half-width of triangle
-    const TRI_OFFSET   = 55;   // distance below/above candle — clears backtest signal arrows
+    const ORANGE      = '#ffa726';
+    const ORANGE_GLOW = 'rgba(255, 167, 38, 0.35)';
+    const TRI_SIZE    = 7;
+    const TRI_OFFSET  = 55;
 
     ctx.font = '10px "Share Tech Mono", monospace';
     ctx.textAlign = 'center';
 
+    const seen = new Set();
+
     trades.forEach((t) => {
-        const entryTC = isoToChartTime(t.entry_time);
-        // Hard filter by chart data time range (prevents stacking)
-        if (minTime !== null && (entryTC < minTime || entryTC > maxTime)) return;
-
-        const entryX = chart.timeScale().timeToCoordinate(entryTC);
-        if (entryX === null || entryX < -20 || entryX > chartW + 20) return;
-
-        let entryY = null;
         try {
-            entryY = candleSeries ? candleSeries.priceToCoordinate(t.entry_price) : null;
+            if (!t || !t.entry_time || t.entry_price == null) return;
+
+            let entryTC;
+            try { entryTC = isoToChartTime(t.entry_time); } catch(_) { return; }
+
+            const entryX = chart.timeScale().timeToCoordinate(entryTC);
+            // null  = library says this time has no position (outside data entirely)
+            if (entryX === null) return;
+            // skip if the coordinate is off the visible canvas
+            if (entryX < -10 || entryX > chartW + 10) return;
+
+            // dedup: same entry_time + direction = same round trip fill
+            const key = t.entry_time + ':' + (t.direction || '?');
+            if (seen.has(key)) return;
+            seen.add(key);
+
+            let entryY = null;
+            try { entryY = candleSeries ? candleSeries.priceToCoordinate(t.entry_price) : null; } catch(_) {}
+            if (entryY === null) return;
+
+            const isBuy  = t.direction === 'buy';
+            const pnlVal = t.pnl || 0;
+            const pnlStr = '$' + (pnlVal >= 0 ? '+' : '-') + Math.abs(pnlVal).toFixed(0);
+
+            const tipY  = isBuy ? entryY + TRI_OFFSET                : entryY - TRI_OFFSET;
+            const baseY = isBuy ? entryY + TRI_OFFSET + TRI_SIZE*1.6 : entryY - TRI_OFFSET - TRI_SIZE*1.6;
+
+            ctx.fillStyle = ORANGE_GLOW;
+            ctx.beginPath();
+            ctx.moveTo(entryX, tipY);
+            ctx.lineTo(entryX - TRI_SIZE - 2, baseY);
+            ctx.lineTo(entryX + TRI_SIZE + 2, baseY);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = ORANGE;
+            ctx.beginPath();
+            ctx.moveTo(entryX, tipY);
+            ctx.lineTo(entryX - TRI_SIZE, baseY);
+            ctx.lineTo(entryX + TRI_SIZE, baseY);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = ORANGE;
+            ctx.fillText(pnlStr, entryX, isBuy ? baseY + 11 : baseY - 4);
         } catch(_) {}
-        if (entryY === null) return;
-
-        const isBuy = t.direction === 'buy';
-        const pnlVal = t.pnl || 0;
-        const sign = pnlVal >= 0 ? '+' : '-';
-        // "$" before sign, e.g. $+252 / $-252
-        const pnlStr = '$' + sign + Math.abs(pnlVal).toFixed(0);
-
-        // Triangle: up-pointing below bar for buys, down-pointing above bar for sells
-        const tipY   = isBuy ? entryY + TRI_OFFSET            : entryY - TRI_OFFSET;
-        const baseY  = isBuy ? entryY + TRI_OFFSET + TRI_SIZE*1.6 : entryY - TRI_OFFSET - TRI_SIZE*1.6;
-
-        // Glow
-        ctx.fillStyle = ORANGE_GLOW;
-        ctx.beginPath();
-        ctx.moveTo(entryX, tipY);
-        ctx.lineTo(entryX - TRI_SIZE - 2, baseY);
-        ctx.lineTo(entryX + TRI_SIZE + 2, baseY);
-        ctx.closePath();
-        ctx.fill();
-
-        // Solid triangle
-        ctx.fillStyle = ORANGE;
-        ctx.beginPath();
-        ctx.moveTo(entryX, tipY);
-        ctx.lineTo(entryX - TRI_SIZE, baseY);
-        ctx.lineTo(entryX + TRI_SIZE, baseY);
-        ctx.closePath();
-        ctx.fill();
-
-        // PnL label
-        const labelY = isBuy ? baseY + 11 : baseY - 4;
-        ctx.fillStyle = ORANGE;
-        ctx.fillText(pnlStr, entryX, labelY);
     });
     ctx.restore();
 }
@@ -2943,15 +2932,13 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
                 renderMetrics(backtestData.metrics, backtestData.trades);
             }
 
-            // Force overlay redraw so trades appear immediately
+            // setMarkers handles all viewports — no canvas redraw needed here
+            drawLiveTradeMarkers(data.trades);
             if (_overlaySyncData) {
                 const sd = _overlaySyncData;
                 if (_cachedVPZones) drawVolumeProfile(_cachedVPZones);
                 if (sd.trades) drawPositionTools(sd.trades);
-                drawLiveTrades(data.trades);
                 drawSessionDividers();
-            } else {
-                drawLiveTrades(data.trades);
             }
         } else {
             window._liveCompletedTrades = [];
@@ -3316,6 +3303,14 @@ async function runBacktest() {
 
 let _overlaySyncRAF = null;
 let _overlaySyncData = null;
+let _backtestMarkers = [];
+let _liveMarkers = [];
+
+function _refreshAllMarkers() {
+    if (!candleSeries) return;
+    const all = [..._backtestMarkers, ..._liveMarkers].sort((a, b) => a.time - b.time);
+    try { candleSeries.setMarkers(all); } catch(e) {}
+}
 
 function renderChart(data) {
     if (!data) { log('No backtest data to render', 'warn'); return; }
@@ -3373,7 +3368,6 @@ function startOverlaySync() {
             if (zonesToDraw) drawVolumeProfile(zonesToDraw);
             clearPositionOverlay();
             if (data.trades) drawPositionTools(data.trades);
-            if (window._liveCompletedTrades) drawLiveTrades(window._liveCompletedTrades);
             drawSessionDividers();
         }
     }
@@ -3400,18 +3394,25 @@ function isoToChartTime(iso) {
 
 
 function drawTradeMarkers(trades) {
-    if (!trades || trades.length === 0) return;
-
-    const markers = trades.map(t => ({
+    _backtestMarkers = (!trades || trades.length === 0) ? [] : trades.map(t => ({
         time: isoToChartTime(t.entry_time),
         position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
         color: t.pnl > 0 ? '#00e5a0' : '#ff4060',
         shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
         text: (t.pnl > 0 ? '+' : '') + '$' + (t.pnl||0).toFixed(0),
-    }));
+    })).filter(m => m.time && !isNaN(m.time));
+    _refreshAllMarkers();
+}
 
-    markers.sort((a, b) => a.time - b.time);
-    candleSeries.setMarkers(markers);
+function drawLiveTradeMarkers(trades) {
+    _liveMarkers = (!trades || trades.length === 0) ? [] : trades.map(t => ({
+        time: isoToChartTime(t.entry_time),
+        position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
+        color: '#ffa726',
+        shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
+        text: '$' + (t.pnl >= 0 ? '+' : '') + (t.pnl || 0).toFixed(0),
+    })).filter(m => m.time && !isNaN(m.time));
+    _refreshAllMarkers();
 }
 
 // Compute summary metrics from a list of trades (used for backtest-day-span and live comparison)
