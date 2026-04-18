@@ -46,7 +46,8 @@ class ExitReason(str, Enum):
 
 class StrategyType(str, Enum):
     REVERSION    = "reversion"
-    TREND_FOLLOW = "trend_follow"
+    TREND_FOLLOW = "trend"       # was "trend_follow" — old JSON may still show "trend_follow"
+    MACD         = "macd"
 
 
 class BarUnit(int, Enum):
@@ -196,6 +197,8 @@ class TradeSignal:
     vol_ratio: Optional[float] = None  # 趨勢跟隨時的成交量比率
     is_big_trend: bool = False
     breakout_range: Optional[float] = None  # |H100-VAH| or |VAL-L100|, for TP recalc
+    order_type: str = "limit"         # "limit" | "market"
+    macd_hist: Optional[float] = None # MACD histogram value at signal
 
     @property
     def sl_points(self) -> float:
@@ -242,6 +245,7 @@ class Trade:
     vol_ratio: Optional[float] = None
     is_big_trend: bool = False
     breakout_range: Optional[float] = None  # for TP timeout recalc
+    macd_hist: Optional[float] = None       # MACD histogram value at entry
 
     @property
     def is_open(self) -> bool:
@@ -285,14 +289,20 @@ class BreakoutAnalysis:
 
 @dataclass
 class StrategyParams:
-    """可配置的策略參數 (SessionTrendFollow)"""
-    strategy: str = "trend"              # "trend" | "reversion"
-    entry_mode: str = "100RE"            # "50RE" | "100RE"
-    tp_ticks: int = 75                   # 25-600 tick
-    sl_ticks: int = 50                   # 25-600 tick
-    entry_timeout_minutes: int = 10      # 10, 20, 30
-    tp_timeout_minutes: int = 0          # 0 (OFF), 30, 60
-    tp_timeout_action: str = "flat"      # "flat", "3", "2", "1"
+    """可配置的策略參數 (SessionTrendFollow / MACDOnlyStrategy)"""
+    strategy: str = "trend"              # "trend" | "macd"
+    tp_ticks: int = 75                   # 5-200 tick
+    sl_ticks: int = 50                   # 5-200 tick
+    trail_sl_ticks: int = 5             # 5-200 tick — new SL offset from entry after trail triggers
+    # MACD params (hardcoded 12/26/9 — not user-configurable)
+    # Candle interval (seconds)
+    candle_seconds: int = 30             # 30 for live 30s bars; 60 for 1m backtest
+    # --- Removed (hardcoded internally) ---
+    # entry_mode: always "100RE" (VAH/VAL entry)
+    # entry_timeout_minutes: hardcoded 10 min inside strategy
+    # tp_timeout_minutes / tp_timeout_action: removed
+    # use_trail_sl: always True (forced)
+    # use_vwap_filter: always True (MACD forced VWAP filter)
 
 
 # ── 回測 ──────────────────────────────────────────────

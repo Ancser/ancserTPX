@@ -924,62 +924,35 @@
             </div>
             <div class="form-group">
                 <label>STRATEGY</label>
-                <select id="strategy-bt">
-                    <option value="trend" selected>Trend Follow</option>
+                <select id="strategy-bt" onchange="onStrategyBtChange()">
+                    <option value="trend" selected>TREND</option>
+                    <option value="macd">MACD</option>
                     <option value="reversion" disabled>Reversion (coming soon)</option>
                 </select>
             </div>
-            <div class="form-group">
-                <label>ENTRY</label>
-                <select id="entry-mode-bt">
-                    <option value="50RE">50% Retracement</option>
-                    <option value="100RE" selected>100% RE (at VAH/VAL)</option>
-                </select>
-            </div>
-            <div class="form-group slider-group">
-                <label>TP <span id="tp-ticks-bt-val" class="slider-value">75 tick</span></label>
-                <div class="slider-row">
-                    <input type="range" id="tp-ticks-bt" min="25" max="600" step="25" value="75"
-                           oninput="document.getElementById('tp-ticks-bt-val').textContent = this.value + ' tick'">
-                </div>
-            </div>
-            <div class="form-group slider-group">
-                <label>SL <span id="sl-ticks-bt-val" class="slider-value">50 tick</span></label>
-                <div class="slider-row">
-                    <input type="range" id="sl-ticks-bt" min="25" max="600" step="25" value="50"
-                           oninput="document.getElementById('sl-ticks-bt-val').textContent = this.value + ' tick'">
-                </div>
+            <!-- MACD note (shown when MACD selected) -->
+            <div id="macd-params-bt" style="display:none;">
+                <div style="font-size:10px;color:var(--text3);margin:2px 0 6px;">EMA 12/26/9 | VWAP filter 強制開啓 | limit order at VWAP</div>
             </div>
             <div class="form-group">
-                <label>ENTRY TIMEOUT</label>
-                <select id="entry-timeout-bt">
-                    <option value="10" selected>10 min</option>
-                    <option value="20">20 min</option>
-                    <option value="30">30 min</option>
-                </select>
+                <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">75</span> ticks</label>
+                <input type="range" id="tp-ticks-bt" min="5" max="200" step="5" value="75"
+                    oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value">
             </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>TP TIMEOUT</label>
-                    <select id="tp-timeout-bt" onchange="toggleTpAction('bt')">
-                        <option value="0" selected>OFF</option>
-                        <option value="30">30 min</option>
-                        <option value="60">60 min</option>
-                    </select>
-                </div>
-                <div class="form-group" id="tp-action-group-bt" style="display:none">
-                    <label>ACTION</label>
-                    <select id="tp-action-bt">
-                        <option value="flat" selected>Flat</option>
-                        <option value="25">TP→25t</option>
-                        <option value="15">TP→15t</option>
-                        <option value="10">TP→10t</option>
-                    </select>
-                </div>
+            <div class="form-group">
+                <label>SL <span id="sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
+                <input type="range" id="sl-ticks-bt" min="5" max="200" step="5" value="50"
+                    oninput="document.getElementById('sl-ticks-bt-val').textContent=this.value">
+            </div>
+            <!-- Trail SL (forced ON) — configurable new SL position -->
+            <div class="form-group">
+                <label>TRAIL SL (UPNL&gt;$100) — 新SL距進場 <span id="trail-sl-ticks-bt-val" style="color:var(--accent)">5</span> ticks</label>
+                <input type="range" id="trail-sl-ticks-bt" min="5" max="200" step="5" value="5"
+                    oninput="document.getElementById('trail-sl-ticks-bt-val').textContent=this.value">
             </div>
 
             <div style="font-size:10px;color:var(--text3);margin-top:4px;line-height:1.6;">
-                Zone: Session overnight (18:00 ET) | Flatten: PT 12:45
+                Zone: Session overnight (18:00 ET) | Flatten: PT 12:45 | Entry timeout: 10 min (hardcoded)
             </div>
             <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled style="margin-top:10px;">EXECUTE BACKTEST</button>
         </div>
@@ -1008,62 +981,35 @@
                 </div>
                 <div class="form-group">
                     <label>STRATEGY</label>
-                    <select id="strategy-live">
-                        <option value="trend" selected>Trend Follow</option>
+                    <select id="strategy-live" onchange="onStrategyLiveChange()">
+                        <option value="trend" selected>TREND</option>
+                        <option value="macd">MACD</option>
                         <option value="reversion" disabled>Reversion (coming soon)</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label>ENTRY</label>
-                    <select id="entry-mode-live">
-                        <option value="50RE">50% Retracement</option>
-                        <option value="100RE" selected>100% RE (at VAH/VAL)</option>
-                    </select>
-                </div>
-                <div class="form-group slider-group">
-                    <label>TP <span id="tp-ticks-live-val" class="slider-value">75 tick</span></label>
-                    <div class="slider-row">
-                        <input type="range" id="tp-ticks-live" min="25" max="600" step="25" value="75"
-                               oninput="document.getElementById('tp-ticks-live-val').textContent = this.value + ' tick'">
-                    </div>
-                </div>
-                <div class="form-group slider-group">
-                    <label>SL <span id="sl-ticks-live-val" class="slider-value">50 tick</span></label>
-                    <div class="slider-row">
-                        <input type="range" id="sl-ticks-live" min="25" max="600" step="25" value="50"
-                               oninput="document.getElementById('sl-ticks-live-val').textContent = this.value + ' tick'">
-                    </div>
+                <!-- MACD note (shown when MACD selected) -->
+                <div id="macd-params-live" style="display:none;">
+                    <div style="font-size:10px;color:var(--text3);margin:2px 0 6px;">EMA 12/26/9 | VWAP filter 強制開啓 | limit order at VWAP</div>
                 </div>
                 <div class="form-group">
-                    <label>ENTRY TIMEOUT</label>
-                    <select id="entry-timeout-live">
-                        <option value="10" selected>10 min</option>
-                        <option value="20">20 min</option>
-                        <option value="30">30 min</option>
-                    </select>
+                    <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">75</span> ticks</label>
+                    <input type="range" id="tp-ticks-live" min="5" max="200" step="5" value="75"
+                        oninput="document.getElementById('tp-ticks-live-val').textContent=this.value">
                 </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>TP TIMEOUT</label>
-                        <select id="tp-timeout-live" onchange="toggleTpAction('live')">
-                            <option value="0" selected>OFF</option>
-                            <option value="30">30 min</option>
-                            <option value="60">60 min</option>
-                        </select>
-                    </div>
-                    <div class="form-group" id="tp-action-group-live" style="display:none">
-                        <label>ACTION</label>
-                        <select id="tp-action-live">
-                            <option value="flat" selected>Flat</option>
-                            <option value="25">TP→25t</option>
-                            <option value="15">TP→15t</option>
-                            <option value="10">TP→10t</option>
-                        </select>
-                    </div>
+                <div class="form-group">
+                    <label>SL <span id="sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
+                    <input type="range" id="sl-ticks-live" min="5" max="200" step="5" value="50"
+                        oninput="document.getElementById('sl-ticks-live-val').textContent=this.value">
+                </div>
+                <!-- Trail SL (forced ON) — configurable new SL position -->
+                <div class="form-group">
+                    <label>TRAIL SL (UPNL&gt;$100) — 新SL距進場 <span id="trail-sl-ticks-live-val" style="color:var(--accent)">5</span> ticks</label>
+                    <input type="range" id="trail-sl-ticks-live" min="5" max="200" step="5" value="5"
+                        oninput="document.getElementById('trail-sl-ticks-live-val').textContent=this.value">
                 </div>
 
                 <div style="font-size:10px;color:var(--text3);margin-top:4px;line-height:1.6;">
-                    Zone: Session overnight (18:00 ET) | Flatten: PT 12:45
+                    Zone: Session overnight (18:00 ET) | Flatten: PT 12:45 | Entry timeout: 10 min (hardcoded)
                 </div>
             </div>
             <div class="panel">
@@ -1221,50 +1167,55 @@ let valLine = null;
 
 const DEFAULT_STRATEGY_PARAMS = {
     strategy: 'trend',
-    entry_mode: '100RE',
     tp_ticks: 75,
     sl_ticks: 50,
-    entry_timeout_minutes: 10,
-    tp_timeout_minutes: 0,
-    tp_timeout_action: 'flat',
+    trail_sl_ticks: 5,
+    candle_seconds: 30,
 };
 
 function collectStrategyParams(mode) {
+    const _int = (id) => { const el = document.getElementById(id); return el ? parseInt(el.value) || 0 : 0; };
+    const _val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
     return {
-        strategy: document.getElementById('strategy-' + mode).value,
-        entry_mode: document.getElementById('entry-mode-' + mode).value,
-        tp_ticks: parseInt(document.getElementById('tp-ticks-' + mode).value),
-        sl_ticks: parseInt(document.getElementById('sl-ticks-' + mode).value),
-        entry_timeout_minutes: parseInt(document.getElementById('entry-timeout-' + mode).value),
-        tp_timeout_minutes: parseInt(document.getElementById('tp-timeout-' + mode).value),
-        tp_timeout_action: document.getElementById('tp-action-' + mode) ?
-            document.getElementById('tp-action-' + mode).value : 'flat',
+        strategy: _val('strategy-' + mode),
+        tp_ticks: _int('tp-ticks-' + mode),
+        sl_ticks: _int('sl-ticks-' + mode),
+        trail_sl_ticks: _int('trail-sl-ticks-' + mode) || 5,
+        candle_seconds: 30,
     };
 }
 
 function applyStrategyParams(mode, params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params);
-    document.getElementById('strategy-' + mode).value = p.strategy;
-    document.getElementById('entry-mode-' + mode).value = p.entry_mode;
-    document.getElementById('tp-ticks-' + mode).value = p.tp_ticks;
-    document.getElementById('sl-ticks-' + mode).value = p.sl_ticks;
-    const tpValEl = document.getElementById('tp-ticks-' + mode + '-val');
-    const slValEl = document.getElementById('sl-ticks-' + mode + '-val');
-    if (tpValEl) tpValEl.textContent = p.tp_ticks + ' tick';
-    if (slValEl) slValEl.textContent = p.sl_ticks + ' tick';
-    document.getElementById('entry-timeout-' + mode).value = p.entry_timeout_minutes;
-    document.getElementById('tp-timeout-' + mode).value = p.tp_timeout_minutes;
-    toggleTpAction(mode);
-    if (document.getElementById('tp-action-' + mode)) {
-        document.getElementById('tp-action-' + mode).value = p.tp_timeout_action;
-    }
+    const _set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+    const _setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    _set('strategy-' + mode, p.strategy);
+    // SL/TP sliders + display values
+    _set('tp-ticks-' + mode, p.tp_ticks);
+    _setVal('tp-ticks-' + mode + '-val', p.tp_ticks);
+    _set('sl-ticks-' + mode, p.sl_ticks);
+    _setVal('sl-ticks-' + mode + '-val', p.sl_ticks);
+    // Trail SL slider + display value
+    const tst = p.trail_sl_ticks != null ? p.trail_sl_ticks : 5;
+    _set('trail-sl-ticks-' + mode, tst);
+    _setVal('trail-sl-ticks-' + mode + '-val', tst);
+    // Show/hide MACD section
+    if (mode === 'bt') onStrategyBtChange();
+    else if (mode === 'live') onStrategyLiveChange();
 }
 
-function toggleTpAction(mode) {
-    const val = document.getElementById('tp-timeout-' + mode).value;
-    const group = document.getElementById('tp-action-group-' + mode);
-    if (group) group.style.display = val === '0' ? 'none' : '';
+function onStrategyBtChange() {
+    const val = document.getElementById('strategy-bt').value;
+    const macdDiv = document.getElementById('macd-params-bt');
+    if (macdDiv) macdDiv.style.display = (val === 'macd') ? '' : 'none';
 }
+
+function onStrategyLiveChange() {
+    const val = document.getElementById('strategy-live').value;
+    const macdDiv = document.getElementById('macd-params-live');
+    if (macdDiv) macdDiv.style.display = (val === 'macd') ? '' : 'none';
+}
+
 
 // ── Preset system (server-side JSON) ──
 let _presetsCache = { presets: {}, last_used_bt: 'default', last_used_live: 'default' };
@@ -1595,7 +1546,7 @@ function updateLiveTopBar() {
 
     // Timeframe
     const tfEl = document.getElementById('lv-timeframe');
-    if (tfEl) { tfEl.textContent = '1min'; }
+    if (tfEl) { tfEl.textContent = '30s'; }
 
     // Zone status default
     const zsEl = document.getElementById('lv-zone-status');
