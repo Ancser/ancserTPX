@@ -326,6 +326,55 @@
         .btn-amber:disabled { opacity: 0.3; cursor: not-allowed; }
         .btn-amber:disabled:hover { background: var(--amber2); box-shadow: none; }
 
+        /* ── ML hazard-stripe button ── */
+        .btn-ml {
+            position: relative;
+            overflow: hidden;
+            border: 1px solid var(--amber);
+            color: var(--amber);
+            font-family: 'Orbitron', sans-serif;
+            font-size: 11px;
+            letter-spacing: 2px;
+            font-weight: 600;
+            background: repeating-linear-gradient(
+                -45deg,
+                rgba(255, 167, 38, 0.10) 0px,
+                rgba(255, 167, 38, 0.10) 6px,
+                rgba(255, 167, 38, 0.03) 6px,
+                rgba(255, 167, 38, 0.03) 12px
+            );
+        }
+        .btn-ml::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: repeating-linear-gradient(
+                -45deg,
+                transparent 0px,
+                transparent 6px,
+                rgba(255, 167, 38, 0.06) 6px,
+                rgba(255, 167, 38, 0.06) 7px
+            );
+            pointer-events: none;
+        }
+        .btn-ml:hover:not(:disabled) {
+            background: repeating-linear-gradient(
+                -45deg,
+                rgba(255, 167, 38, 0.20) 0px,
+                rgba(255, 167, 38, 0.20) 6px,
+                rgba(255, 167, 38, 0.08) 6px,
+                rgba(255, 167, 38, 0.08) 12px
+            );
+            box-shadow: 0 0 20px rgba(255, 167, 38, 0.2);
+        }
+        .btn-ml:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+        .btn-ml:disabled:hover {
+            box-shadow: none;
+        }
+
         .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text2); }
         .btn-outline:hover { border-color: var(--text2); color: var(--text); }
 
@@ -844,7 +893,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.9.3</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.9.4</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -918,8 +967,9 @@
                         <option value="default">Default</option>
                     </select>
                 </div>
-                <div class="form-group" style="flex:1;display:flex;align-items:flex-end;">
+                <div class="form-group" style="flex:1;display:flex;align-items:flex-end;gap:4px;">
                     <button class="btn btn-outline" onclick="savePreset('bt')" style="padding:7px 6px;font-size:10px;">SAVE</button>
+                    <button class="btn btn-red" onclick="deletePreset('bt')" style="padding:7px 6px;font-size:10px;" title="Delete selected preset">DEL</button>
                 </div>
             </div>
             <div class="form-group">
@@ -954,7 +1004,10 @@
             <div style="font-size:10px;color:var(--text3);margin-top:4px;line-height:1.6;">
                 Zone: Session overnight (18:00 ET) | Flatten: PT 12:45 | Entry timeout: 10 min (hardcoded)
             </div>
-            <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled style="margin-top:10px;">EXECUTE BACKTEST</button>
+            <div style="display:flex;flex-direction:column;gap:6px;margin-top:10px;">
+                <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
+                <button class="btn btn-ml" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run all SL/TP/Trail combos and rank results">MACHINE LEARNING</button>
+            </div>
         </div>
 
         <!-- Metrics -->
@@ -975,8 +1028,9 @@
                             <option value="default">Default</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;display:flex;align-items:flex-end;">
+                    <div class="form-group" style="flex:1;display:flex;align-items:flex-end;gap:4px;">
                         <button class="btn btn-outline" onclick="savePreset('live')" style="padding:7px 6px;font-size:10px;">SAVE</button>
+                        <button class="btn btn-red" onclick="deletePreset('live')" style="padding:7px 6px;font-size:10px;" title="Delete selected preset">DEL</button>
                     </div>
                 </div>
                 <div class="form-group">
@@ -1085,11 +1139,43 @@
 
         <div class="bottom-panel">
             <div class="bottom-tabs">
+                <div class="bottom-tab" data-btab="ml">MACHINE LEARNING</div>
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
+                <div id="btab-ml" class="hidden">
+                    <div style="padding:8px 4px 4px;display:flex;align-items:center;gap:12px;">
+                        <span style="font-size:11px;color:var(--text2);" id="ml-status">No results yet — click MACHINE LEARNING to start</span>
+                        <button class="btn btn-outline" onclick="clearMLResults()" style="padding:4px 8px;font-size:10px;">CLEAR</button>
+                    </div>
+                    <div class="trade-table-wrap" style="max-height:calc(100% - 36px);">
+                        <table id="ml-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:36px;">ML#</th>
+                                    <th style="width:52px;">STRAT</th>
+                                    <th style="width:40px;">SL</th>
+                                    <th style="width:40px;">TP</th>
+                                    <th style="width:44px;">TRAIL</th>
+                                    <th style="width:44px;">TRADES</th>
+                                    <th style="width:52px;">WIN%</th>
+                                    <th style="width:68px;">TOTAL PNL</th>
+                                    <th style="width:60px;">MAX DD</th>
+                                    <th style="width:52px;">CALMAR</th>
+                                    <th style="width:52px;">P.FACTOR</th>
+                                    <th style="width:52px;">CONSIST</th>
+                                    <th style="width:60px;">BEST DAY</th>
+                                    <th style="width:60px;">WORST DAY</th>
+                                    <th style="width:52px;">SCORE</th>
+                                    <th style="width:32px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="ml-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
                 <div id="btab-trades">
                     <div class="trade-table-wrap">
                         <table>
@@ -1290,6 +1376,28 @@ function refreshPresetDropdowns() {
     });
 }
 
+async function deletePreset(mode) {
+    const sel = document.getElementById('preset-' + mode);
+    const name = sel.value;
+    if (name === 'default') { log('Cannot delete the Default preset', 'warn'); return; }
+    if (!confirm('Delete preset "' + name + '"?')) return;
+    try {
+        await fetch(API + '/presets/' + encodeURIComponent(name), {
+            method: 'DELETE',
+        });
+        await fetchPresets();
+        refreshPresetDropdowns();
+        // Reset both dropdowns to default if they were showing deleted preset
+        ['bt', 'live'].forEach(m => {
+            const s = document.getElementById('preset-' + m);
+            if (s && s.value === name) { s.value = 'default'; applyStrategyParams(m, DEFAULT_STRATEGY_PARAMS); }
+        });
+        log('Preset "' + name + '" deleted', 'info');
+    } catch(e) {
+        log('Preset delete error: ' + e.message, 'error');
+    }
+}
+
 async function initPresets() {
     await fetchPresets();
     refreshPresetDropdowns();
@@ -1390,7 +1498,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
             t.classList.add('active');
             const tab = t.dataset.btab;
-            ['trades','execute','log'].forEach(id => {
+            ['ml','trades','execute','log'].forEach(id => {
                 document.getElementById('btab-' + id).classList.toggle('hidden', id !== tab);
             });
         };
@@ -3087,6 +3195,7 @@ async function connectAPI() {
         document.getElementById('conn-trigger').classList.add('connected');
         document.getElementById('data-count').value = data.candles_count + ' bars';
         document.getElementById('btn-backtest').disabled = false;
+        document.getElementById('btn-run-all').disabled = false;
 
         log('Connected // Contract: ' + data.contract_id, 'success');
         log('Loaded ' + data.candles_count + ' bars (' + data.interval + ') from ' + data.first + ' to ' + data.last, 'success');
@@ -3250,6 +3359,169 @@ async function runBacktest() {
     }
 }
 
+// -- ML Optimizer -----------------------------------
+
+let _mlResults = [];
+
+async function runAllCombinations() {
+    const btn = document.getElementById('btn-run-all');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
+
+    // Switch to ML tab so user can watch
+    document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
+    document.querySelector('[data-btab="ml"]').classList.add('active');
+    ['ml','trades','execute','log'].forEach(id => {
+        document.getElementById('btab-' + id).classList.toggle('hidden', id !== 'ml');
+    });
+
+    const statusEl = document.getElementById('ml-status');
+    statusEl.textContent = 'Running combinations... (this may take 30–90 sec)';
+
+    const params = collectStrategyParams('bt');
+    try {
+        const startDate = document.getElementById('start-date').value;
+        const endDate   = document.getElementById('end-date').value;
+        const capital   = 50000;
+
+        const resp = await fetch(API + '/backtest/ml-run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                strategy: params.strategy,
+                candle_seconds: params.candle_seconds,
+                initial_capital: capital,
+                start_date: startDate,
+                end_date: endDate,
+            }),
+        });
+
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        _mlResults = data.results || [];
+        renderMLResults(_mlResults);
+        statusEl.textContent = _mlResults.length + ' combinations ranked — top shown first';
+        log('ML run complete: ' + _mlResults.length + ' combos', 'success');
+    } catch(e) {
+        log('ML run failed: ' + e.message, 'error');
+        statusEl.textContent = 'ML run failed: ' + e.message;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'MACHINE LEARNING';
+    }
+}
+
+function renderMLResults(results) {
+    const tbody = document.getElementById('ml-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    if (!results || results.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="16" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
+        return;
+    }
+
+    results.forEach(function(r, idx) {
+        const rank = idx + 1;
+        // Backend uses flat fields: r.sl, r.tp, r.trail (not sl_ticks etc.)
+        const dd = r.max_drawdown || 0;
+        const ddColor = dd < 2000 ? 'var(--green)' : 'var(--red)';
+        const wr = ((r.win_rate || 0) * 100).toFixed(1);
+        const calmar = r.calmar_ratio || 0;
+        const calmarColor = calmar >= 1 ? 'var(--green)' : '';
+        const pnl = r.total_pnl || 0;
+        const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const score = (r.score || 0).toFixed(1);
+        const scoreColor = (r.score || 0) >= 0 ? 'var(--cyan)' : 'var(--red)';
+        const pf = r.profit_factor || 0;
+
+        // Consistency: % profitable days (0–1 in backend, multiply × 100)
+        const consist = r.consistency_pct != null ? (r.consistency_pct * 100).toFixed(0) + '%' : '—';
+        // max_day_pct is already ×100 on backend side
+        const maxDayPct = r.max_day_pct != null ? r.max_day_pct.toFixed(1) + '%' : '—';
+
+        // Best/worst day from daily_pnl dict
+        const daily = r.daily_pnl || {};
+        const dailyVals = Object.values(daily);
+        const bestDay = dailyVals.length ? '$' + Math.max(...dailyVals).toFixed(0) : '—';
+        const worstDay = dailyVals.length ? '$' + Math.min(...dailyVals).toFixed(0) : '—';
+
+        // ML# badge — only shown if saved
+        const savedLabel = _mlSavedMap[rank] ? 'ML#' + _mlSavedMap[rank] : '';
+
+        const tr = document.createElement('tr');
+        tr.innerHTML =
+            '<td style="text-align:center;font-size:10px;color:var(--text3);">' + rank + '</td>' +
+            '<td style="font-size:10px;">' + (r.strategy || '—').toUpperCase() + '</td>' +
+            '<td style="text-align:center;">' + (r.sl || 0) + '</td>' +
+            '<td style="text-align:center;">' + (r.tp || 0) + '</td>' +
+            '<td style="text-align:center;">' + (r.trail || 0) + '</td>' +
+            '<td style="text-align:center;">' + (r.total_trades || 0) + '</td>' +
+            '<td style="text-align:center;color:' + (parseFloat(wr) >= 50 ? 'var(--green)' : '') + ';">' + wr + '%</td>' +
+            '<td style="text-align:right;color:' + pnlColor + ';">$' + pnl.toFixed(0) + '</td>' +
+            '<td style="text-align:right;color:' + ddColor + ';">$' + dd.toFixed(0) + '</td>' +
+            '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
+            '<td style="text-align:center;">' + (pf >= 999 ? '∞' : pf.toFixed(2)) + '</td>' +
+            '<td style="text-align:center;">' + consist + '</td>' +
+            '<td style="text-align:right;color:var(--green);">' + bestDay + '</td>' +
+            '<td style="text-align:right;color:var(--red);">' + worstDay + '</td>' +
+            '<td style="text-align:center;color:' + scoreColor + ';font-weight:600;">' + score + '</td>' +
+            '<td style="text-align:center;">' +
+                '<button class="btn btn-outline" onclick="saveMLPreset(' + rank + ')" ' +
+                    'style="padding:2px 6px;font-size:10px;min-width:28px;" ' +
+                    'title="Save as ML#' + rank + ' preset">' +
+                    (savedLabel || '+') + '</button>' +
+            '</td>';
+        tbody.appendChild(tr);
+    });
+}
+
+// Track which ranks have been saved as presets
+const _mlSavedMap = {};   // rank → ML#N number
+
+async function saveMLPreset(rank) {
+    const idx = rank - 1;
+    if (!_mlResults[idx]) return;
+    const r = _mlResults[idx];
+
+    // Assign next ML# number
+    const existing = Object.values(_mlSavedMap);
+    const nextNum = existing.length > 0 ? Math.max(...existing) + 1 : 1;
+    const presetName = 'ML#' + nextNum;
+
+    const params = {
+        strategy: r.strategy || 'trend',
+        tp_ticks: r.tp,
+        sl_ticks: r.sl,
+        trail_sl_ticks: r.trail,
+        candle_seconds: r.candle_seconds || 30,
+    };
+
+    try {
+        await fetch(API + '/presets/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: presetName, params: params }),
+        });
+        await fetchPresets();
+        refreshPresetDropdowns();
+        _mlSavedMap[rank] = nextNum;
+        renderMLResults(_mlResults);   // re-render to show badge
+        log('Saved "' + presetName + '": SL=' + r.sl + ' TP=' + r.tp + ' Trail=' + r.trail, 'success');
+    } catch(e) {
+        log('ML preset save error: ' + e.message, 'error');
+    }
+}
+
+function clearMLResults() {
+    _mlResults = [];
+    Object.keys(_mlSavedMap).forEach(k => delete _mlSavedMap[k]);
+    const tbody = document.getElementById('ml-tbody');
+    if (tbody) tbody.innerHTML = '';
+    const statusEl = document.getElementById('ml-status');
+    if (statusEl) statusEl.textContent = 'No results yet — click MACHINE LEARNING to start';
+}
+
 // -- Render ----------------------------------------
 
 let _overlaySyncRAF = null;
@@ -3372,7 +3644,7 @@ function _computeTradeStats(trades) {
         return {
             total_pnl: 0, trades: 0, wins: 0, losses: 0,
             win_rate: 0, avg_win: 0, avg_loss: 0, profit_factor: 0,
-            rr_ratio: 0, max_dd: 0, sharpe: 0,
+            rr_ratio: 0, max_dd: 0, calmar: 0,
             days: 0, daily_pnl: {}, consec3Pass: false, maxStreak: 0,
             maxDayPnl: 0, maxDayPass: false, maxDayPct: 0,
         };
@@ -3414,14 +3686,8 @@ function _computeTradeStats(trades) {
     const pf = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? Infinity : 0);
     const rr = Math.abs(avgLoss) > 0 ? Math.abs(avgWin / avgLoss) : 0;
 
-    // Per-trade Sharpe ratio (annualized assuming ~252 trading days)
-    let sharpe = 0;
-    if (count >= 2) {
-        const mean = pnlsAll.reduce((a,b)=>a+b,0) / count;
-        const variance = pnlsAll.reduce((acc, x) => acc + (x - mean) * (x - mean), 0) / count;
-        const std = Math.sqrt(variance);
-        if (std > 0) sharpe = (mean / std) * Math.sqrt(count);
-    }
+    // Calmar ratio = total PnL / max drawdown
+    const calmar = maxDD > 0 ? cum / maxDD : (cum > 0 ? 999 : 0);
 
     const dailyEntries = Object.entries(daily).sort((a,b)=>a[0].localeCompare(b[0]));
     const dailyPnls = dailyEntries.map(e=>e[1]);
@@ -3445,7 +3711,7 @@ function _computeTradeStats(trades) {
         profit_factor: pf,
         rr_ratio: rr,
         max_dd: maxDD,
-        sharpe: sharpe,
+        calmar: calmar,
         days: Object.keys(daily).length,
         daily_pnl: daily,
         consec3Pass: maxStreak >= 3,
@@ -3573,10 +3839,10 @@ function renderMetrics(m, backtestTrades) {
           cls: rr_ratio >= 2 ? 'pos' : '' },
         { label: 'MAX DD',
           value: '$' + max_dd.toFixed(0) + paren(liveStats ? '$' + liveStats.max_dd.toFixed(0) : ''),
-          cls: 'neg' },
-        { label: 'SHARPE',
-          value: sharpe.toFixed(2) + paren(liveStats ? liveStats.sharpe.toFixed(2) : ''),
-          cls: sharpe >= 1 ? 'pos' : '' },
+          cls: max_dd < 2000 ? 'pos' : 'neg' },
+        { label: 'CALMAR',
+          value: (m.calmar_ratio != null ? m.calmar_ratio : 0).toFixed(2) + paren(liveStats ? (liveStats.calmar != null ? liveStats.calmar : 0).toFixed(2) : ''),
+          cls: (m.calmar_ratio || 0) >= 1 ? 'pos' : '' },
         { label: 'PROFIT FACTOR',
           value: fmtPF(profit_factor) + paren(liveStats ? fmtPF(liveStats.profit_factor) : ''),
           cls: profit_factor >= 1.5 ? 'pos' : '' },

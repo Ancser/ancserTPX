@@ -350,7 +350,7 @@ class Metrics:
     expectancy: float = 0.0
     max_drawdown: float = 0.0
     max_drawdown_pct: float = 0.0
-    sharpe_ratio: float = 0.0
+    calmar_ratio: float = 0.0          # Total PnL / Max Drawdown
     profit_factor: float = 0.0
     max_consecutive_losses: int = 0
     total_pnl: float = 0.0

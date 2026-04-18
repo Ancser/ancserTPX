@@ -145,7 +145,7 @@ class MetricsResponse(BaseModel):
     expectancy: float
     max_drawdown: float
     max_drawdown_pct: float
-    sharpe_ratio: float
+    calmar_ratio: float = 0.0
     profit_factor: float
     max_consecutive_losses: int
     total_pnl: float
@@ -869,7 +869,7 @@ async def run_backtest(req: BacktestRequest):
         expectancy=m.expectancy,
         max_drawdown=m.max_drawdown,
         max_drawdown_pct=m.max_drawdown_pct,
-        sharpe_ratio=m.sharpe_ratio,
+        calmar_ratio=m.calmar_ratio,
         profit_factor=m.profit_factor,
         max_consecutive_losses=m.max_consecutive_losses,
         total_pnl=m.total_pnl,
@@ -904,6 +904,185 @@ async def list_backtests():
         }
         for i, r in enumerate(_backtest_results)
     ]
+
+
+# ── ML Optimizer: Run all SL/TP/Trail combinations ────────────────
+
+_ml_results_cache: List[dict] = []
+
+
+class MLRunRequest(BaseModel):
+    strategy: str = "trend"
+    candle_seconds: int = 30
+    initial_capital: float = 50000.0
+    start_date: str = ""
+    end_date: str = ""
+
+
+def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs) -> dict:
+    """Run one backtest combination synchronously (called from thread pool)."""
+    from backend.backtest.engine import BacktestEngine
+    from backend.db.models import BacktestConfig, StrategyParams
+
+    sp = StrategyParams(
+        strategy=strategy,
+        sl_ticks=sl,
+        tp_ticks=tp,
+        trail_sl_ticks=trail,
+        candle_seconds=cand_secs,
+    )
+    engine = BacktestEngine(config=config, strategy_params=sp)
+    try:
+        result = engine.run(list(candles))
+        m = result.metrics
+        return {
+            "strategy": strategy,
+            "sl": sl,
+            "tp": tp,
+            "trail": trail,
+            "total_trades": m.total_trades,
+            "wins": m.wins,
+            "losses": m.losses,
+            "win_rate": round(m.win_rate, 4),
+            "total_pnl": round(m.total_pnl, 2),
+            "max_drawdown": round(m.max_drawdown, 2),
+            "calmar_ratio": round(m.calmar_ratio, 3),
+            "profit_factor": round(m.profit_factor, 3),
+            "daily_pnl": m.daily_pnl,
+            "avg_win": round(m.avg_win, 2),
+            "avg_loss": round(m.avg_loss, 2),
+        }
+    except Exception as e:
+        return {"strategy": strategy, "sl": sl, "tp": tp, "trail": trail, "error": str(e)}
+
+
+def _score_result(r: dict) -> float:
+    """Score a result for ranking. Higher = better. Negative = filtered out."""
+    if r.get("error"):
+        return -999.0
+    if r["max_drawdown"] >= 2000:
+        return -1.0
+    if r["total_trades"] < 5:
+        return -0.5   # too few trades → unreliable
+
+    score = 0.0
+
+    # Consistency: % profitable days
+    daily = r.get("daily_pnl", {})
+    if daily:
+        pos_days = sum(1 for v in daily.values() if v > 0)
+        consistency = pos_days / len(daily)
+        if consistency >= 0.6:
+            score += 25
+        else:
+            score += consistency * 25
+
+    # Max day < 40% of total PnL
+    if r["total_pnl"] > 0 and daily:
+        max_day = max(daily.values())
+        day_pct = max_day / r["total_pnl"]
+        if day_pct < 0.40:
+            score += 20
+
+    # Win rate (0-30 pts)
+    score += r["win_rate"] * 30
+
+    # Calmar bonus (0-20 pts, capped at 4.0)
+    score += min(r["calmar_ratio"] / 4.0, 1.0) * 20
+
+    # Total PnL (0-20 pts, capped at $5000)
+    score += min(max(r["total_pnl"], 0) / 5000.0, 1.0) * 20
+
+    return round(score, 2)
+
+
+@router.post("/backtest/ml-run")
+async def ml_run(req: MLRunRequest):
+    """Run all SL/TP/Trail combinations and rank results.
+    Uses ThreadPoolExecutor for parallel execution.
+    """
+    global _ml_results_cache
+
+    if not _historical_candles:
+        raise HTTPException(400, "No candles loaded — fetch historical data first")
+
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from backend.db.models import BacktestConfig
+
+    config = BacktestConfig(
+        strategies=[req.strategy],
+        initial_capital=req.initial_capital,
+        start_date=req.start_date,
+        end_date=req.end_date,
+    )
+    candles = list(_historical_candles)
+    strategy = req.strategy
+    cand_secs = req.candle_seconds
+
+    # Search grid — coarse enough to be fast, fine enough to be useful
+    sl_values    = [10, 20, 30, 40, 50, 60, 80, 100]
+    tp_values    = [20, 40, 60, 80, 100, 120, 150, 200]
+    trail_values = [5, 10, 20]
+
+    combos = [
+        (sl, tp, trail)
+        for sl in sl_values
+        for tp in tp_values
+        for trail in trail_values
+        if tp > sl  # TP must be larger than SL (basic sanity)
+    ]
+
+    logger.info(f"[ML] Running {len(combos)} combinations for strategy={strategy}")
+
+    loop = asyncio.get_event_loop()
+    results = []
+
+    # Run in batches of 16 threads for parallelism
+    BATCH = 16
+    with ThreadPoolExecutor(max_workers=BATCH) as executor:
+        tasks = [
+            loop.run_in_executor(
+                executor, _run_single_combo,
+                candles, config, strategy, sl, tp, trail, cand_secs
+            )
+            for sl, tp, trail in combos
+        ]
+        results = await asyncio.gather(*tasks)
+
+    # Score and rank
+    scored = [(r, _score_result(r)) for r in results]
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    ranked = []
+    for rank, (r, score) in enumerate(scored, start=1):
+        r["rank"] = rank
+        r["score"] = score
+        r["pass_max_dd"] = r.get("max_drawdown", 9999) < 2000
+        daily = r.get("daily_pnl", {})
+        if daily and r.get("total_pnl", 0) > 0:
+            pos_days = sum(1 for v in daily.values() if v > 0)
+            r["consistency_pct"] = round(pos_days / len(daily), 3)
+            max_day = max(daily.values())
+            r["max_day_pct"] = round(max_day / r["total_pnl"] * 100, 1) if r["total_pnl"] > 0 else 0
+        else:
+            r["consistency_pct"] = 0
+            r["max_day_pct"] = 0
+        ranked.append(r)
+
+    _ml_results_cache = ranked
+    logger.info(f"[ML] Done. Top result: {ranked[0] if ranked else 'none'}")
+
+    return {
+        "total_combinations": len(combos),
+        "results": ranked,
+    }
+
+
+@router.get("/backtest/ml-results")
+async def get_ml_results():
+    """Return cached ML results from last run."""
+    return {"results": _ml_results_cache}
 
 
 # ============================================================

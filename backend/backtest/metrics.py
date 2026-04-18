@@ -53,6 +53,7 @@ class MetricsCalculator:
 
         dd, dd_pct = self.max_drawdown(completed, initial_capital)
 
+        total_pnl = sum(t.pnl for t in completed)
         metrics = Metrics(
             total_trades=len(completed),
             wins=len(wins),
@@ -64,10 +65,10 @@ class MetricsCalculator:
             expectancy=self.expectancy(completed),
             max_drawdown=dd,
             max_drawdown_pct=dd_pct,
-            sharpe_ratio=self.sharpe_ratio(completed),
+            calmar_ratio=self.calmar_ratio(total_pnl, dd),
             profit_factor=self.profit_factor(completed),
             max_consecutive_losses=self.max_consecutive_losses(completed),
-            total_pnl=sum(t.pnl for t in completed),
+            total_pnl=total_pnl,
             daily_pnl=self.daily_pnl_summary(completed),
         )
 
@@ -157,24 +158,16 @@ class MetricsCalculator:
         return max_dd, max_dd_pct
 
     @staticmethod
-    def sharpe_ratio(
-        trades: List[Trade], risk_free_rate: float = 0.0
-    ) -> float:
-        """Sharpe Ratio (年化，假設每日 1-3 筆)"""
-        pnls = [t.pnl for t in trades if t.pnl is not None]
-        if len(pnls) < 2:
+    def calmar_ratio(total_pnl: float, max_drawdown: float) -> float:
+        """Calmar Ratio = Total PnL / Max Drawdown.
+        High ratio = good return relative to worst drawdown.
+        Returns 0 if no profit, 999 if no drawdown but profitable.
+        """
+        if total_pnl <= 0:
             return 0.0
-
-        mean = sum(pnls) / len(pnls)
-        variance = sum((p - mean) ** 2 for p in pnls) / (len(pnls) - 1)
-        std = math.sqrt(variance) if variance > 0 else 0
-
-        if std == 0:
-            return 0.0
-
-        # 假設每日 ~2 筆，252 交易日 → √504 年化
-        daily_sharpe = (mean - risk_free_rate) / std
-        return daily_sharpe * math.sqrt(252)
+        if max_drawdown <= 0:
+            return 999.0   # no drawdown = perfect
+        return total_pnl / max_drawdown
 
     @staticmethod
     def profit_factor(trades: List[Trade]) -> float:
