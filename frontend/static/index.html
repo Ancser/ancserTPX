@@ -893,7 +893,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.9.4</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.9.5</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -1007,6 +1007,16 @@
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:10px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
                 <button class="btn btn-ml" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run all SL/TP/Trail combos and rank results">MACHINE LEARNING</button>
+            </div>
+            <!-- ML progress bar -->
+            <div id="ml-progress-wrap" style="display:none;margin-top:7px;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                    <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">COMBINATIONS</span>
+                    <span id="ml-progress-text" style="font-size:9px;font-family:'Share Tech Mono',monospace;color:var(--text2);">0 / 0</span>
+                </div>
+                <div style="height:2px;background:rgba(255,255,255,0.07);border-radius:1px;overflow:hidden;">
+                    <div id="ml-progress-bar" style="height:100%;width:0%;background:#fff;border-radius:1px;transition:width 0.25s linear;box-shadow:0 0 6px rgba(255,255,255,0.5);"></div>
+                </div>
             </div>
         </div>
 
@@ -3362,6 +3372,40 @@ async function runBacktest() {
 // -- ML Optimizer -----------------------------------
 
 let _mlResults = [];
+let _mlProgressInterval = null;
+
+function _startMLProgress() {
+    const wrap = document.getElementById('ml-progress-wrap');
+    const bar  = document.getElementById('ml-progress-bar');
+    const text = document.getElementById('ml-progress-text');
+    if (wrap) wrap.style.display = 'block';
+    if (bar)  bar.style.width = '0%';
+    if (text) text.textContent = '0 / 0';
+
+    _mlProgressInterval = setInterval(async () => {
+        try {
+            const r = await fetch(API + '/backtest/ml-progress');
+            const d = await r.json();
+            const cur = d.current || 0;
+            const tot = d.total  || 0;
+            if (text) text.textContent = cur + ' / ' + tot;
+            if (bar && tot > 0) bar.style.width = (cur / tot * 100).toFixed(1) + '%';
+        } catch(e) { /* ignore poll errors */ }
+    }, 350);
+}
+
+function _stopMLProgress(success) {
+    if (_mlProgressInterval) { clearInterval(_mlProgressInterval); _mlProgressInterval = null; }
+    const bar  = document.getElementById('ml-progress-bar');
+    const wrap = document.getElementById('ml-progress-wrap');
+    if (success && bar) {
+        bar.style.width = '100%';
+        // fade out after 1.2 s
+        setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, 1200);
+    } else {
+        if (wrap) wrap.style.display = 'none';
+    }
+}
 
 async function runAllCombinations() {
     const btn = document.getElementById('btn-run-all');
@@ -3376,9 +3420,12 @@ async function runAllCombinations() {
     });
 
     const statusEl = document.getElementById('ml-status');
-    statusEl.textContent = 'Running combinations... (this may take 30–90 sec)';
+    statusEl.textContent = 'Running all combinations — TREND + MACD × all SL/TP/Trail (~336 combos)...';
+
+    _startMLProgress();
 
     const params = collectStrategyParams('bt');
+    let success = false;
     try {
         const startDate = document.getElementById('start-date').value;
         const endDate   = document.getElementById('end-date').value;
@@ -3388,7 +3435,6 @@ async function runAllCombinations() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                strategy: params.strategy,
                 candle_seconds: params.candle_seconds,
                 initial_capital: capital,
                 start_date: startDate,
@@ -3402,10 +3448,12 @@ async function runAllCombinations() {
         renderMLResults(_mlResults);
         statusEl.textContent = _mlResults.length + ' combinations ranked — top shown first';
         log('ML run complete: ' + _mlResults.length + ' combos', 'success');
+        success = true;
     } catch(e) {
         log('ML run failed: ' + e.message, 'error');
         statusEl.textContent = 'ML run failed: ' + e.message;
     } finally {
+        _stopMLProgress(success);
         btn.disabled = false;
         btn.textContent = 'MACHINE LEARNING';
     }

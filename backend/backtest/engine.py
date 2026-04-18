@@ -40,11 +40,12 @@ class BacktestEngine:
     PRE_FLATTEN_UTC = time(19, 30)
 
     def __init__(self, config: Optional[BacktestConfig] = None,
-                 strategy_params: Optional[StrategyParams] = None):
+                 strategy_params: Optional[StrategyParams] = None,
+                 zone_timeline: Optional[List[dict]] = None):
         self.config = config or BacktestConfig()
         self.strategy_params = strategy_params or StrategyParams()
 
-        # Session-based zone detector
+        # Session-based zone detector (skipped when zone_timeline is provided)
         self.detector = SessionZoneDetector(
             value_area_pct=self.config.value_area_pct,
         )
@@ -55,6 +56,10 @@ class BacktestEngine:
             self.trend_follow = MACDOnlyStrategy(params=self.strategy_params)
         else:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+
+        # Pre-computed zone timeline (set once for ML optimizer — avoids re-running detection)
+        self._zone_timeline: Optional[List[dict]] = zone_timeline
+        self._zi: int = 0  # current index into zone_timeline
 
         # State
         self._capital = self.config.initial_capital
@@ -77,8 +82,10 @@ class BacktestEngine:
         )
         self._reset()
 
-        # Ensure chronological order (API may return newest-first)
-        candles = sorted(candles, key=lambda c: c.timestamp)
+        # Ensure chronological order (API may return newest-first).
+        # Skip when using zone_timeline — ml_run pre-sorts once so _zi indices stay aligned.
+        if self._zone_timeline is None:
+            candles = sorted(candles, key=lambda c: c.timestamp)
 
         # Live-edge guard: cancel pending + block new signals for the last N candles.
         # Prevents phantom 0/1-min trades when the backtest reaches real-time and
@@ -100,15 +107,16 @@ class BacktestEngine:
         if self._open_position:
             self._force_exit(candles[-1], ExitReason.FLATTEN)
 
-        # Close any remaining active zone at end of backtest
-        if candles:
+        # Close any remaining active zone at end of backtest (skip when using timeline)
+        if candles and self._zone_timeline is None:
             self.detector.close_final_zone(candles[-1])
 
         from backend.backtest.metrics import MetricsCalculator
         calc = MetricsCalculator()
         metrics = calc.calculate_all(self._trades, self.config.initial_capital)
 
-        all_zones = self.detector.get_all_zones()
+        # ML fast runs don't need zone data for chart rendering
+        all_zones = [] if self._zone_timeline is not None else self.detector.get_all_zones()
 
         result = BacktestResult(
             config=self.config,
@@ -135,14 +143,25 @@ class BacktestEngine:
         self._last_closed_trade = None
         self._trail_sl_triggered = False
         self._near_data_end = False   # live-edge guard flag
-        self.detector.reset()
+        self._zi = 0                  # zone timeline index
+        if self._zone_timeline is None:
+            self.detector.reset()
         self.trend_follow.reset()
 
     def _process_candle(self, candle: Candle):
         self._equity_curve.append((candle.timestamp, self._capital))
 
-        # ── ALWAYS update zone detector first (even during flatten/limits) ──
-        self.detector.update(candle)
+        # ── Zone state: either live detector or pre-computed timeline ──
+        if self._zone_timeline is not None:
+            # Fast path: look up pre-computed state, skip expensive detector
+            _zt = self._zone_timeline[self._zi] if self._zi < len(self._zone_timeline) else {}
+            self._zi += 1
+            _active_zone = _zt.get('active')
+            _is_mature   = _zt.get('mature', False)
+            _last_left   = _zt.get('last_left')
+        else:
+            # Normal path: run detector live
+            self.detector.update(candle)
 
         # Daily loss limit
         date_str = candle.timestamp.strftime("%Y-%m-%d")
@@ -200,17 +219,25 @@ class BacktestEngine:
         if not self._open_position and not self._pending_order:
             if self._near_data_end:
                 return   # no new entries near live edge
-            active_zone = self.detector.get_active_zone()
-            is_mature = self.detector.is_zone_mature
 
-            # Default: use current zone if mature, fall back to last LEFT
-            eval_zone = active_zone
-            eval_mature = is_mature
-            if not is_mature:
-                prev = self.detector.get_last_left_zone()
-                if prev:
-                    eval_zone = prev
+            if self._zone_timeline is not None:
+                # Fast path: zones already looked up above
+                eval_zone   = _active_zone
+                eval_mature = _is_mature
+                if not eval_mature and _last_left:
+                    eval_zone   = _last_left
                     eval_mature = True
+            else:
+                # Normal path
+                active_zone = self.detector.get_active_zone()
+                is_mature   = self.detector.is_zone_mature
+                eval_zone   = active_zone
+                eval_mature = is_mature
+                if not is_mature:
+                    prev = self.detector.get_last_left_zone()
+                    if prev:
+                        eval_zone   = prev
+                        eval_mature = True
 
             signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
             if signal:

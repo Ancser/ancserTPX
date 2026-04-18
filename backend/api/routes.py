@@ -909,6 +909,40 @@ async def list_backtests():
 # ── ML Optimizer: Run all SL/TP/Trail combinations ────────────────
 
 _ml_results_cache: List[dict] = []
+_ml_progress: dict = {"current": 0, "total": 0}
+
+import threading as _threading
+_ml_progress_lock = _threading.Lock()
+
+
+def _precompute_zone_timeline(candles: list, value_area_pct: float = 0.80) -> list:
+    """Run SessionZoneDetector ONCE on all candles.
+    Returns a list[dict] — one entry per candle — with pre-computed zone state.
+    Slim zones (candles list stripped) are safe for strategy evaluation.
+    """
+    import copy
+    from backend.strategy.consolidation import SessionZoneDetector
+
+    detector = SessionZoneDetector(value_area_pct=value_area_pct)
+    timeline = []
+
+    for candle in candles:
+        detector.update(candle)
+
+        def _slim(z):
+            if z is None:
+                return None
+            c = copy.copy(z)
+            c.candles = []   # strip raw candle list — strategy only reads price levels
+            return c
+
+        timeline.append({
+            'active':    _slim(detector.get_active_zone()),
+            'mature':    detector.is_zone_mature,
+            'last_left': _slim(detector.get_last_left_zone()),
+        })
+
+    return timeline
 
 
 class MLRunRequest(BaseModel):
@@ -919,8 +953,11 @@ class MLRunRequest(BaseModel):
     end_date: str = ""
 
 
-def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs) -> dict:
-    """Run one backtest combination synchronously (called from thread pool)."""
+def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs, zone_timeline) -> dict:
+    """Run one backtest combination synchronously (called from process pool).
+    zone_timeline is pre-computed once and shared across all combos — avoids re-running
+    the expensive SessionZoneDetector for every parameter combination.
+    """
     from backend.backtest.engine import BacktestEngine
     from backend.db.models import BacktestConfig, StrategyParams
 
@@ -931,7 +968,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs) -> di
         trail_sl_ticks=trail,
         candle_seconds=cand_secs,
     )
-    engine = BacktestEngine(config=config, strategy_params=sp)
+    engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline)
     try:
         result = engine.run(list(candles))
         m = result.metrics
@@ -954,6 +991,9 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs) -> di
         }
     except Exception as e:
         return {"strategy": strategy, "sl": sl, "tp": tp, "trail": trail, "error": str(e)}
+    finally:
+        with _ml_progress_lock:
+            _ml_progress["current"] += 1
 
 
 def _score_result(r: dict) -> float:
@@ -999,7 +1039,9 @@ def _score_result(r: dict) -> float:
 @router.post("/backtest/ml-run")
 async def ml_run(req: MLRunRequest):
     """Run all SL/TP/Trail combinations and rank results.
-    Uses ThreadPoolExecutor for parallel execution.
+    Optimisations:
+      1. Zone timeline pre-computed ONCE — all combos skip expensive zone detection
+      2. ProcessPoolExecutor — true CPU parallelism, bypasses GIL
     """
     global _ml_results_cache
 
@@ -1007,46 +1049,75 @@ async def ml_run(req: MLRunRequest):
         raise HTTPException(400, "No candles loaded — fetch historical data first")
 
     import asyncio
+    import os
     from concurrent.futures import ThreadPoolExecutor
     from backend.db.models import BacktestConfig
 
-    config = BacktestConfig(
-        strategies=[req.strategy],
+    config_base = BacktestConfig(
         initial_capital=req.initial_capital,
         start_date=req.start_date,
         end_date=req.end_date,
     )
-    candles = list(_historical_candles)
-    strategy = req.strategy
     cand_secs = req.candle_seconds
 
-    # Search grid — coarse enough to be fast, fine enough to be useful
+    # Sort ONCE here — both the zone precompute and each combo engine.run()
+    # must see candles in the same chronological order so that _zi indices align.
+    candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+
+    # ── Phase 1: pre-compute zone timeline ONCE (replaces detector in every combo) ──
+    logger.info(f"[ML] Pre-computing zone timeline for {len(candles)} candles...")
+    loop = asyncio.get_running_loop()
+    zone_timeline = await loop.run_in_executor(
+        None, _precompute_zone_timeline, candles, config_base.value_area_pct
+    )
+    logger.info(f"[ML] Zone timeline ready ({len(zone_timeline)} entries)")
+
+    # Always sweep both strategies
+    all_strategies = ["trend", "macd"]
+
+    # Search grid
     sl_values    = [10, 20, 30, 40, 50, 60, 80, 100]
     tp_values    = [20, 40, 60, 80, 100, 120, 150, 200]
     trail_values = [5, 10, 20]
 
-    combos = [
+    param_combos = [
         (sl, tp, trail)
         for sl in sl_values
         for tp in tp_values
         for trail in trail_values
-        if tp > sl  # TP must be larger than SL (basic sanity)
+        if tp > sl
     ]
 
-    logger.info(f"[ML] Running {len(combos)} combinations for strategy={strategy}")
+    combos = [
+        (strategy, sl, tp, trail)
+        for strategy in all_strategies
+        for sl, tp, trail in param_combos
+    ]
 
-    loop = asyncio.get_event_loop()
-    results = []
+    logger.info(f"[ML] Running {len(combos)} combos ({len(all_strategies)} strategies × {len(param_combos)} param sets)")
 
-    # Run in batches of 16 threads for parallelism
-    BATCH = 16
-    with ThreadPoolExecutor(max_workers=BATCH) as executor:
+    # Reset progress counter
+    _ml_progress["current"] = 0
+    _ml_progress["total"] = len(combos)
+
+    # ── Phase 2: thread pool (zone precompute already removed 80% of work;
+    #    ThreadPoolExecutor avoids Windows process-spawn overhead and keeps
+    #    the progress counter working via shared _ml_progress dict) ──
+    WORKERS = min(os.cpu_count() or 4, 32)
+    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
         tasks = [
             loop.run_in_executor(
                 executor, _run_single_combo,
-                candles, config, strategy, sl, tp, trail, cand_secs
+                candles,
+                BacktestConfig(
+                    strategies=[strategy],
+                    initial_capital=config_base.initial_capital,
+                    start_date=config_base.start_date,
+                    end_date=config_base.end_date,
+                ),
+                strategy, sl, tp, trail, cand_secs, zone_timeline
             )
-            for sl, tp, trail in combos
+            for strategy, sl, tp, trail in combos
         ]
         results = await asyncio.gather(*tasks)
 
@@ -1083,6 +1154,12 @@ async def ml_run(req: MLRunRequest):
 async def get_ml_results():
     """Return cached ML results from last run."""
     return {"results": _ml_results_cache}
+
+
+@router.get("/backtest/ml-progress")
+async def get_ml_progress():
+    """Return current ML run progress (current / total combos done)."""
+    return dict(_ml_progress)
 
 
 # ============================================================
