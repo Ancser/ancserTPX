@@ -3775,10 +3775,9 @@ function renderExecuteTrades(trades) {
     };
 
     tbody.innerHTML = sorted.map((t) => {
-        const netPnl = t.pnl || 0;
+        const grossPnl = t.pnl || 0;   // TopstepX profitAndLoss = gross P&L (before commission/fees)
         const commission = (t.commission != null) ? t.commission : 1.0;
         const fees = (t.fees != null) ? t.fees : 2.80;
-        const grossPnl = netPnl + commission + fees;
         const pnlClass = grossPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
         const dirLabel = t.direction === 'buy' ? 'Long' : 'Short';
         const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
