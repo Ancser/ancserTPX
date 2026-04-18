@@ -89,8 +89,13 @@ class LiveTradingEngine:
         self.detector = SessionZoneDetector(
             value_area_pct=value_area_pct,
         )
-        # Strategy
-        self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+        # Strategy selection
+        _strat = (self.strategy_params.strategy or "trend").lower()
+        if _strat == "macd":
+            from backend.strategy.macd_strategy import MACDOnlyStrategy
+            self.trend_follow = MACDOnlyStrategy(params=self.strategy_params)
+        else:
+            self.trend_follow = SessionTrendFollow(params=self.strategy_params)
 
         # Live state
         self._running = False
@@ -104,8 +109,8 @@ class LiveTradingEngine:
         self._tp_order_id: Optional[int] = None
         self._active_signal: Optional[TradeSignal] = None  # preserved after fill for SL/TP
         self._position_just_closed: bool = False  # skip strategy eval on same tick as close
-        self._position_age: int = 0              # candles since position opened
-        self._tp_timeout_triggered: bool = False  # prevent re-triggering
+        self._position_age: int = 0              # candles since position opened (for display)
+        self._trail_sl_triggered: bool = False    # trailing SL: one-time trigger per position
         self._daily_pnl: float = 0.0
         self._today: str = ""
         self._capital: float = 0.0
@@ -268,7 +273,7 @@ class LiveTradingEngine:
         return "無"
 
     def _get_order_phase(self) -> str:
-        """Order status: 等待突破/確認突破中/掛單中/持倉中"""
+        """Order status: delegate to strategy's get_phase_label() when possible."""
         if self._open_position:
             age = self._position_age
             hours = age // 60
@@ -277,13 +282,19 @@ class LiveTradingEngine:
         if self._pending_order_id:
             age = self._pending_age
             timeout = self.trend_follow.PENDING_TIMEOUT_CANDLES
-            return f"掛單中({age}/{timeout}min)"
+            if timeout >= 999:
+                return f"市價單中({age}s)"
+            return f"掛單中({age}/{timeout})"
+
+        # Delegate to strategy's own label if it has one
+        if hasattr(self.trend_follow, 'get_phase_label'):
+            return self.trend_follow.get_phase_label()
 
         trend_state = self.trend_follow.raw_state
         if trend_state == "watching":
             count = getattr(self.trend_follow, '_consecutive_outside', 0)
             total = getattr(self.trend_follow, 'BREAKOUT_CONFIRM_CANDLES', 5)
-            return f"確認突破中({count}/{total}min)"
+            return f"確認突破中({count}/{total})"
         if trend_state == "confirmed":
             return "入場準備"
         return "等待突破"
@@ -345,16 +356,22 @@ class LiveTradingEngine:
         else:
             self._log_event("⚠ 無歷史K線! warm-up 跳過", "error")
 
-        # Warm up: feed historical candles to session zone detector
+        # Warm up: feed historical candles to session zone detector + strategy
         # MUST sort chronologically — API returns newest-first
         historical_candles = sorted(historical_candles, key=lambda c: c.timestamp)
         for c in historical_candles:
             self.detector.update(c)
+            # Feed to strategy for indicator warm-up (MACD EMA history)
+            if hasattr(self.trend_follow, 'warmup'):
+                self.trend_follow.warmup(c)
 
         self._candles_processed = len(historical_candles)
 
-        # Reset strategy after warm-up (prevent stale state)
-        self.trend_follow.reset()
+        # Soft reset: clear state machine but keep indicator history (MACD EMA values)
+        if hasattr(self.trend_follow, 'reset_state_only'):
+            self.trend_follow.reset_state_only()
+        else:
+            self.trend_follow.reset()
 
         active = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
@@ -462,50 +479,6 @@ class LiveTradingEngine:
         except Exception as e:
             self._log_event(f"緊急平倉失敗: {e}", "error")
 
-    async def _recalc_tp_live(self, new_tp_ticks: int):
-        """Recalculate TP with new tick count: cancel old TP, place new one.
-        TP = entry ± new_tp_ticks × tick_size
-        """
-        if not self._active_signal:
-            self._log_event("TP recalc skipped — no active signal", "warn")
-            return
-
-        sig = self._active_signal
-        tp_points = new_tp_ticks * TICK_SIZE
-        if sig.direction == Direction.BUY:
-            new_tp = sig.entry_price + tp_points
-        else:
-            new_tp = sig.entry_price - tp_points
-
-        # Cancel existing TP order
-        if self._tp_order_id:
-            try:
-                await self.client.cancel_order(self.account_id, self._tp_order_id)
-                self._log_event(f"舊 TP 取消 (order {self._tp_order_id})")
-            except Exception as e:
-                self._log_event(f"取消 TP 失敗: {e}", "error")
-            self._tp_order_id = None
-
-        # Place new TP limit order
-        try:
-            tp_side = 2 if sig.direction == Direction.BUY else 1  # sell to close / buy to close
-            tp_order = OrderRequest(
-                account_id=self.account_id,
-                contract_id=self.contract_id,
-                order_type=1,  # Limit
-                side=tp_side,
-                size=1,
-                limit_price=new_tp,
-            )
-            resp = await self.client.place_order(tp_order)
-            if resp and resp.success:
-                self._tp_order_id = resp.order_id
-                self._log_event(f"新 TP @ {new_tp:.2f} ({new_tp_ticks}t) order={resp.order_id}")
-            else:
-                self._log_event(f"新 TP 下單失敗: {resp}", "error")
-        except Exception as e:
-            self._log_event(f"新 TP 下單失敗: {e}", "error")
-
     # ── Main Loop ──────────────────────────────────────────
 
     async def _main_loop(self):
@@ -543,8 +516,8 @@ class LiveTradingEngine:
             self._position_just_closed = False
             return
 
-        # Get latest 1m candle
-        candle = await self._fetch_latest_candle(unit_number=1)
+        # Get latest 30s candle
+        candle = await self._fetch_latest_candle(unit_number=30)
         if not candle:
             return
 
@@ -633,19 +606,10 @@ class LiveTradingEngine:
                             "error"
                         )
 
-            # ── TP Timeout check ──
-            self._position_age += 1
-            tp_timeout = self.trend_follow.TP_TIMEOUT_CANDLES
-            if tp_timeout > 0 and not self._tp_timeout_triggered and self._position_age >= tp_timeout:
-                self._tp_timeout_triggered = True
-                action = self.trend_follow.TP_TIMEOUT_ACTION
-                if action == "flat":
-                    self._log_event(f"TP timeout ({tp_timeout} min) → flat close", "warn")
-                    await self.flatten_now()
-                else:
-                    new_tp_ticks = int(action)
-                    self._log_event(f"TP timeout ({tp_timeout} min) → TP → {new_tp_ticks}t", "warn")
-                    await self._recalc_tp_live(new_tp_ticks)
+            # ── Trailing SL (forced ON): UPNL ≥ 20 ticks → move SL to entry ± trail_sl_ticks ──
+            self._position_age += 1   # track for display only
+            if self._last_market_price:
+                await self._check_trailing_sl_live()
             return
 
         # ── Safety: cancel orphaned SL/TP if FLAT ──
@@ -693,7 +657,10 @@ class LiveTradingEngine:
         signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
 
         if signal and not self._pending_order_id:
-            placed = await self._place_order(signal)
+            if getattr(signal, 'order_type', 'limit') == 'market':
+                placed = await self._place_market_entry(signal)
+            else:
+                placed = await self._place_order(signal)
             if not placed:
                 strat.notify_order_cancelled()
             return
@@ -789,6 +756,107 @@ class LiveTradingEngine:
         except Exception as e:
             self._log_event(f"下單異常: {e}", "error")
             return False
+
+    async def _place_market_entry(self, signal: TradeSignal) -> bool:
+        """Place a market order for MACD strategy. SL/TP placed after fill via _sync_position."""
+        signal.entry_price = self._round_to_tick(signal.entry_price)
+        signal.sl_price = self._round_to_tick(signal.sl_price)
+        signal.tp_price = self._round_to_tick(signal.tp_price)
+
+        side = 1 if signal.direction == Direction.BUY else 2
+        dir_label = "買" if signal.direction == Direction.BUY else "賣"
+
+        order = OrderRequest(
+            account_id=self.account_id,
+            contract_id=self.contract_id,
+            order_type=2,   # Market
+            side=side,
+            size=1,
+        )
+
+        try:
+            resp = await self.client.place_order(order)
+            if resp.success:
+                # Treat market order like a pending order — _sync_position will detect fill
+                self._pending_order_id = resp.order_id
+                self._pending_signal = signal
+                self._pending_age = 0
+                self._log_event(
+                    f"市價單 #{resp.order_id} | {dir_label} MKT @ ~{signal.entry_price:.2f} | "
+                    f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f}"
+                )
+                return True
+            else:
+                self._log_event(
+                    f"市價單失敗: code={resp.error_code} msg={resp.error_message}",
+                    "error"
+                )
+                return False
+        except Exception as e:
+            self._log_event(f"市價單異常: {e}", "error")
+            return False
+
+    async def _check_trailing_sl_live(self):
+        """Live trailing SL (forced ON): UPNL ≥ 20 ticks ($100) → move SL to entry ± trail_sl_ticks.
+        trail_sl_ticks=1 → new SL = entry + $5 (barely profitable). One-time per position.
+        """
+        if self._trail_sl_triggered or not self._active_signal or not self._fill_price:
+            return
+        sig = self._active_signal
+        mkt = self._last_market_price
+        if sig.direction == Direction.BUY:
+            upnl = (mkt - self._fill_price) * POINT_VALUE
+        else:
+            upnl = (self._fill_price - mkt) * POINT_VALUE
+
+        # Trigger: 20 ticks × $5/tick = $100
+        TRAIL_TRIGGER = 20 * TICK_SIZE * POINT_VALUE   # $100
+        if upnl < TRAIL_TRIGGER:
+            return
+
+        self._trail_sl_triggered = True
+        trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 1) * TICK_SIZE
+        if sig.direction == Direction.BUY:
+            new_sl = self._fill_price + trail_pts
+        else:
+            new_sl = self._fill_price - trail_pts
+        new_sl = self._round_to_tick(new_sl)
+        self._log_event(
+            f"[TRAIL SL] UPNL=${upnl:.0f} → SL 移至 {new_sl:.2f} "
+            f"(entry={self._fill_price:.2f} +{trail_pts:.2f}pts)"
+        )
+
+        # Cancel old SL, place new stop at breakeven
+        if self._sl_order_id:
+            try:
+                await self.client.cancel_order(self.account_id, self._sl_order_id)
+                self._log_event(f"舊 SL #{self._sl_order_id} 取消")
+            except Exception as e:
+                self._log_event(f"取消舊 SL 失敗: {e}", "error")
+            self._sl_order_id = None
+
+        sl_side = 2 if sig.direction == Direction.BUY else 1
+        sl_order = OrderRequest(
+            account_id=self.account_id,
+            contract_id=self.contract_id,
+            order_type=3,   # Stop
+            side=sl_side,
+            size=1,
+            stop_price=new_sl,
+        )
+        try:
+            resp = await self.client.place_order(sl_order)
+            if resp.success:
+                self._sl_order_id = resp.order_id
+                # Update signal's SL reference so engine knows the new level
+                sig.sl_price = new_sl
+                self._log_event(f"✅ 保本 SL @ {new_sl:.2f} order=#{resp.order_id}")
+            else:
+                self._log_event(
+                    f"❌ 保本 SL 下單失敗: {resp.error_message}", "error"
+                )
+        except Exception as e:
+            self._log_event(f"❌ 保本 SL 異常: {e}", "error")
 
     async def _cancel_with_retry(self, order_id: Optional[int], label: str):
         """Cancel an order with retry."""
@@ -1009,7 +1077,7 @@ class LiveTradingEngine:
                 self._pending_signal = None
                 self._pending_age = 0
                 self._position_age = 0
-                self._tp_timeout_triggered = False
+                self._trail_sl_triggered = False
 
             # ── Transition 1b: Position exists but engine didn't place it ──
             # Double-fill scenario: both SL and TP filled in rapid succession,
@@ -1125,8 +1193,8 @@ class LiveTradingEngine:
             self._log_event(f"[SYNC ERROR] {e}", "error")
             logger.error(f"[SYNC] position sync failed: {e}", exc_info=True)
 
-    async def _fetch_latest_candle(self, unit_number: int = 5) -> Optional[Candle]:
-        """Fetch the most recent candle from TopstepX API.
+    async def _fetch_latest_candle(self, unit_number: int = 30) -> Optional[Candle]:
+        """Fetch the most recent 30-second candle from TopstepX API.
 
         Note: TopstepX API returns bars newest-first, so candles[-1] is the
         OLDEST. Must sort by timestamp to get the actual newest.
@@ -1134,7 +1202,7 @@ class LiveTradingEngine:
         try:
             candles = await self.client.get_historical_bars(
                 contract_id=self.contract_id,
-                unit=BarUnit.MINUTE,
+                unit=BarUnit.SECOND,
                 unit_number=unit_number,
                 limit=5,
             )

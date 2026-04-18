@@ -413,12 +413,14 @@ class SessionTrendFollow:
 
     def __init__(self, params: Optional[StrategyParams] = None):
         p = params or StrategyParams()
-        self.ENTRY_RATIO = 0.5 if p.entry_mode == "50RE" else 0.0
+        self.ENTRY_RATIO = 0.0   # Always 100%RE (entry at VAH/VAL, hardcoded)
         self.SL_TICKS = p.sl_ticks
         self.TP_TICKS = p.tp_ticks
-        self.PENDING_TIMEOUT_CANDLES = p.entry_timeout_minutes  # 1:1 for 1m bars
-        self.TP_TIMEOUT_CANDLES = p.tp_timeout_minutes           # 1:1 for 1m bars
-        self.TP_TIMEOUT_ACTION = p.tp_timeout_action
+        # Entry timeout: hardcoded 10 min (not user-configurable)
+        _candle_secs = getattr(p, 'candle_seconds', 30)
+        _cpm = max(1, 60 // _candle_secs)   # candles per minute (2 for 30s bars)
+        self.PENDING_TIMEOUT_CANDLES = 10 * _cpm   # 10 min hardcoded
+        # TP timeout removed
 
         self._state = "idle"  # idle | watching | confirmed | in_trade
         self._consecutive_outside: int = 0
@@ -432,6 +434,14 @@ class SessionTrendFollow:
         self._breakout_direction = None
         self._ref_zone = None
         self._recent_candles = []
+
+    def reset_state_only(self):
+        """Alias for reset() — keeps interface compatible with MACDOnlyStrategy."""
+        self.reset()
+
+    def warmup(self, candle: Candle):
+        """Feed candle during warm-up without generating signals (no-op for TrendFollow)."""
+        pass
 
     def evaluate(
         self,
@@ -535,7 +545,7 @@ class SessionTrendFollow:
 
         sl_dollars = abs(entry - sl) * POINT_VALUE
         tp_dollars = abs(tp - entry) * POINT_VALUE
-        entry_label = "50%RE" if self.ENTRY_RATIO == 0.5 else "100%RE"
+        entry_label = "100%RE"   # always VAH/VAL entry
 
         logger.info(
             f"[SessionTrend] BREAKOUT {direction.upper()} confirmed | "
