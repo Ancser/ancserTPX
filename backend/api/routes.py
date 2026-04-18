@@ -66,10 +66,7 @@ class BacktestRequest(BaseModel):
     strategy: str = "trend"
     tp_ticks: int = 75
     sl_ticks: int = 50
-    trail_sl_ticks: int = 1
-    macd_fast: int = 12
-    macd_slow: int = 26
-    macd_signal: int = 9
+    trail_sl_ticks: int = 5
     candle_seconds: int = 30
 
 
@@ -769,9 +766,6 @@ async def run_backtest(req: BacktestRequest):
         tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
         trail_sl_ticks=req.trail_sl_ticks,
-        macd_fast=req.macd_fast,
-        macd_slow=req.macd_slow,
-        macd_signal=req.macd_signal,
         candle_seconds=req.candle_seconds,
     )
 
@@ -927,10 +921,7 @@ class LiveStartRequest(BaseModel):
     strategy: str = "trend"
     tp_ticks: int = 75
     sl_ticks: int = 50
-    trail_sl_ticks: int = 1
-    macd_fast: int = 12
-    macd_slow: int = 26
-    macd_signal: int = 9
+    trail_sl_ticks: int = 5
     candle_seconds: int = 30
 
 
@@ -1004,9 +995,6 @@ async def live_start(req: LiveStartRequest):
         tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
         trail_sl_ticks=req.trail_sl_ticks,
-        macd_fast=req.macd_fast,
-        macd_slow=req.macd_slow,
-        macd_signal=req.macd_signal,
         candle_seconds=req.candle_seconds,
     )
 

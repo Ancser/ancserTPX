@@ -798,7 +798,7 @@ class LiveTradingEngine:
 
     async def _check_trailing_sl_live(self):
         """Live trailing SL (forced ON): UPNL ≥ 20 ticks ($100) → move SL to entry ± trail_sl_ticks.
-        trail_sl_ticks=1 → new SL = entry + $5 (barely profitable). One-time per position.
+        trail_sl_ticks=5 (default) → new SL = entry ± 5 ticks = $25 locked profit. One-time per position.
         """
         if self._trail_sl_triggered or not self._active_signal or not self._fill_price:
             return
@@ -815,7 +815,7 @@ class LiveTradingEngine:
             return
 
         self._trail_sl_triggered = True
-        trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 1) * TICK_SIZE
+        trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 5) * TICK_SIZE
         if sig.direction == Direction.BUY:
             new_sl = self._fill_price + trail_pts
         else:

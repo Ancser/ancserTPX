@@ -930,23 +930,9 @@
                     <option value="reversion" disabled>Reversion (coming soon)</option>
                 </select>
             </div>
-            <!-- MACD params (hidden unless MACD selected) -->
+            <!-- MACD note (shown when MACD selected) -->
             <div id="macd-params-bt" style="display:none;">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>FAST</label>
-                        <input type="number" id="macd-fast-bt" min="2" max="50" step="1" value="12" style="width:100%;">
-                    </div>
-                    <div class="form-group">
-                        <label>SLOW</label>
-                        <input type="number" id="macd-slow-bt" min="5" max="100" step="1" value="26" style="width:100%;">
-                    </div>
-                    <div class="form-group">
-                        <label>SIGNAL</label>
-                        <input type="number" id="macd-signal-bt" min="2" max="30" step="1" value="9" style="width:100%;">
-                    </div>
-                </div>
-                <div style="font-size:10px;color:var(--text3);margin:2px 0 6px;">VWAP filter: 強制開啓 (多在VWAP上，空在VWAP下)</div>
+                <div style="font-size:10px;color:var(--text3);margin:2px 0 6px;">EMA 12/26/9 | VWAP filter 強制開啓 | limit order at VWAP</div>
             </div>
             <div class="form-group">
                 <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">75</span> ticks</label>
@@ -960,8 +946,8 @@
             </div>
             <!-- Trail SL (forced ON) — configurable new SL position -->
             <div class="form-group">
-                <label>TRAIL SL (UPNL&gt;$100) — 新SL距進場 <span id="trail-sl-ticks-bt-val" style="color:var(--accent)">1</span> tick</label>
-                <input type="range" id="trail-sl-ticks-bt" min="1" max="200" step="1" value="1"
+                <label>TRAIL SL (UPNL&gt;$100) — 新SL距進場 <span id="trail-sl-ticks-bt-val" style="color:var(--accent)">5</span> ticks</label>
+                <input type="range" id="trail-sl-ticks-bt" min="5" max="200" step="5" value="5"
                     oninput="document.getElementById('trail-sl-ticks-bt-val').textContent=this.value">
             </div>
 
@@ -1001,23 +987,9 @@
                         <option value="reversion" disabled>Reversion (coming soon)</option>
                     </select>
                 </div>
-                <!-- MACD params live (hidden unless MACD selected) -->
+                <!-- MACD note (shown when MACD selected) -->
                 <div id="macd-params-live" style="display:none;">
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>FAST</label>
-                            <input type="number" id="macd-fast-live" min="2" max="50" step="1" value="12" style="width:100%;">
-                        </div>
-                        <div class="form-group">
-                            <label>SLOW</label>
-                            <input type="number" id="macd-slow-live" min="5" max="100" step="1" value="26" style="width:100%;">
-                        </div>
-                        <div class="form-group">
-                            <label>SIGNAL</label>
-                            <input type="number" id="macd-signal-live" min="2" max="30" step="1" value="9" style="width:100%;">
-                        </div>
-                    </div>
-                    <div style="font-size:10px;color:var(--text3);margin:2px 0 6px;">VWAP filter: 強制開啓 (多在VWAP上，空在VWAP下)</div>
+                    <div style="font-size:10px;color:var(--text3);margin:2px 0 6px;">EMA 12/26/9 | VWAP filter 強制開啓 | limit order at VWAP</div>
                 </div>
                 <div class="form-group">
                     <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">75</span> ticks</label>
@@ -1031,8 +1003,8 @@
                 </div>
                 <!-- Trail SL (forced ON) — configurable new SL position -->
                 <div class="form-group">
-                    <label>TRAIL SL (UPNL&gt;$100) — 新SL距進場 <span id="trail-sl-ticks-live-val" style="color:var(--accent)">1</span> tick</label>
-                    <input type="range" id="trail-sl-ticks-live" min="1" max="200" step="1" value="1"
+                    <label>TRAIL SL (UPNL&gt;$100) — 新SL距進場 <span id="trail-sl-ticks-live-val" style="color:var(--accent)">5</span> ticks</label>
+                    <input type="range" id="trail-sl-ticks-live" min="5" max="200" step="5" value="5"
                         oninput="document.getElementById('trail-sl-ticks-live-val').textContent=this.value">
                 </div>
 
@@ -1197,10 +1169,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     strategy: 'trend',
     tp_ticks: 75,
     sl_ticks: 50,
-    trail_sl_ticks: 1,
-    macd_fast: 12,
-    macd_slow: 26,
-    macd_signal: 9,
+    trail_sl_ticks: 5,
     candle_seconds: 30,
 };
 
@@ -1211,10 +1180,7 @@ function collectStrategyParams(mode) {
         strategy: _val('strategy-' + mode),
         tp_ticks: _int('tp-ticks-' + mode),
         sl_ticks: _int('sl-ticks-' + mode),
-        trail_sl_ticks: _int('trail-sl-ticks-' + mode) || 1,
-        macd_fast: _int('macd-fast-' + mode) || 12,
-        macd_slow: _int('macd-slow-' + mode) || 26,
-        macd_signal: _int('macd-signal-' + mode) || 9,
+        trail_sl_ticks: _int('trail-sl-ticks-' + mode) || 5,
         candle_seconds: 30,
     };
 }
@@ -1230,13 +1196,9 @@ function applyStrategyParams(mode, params) {
     _set('sl-ticks-' + mode, p.sl_ticks);
     _setVal('sl-ticks-' + mode + '-val', p.sl_ticks);
     // Trail SL slider + display value
-    const tst = p.trail_sl_ticks != null ? p.trail_sl_ticks : 1;
+    const tst = p.trail_sl_ticks != null ? p.trail_sl_ticks : 5;
     _set('trail-sl-ticks-' + mode, tst);
     _setVal('trail-sl-ticks-' + mode + '-val', tst);
-    // MACD params
-    _set('macd-fast-' + mode, p.macd_fast);
-    _set('macd-slow-' + mode, p.macd_slow);
-    _set('macd-signal-' + mode, p.macd_signal);
     // Show/hide MACD section
     if (mode === 'bt') onStrategyBtChange();
     else if (mode === 'live') onStrategyLiveChange();

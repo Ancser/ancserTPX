@@ -293,11 +293,8 @@ class StrategyParams:
     strategy: str = "trend"              # "trend" | "macd"
     tp_ticks: int = 75                   # 5-200 tick
     sl_ticks: int = 50                   # 5-200 tick
-    trail_sl_ticks: int = 1             # 1-200 tick — new SL offset from entry after trail triggers
-    # MACD params
-    macd_fast: int = 12
-    macd_slow: int = 26
-    macd_signal: int = 9
+    trail_sl_ticks: int = 5             # 5-200 tick — new SL offset from entry after trail triggers
+    # MACD params (hardcoded 12/26/9 — not user-configurable)
     # Candle interval (seconds)
     candle_seconds: int = 30             # 30 for live 30s bars; 60 for 1m backtest
     # --- Removed (hardcoded internally) ---

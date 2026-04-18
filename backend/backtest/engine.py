@@ -361,7 +361,7 @@ class BacktestEngine:
 
     def _check_trailing_sl(self, candle: Candle):
         """Trailing SL (forced ON): if UPNL ≥ 20 ticks ($100), move SL to entry ± trail_sl_ticks.
-        trail_sl_ticks=1 (default) → new SL = entry + $5 = barely profitable.
+        trail_sl_ticks=5 (default) → new SL = entry ± 5 ticks = $25 locked profit.
         One-time trigger per position.
         """
         if self._trail_sl_triggered:
@@ -378,7 +378,7 @@ class BacktestEngine:
         TRAIL_TRIGGER = 20 * self.TICK_SIZE * self.POINT_VALUE   # $100
         if upnl >= TRAIL_TRIGGER:
             self._trail_sl_triggered = True
-            trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 1) * self.TICK_SIZE
+            trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 5) * self.TICK_SIZE
             if pos.direction == Direction.BUY:
                 pos.sl_price = pos.entry_price + trail_pts
             else:
