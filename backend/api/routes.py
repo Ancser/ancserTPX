@@ -64,12 +64,13 @@ class BacktestRequest(BaseModel):
     initial_capital: float = 50000.0
     # Strategy params
     strategy: str = "trend"
-    entry_mode: str = "50RE"
-    tp_ticks: int = 50
+    tp_ticks: int = 75
     sl_ticks: int = 50
-    entry_timeout_minutes: int = 30
-    tp_timeout_minutes: int = 0
-    tp_timeout_action: str = "flat"
+    trail_sl_ticks: int = 1
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    candle_seconds: int = 30
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -102,6 +103,7 @@ class TradeResponse(BaseModel):
     zone_id: str
     vol_ratio: Optional[float]
     is_big_trend: bool
+    macd_hist: Optional[float] = None
 
 
 class ZoneResponse(BaseModel):
@@ -248,9 +250,9 @@ async def get_latest_candles(since: str = ""):
         else:
             candles = await _topstepx_client.get_historical_bars(
                 contract_id=_live_contract_id,
-                unit=BarUnit.MINUTE,
-                unit_number=1,
-                limit=30,
+                unit=BarUnit.SECOND,
+                unit_number=30,
+                limit=60,
             )
             _candle_cache["data"] = candles
             _candle_cache["time"] = now_ts
@@ -764,12 +766,13 @@ async def run_backtest(req: BacktestRequest):
 
     strategy_params = StrategyParams(
         strategy=req.strategy,
-        entry_mode=req.entry_mode,
         tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
-        entry_timeout_minutes=req.entry_timeout_minutes,
-        tp_timeout_minutes=req.tp_timeout_minutes,
-        tp_timeout_action=req.tp_timeout_action,
+        trail_sl_ticks=req.trail_sl_ticks,
+        macd_fast=req.macd_fast,
+        macd_slow=req.macd_slow,
+        macd_signal=req.macd_signal,
+        candle_seconds=req.candle_seconds,
     )
 
     engine = BacktestEngine(
@@ -806,6 +809,7 @@ async def run_backtest(req: BacktestRequest):
             zone_id=t.zone_id,
             vol_ratio=t.vol_ratio,
             is_big_trend=t.is_big_trend,
+            macd_hist=getattr(t, 'macd_hist', None),
         ))
 
     zones_resp = []
@@ -921,12 +925,13 @@ class LiveStartRequest(BaseModel):
     value_area_pct: float = 0.80
     # Strategy params
     strategy: str = "trend"
-    entry_mode: str = "50RE"
-    tp_ticks: int = 50
+    tp_ticks: int = 75
     sl_ticks: int = 50
-    entry_timeout_minutes: int = 30
-    tp_timeout_minutes: int = 0
-    tp_timeout_action: str = "flat"
+    trail_sl_ticks: int = 1
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    candle_seconds: int = 30
 
 
 @router.post("/live/start")
@@ -974,19 +979,19 @@ async def live_start(req: LiveStartRequest):
         now = datetime.utcnow()
         fresh_start = (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         fresh_end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        logger.info(f"[LIVE START] Fetching fresh 1min candles: {fresh_start} ~ {fresh_end}")
+        logger.info(f"[LIVE START] Fetching fresh 30s candles: {fresh_start} ~ {fresh_end}")
 
         fresh_candles = await _topstepx_client.get_historical_bars_paginated(
             contract_id=req.contract_id,
-            unit=BarUnit.MINUTE,
-            unit_number=1,
+            unit=BarUnit.SECOND,
+            unit_number=30,
             start_time=fresh_start,
             end_time=fresh_end,
         )
         if fresh_candles and len(fresh_candles) > 0:
             live_warmup_candles = fresh_candles
             logger.info(
-                f"[LIVE START] Fresh candles loaded: {len(fresh_candles)} | "
+                f"[LIVE START] Fresh 30s candles loaded: {len(fresh_candles)} | "
                 f"range: {fresh_candles[0].timestamp} ~ {fresh_candles[-1].timestamp}"
             )
         else:
@@ -996,12 +1001,13 @@ async def live_start(req: LiveStartRequest):
 
     live_strategy_params = StrategyParams(
         strategy=req.strategy,
-        entry_mode=req.entry_mode,
         tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
-        entry_timeout_minutes=req.entry_timeout_minutes,
-        tp_timeout_minutes=req.tp_timeout_minutes,
-        tp_timeout_action=req.tp_timeout_action,
+        trail_sl_ticks=req.trail_sl_ticks,
+        macd_fast=req.macd_fast,
+        macd_slow=req.macd_slow,
+        macd_signal=req.macd_signal,
+        candle_seconds=req.candle_seconds,
     )
 
     _live_engine = LiveTradingEngine(

@@ -48,8 +48,13 @@ class BacktestEngine:
         self.detector = SessionZoneDetector(
             value_area_pct=self.config.value_area_pct,
         )
-        # SessionTrendFollow with configurable params
-        self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+        # Strategy selection
+        _strat = (self.strategy_params.strategy or "trend").lower()
+        if _strat == "macd":
+            from backend.strategy.macd_strategy import MACDOnlyStrategy
+            self.trend_follow = MACDOnlyStrategy(params=self.strategy_params)
+        else:
+            self.trend_follow = SessionTrendFollow(params=self.strategy_params)
 
         # State
         self._capital = self.config.initial_capital
@@ -61,9 +66,8 @@ class BacktestEngine:
         self._equity_curve: List[Tuple[datetime, float]] = []
         self._daily_pnl: Dict[str, float] = {}
         self._last_closed_trade: Optional[Trade] = None
-        # TP timeout state
-        self._position_age: int = 0
-        self._tp_timeout_triggered: bool = False
+        # Trailing SL state (forced ON — one-time trigger per position)
+        self._trail_sl_triggered: bool = False
 
     def run(self, candles: List[Candle]) -> BacktestResult:
         """執行回測 (1m candles)"""
@@ -129,8 +133,7 @@ class BacktestEngine:
         self._equity_curve = []
         self._daily_pnl = {}
         self._last_closed_trade = None
-        self._position_age = 0
-        self._tp_timeout_triggered = False
+        self._trail_sl_triggered = False
         self._near_data_end = False   # live-edge guard flag
         self.detector.reset()
         self.trend_follow.reset()
@@ -178,21 +181,9 @@ class BacktestEngine:
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
-                # ── TP Timeout check ──
-                self._position_age += 1
-                tp_timeout = self.trend_follow.TP_TIMEOUT_CANDLES
-                if tp_timeout > 0 and not self._tp_timeout_triggered and self._position_age >= tp_timeout:
-                    self._tp_timeout_triggered = True
-                    action = self.trend_follow.TP_TIMEOUT_ACTION
-                    if action == "flat":
-                        logger.debug(f"TP timeout ({tp_timeout} min) → flat close")
-                        self._force_exit(candle, ExitReason.FLATTEN)
-                    else:
-                        new_factor = int(action)
-                        self._recalc_tp(new_factor)
-                        logger.debug(f"TP timeout ({tp_timeout} min) → TP factor → {new_factor}x")
-                if self._open_position:
-                    return  # still open, don't open new
+                # ── Trailing SL (forced ON): UPNL > 20 ticks → move SL to entry ± trail_sl_ticks ──
+                self._check_trailing_sl(candle)
+                return  # still open, don't open new
 
         # ── Check if pending limit order fills on this candle ──
         if self._pending_order and not self._open_position:
@@ -223,7 +214,13 @@ class BacktestEngine:
 
             signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
             if signal:
-                self._place_pending_order(signal, candle)
+                if getattr(signal, 'order_type', 'limit') == 'market':
+                    # Market order: execute immediately at candle close
+                    self._execute_entry(signal, candle)
+                    if self._open_position:
+                        self._check_sl_only(candle)
+                else:
+                    self._place_pending_order(signal, candle)
                 return
 
     def _check_exit(self, candle: Candle):
@@ -353,28 +350,43 @@ class BacktestEngine:
             vol_ratio=signal.vol_ratio,
             is_big_trend=signal.is_big_trend,
             breakout_range=signal.breakout_range,
+            macd_hist=getattr(signal, 'macd_hist', None),
         )
         self._open_position = trade
-        self._position_age = 0
-        self._tp_timeout_triggered = False
+        self._trail_sl_triggered = False
         logger.debug(
             f"入場: {trade.strategy.value} {trade.direction.value} "
             f"@ {fill_price:.2f} | SL={trade.sl_price:.2f} TP={trade.tp_price:.2f}"
         )
 
-    def _recalc_tp(self, new_factor: int):
-        """Recalculate TP price with a new tp_factor (for TP timeout).
-        Uses SL distance as base: TP = entry ± |entry - SL| × new_factor
+    def _check_trailing_sl(self, candle: Candle):
+        """Trailing SL (forced ON): if UPNL ≥ 20 ticks ($100), move SL to entry ± trail_sl_ticks.
+        trail_sl_ticks=1 (default) → new SL = entry + $5 = barely profitable.
+        One-time trigger per position.
         """
+        if self._trail_sl_triggered:
+            return
         pos = self._open_position
         if not pos:
             return
-        sl_distance = abs(pos.entry_price - pos.sl_price)
+        mkt = candle.close
         if pos.direction == Direction.BUY:
-            pos.tp_price = pos.entry_price + sl_distance * new_factor
+            upnl = (mkt - pos.entry_price) * self.POINT_VALUE
         else:
-            pos.tp_price = pos.entry_price - sl_distance * new_factor
-        logger.debug(f"TP recalculated: new TP={pos.tp_price:.2f} ({new_factor}x SL)")
+            upnl = (pos.entry_price - mkt) * self.POINT_VALUE
+        # Trigger: 20 ticks × $5/tick = $100
+        TRAIL_TRIGGER = 20 * self.TICK_SIZE * self.POINT_VALUE   # $100
+        if upnl >= TRAIL_TRIGGER:
+            self._trail_sl_triggered = True
+            trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 1) * self.TICK_SIZE
+            if pos.direction == Direction.BUY:
+                pos.sl_price = pos.entry_price + trail_pts
+            else:
+                pos.sl_price = pos.entry_price - trail_pts
+            logger.debug(
+                f"Trail SL: UPNL=${upnl:.0f} → SL moved to {pos.sl_price:.2f} "
+                f"(+{trail_pts:.2f} pts from entry)"
+            )
 
     def _execute_exit(self, candle: Candle, exit_price: float, reason: ExitReason):
         pos = self._open_position
