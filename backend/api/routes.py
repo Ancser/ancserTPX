@@ -1239,18 +1239,26 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 break
 
         if opener is not None:
+            _ep = float(opener["price"] or 0)
+            _xp = float(f["price"] or 0)
+            _sz = opener.get("size") or f.get("size") or 1
+            _NQ_POINT = 20.0
+            if opener["direction"] == "buy":
+                _gross_pnl = (_xp - _ep) * _NQ_POINT * _sz
+            else:
+                _gross_pnl = (_ep - _xp) * _NQ_POINT * _sz
             trades.append({
                 "trade_id": str(opener["fill_id"]) + "_" + str(f["fill_id"]),
                 "direction": opener["direction"],
-                "size": opener.get("size") or f.get("size") or 1,
+                "size": _sz,
                 "entry_price": opener["price"],
                 "exit_price": f["price"],
                 "entry_time": opener["time"],
                 "exit_time": f["time"],
-                "pnl": f["pnl"],
-                "commission": 1.0,         # TopstepX Mini NQ round-turn
-                "fees": 2.80,              # exchange + regulatory
-                "exit_reason": "tp" if f["pnl"] >= 0 else "sl",
+                "pnl": round(_gross_pnl, 2),  # gross P&L from price movement
+                "commission": 1.0,
+                "fees": 2.80,
+                "exit_reason": "tp" if _gross_pnl >= 0 else "sl",
                 "account_id": f.get("account_id"),
                 "contract_id": f.get("contract_id"),
                 "source": "topstep",
@@ -1265,10 +1273,10 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 "exit_price": f["price"],
                 "entry_time": f["time"],
                 "exit_time": f["time"],
-                "pnl": f["pnl"],
+                "pnl": round(float(f["pnl"] or 0), 2),  # use API pnl; no paired prices
                 "commission": 1.0,
                 "fees": 2.80,
-                "exit_reason": "tp" if f["pnl"] >= 0 else "sl",
+                "exit_reason": "tp" if (f["pnl"] or 0) >= 0 else "sl",
                 "account_id": f.get("account_id"),
                 "contract_id": f.get("contract_id"),
                 "source": "topstep",
