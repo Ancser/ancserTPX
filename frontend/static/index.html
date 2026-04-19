@@ -924,7 +924,7 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.9.6</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.9.7</span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -1275,7 +1275,10 @@
 const API = window.location.origin + '/api';
 let chart = null;
 let candleSeries = null;
-let volumeSeries = null;
+let volumeSeries = null;   // kept for live-update guard; no longer rendered
+let vwapSeries = null;
+let macdStripSeries = null;
+let _rawCandleBuffer = []; // [{time(unix), open, high, low, close, volume}]
 let zoneRectangles = [];
 let tradeMarkers = [];
 let backtestData = null;
@@ -1284,6 +1287,69 @@ let allAccounts = [];
 let pocLine = null;
 let vahLine = null;
 let valLine = null;
+
+// ── VWAP & MACD helpers ──────────────────────────────────────────────────────
+function _ema(arr, period) {
+    if (arr.length < period) return arr.map(() => null);
+    const k = 2 / (period + 1);
+    const res = arr.map(() => null);
+    let sum = 0;
+    for (let i = 0; i < period; i++) sum += arr[i];
+    let val = sum / period;
+    res[period - 1] = val;
+    for (let i = period; i < arr.length; i++) {
+        val = arr[i] * k + val * (1 - k);
+        res[i] = val;
+    }
+    return res;
+}
+
+function _computeVWAP(candles) {
+    // Cumulative VWAP, reset each UTC day
+    const res = [];
+    let cumTPV = 0, cumVol = 0, lastDay = -1;
+    for (const c of candles) {
+        const day = Math.floor(c.time / 86400);
+        if (day !== lastDay) { cumTPV = 0; cumVol = 0; lastDay = day; }
+        const tp = (c.high + c.low + c.close) / 3;
+        const vol = c.volume || 1;
+        cumTPV += tp * vol;
+        cumVol += vol;
+        res.push({ time: c.time, value: cumTPV / cumVol });
+    }
+    return res;
+}
+
+function _computeMACDStrip(candles) {
+    // Returns [{time, value:1, color}] — colored strip, green = hist≥0, red = hist<0
+    if (candles.length < 34) return [];
+    const closes = candles.map(c => c.close);
+    const ema12 = _ema(closes, 12);
+    const ema26 = _ema(closes, 26);
+
+    // MACD values and their original indices
+    const macdVals = [], macdOrig = [];
+    for (let i = 0; i < closes.length; i++) {
+        if (ema12[i] != null && ema26[i] != null) {
+            macdVals.push(ema12[i] - ema26[i]);
+            macdOrig.push(i);
+        }
+    }
+    if (macdVals.length < 9) return [];
+    const signal = _ema(macdVals, 9);
+
+    const strip = [];
+    for (let j = 0; j < macdVals.length; j++) {
+        if (signal[j] == null) continue;
+        const hist = macdVals[j] - signal[j];
+        strip.push({
+            time: candles[macdOrig[j]].time,
+            value: 1,
+            color: hist >= 0 ? 'rgba(38,166,154,0.80)' : 'rgba(239,83,80,0.80)',
+        });
+    }
+    return strip;
+}
 
 // -- Strategy Params & Presets ----------------------
 
@@ -2224,12 +2290,24 @@ async function pollLiveCandle() {
             const t = isoToChartTime(c.time || c.timestamp);
             const bar = { time: t, open: c.open, high: c.high, low: c.low, close: c.close };
             candleSeries.update(bar);
-            if (volumeSeries) {
-                volumeSeries.update({
-                    time: t,
-                    value: c.volume || 0,
-                    color: c.close >= c.open ? 'rgba(136,136,136,0.3)' : 'rgba(85,85,85,0.3)',
-                });
+
+            // Update raw buffer (upsert by time)
+            const bidx = _rawCandleBuffer.findIndex(x => x.time === t);
+            const raw = { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 };
+            if (bidx >= 0) _rawCandleBuffer[bidx] = raw; else _rawCandleBuffer.push(raw);
+
+            // VWAP: update current day's last point
+            if (vwapSeries && _rawCandleBuffer.length > 0) {
+                const todayBars = _rawCandleBuffer.filter(x => Math.floor(x.time / 86400) === Math.floor(t / 86400));
+                let cv = 0, cv2 = 0;
+                for (const b of todayBars) { const tp = (b.high + b.low + b.close) / 3; cv += tp * (b.volume || 1); cv2 += (b.volume || 1); }
+                if (cv2 > 0) vwapSeries.update({ time: t, value: cv / cv2 });
+            }
+
+            // MACD strip: recompute last point
+            if (macdStripSeries && _rawCandleBuffer.length >= 34) {
+                const strip = _computeMACDStrip(_rawCandleBuffer);
+                if (strip.length > 0) macdStripSeries.update(strip[strip.length - 1]);
             }
             updated++;
         }
@@ -2299,14 +2377,24 @@ function initChart() {
         wickUpColor: '#888888',
     });
 
-    volumeSeries = chart.addHistogramSeries({
-        color: '#00e5a0',
-        priceFormat: { type: 'volume' },
-        priceScaleId: 'vol',
+    // VWAP line on main price scale
+    vwapSeries = chart.addLineSeries({
+        color: 'rgba(255, 180, 0, 0.85)',
+        lineWidth: 1,
+        lineStyle: 0,
+        priceLineVisible: false,
+        lastValueVisible: true,
+        crosshairMarkerVisible: false,
     });
 
-    chart.priceScale('vol').applyOptions({
-        scaleMargins: { top: 0.85, bottom: 0 },
+    // MACD direction strip — thin colored band at chart bottom
+    macdStripSeries = chart.addHistogramSeries({
+        priceScaleId: 'macd-strip',
+        priceFormat: { type: 'price', precision: 0 },
+    });
+    chart.priceScale('macd-strip').applyOptions({
+        scaleMargins: { top: 0.99, bottom: 0 },
+        visible: false,
     });
 
     new ResizeObserver(() => {
@@ -3286,22 +3374,28 @@ function showCandleData(candles) {
     // Convert and deduplicate by time, sort ascending
     const seen = new Set();
     const chartData = [];
-    const volData = [];
+    const rawBuf = [];
 
     candles.forEach(c => {
         const t = isoToChartTime(c.time);
         if (seen.has(t)) return;
         seen.add(t);
         chartData.push({ time: t, open: c.open, high: c.high, low: c.low, close: c.close });
-        volData.push({ time: t, value: c.volume, color: c.close >= c.open ? 'rgba(136,136,136,0.3)' : 'rgba(85,85,85,0.3)' });
+        rawBuf.push({ time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 });
     });
 
     chartData.sort((a, b) => a.time - b.time);
-    volData.sort((a, b) => a.time - b.time);
+    rawBuf.sort((a, b) => a.time - b.time);
+    _rawCandleBuffer = rawBuf;
 
     candleSeries.setData(chartData);
-    volumeSeries.setData(volData);
     window._lastChartData = chartData;
+
+    // VWAP
+    if (vwapSeries) vwapSeries.setData(_computeVWAP(rawBuf));
+
+    // MACD direction strip
+    if (macdStripSeries) macdStripSeries.setData(_computeMACDStrip(rawBuf));
 
     applyDefaultChartView(chartData);
     drawSessionDividers();

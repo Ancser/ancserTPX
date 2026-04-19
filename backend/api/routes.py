@@ -1462,7 +1462,7 @@ def _normalize_topstep_fill(t: dict) -> dict:
         "account_id": t.get("accountId") or t.get("AccountId"),
         "contract_id": t.get("contractId") or t.get("ContractId") or "",
         "time": ts,
-        "price": float(price) if price else 0.0,
+        "price": round(round(float(price) / 0.25) * 0.25, 2) if price else 0.0,
         "direction": direction,
         "size": t.get("size") or t.get("Size") or 1,
         "pnl": float(pnl) if pnl else 0.0,

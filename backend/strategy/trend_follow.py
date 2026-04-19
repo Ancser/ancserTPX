@@ -416,10 +416,10 @@ class SessionTrendFollow:
         self.ENTRY_RATIO = 0.0   # Always 100%RE (entry at VAH/VAL, hardcoded)
         self.SL_TICKS = p.sl_ticks
         self.TP_TICKS = p.tp_ticks
-        # Entry timeout: hardcoded 10 min (not user-configurable)
+        # Entry timeout: hardcoded 5 min (not user-configurable)
         _candle_secs = getattr(p, 'candle_seconds', 30)
         _cpm = max(1, 60 // _candle_secs)   # candles per minute (2 for 30s bars)
-        self.PENDING_TIMEOUT_CANDLES = 10 * _cpm   # 10 min hardcoded
+        self.PENDING_TIMEOUT_CANDLES = 5 * _cpm   # 5 min hardcoded
         # TP timeout removed
 
         self._state = "idle"  # idle | watching | confirmed | in_trade
