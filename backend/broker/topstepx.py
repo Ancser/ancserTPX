@@ -43,7 +43,7 @@ SignalR Hub: https://rtc.topstepx.com/hubs/market (市場數據)
 from __future__ import annotations
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -347,35 +347,99 @@ class TopstepXClient:
         end_time: str = "",
     ) -> List[Candle]:
         """
-        分頁取得大量歷史數據（超過 20000 根時自動分頁）
+        BACKWARD pagination to collect all bars in [start_time, end_time].
 
-        適用場景：取 1 個月的 1 分鐘數據（約 20 x 390 = 7800 根/月）
+        TopstepX returns the MOST RECENT bars up to the 20,000 limit when a date
+        range exceeds one batch.  Forward pagination (advancing start) re-fetches
+        the same recent period every iteration and never reaches older data.
+
+        Strategy: keep start_time fixed; walk current_end backwards after each batch.
+          batch 1 → [start, end]           → newest 20k bars  (newest → oldest_1)
+          batch 2 → [start, oldest_1 − Δ]  → next 20k before oldest_1
+          ...until batch < 20k or oldest_ts ≤ start_time
+
+        Capacity estimate (1m bars, ~23h/day NQ):
+          1 month  ≈ 30,000 bars  → 2 batches   (~4 s)
+          3 months ≈ 90,000 bars  → 5 batches   (~10 s)
+          6 months ≈ 180,000 bars → 9 batches   (~20 s)
         """
         all_candles: List[Candle] = []
-        current_start = start_time
+        current_end = end_time
 
-        while True:
+        _unit_delta = {
+            BarUnit.SECOND: timedelta(seconds=unit_number),
+            BarUnit.MINUTE: timedelta(minutes=unit_number),
+            BarUnit.HOUR:   timedelta(hours=unit_number),
+            BarUnit.DAY:    timedelta(days=unit_number),
+        }
+        advance = _unit_delta.get(unit, timedelta(minutes=unit_number))
+
+        # Parse start_time once for boundary check
+        start_dt: Optional[datetime] = None
+        if start_time:
+            try:
+                start_dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        batch_num = 0
+        prev_oldest: Optional[datetime] = None
+        MAX_BATCHES = 20  # safety cap (~400k bars, ~6 months of 1m NQ data)
+
+        while batch_num < MAX_BATCHES:
             batch = await self.get_historical_bars(
                 contract_id, unit, unit_number,
-                current_start, end_time, limit=20000,
+                start_time, current_end, limit=20000,
             )
             if not batch:
+                logger.info(f"[paginated] batch {batch_num + 1}: empty — stopping")
                 break
 
             all_candles.extend(batch)
+            batch_num += 1
 
-            # 如果拿到 < 20000 根，已經到底
+            # API returns newest-first; min/max are safer than relying on order
+            oldest_ts = min(c.timestamp for c in batch)
+            newest_ts = max(c.timestamp for c in batch)
+            logger.info(
+                f"[paginated] batch {batch_num}: {len(batch)} bars "
+                f"({oldest_ts.date()} → {newest_ts.date()}), "
+                f"total so far: {len(all_candles)}"
+            )
+
+            # Stop: fewer than limit → no more data before oldest_ts
             if len(batch) < 20000:
                 break
 
-            # 下一頁從最後一根的下一秒開始
-            last_ts = batch[-1].timestamp
-            current_start = last_ts.isoformat()
+            # Stop: oldest bar already at or before the requested start
+            if start_dt and oldest_ts <= start_dt:
+                break
 
-            # 避免 rate limit
-            await asyncio.sleep(1)
+            # Guard against stalled pagination (same oldest_ts twice)
+            if prev_oldest is not None and oldest_ts >= prev_oldest:
+                logger.warning("[paginated] oldest timestamp did not retreat — stopping")
+                break
+            prev_oldest = oldest_ts
 
-        return all_candles
+            # Move end backwards to just before the oldest bar received
+            current_end = (oldest_ts - advance).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            await asyncio.sleep(1.2)
+
+        if batch_num >= MAX_BATCHES:
+            logger.warning(f"[paginated] hit max batches ({MAX_BATCHES}), stopping early")
+
+        # Deduplicate and sort chronologically (oldest first)
+        seen: set = set()
+        unique: List[Candle] = []
+        for c in all_candles:
+            if c.timestamp not in seen:
+                seen.add(c.timestamp)
+                unique.append(c)
+        unique.sort(key=lambda c: c.timestamp)
+
+        logger.info(f"[paginated] done — {len(unique)} unique bars across {batch_num} batch(es)")
+        return unique
 
     # ── 帳戶安全 ─────────────────────────────────────
 

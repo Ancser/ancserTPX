@@ -997,43 +997,49 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs, zone_
 
 
 def _score_result(r: dict) -> float:
-    """Score a result for ranking. Higher = better. Negative = filtered out."""
+    """Score a result 0–100. Higher = better. Negative = filtered out.
+
+    Two components (50 pts each):
+      50 pts  Max DD    — DD ≤ $2000 → full 50; DD ≥ $4500 → 0; linear between
+      50 pts  PnL       — PnL ≥ $10k → full 50; PnL ≤ $2k → 0; linear between
+
+    Hard filters (score < 0 → excluded from ranking):
+      • error in run
+      • PnL ≤ 0          (not profitable)
+      • trade count < 8  (not enough data)
+    """
     if r.get("error"):
         return -999.0
-    if r["max_drawdown"] >= 2000:
-        return -1.0
-    if r["total_trades"] < 5:
-        return -0.5   # too few trades → unreliable
 
-    score = 0.0
+    trades = r.get("total_trades", 0)
+    pnl    = r.get("total_pnl", 0)
+    dd     = r.get("max_drawdown", 0)
 
-    # Consistency: % profitable days
-    daily = r.get("daily_pnl", {})
-    if daily:
-        pos_days = sum(1 for v in daily.values() if v > 0)
-        consistency = pos_days / len(daily)
-        if consistency >= 0.6:
-            score += 25
-        else:
-            score += consistency * 25
+    # ── Hard filters ──────────────────────────────────────────────────────
+    if pnl <= 0:
+        return -0.5
+    if trades < 8:
+        return -0.4
 
-    # Max day < 40% of total PnL
-    if r["total_pnl"] > 0 and daily:
-        max_day = max(daily.values())
-        day_pct = max_day / r["total_pnl"]
-        if day_pct < 0.40:
-            score += 20
+    # ── 1. Max DD component (0–67 pts, weight 2) ──────────────────────────
+    # DD ≤ 2000 → 67 pts | DD ≥ 4500 → 0 pts | linear between
+    if dd <= 2000:
+        dd_score = 67.0
+    elif dd >= 4500:
+        dd_score = 0.0
+    else:
+        dd_score = 67.0 * (4500 - dd) / (4500 - 2000)
 
-    # Win rate (0-30 pts)
-    score += r["win_rate"] * 30
+    # ── 2. PnL component (0–33 pts, weight 1) ─────────────────────────────
+    # PnL ≥ 10000 → 33 pts | PnL ≤ 2000 → 0 pts | linear between
+    if pnl >= 10000:
+        pnl_score = 33.0
+    elif pnl <= 2000:
+        pnl_score = 0.0
+    else:
+        pnl_score = 33.0 * (pnl - 2000) / (10000 - 2000)
 
-    # Calmar bonus (0-20 pts, capped at 4.0)
-    score += min(r["calmar_ratio"] / 4.0, 1.0) * 20
-
-    # Total PnL (0-20 pts, capped at $5000)
-    score += min(max(r["total_pnl"], 0) / 5000.0, 1.0) * 20
-
-    return round(score, 2)
+    return round(dd_score + pnl_score, 2)
 
 
 @router.post("/backtest/ml-run")
