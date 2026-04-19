@@ -1191,7 +1191,6 @@
                         <table id="ml-table">
                             <thead id="ml-thead">
                                 <tr>
-                                    <th class="ml-sort-th" data-col="rank"     style="width:36px;" onclick="mlSortBy('rank')">ML# <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="strategy" style="width:52px;" onclick="mlSortBy('strategy')">STRAT <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="sl"       style="width:40px;" onclick="mlSortBy('sl')">SL <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="tp"       style="width:40px;" onclick="mlSortBy('tp')">TP <span class="sa">↕</span></th>
@@ -3643,7 +3642,7 @@ function renderMLResults(results) {
     tbody.innerHTML = '';
 
     if (!results || results.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="16" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="15" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
         return;
     }
 
@@ -3687,7 +3686,6 @@ function renderMLResults(results) {
 
         const tr = document.createElement('tr');
         tr.innerHTML =
-            '<td style="text-align:center;color:var(--text3);">' + rank + '</td>' +
             '<td>' + (r.strategy || '—').toUpperCase() + '</td>' +
             '<td style="text-align:center;">' + (r.sl || 0) + '</td>' +
             '<td style="text-align:center;">' + (r.tp || 0) + '</td>' +
