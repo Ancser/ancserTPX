@@ -797,21 +797,20 @@ class LiveTradingEngine:
             return False
 
     async def _check_trailing_sl_live(self):
-        """Live trailing SL (forced ON): UPNL ≥ 20 ticks ($100) → move SL to entry ± trail_sl_ticks.
-        trail_sl_ticks=5 (default) → new SL = entry ± 5 ticks = $25 locked profit. One-time per position.
+        """Live trailing SL (forced ON): price moves ≥ 20 ticks in favour → move SL to entry ± trail_sl_ticks.
+        Tick-based trigger (contract-agnostic). One-time per position.
         """
         if self._trail_sl_triggered or not self._active_signal or not self._fill_price:
             return
         sig = self._active_signal
         mkt = self._last_market_price
         if sig.direction == Direction.BUY:
-            upnl = (mkt - self._fill_price) * POINT_VALUE
+            ticks_moved = (mkt - self._fill_price) / TICK_SIZE
         else:
-            upnl = (self._fill_price - mkt) * POINT_VALUE
+            ticks_moved = (self._fill_price - mkt) / TICK_SIZE
 
-        # Trigger: 20 ticks × $5/tick = $100
-        TRAIL_TRIGGER = 20 * TICK_SIZE * POINT_VALUE   # $100
-        if upnl < TRAIL_TRIGGER:
+        TRAIL_TRIGGER_TICKS = 20
+        if ticks_moved < TRAIL_TRIGGER_TICKS:
             return
 
         self._trail_sl_triggered = True
@@ -822,7 +821,7 @@ class LiveTradingEngine:
             new_sl = self._fill_price - trail_pts
         new_sl = self._round_to_tick(new_sl)
         self._log_event(
-            f"[TRAIL SL] UPNL=${upnl:.0f} → SL 移至 {new_sl:.2f} "
+            f"[TRAIL SL] +{ticks_moved:.0f} ticks → SL 移至 {new_sl:.2f} "
             f"(entry={self._fill_price:.2f} +{trail_pts:.2f}pts)"
         )
 

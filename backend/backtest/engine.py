@@ -387,9 +387,9 @@ class BacktestEngine:
         )
 
     def _check_trailing_sl(self, candle: Candle):
-        """Trailing SL (forced ON): if UPNL ≥ 20 ticks ($100), move SL to entry ± trail_sl_ticks.
-        trail_sl_ticks=5 (default) → new SL = entry ± 5 ticks = $25 locked profit.
-        One-time trigger per position.
+        """Trailing SL (forced ON): if price moves ≥ 20 ticks from entry, move SL to entry ± trail_sl_ticks.
+        trail_sl_ticks=5 (default) → new SL = entry ± 5 ticks locked profit.
+        Tick-based trigger is contract-agnostic. One-time trigger per position.
         """
         if self._trail_sl_triggered:
             return
@@ -397,13 +397,13 @@ class BacktestEngine:
         if not pos:
             return
         mkt = candle.close
+        # Trigger: 20 ticks price movement (tick-based, contract-agnostic)
+        TRAIL_TRIGGER_TICKS = 20
         if pos.direction == Direction.BUY:
-            upnl = (mkt - pos.entry_price) * self.POINT_VALUE
+            ticks_moved = (mkt - pos.entry_price) / self.TICK_SIZE
         else:
-            upnl = (pos.entry_price - mkt) * self.POINT_VALUE
-        # Trigger: 20 ticks × $5/tick = $100
-        TRAIL_TRIGGER = 20 * self.TICK_SIZE * self.POINT_VALUE   # $100
-        if upnl >= TRAIL_TRIGGER:
+            ticks_moved = (pos.entry_price - mkt) / self.TICK_SIZE
+        if ticks_moved >= TRAIL_TRIGGER_TICKS:
             self._trail_sl_triggered = True
             trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 5) * self.TICK_SIZE
             if pos.direction == Direction.BUY:
@@ -411,7 +411,7 @@ class BacktestEngine:
             else:
                 pos.sl_price = pos.entry_price - trail_pts
             logger.debug(
-                f"Trail SL: UPNL=${upnl:.0f} → SL moved to {pos.sl_price:.2f} "
+                f"Trail SL: {ticks_moved:.1f} ticks moved → SL moved to {pos.sl_price:.2f} "
                 f"(+{trail_pts:.2f} pts from entry)"
             )
 

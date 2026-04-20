@@ -924,7 +924,10 @@
 <body>
 
 <div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">0.9.7</span></h1>
+    <h1><span style="color:var(--amber);">ancser</span>TPX 
+        <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
+        0.9.8
+        </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
@@ -1018,14 +1021,14 @@
                 <div style="font-size:10px;color:var(--text3);margin:2px 0 6px;">EMA 12/26/9 | VWAP filter 強制開啓 | limit order at VWAP</div>
             </div>
             <div class="form-group">
-                <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">75</span> ticks</label>
-                <input type="range" id="tp-ticks-bt" min="5" max="200" step="5" value="75"
-                    oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value">
-            </div>
-            <div class="form-group">
                 <label>SL <span id="sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
                 <input type="range" id="sl-ticks-bt" min="5" max="200" step="5" value="50"
                     oninput="document.getElementById('sl-ticks-bt-val').textContent=this.value">
+            </div>
+            <div class="form-group">
+                <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">75</span> ticks</label>
+                <input type="range" id="tp-ticks-bt" min="5" max="200" step="5" value="75"
+                    oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value">
             </div>
             <!-- Trail SL (forced ON) — configurable new SL position -->
             <div class="form-group">
@@ -1099,14 +1102,14 @@
                     <div style="font-size:10px;color:var(--text3);margin:2px 0 6px;">EMA 12/26/9 | VWAP filter 強制開啓 | limit order at VWAP</div>
                 </div>
                 <div class="form-group">
-                    <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">75</span> ticks</label>
-                    <input type="range" id="tp-ticks-live" min="5" max="200" step="5" value="75"
-                        oninput="document.getElementById('tp-ticks-live-val').textContent=this.value">
-                </div>
-                <div class="form-group">
                     <label>SL <span id="sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
                     <input type="range" id="sl-ticks-live" min="5" max="200" step="5" value="50"
                         oninput="document.getElementById('sl-ticks-live-val').textContent=this.value">
+                </div>
+                <div class="form-group">
+                    <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">75</span> ticks</label>
+                    <input type="range" id="tp-ticks-live" min="5" max="200" step="5" value="75"
+                        oninput="document.getElementById('tp-ticks-live-val').textContent=this.value">
                 </div>
                 <!-- Trail SL (forced ON) — configurable new SL position -->
                 <div class="form-group">
@@ -1305,12 +1308,15 @@ function _ema(arr, period) {
 }
 
 function _computeVWAP(candles) {
-    // Cumulative VWAP, reset each UTC day
+    // Cumulative VWAP, reset each CME Globex session (22:00 UTC = 18:00 ET open)
+    // Session key: if hour >= 22, belongs to today's session; else belongs to yesterday's session
     const res = [];
-    let cumTPV = 0, cumVol = 0, lastDay = -1;
+    let cumTPV = 0, cumVol = 0, lastSession = -1;
     for (const c of candles) {
-        const day = Math.floor(c.time / 86400);
-        if (day !== lastDay) { cumTPV = 0; cumVol = 0; lastDay = day; }
+        const h = Math.floor((c.time % 86400) / 3600); // UTC hour
+        const dayBase = Math.floor(c.time / 86400);
+        const sessionKey = h >= 22 ? dayBase : dayBase - 1; // pre-22:00 belongs to prior session
+        if (sessionKey !== lastSession) { cumTPV = 0; cumVol = 0; lastSession = sessionKey; }
         const tp = (c.high + c.low + c.close) / 3;
         const vol = c.volume || 1;
         cumTPV += tp * vol;
