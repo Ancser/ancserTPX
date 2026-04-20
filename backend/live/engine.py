@@ -354,7 +354,7 @@ class LiveTradingEngine:
                 f"範圍: {first_ts} ~ {last_ts}"
             )
         else:
-            self._log_event("⚠ 無歷史K線! warm-up 跳過", "error")
+            self._log_event("無歷史K線! warm-up 跳過", "error")
 
         # Warm up: feed historical candles to session zone detector + strategy
         # MUST sort chronologically — API returns newest-first
@@ -448,7 +448,7 @@ class LiveTradingEngine:
         """Place a market order to close position when SL/TP placement fails.
         Called when Stop order is rejected (price already past SL level).
         """
-        self._log_event(f"⚠ [{reason}] 緊急 Market 平倉 side={'SELL' if side == 2 else 'BUY'}")
+        self._log_event(f"[{reason}] 緊急 Market 平倉 side={'SELL' if side == 2 else 'BUY'}")
         try:
             mkt_order = OrderRequest(
                 account_id=self.account_id,
@@ -459,14 +459,14 @@ class LiveTradingEngine:
             )
             resp = await self.client.place_order(mkt_order)
             if resp.success:
-                self._log_event(f"✅ Market 平倉成功 #{resp.order_id}")
+                self._log_event(f"Market 平倉成功 #{resp.order_id}")
             else:
                 self._log_event(
-                    f"❌ Market 平倉失敗: {resp.error_message} → 需手動平倉!",
+                    f"Market 平倉失敗: {resp.error_message} → 需手動平倉!",
                     "error"
                 )
         except Exception as e:
-            self._log_event(f"❌ Market 平倉異常: {e} → 需手動平倉!", "error")
+            self._log_event(f"Market 平倉異常: {e} → 需手動平倉!", "error")
 
     async def flatten_now(self):
         """Emergency flatten all positions."""
@@ -593,7 +593,7 @@ class LiveTradingEngine:
                         if not self._tp_order_id:
                             missing.append("TP")
                         self._log_event(
-                            f"⚠ 持倉中缺少 {'+'.join(missing)} → 補掛",
+                            f"持倉中缺少 {'+'.join(missing)} → 補掛",
                             "error"
                         )
                         self._pending_signal = self._active_signal
@@ -602,7 +602,7 @@ class LiveTradingEngine:
                 else:
                     if not self._sl_order_id or not self._tp_order_id:
                         self._log_event(
-                            "⚠ 持倉中無 SL/TP 且無 signal（重啟後或手動入場）→ 需手動設定 SL/TP",
+                            "持倉中無 SL/TP 且無 signal（重啟後或手動入場）→ 需手動設定 SL/TP",
                             "error"
                         )
 
@@ -616,7 +616,7 @@ class LiveTradingEngine:
         if not self._open_position and not self._pending_order_id:
             if self._sl_order_id or self._tp_order_id:
                 self._log_event(
-                    f"⚠ FLAT 但有殘留單 SL=#{self._sl_order_id} TP=#{self._tp_order_id} → 清除",
+                    f"FLAT 但有殘留單 SL=#{self._sl_order_id} TP=#{self._tp_order_id} → 清除",
                     "error"
                 )
                 for oid, label in [
@@ -650,7 +650,7 @@ class LiveTradingEngine:
         # Safety: if strategy thinks it's confirmed but no order exists, reset
         if strat.raw_state == "confirmed" and not self._pending_order_id:
             self._log_event(
-                f"⚠ Strategy stuck in 'confirmed' but no pending order → reset"
+                f"Strategy stuck in 'confirmed' but no pending order → reset"
             )
             strat.reset()
 
@@ -825,15 +825,8 @@ class LiveTradingEngine:
             f"(entry={self._fill_price:.2f} +{trail_pts:.2f}pts)"
         )
 
-        # Cancel old SL, place new stop at breakeven
-        if self._sl_order_id:
-            try:
-                await self.client.cancel_order(self.account_id, self._sl_order_id)
-                self._log_event(f"舊 SL #{self._sl_order_id} 取消")
-            except Exception as e:
-                self._log_event(f"取消舊 SL 失敗: {e}", "error")
-            self._sl_order_id = None
-
+        # Place new breakeven SL FIRST, then cancel old SL only if new one succeeds.
+        # This prevents the position from being unprotected if the new SL is rejected.
         sl_side = 2 if sig.direction == Direction.BUY else 1
         sl_order = OrderRequest(
             account_id=self.account_id,
@@ -846,16 +839,27 @@ class LiveTradingEngine:
         try:
             resp = await self.client.place_order(sl_order)
             if resp.success:
-                self._sl_order_id = resp.order_id
-                # Update signal's SL reference so engine knows the new level
+                new_sl_order_id = resp.order_id
+                self._log_event(f"保本 SL @ {new_sl:.2f} order=#{new_sl_order_id}")
+                # New SL confirmed — now safe to cancel the old one
+                if self._sl_order_id:
+                    try:
+                        await self.client.cancel_order(self.account_id, self._sl_order_id)
+                        self._log_event(f"舊 SL #{self._sl_order_id} 取消")
+                    except Exception as e:
+                        self._log_event(f"取消舊 SL 失敗 (新SL已生效): {e}", "error")
+                self._sl_order_id = new_sl_order_id
                 sig.sl_price = new_sl
-                self._log_event(f"✅ 保本 SL @ {new_sl:.2f} order=#{resp.order_id}")
             else:
+                # New SL rejected — old SL is still active, position stays protected
                 self._log_event(
-                    f"❌ 保本 SL 下單失敗: {resp.error_message}", "error"
+                    f"保本 SL 下單失敗: {resp.error_message} → 舊 SL 維持不動",
+                    "error"
                 )
+                self._trail_sl_triggered = False  # allow retry on next candle
         except Exception as e:
-            self._log_event(f"❌ 保本 SL 異常: {e}", "error")
+            self._log_event(f"保本 SL 異常: {e} → 舊 SL 維持不動", "error")
+            self._trail_sl_triggered = False  # allow retry on next candle
 
     async def _cancel_with_retry(self, order_id: Optional[int], label: str):
         """Cancel an order with retry."""
@@ -897,7 +901,7 @@ class LiveTradingEngine:
                 await asyncio.sleep(1)
 
         if not cancelled:
-            self._log_event(f"⚠ 取消掛單 #{oid} 3次均失敗! 下個 tick 再試", "error")
+            self._log_event(f"取消掛單 #{oid} 3次均失敗! 下個 tick 再試", "error")
             return  # DON'T clear state — retry next tick
 
         if self._pending_signal:
@@ -962,10 +966,10 @@ class LiveTradingEngine:
                 sl_resp = await self.client.place_order(sl_order)
                 if sl_resp.success:
                     self._sl_order_id = sl_resp.order_id
-                    self._log_event(f"✅ SL 掛單成功 #{sl_resp.order_id} @ {sig.sl_price:.2f}")
+                    self._log_event(f"SL 掛單成功 #{sl_resp.order_id} @ {sig.sl_price:.2f}")
                 else:
                     self._log_event(
-                        f"❌ SL 掛單失敗: code={sl_resp.error_code} msg={sl_resp.error_message}"
+                        f"SL 掛單失敗: code={sl_resp.error_code} msg={sl_resp.error_message}"
                         f" → 價格可能已跌破 SL, 嘗試 Market 平倉",
                         "error"
                     )
@@ -973,7 +977,7 @@ class LiveTradingEngine:
                     await self._emergency_market_close(sl_side, "SL_REJECTED")
                     return  # skip TP — position is being closed
             except Exception as e:
-                self._log_event(f"❌ SL 下單異常: {e} → 嘗試 Market 平倉", "error")
+                self._log_event(f"SL 下單異常: {e} → 嘗試 Market 平倉", "error")
                 await self._emergency_market_close(sl_side, "SL_EXCEPTION")
                 return
 
@@ -991,14 +995,14 @@ class LiveTradingEngine:
                 tp_resp = await self.client.place_order(tp_order)
                 if tp_resp.success:
                     self._tp_order_id = tp_resp.order_id
-                    self._log_event(f"✅ TP 掛單成功 #{tp_resp.order_id} @ {sig.tp_price:.2f}")
+                    self._log_event(f"TP 掛單成功 #{tp_resp.order_id} @ {sig.tp_price:.2f}")
                 else:
                     self._log_event(
-                        f"❌ TP 掛單失敗: code={tp_resp.error_code} msg={tp_resp.error_message}",
+                        f"TP 掛單失敗: code={tp_resp.error_code} msg={tp_resp.error_message}",
                         "error"
                     )
             except Exception as e:
-                self._log_event(f"❌ TP 下單異常: {e}", "error")
+                self._log_event(f"TP 下單異常: {e}", "error")
 
     async def _sync_position(self):
         """Sync position state from exchange.
@@ -1034,7 +1038,7 @@ class LiveTradingEngine:
                     slippage_dollars = slippage * POINT_VALUE
                     if slippage > 5.0:
                         self._log_event(
-                            f"⚠ [FILL MISMATCH] entry={entry:.2f} fill={self._fill_price:.2f} "
+                            f"[FILL MISMATCH] entry={entry:.2f} fill={self._fill_price:.2f} "
                             f"差距={slippage:.2f} pts (${slippage_dollars:.0f})",
                             "error"
                         )
@@ -1068,7 +1072,7 @@ class LiveTradingEngine:
                 elif self._skip_engine_sl_tp:
                     self._log_event("[SL/TP] 由 TopstepX Position Bracket 管理")
                 else:
-                    self._log_event("⚠ [SL/TP] 無 pending_signal 無法下 SL/TP!", "error")
+                    self._log_event("[SL/TP] 無 pending_signal 無法下 SL/TP!", "error")
 
                 # Save signal for SL/TP retry, then clear pending state
                 self._active_signal = self._pending_signal  # keep for SL/TP reference
@@ -1095,7 +1099,7 @@ class LiveTradingEngine:
                     # (the residual SL/TP order filled after the first one closed us)
                     close_side = 2 if pos_side == 0 else 1  # opposite side to close
                     self._log_event(
-                        f"⚠ DOUBLE-FILL 偵測! SL/TP 同時成交 → 緊急平倉 | "
+                        f"DOUBLE-FILL 偵測! SL/TP 同時成交 → 緊急平倉 | "
                         f"rogue side={'LONG' if pos_side == 0 else 'SHORT'} | "
                         f"fill={self._fill_price}",
                         "error"
@@ -1103,7 +1107,7 @@ class LiveTradingEngine:
                     await self._emergency_market_close(close_side, "DOUBLE_FILL")
                 else:
                     self._log_event(
-                        f"⚠ 偵測到未追蹤的持倉 | fill={self._fill_price} | "
+                        f"偵測到未追蹤的持倉 | fill={self._fill_price} | "
                         f"side={'LONG' if pos_side == 0 else 'SHORT'} | "
                         f"無 pending_order → 可能是手動入場或重啟後",
                         "error"
