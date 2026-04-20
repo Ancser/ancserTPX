@@ -1106,44 +1106,12 @@ class LiveTradingEngine:
                     )
                     await self._emergency_market_close(close_side, "DOUBLE_FILL")
                 else:
-                    # Restart recovery: position exists but engine has no signal context.
-                    # Reconstruct a synthetic signal from fill price + current params
-                    # so SL/TP can be placed immediately to protect the position.
-                    direction = Direction.BUY if pos_side == 0 else Direction.SELL
                     self._log_event(
-                        f"重啟後偵測到持倉 | fill={self._fill_price} | "
+                        f"偵測到未追蹤的持倉 | fill={self._fill_price} | "
                         f"side={'LONG' if pos_side == 0 else 'SHORT'} | "
-                        f"重建 SL/TP 保護",
+                        f"無 pending_order → 可能是手動入場或重啟後",
                         "error"
                     )
-                    if self._fill_price and not self._active_signal:
-                        p = self.strategy_params
-                        sl_pts = p.sl_ticks * TICK_SIZE
-                        tp_pts = p.tp_ticks * TICK_SIZE
-                        fp = self._fill_price
-                        if direction == Direction.BUY:
-                            sl_p = self._round_to_tick(fp - sl_pts)
-                            tp_p = self._round_to_tick(fp + tp_pts)
-                        else:
-                            sl_p = self._round_to_tick(fp + sl_pts)
-                            tp_p = self._round_to_tick(fp - tp_pts)
-                        self._active_signal = TradeSignal(
-                            strategy=StrategyType.TREND,
-                            direction=direction,
-                            entry_price=fp,
-                            sl_price=sl_p,
-                            tp_price=tp_p,
-                            zone_id="",
-                            reason="restart-recovery",
-                            timestamp=datetime.utcnow(),
-                            order_type="market",
-                        )
-                        self._trail_sl_triggered = False
-                        self._log_event(
-                            f"[RESTART] 重建 signal: SL={sl_p:.2f} TP={tp_p:.2f} dir={direction.value}"
-                        )
-                        if not self._skip_engine_sl_tp:
-                            await self._place_sl_tp()
 
             # ── Transition 2: Position CLOSED (SL/TP hit) ──
             if was_open and not has_position:
