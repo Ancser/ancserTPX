@@ -926,7 +926,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.9.16
+        0.9.17
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -2270,11 +2270,18 @@ async function pollLiveCandle() {
         const data = await resp.json();
         if (!data.candles || data.candles.length === 0) return;
 
+        // Sort ascending — API returns newest-first; update() requires oldest-first
+        const sorted = [...data.candles].sort((a, b) => {
+            const ta = new Date(a.time || a.timestamp).getTime();
+            const tb = new Date(b.time || b.timestamp).getTime();
+            return ta - tb;
+        });
+
         let updated = 0;
-        for (const c of data.candles) {
+        for (const c of sorted) {
             const t = isoToChartTime(c.time || c.timestamp);
             const bar = { time: t, open: c.open, high: c.high, low: c.low, close: c.close };
-            candleSeries.update(bar);
+            try { candleSeries.update(bar); } catch(e) { continue; }
 
             // Update raw buffer (upsert by time)
             const bidx = _rawCandleBuffer.findIndex(x => x.time === t);
@@ -2297,9 +2304,9 @@ async function pollLiveCandle() {
             updated++;
         }
 
-        // Track last candle time for next poll
-        const lastC = data.candles[data.candles.length - 1];
-        _lastLiveCandleTime = lastC.time || lastC.timestamp || '';
+        // Track NEWEST candle time — next poll uses ?since=newest to get only new bars
+        const newestC = sorted[sorted.length - 1];
+        _lastLiveCandleTime = newestC.time || newestC.timestamp || '';
 
         if (updated > 0) {
             log('K線更新: ' + lastC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');

@@ -247,8 +247,8 @@ async def get_latest_candles(since: str = ""):
         else:
             candles = await _topstepx_client.get_historical_bars(
                 contract_id=_live_contract_id,
-                unit=BarUnit.SECOND,
-                unit_number=30,
+                unit=BarUnit.MINUTE,   # 1m — 30s has ~6h settle delay
+                unit_number=1,
                 limit=60,
             )
             _candle_cache["data"] = candles
@@ -1226,7 +1226,13 @@ async def live_start(req: LiveStartRequest):
 
     # ── Fetch fresh candles for live warm-up (separate from backtest data) ──
     # Don't overwrite _historical_candles — backtest needs the full dataset.
-    live_warmup_candles = list(_historical_candles)  # fallback: use existing data
+    # Fallback: use last 2 days from existing data (cap to avoid slow warmup with 30-day set)
+    from datetime import datetime as _dt2, timedelta as _td2
+    _cutoff = _dt2.utcnow() - _td2(days=2)
+    live_warmup_candles = [c for c in _historical_candles
+                           if c.timestamp.replace(tzinfo=None) >= _cutoff]
+    if not live_warmup_candles:
+        live_warmup_candles = list(_historical_candles[-2880:])  # last ~2d of 1m
     try:
         from datetime import datetime, timedelta
         now = datetime.utcnow()
