@@ -926,7 +926,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.9.9
+        0.9.12
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -968,12 +968,7 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label>INTERVAL</label>
-                        <select id="bar-unit">
-                            <option value="30s">30 SEC</option>
-                            <option value="1" selected>1 MIN</option>
-                            <option value="5">5 MIN</option>
-                            <option value="15">15 MIN</option>
-                        </select>
+                        <input type="text" value="30 SEC" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
                     </div>
                     <div class="form-group">
                         <label>BARS</label>
@@ -1035,19 +1030,6 @@
                 <label>TRAIL SL <span id="trail-sl-ticks-bt-val" style="color:var(--accent)">5</span> TICKS</label>
                 <input type="range" id="trail-sl-ticks-bt" min="5" max="200" step="5" value="5"
                     oninput="document.getElementById('trail-sl-ticks-bt-val').textContent=this.value">
-            </div>
-
-            <!-- Backtest range slider -->
-            <div class="form-group" style="margin-top:10px;">
-                <label style="display:flex;justify-content:space-between;align-items:center;">
-                    <span>BACKTEST RANGE</span>
-                    <span id="bt-range-label" style="font-family:'IBM Plex Mono',monospace;color:var(--cyan);font-size:12px;letter-spacing:1px;">2W</span>
-                </label>
-                <input type="range" id="bt-range-days" min="7" max="28" step="7" value="14"
-                    oninput="onBtRangeSlider(this.value)">
-                <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text3);letter-spacing:0.5px;margin-top:2px;">
-                    <span>1W</span><span>2W</span><span>3W</span><span>4W</span>
-                </div>
             </div>
 
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
@@ -1561,13 +1543,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const today = new Date();
     const endStr = today.toISOString().slice(0, 10);
     const start = new Date(today);
-    start.setDate(start.getDate() - 28);   // default 4W; ML uses same date pickers
+    start.setDate(start.getDate() - 14);   // fixed 2W backtest range
     const startStr = start.toISOString().slice(0, 10);
     document.getElementById('start-date').value = startStr;
     document.getElementById('end-date').value = endStr;
-    // Sync range slider to match the 4W default
-    const _rsl = document.getElementById('bt-range-days');
-    if (_rsl) { _rsl.value = 28; onBtRangeSlider(28); }
 
     // Auto-connect after env config loads
     setTimeout(() => {
@@ -3284,26 +3263,16 @@ async function connectAPI() {
 
     // CONNECT always fetches last 14 days — fast, just for auth + chart + live readiness.
     // Full date-range data is loaded lazily when EXECUTE BACKTEST or MACHINE LEARNING is clicked.
-    const barUnitRaw = document.getElementById('bar-unit').value;
+    // Always 30s candles — fixed platform-wide
     const _now = new Date();
     const _quick14 = new Date(_now);
     _quick14.setDate(_quick14.getDate() - 14);
     const startDate = _quick14.toISOString().slice(0, 10);
     const endDate   = _now.toISOString().slice(0, 10);
 
-    // Handle 30s (seconds) vs minute intervals
-    let unit = 2;         // default: minute
-    let unitNumber = 1;   // default: 1 min
-    if (barUnitRaw === '30s') {
-        unit = 1;         // second
-        unitNumber = 30;  // 30 sec
-    } else {
-        unitNumber = parseInt(barUnitRaw);
-    }
-
     const body = {
-        unit: unit,
-        unit_number: unitNumber,
+        unit: 1,
+        unit_number: 30,
         start_time: startDate + 'T00:00:00Z',
         end_time: endDate + 'T23:59:59Z',
     };
@@ -3346,7 +3315,7 @@ async function connectAPI() {
         await loadAccounts();
 
         // Fetch and display chart data
-        await fetchAndShowChart(barUnitRaw === '30s' ? '30s' : unitNumber + 'm');
+        await fetchAndShowChart('30s');
 
         // Fetch actual trades from TopstepX (refresh cache) for the active account
         const accId = currentAccount ? currentAccount.id : 0;
@@ -3482,26 +3451,6 @@ function _updateDataInfo(first, last, source, barCount) {
     el.innerHTML = `<span style="color:${color};font-weight:600">${label}</span>&nbsp;·&nbsp;${fmt(first)}&nbsp;→&nbsp;${fmt(last)}&nbsp;·&nbsp;${days}d${bars}`;
 }
 
-// ── Backtest range slider ───────────────────────────
-function onBtRangeSlider(days) {
-    days = parseInt(days);
-    const weeks = days / 7;
-
-    // Human label: 1W / 2W / 3W / 4W
-    const label = weeks + 'W';
-    document.getElementById('bt-range-label').textContent = label;
-
-    // Push new start-date (end-date stays today)
-    const endDt  = new Date();
-    const startDt = new Date(endDt);
-    startDt.setDate(startDt.getDate() - days);
-    document.getElementById('start-date').value = startDt.toISOString().slice(0, 10);
-    document.getElementById('end-date').value   = endDt.toISOString().slice(0, 10);
-
-    // Invalidate data cache — next EXECUTE BACKTEST click will re-fetch
-    _btDataRange = null;
-}
-
 // ── Backtest data lazy-loader ──────────────────────
 // Tracks which date range is currently loaded in the backend.
 // CONNECT only loads 14 days (fast); full range is fetched on first backtest/ML click.
@@ -3521,7 +3470,7 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data...';
     log('Fetching backtest data (' + startDate + ' → ' + endDate + ')...', 'info');
 
-    const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest
+    const body = { unit: 1, unit_number: 30,   // always 30s bars for backtest / ML
         start_time: startDate + 'T00:00:00Z',
         end_time:   endDate   + 'T23:59:59Z' };
     const username   = document.getElementById('username').value.trim();
@@ -3544,7 +3493,7 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
         _updateDataInfo(data.first, data.last, 'bt', data.candles_count);
         log('Backtest data ready: ' + data.candles_count + ' bars', 'success');
         // Refresh chart to show the full loaded range
-        await fetchAndShowChart('1m');
+        await fetchAndShowChart('30s');
         return true;
     } catch(e) {
         log('Data fetch failed: ' + e.message, 'error');
