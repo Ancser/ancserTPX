@@ -926,7 +926,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.9.14
+        0.9.15
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1050,7 +1050,7 @@
 
         <!-- Metrics -->
         <div class="panel" id="metrics-panel" style="display:none;">
-            <div class="panel-title">PERFORMANCE</div>
+            <div class="panel-title">PERFORMANCE (1 MONTH)</div>
             <div class="metrics-grid" id="metrics-grid"></div>
         </div>
 
@@ -1346,7 +1346,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     tp_ticks: 75,
     sl_ticks: 50,
     trail_sl_ticks: 5,
-    candle_seconds: 30,
+    candle_seconds: 60,
 };
 
 function collectStrategyParams(mode) {
@@ -1357,7 +1357,7 @@ function collectStrategyParams(mode) {
         tp_ticks: _int('tp-ticks-' + mode),
         sl_ticks: _int('sl-ticks-' + mode),
         trail_sl_ticks: _int('trail-sl-ticks-' + mode) || 5,
-        candle_seconds: 30,
+        candle_seconds: 60,   // 1m bars platform-wide
     };
 }
 
@@ -1543,7 +1543,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const today = new Date();
     const endStr = today.toISOString().slice(0, 10);
     const start = new Date(today);
-    start.setDate(start.getDate() - 14);   // fixed 2W backtest range
+    start.setDate(start.getDate() - 30);   // fixed 1M backtest range
     const startStr = start.toISOString().slice(0, 10);
     document.getElementById('start-date').value = startStr;
     document.getElementById('end-date').value = endStr;
@@ -3470,7 +3470,7 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data...';
     log('Fetching backtest data (' + startDate + ' → ' + endDate + ')...', 'info');
 
-    const body = { unit: 1, unit_number: 30,   // always 30s bars for backtest / ML
+    const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / ML
         start_time: startDate + 'T00:00:00Z',
         end_time:   endDate   + 'T23:59:59Z' };
     const username   = document.getElementById('username').value.trim();
@@ -3493,7 +3493,7 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
         _updateDataInfo(data.first, data.last, 'bt', data.candles_count);
         log('Backtest data ready: ' + data.candles_count + ' bars', 'success');
         // Refresh chart to show the full loaded range
-        await fetchAndShowChart('30s');
+        await fetchAndShowChart('1m');
         return true;
     } catch(e) {
         log('Data fetch failed: ' + e.message, 'error');
