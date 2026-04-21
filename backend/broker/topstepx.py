@@ -387,6 +387,10 @@ class TopstepXClient:
         MAX_BATCHES = 20  # safety cap (~400k bars, ~6 months of 1m NQ data)
 
         while batch_num < MAX_BATCHES:
+            logger.info(
+                f"[paginated] requesting batch {batch_num + 1}: "
+                f"start={start_time} end={current_end} unit={unit.name} n={unit_number} limit=20000"
+            )
             batch = await self.get_historical_bars(
                 contract_id, unit, unit_number,
                 start_time, current_end, limit=20000,
@@ -403,7 +407,7 @@ class TopstepXClient:
             newest_ts = max(c.timestamp for c in batch)
             logger.info(
                 f"[paginated] batch {batch_num}: {len(batch)} bars "
-                f"({oldest_ts.date()} → {newest_ts.date()}), "
+                f"(newest={newest_ts.isoformat()} oldest={oldest_ts.isoformat()}), "
                 f"total so far: {len(all_candles)}"
             )
 

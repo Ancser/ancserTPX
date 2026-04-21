@@ -926,7 +926,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.9.12
+        0.9.14
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -3261,9 +3261,9 @@ async function connectAPI() {
     setStatus('loading', 'CONNECTING...');
     log('Connecting to TopstepX API...', 'info');
 
-    // CONNECT always fetches last 14 days — fast, just for auth + chart + live readiness.
-    // Full date-range data is loaded lazily when EXECUTE BACKTEST or MACHINE LEARNING is clicked.
-    // Always 30s candles — fixed platform-wide
+    // CONNECT fetches last 14 days of 1m bars — fast, fresh, reliable.
+    // 30s bars via TopstepX paginated API have a ~6h settle delay for large ranges.
+    // Backtest/ML use 30s separately (lazy-loaded on demand).
     const _now = new Date();
     const _quick14 = new Date(_now);
     _quick14.setDate(_quick14.getDate() - 14);
@@ -3271,8 +3271,8 @@ async function connectAPI() {
     const endDate   = _now.toISOString().slice(0, 10);
 
     const body = {
-        unit: 1,
-        unit_number: 30,
+        unit: 2,
+        unit_number: 1,
         start_time: startDate + 'T00:00:00Z',
         end_time: endDate + 'T23:59:59Z',
     };
@@ -3314,8 +3314,8 @@ async function connectAPI() {
         // Load accounts after successful connect (await so account is ready)
         await loadAccounts();
 
-        // Fetch and display chart data
-        await fetchAndShowChart('30s');
+        // Fetch and display chart data (1m bars from connect — fresh, no settle delay)
+        await fetchAndShowChart('1m');
 
         // Fetch actual trades from TopstepX (refresh cache) for the active account
         const accId = currentAccount ? currentAccount.id : 0;
@@ -3849,7 +3849,15 @@ let _liveMarkers = [];
 
 function _refreshAllMarkers() {
     if (!candleSeries) return;
-    const all = [..._backtestMarkers, ..._liveMarkers].sort((a, b) => a.time - b.time);
+    let all = [..._backtestMarkers, ..._liveMarkers].sort((a, b) => a.time - b.time);
+    // Drop markers whose time is before the first chart bar.
+    // Lightweight Charts snaps older markers to the first bar → visual stacking.
+    const cd = window._lastChartData;
+    if (cd && cd.length > 0) {
+        const firstT = cd[0].time;
+        const lastT  = cd[cd.length - 1].time;
+        all = all.filter(m => m.time >= firstT && m.time <= lastT);
+    }
     try { candleSeries.setMarkers(all); } catch(e) {}
 }
 

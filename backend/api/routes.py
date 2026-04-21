@@ -1232,19 +1232,19 @@ async def live_start(req: LiveStartRequest):
         now = datetime.utcnow()
         fresh_start = (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
         fresh_end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        logger.info(f"[LIVE START] Fetching fresh 30s candles: {fresh_start} ~ {fresh_end}")
+        logger.info(f"[LIVE START] Fetching fresh 1m candles: {fresh_start} ~ {fresh_end}")
 
         fresh_candles = await _topstepx_client.get_historical_bars_paginated(
             contract_id=req.contract_id,
-            unit=BarUnit.SECOND,
-            unit_number=30,
+            unit=BarUnit.MINUTE,   # 1m — no settle delay (30s has ~6h lag)
+            unit_number=1,
             start_time=fresh_start,
             end_time=fresh_end,
         )
         if fresh_candles and len(fresh_candles) > 0:
             live_warmup_candles = fresh_candles
             logger.info(
-                f"[LIVE START] Fresh 30s candles loaded: {len(fresh_candles)} | "
+                f"[LIVE START] Fresh 1m candles loaded: {len(fresh_candles)} | "
                 f"range: {fresh_candles[0].timestamp} ~ {fresh_candles[-1].timestamp}"
             )
         else:

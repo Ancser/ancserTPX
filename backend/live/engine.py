@@ -81,7 +81,8 @@ class LiveTradingEngine:
         self.client = client
         self.account_id = account_id
         self.contract_id = contract_id
-        self.strategies = ["trend_follow"]  # Only SessionTrendFollow
+        # Strategy label set after strategy object is created (below)
+        self.strategies: List[str] = []
         self.slippage_ticks = slippage_ticks
         self.strategy_params = strategy_params or StrategyParams()
 
@@ -94,8 +95,10 @@ class LiveTradingEngine:
         if _strat == "macd":
             from backend.strategy.macd_strategy import MACDOnlyStrategy
             self.trend_follow = MACDOnlyStrategy(params=self.strategy_params)
+            self.strategies = ["macd"]
         else:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+            self.strategies = ["trend_follow"]
 
         # Live state
         self._running = False
@@ -498,7 +501,7 @@ class LiveTradingEngine:
                 await asyncio.sleep(1)
 
     async def _tick(self):
-        """One iteration of the trading loop (1m candles)."""
+        """One iteration of the trading loop (1m candles — 30s bars stale on TopstepX)."""
         now = datetime.utcnow()
 
         # Reset daily counters
@@ -516,8 +519,8 @@ class LiveTradingEngine:
             self._position_just_closed = False
             return
 
-        # Get latest 30s candle
-        candle = await self._fetch_latest_candle(unit_number=30)
+        # Get latest 1m candle (30s bars have ~6h settle delay on TopstepX)
+        candle = await self._fetch_latest_candle()
         if not candle:
             return
 
@@ -1197,16 +1200,20 @@ class LiveTradingEngine:
             logger.error(f"[SYNC] position sync failed: {e}", exc_info=True)
 
     async def _fetch_latest_candle(self, unit_number: int = 30) -> Optional[Candle]:
-        """Fetch the most recent 30-second candle from TopstepX API.
+        """Fetch the most recent 1-minute candle from TopstepX API.
 
-        Note: TopstepX API returns bars newest-first, so candles[-1] is the
-        OLDEST. Must sort by timestamp to get the actual newest.
+        NOTE: TopstepX 30s bar API has a ~6-hour settle delay — bars from
+        sub-minute endpoints are never current. 1m bars are real-time.
+        MACD/VWAP indicators run on 1m bars in live mode.
+
+        TopstepX returns bars newest-first, so candles[-1] is the OLDEST.
+        Must sort by timestamp to get the actual newest.
         """
         try:
             candles = await self.client.get_historical_bars(
                 contract_id=self.contract_id,
-                unit=BarUnit.SECOND,
-                unit_number=unit_number,
+                unit=BarUnit.MINUTE,   # 1m bars — no settle delay
+                unit_number=1,
                 limit=5,
             )
             if candles:
