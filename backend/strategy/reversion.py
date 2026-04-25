@@ -133,16 +133,21 @@ class SessionReversion:
 
     規則:
       1. 等待 SessionZoneDetector 報告區間成熟
-      2. 連續 5 根 1m close 都在 [VAL, VAH] 範圍內 → 確認區間有效
-      3. 第 5 根 close 偏向 VAH (≥ POC) → SELL LIMIT @ VAH (fade 上沿)
-         第 5 根 close 偏向 VAL (< POC) → BUY  LIMIT @ VAL (fade 下沿)
-      4. SL: VAH/VAL 外側 ± sl_ticks × tick_size  (區間破位即停損)
-      5. TP: entry ± tp_ticks × tick_size         (與 Trend 同)
-      6. 掛單超時取消 (entry_timeout)
+      2. **觸發 = 假突破 pattern**（兩根相鄰 K 線，立即進場，不再等 5 根）：
+            上沿: prev.high > VAH 且 current.close < VAH → SELL LIMIT @ VAH
+            下沿: prev.low  < VAL 且 current.close > VAL → BUY  LIMIT @ VAL
+      3. SL: VAH/VAL 外側 ± sl_ticks × tick_size  (區間破位即停損)
+      4. TP: entry ± tp_ticks × tick_size
+      5. **掛單超時延長機制**：訂單被引擎超時取消時，
+            檢查最近 5 根 close 是否仍在正確側
+              SELL @ VAH : 全 5 根 close < VAH → re-arm 下一根重新掛
+              BUY  @ VAL : 全 5 根 close > VAL → re-arm 下一根重新掛
+            否則 → 真的取消、回 idle
+      6. 新 zone 進來時清除待掛狀態
 
     對比 Trend：
       Trend     —  5 根 close 出界 → 順勢突破做多/做空
-      Reversion —  5 根 close 範圍內 → 反向掛單做空/做多 (賭區間繼續守住)
+      Reversion —  假突破一次 + 5 根 close 範圍內 → 反向 fade
     """
 
     BREAKOUT_CONFIRM_CANDLES = 5   # 連續 5 根 close 在 [VAL, VAH] 內
@@ -156,18 +161,22 @@ class SessionReversion:
         _cpm = max(1, 60 // _candle_secs)
         self.PENDING_TIMEOUT_CANDLES = 5 * _cpm   # 5 min hardcoded
 
-        self._state = "idle"  # idle | watching | confirmed | in_trade
-        self._consecutive_inside: int = 0
+        self._state = "idle"  # idle | confirmed | in_trade | rearm
         self._fade_direction: Optional[str] = None  # "up" = fade VAH, "down" = fade VAL
         self._ref_zone: Optional[ConsolidationZone] = None
         self._recent_candles: List[Candle] = []
 
+        # ── Trigger pattern state (prev/current pair) ──
+        self._prev_candle: Optional[Candle] = None
+        self._tracked_zone_id: Optional[str] = None
+
     def reset(self):
         self._state = "idle"
-        self._consecutive_inside = 0
         self._fade_direction = None
         self._ref_zone = None
         self._recent_candles = []
+        self._prev_candle = None
+        self._tracked_zone_id = None
 
     def reset_state_only(self):
         """Alias for reset() — keeps interface compatible with MACDOnlyStrategy."""
@@ -184,8 +193,9 @@ class SessionReversion:
         is_mature: bool,
     ) -> Optional[TradeSignal]:
         """
-        每根 1m K 線調用一次.
-        Lookback: 看最近 5 根 close 是否都在 [VAL, VAH] 內.
+        每根 1m K 線調用一次。
+        即時觸發：偵測到假突破 pattern 立即返回 signal，不再等 5 根。
+        Re-arm: 若上一筆掛單超時被取消但條件仍合格 → 下一根再次返回 signal。
         """
         self._recent_candles.append(candle)
         if len(self._recent_candles) > 20:
@@ -202,37 +212,39 @@ class SessionReversion:
         if self._state in ("confirmed", "in_trade"):
             return None
 
-        vah = zone.vah_80
-        val = zone.val_80
-        poc = zone.poc
-
-        n = self.BREAKOUT_CONFIRM_CANDLES
-        recent = self._recent_candles[-n:] if len(self._recent_candles) >= n else self._recent_candles
-
-        # Count consecutive inside-range from the END (most recent)
-        inside_count = 0
-        for c in reversed(recent):
-            if val <= c.close <= vah:
-                inside_count += 1
-            else:
-                break
-
-        self._consecutive_inside = inside_count
-
-        if inside_count == 0:
-            self._state = "idle"
+        # ── Reset state when zone changes ──
+        if zone.zone_id != self._tracked_zone_id:
+            self._tracked_zone_id = zone.zone_id
+            self._prev_candle = None
             self._fade_direction = None
+            self._ref_zone = None
+            if self._state == "rearm":
+                self._state = "idle"
+
+        # ── Re-arm path: timeout extended; re-fire same direction ──
+        if self._state == "rearm" and self._fade_direction is not None:
+            return self._generate_signal(candle, zone, self._fade_direction)
+
+        # ── Detect 2-bar fakeout pattern ──
+        prev = self._prev_candle
+        self._prev_candle = candle
+        if prev is None:
             return None
 
-        self._state = "watching"
+        vah = zone.vah_80
+        val = zone.val_80
 
-        # ── 5 consecutive inside → confirmed range, place fade order ──
-        if inside_count >= n:
-            # Fade direction: latest close above POC → fade VAH (sell), else fade VAL (buy)
-            self._fade_direction = "up" if candle.close >= poc else "down"
-            self._state = "confirmed"
+        # Up-side fakeout → SELL @ VAH
+        if prev.high > vah and candle.close < vah:
+            self._fade_direction = "up"
             self._ref_zone = zone
-            return self._generate_signal(candle, zone, self._fade_direction)
+            return self._generate_signal(candle, zone, "up")
+
+        # Down-side fakeout → BUY @ VAL
+        if prev.low < val and candle.close > val:
+            self._fade_direction = "down"
+            self._ref_zone = zone
+            return self._generate_signal(candle, zone, "down")
 
         return None
 
@@ -274,7 +286,7 @@ class SessionReversion:
         )
 
         edge_label = "SELL@VAH" if direction == "up" else "BUY@VAL"
-        return TradeSignal(
+        signal = TradeSignal(
             strategy=StrategyType.REVERSION,
             direction=trade_dir,
             entry_price=entry,
@@ -283,37 +295,164 @@ class SessionReversion:
             zone_id=zone.zone_id,
             reason=(
                 f"SESSION REV {edge_label} | "
-                f"5-bar inside-range fade | "
+                f"fakeout pattern | "
                 f"SL {self.SL_TICKS}t(${sl_dollars:.0f}) TP {self.TP_TICKS}t(${tp_dollars:.0f})"
             ),
             timestamp=candle.timestamp,
         )
+        # State → confirmed (engine will treat as pending-order armed)
+        self._state = "confirmed"
+        return signal
 
     def notify_trade_closed(self, exit_reason: str):
         self._state = "idle"
-        self._consecutive_inside = 0
         self._fade_direction = None
 
     def notify_order_cancelled(self):
-        """Order cancelled (timeout/flatten). Keep counter — re-check next bar."""
-        if self._state == "confirmed":
+        """
+        Engine cancelled the pending limit (timeout / flatten).
+        Extension rule: if last N closes still favour the fade direction,
+        flip to "rearm" so next evaluate re-fires the same order.
+        Otherwise reset to idle.
+        """
+        direction = self._fade_direction
+        if direction is None or self._ref_zone is None:
+            self._state = "idle"
+            self._fade_direction = None
+            return
+
+        n = self.BREAKOUT_CONFIRM_CANDLES   # check last 5 candles
+        recent = self._recent_candles[-n:] if len(self._recent_candles) >= n else []
+
+        keep = False
+        if len(recent) >= n:
+            if direction == "up":
+                # SELL @ VAH; need all last 5 closes < VAH
+                keep = all(c.close < self._ref_zone.vah_80 for c in recent)
+            else:
+                # BUY @ VAL; need all last 5 closes > VAL
+                keep = all(c.close > self._ref_zone.val_80 for c in recent)
+
+        if keep:
+            self._state = "rearm"
+            side = "<VAH" if direction == "up" else ">VAL"
             logger.info(
-                f"[SessionReversion] Order cancelled → watching "
-                f"(keep count={self._consecutive_inside}, dir={self._fade_direction})"
+                f"[SessionReversion] Timeout — last {n} closes still {side}, re-arm next bar"
             )
-        self._state = "watching"
+        else:
+            self._state = "idle"
+            self._fade_direction = None
+            logger.info(f"[SessionReversion] Timeout — condition broken, abort")
 
     def get_phase_label(self) -> str:
-        if self._state == "idle":
-            return "等待範圍"
-        elif self._state == "watching":
-            return f"範圍內({self._consecutive_inside}/{self.BREAKOUT_CONFIRM_CANDLES} bar)"
-        elif self._state == "confirmed":
-            return "入場準備"
-        elif self._state == "in_trade":
+        if self._state == "in_trade":
             return "持倉中"
-        return self._state
+        if self._state == "confirmed":
+            return "掛單中"
+        if self._state == "rearm":
+            side = "VAH" if self._fade_direction == "up" else "VAL"
+            return f"超時延長·待重掛@{side}"
+        return "等待假突破"
 
     @property
     def raw_state(self) -> str:
         return self._state
+
+
+# ══════════════════════════════════════════════════════════
+# Combined Trend + Reversion (parallel sub-strategies)
+# ══════════════════════════════════════════════════════════
+
+class SessionTrendReversion:
+    """
+    Combined wrapper — runs SessionTrendFollow and SessionReversion in parallel.
+
+    規則:
+      - 引擎本身一倉一單；evaluate 只在閒置時被呼叫
+      - 每根 K 線同時餵兩個子策略 (避免 lookback 不同步)
+      - Trend 優先：先評估 trend；trend 沒 signal 才評估 reversion
+      - Active sub 記錄哪個子策略當前持單；notify_* 只轉發給該子
+      - reset / warmup 同時作用於兩子
+    """
+
+    BREAKOUT_CONFIRM_CANDLES = 5
+    TICK_SIZE = 0.25
+
+    def __init__(self, params: Optional[StrategyParams] = None):
+        # Lazy import to avoid circular: trend_follow imports reversion not, but be safe
+        from backend.strategy.trend_follow import SessionTrendFollow
+        self.trend = SessionTrendFollow(params)
+        self.rev = SessionReversion(params)
+        # Engine reads PENDING_TIMEOUT_CANDLES from the strategy — both subs use same value
+        self.PENDING_TIMEOUT_CANDLES = self.trend.PENDING_TIMEOUT_CANDLES
+        self._active_sub: Optional[str] = None  # "trend" | "rev" | None
+
+    def reset(self):
+        self.trend.reset()
+        self.rev.reset()
+        self._active_sub = None
+
+    def reset_state_only(self):
+        if hasattr(self.trend, 'reset_state_only'):
+            self.trend.reset_state_only()
+        else:
+            self.trend.reset()
+        self.rev.reset_state_only()
+        self._active_sub = None
+
+    def warmup(self, candle: Candle):
+        self.trend.warmup(candle)
+        self.rev.warmup(candle)
+
+    def evaluate(
+        self,
+        candle: Candle,
+        zone: Optional[ConsolidationZone],
+        is_mature: bool,
+    ) -> Optional[TradeSignal]:
+        # Trend 優先評估
+        signal = self.trend.evaluate(candle, zone, is_mature)
+        if signal:
+            self._active_sub = "trend"
+            return signal
+
+        # Reversion 補位
+        signal = self.rev.evaluate(candle, zone, is_mature)
+        if signal:
+            self._active_sub = "rev"
+            return signal
+
+        return None
+
+    def notify_trade_closed(self, exit_reason: str):
+        if self._active_sub == "trend":
+            self.trend.notify_trade_closed(exit_reason)
+        elif self._active_sub == "rev":
+            self.rev.notify_trade_closed(exit_reason)
+        self._active_sub = None
+
+    def notify_order_cancelled(self):
+        if self._active_sub == "trend":
+            self.trend.notify_order_cancelled()
+        elif self._active_sub == "rev":
+            self.rev.notify_order_cancelled()
+        self._active_sub = None
+
+    def get_phase_label(self) -> str:
+        if self._active_sub == "trend":
+            return f"[T] {self.trend.get_phase_label()}"
+        if self._active_sub == "rev":
+            return f"[R] {self.rev.get_phase_label()}"
+        # Both idle — surface compact dual state
+        t = self.trend.get_phase_label()
+        r = self.rev.get_phase_label()
+        return f"T:{t} | R:{r}"
+
+    @property
+    def raw_state(self) -> str:
+        if self._active_sub == "trend":
+            return self.trend.raw_state
+        if self._active_sub == "rev":
+            return self.rev.raw_state
+        # Both idle
+        return "idle"

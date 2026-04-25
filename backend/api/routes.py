@@ -1078,8 +1078,14 @@ async def ml_run(req: MLRunRequest):
     )
     logger.info(f"[ML] Zone timeline ready ({len(zone_timeline)} entries)")
 
-    # Always sweep both strategies
-    all_strategies = ["trend", "macd"]
+    # Strategy selection: respect req.strategy ("trend" / "macd" / "reversion" / "trend_reversion");
+    # "all" or empty → sweep all four.
+    _req_strat = (req.strategy or "all").lower()
+    if _req_strat in ("trend", "macd", "reversion", "trend_reversion"):
+        all_strategies = [_req_strat]
+    else:
+        all_strategies = ["trend", "macd", "reversion", "trend_reversion"]
+    logger.info(f"[ML] Strategy sweep: {all_strategies}")
 
     # Search grid
     sl_values    = [10, 20, 30, 40, 50, 60, 80, 100]

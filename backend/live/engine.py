@@ -100,6 +100,10 @@ class LiveTradingEngine:
             from backend.strategy.reversion import SessionReversion
             self.trend_follow = SessionReversion(params=self.strategy_params)
             self.strategies = ["reversion"]
+        elif _strat == "trend_reversion":
+            from backend.strategy.reversion import SessionTrendReversion
+            self.trend_follow = SessionTrendReversion(params=self.strategy_params)
+            self.strategies = ["trend_reversion"]
         else:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
             self.strategies = ["trend_follow"]
