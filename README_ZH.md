@@ -39,22 +39,22 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 
 ### 2. ProjectX API 設定
 
-1. 前往 https://dashboard.projectx.com/dashboard
-2. 建立 ProjectX 帳號
-3. 開通 ProjectX API Access
-4. 綁定 TopstepX 帳戶
-5. 前往 https://topstepx.com/settings
-6. 進入 **API** 頁面
-7. 複製 API Key
+1. 前往 https://dashboard.projectx.com/dashboard 並開通 ProjectX API Access
+2. 綁定 TopstepX 帳戶
+3. 前往 https://topstepx.com/settings
+4. 進入 **API** 頁面
+5. 複製 API Key
 
 ### 3. 設定 `.env`
 
 在專案根目錄建立 `.env`：
 
+- `TOPSTEPX_USERNAME` — TopstepX 用戶郵箱
+- `TOPSTEPX_API_KEY` — ProjectX API Key
+
 ```env
 TOPSTEPX_USERNAME=your_email@example.com
 TOPSTEPX_API_KEY=your_api_key_here
-TOPSTEPX_CONTRACT_ID=CON.F.US.ENQ.M26
 ```
 
 ---
@@ -79,9 +79,8 @@ TOPSTEPX_CONTRACT_ID=CON.F.US.ENQ.M26
 
 ### Backtest
 
-1. 載入歷史資料
-2. 選擇策略或 preset
-3. 點擊 **EXECUTE BACKTEST**
+1. 選擇策略或 preset
+2. 點擊 **EXECUTE BACKTEST**
 
 ### Live Trading
 

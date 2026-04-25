@@ -39,22 +39,22 @@ Current default trading settings:
 
 ### 2. ProjectX API Setup
 
-1. Go to https://dashboard.projectx.com/dashboard
-2. Create a ProjectX account
-3. Enable ProjectX API Access
-4. Link your TopstepX account
-5. Go to https://topstepx.com/settings
-6. Open the **API** page
-7. Copy your API key
+1. Go to https://dashboard.projectx.com/dashboard and enable ProjectX API Access
+2. Link your TopstepX account
+3. Go to https://topstepx.com/settings
+4. Open the **API** page
+5. Copy your API key
 
 ### 3. Configure `.env`
 
 Create a `.env` file in the project root:
 
+- `TOPSTEPX_USERNAME` — your TopstepX account email
+- `TOPSTEPX_API_KEY` — your ProjectX API key
+
 ```env
 TOPSTEPX_USERNAME=your_email@example.com
 TOPSTEPX_API_KEY=your_api_key_here
-TOPSTEPX_CONTRACT_ID=CON.F.US.ENQ.M26
 ```
 
 ---
@@ -79,9 +79,8 @@ Run the matching files for your operating system:
 
 ### Backtest
 
-1. Load historical data
-2. Choose a strategy or preset
-3. Click **EXECUTE BACKTEST**
+1. Choose a strategy or preset
+2. Click **EXECUTE BACKTEST**
 
 ### Live Trading
 
