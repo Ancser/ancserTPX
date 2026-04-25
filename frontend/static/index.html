@@ -2279,11 +2279,6 @@ async function pollLiveCandle() {
                 if (cv2 > 0) vwapSeries.update({ time: t, value: cv / cv2 });
             }
 
-            // MACD strip: recompute last point
-            if (macdStripSeries && _rawCandleBuffer.length >= 34) {
-                const strip = _computeMACDStrip(_rawCandleBuffer);
-                if (strip.length > 0) macdStripSeries.update(strip[strip.length - 1]);
-            }
             updated++;
         }
 
@@ -2360,16 +2355,6 @@ function initChart() {
         priceLineVisible: false,
         lastValueVisible: true,
         crosshairMarkerVisible: false,
-    });
-
-    // MACD direction strip — thin colored band at chart bottom
-    macdStripSeries = chart.addHistogramSeries({
-        priceScaleId: 'macd-strip',
-        priceFormat: { type: 'price', precision: 0 },
-    });
-    chart.priceScale('macd-strip').applyOptions({
-        scaleMargins: { top: 0.99, bottom: 0 },
-        visible: false,
     });
 
     new ResizeObserver(() => {
@@ -3358,9 +3343,6 @@ function showCandleData(candles) {
 
     // VWAP
     if (vwapSeries) vwapSeries.setData(_computeVWAP(rawBuf));
-
-    // MACD direction strip
-    if (macdStripSeries) macdStripSeries.setData(_computeMACDStrip(rawBuf));
 
     applyDefaultChartView(chartData);
     drawSessionDividers();
