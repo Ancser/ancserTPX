@@ -40,6 +40,7 @@ class Direction(str, Enum):
 class ExitReason(str, Enum):
     TP      = "tp"
     SL      = "sl"
+    TRAIL_SL = "trail_sl"
     FLATTEN = "flatten"   # 3:10 PM CT 強制平倉
     MANUAL  = "manual"
 
@@ -290,8 +291,8 @@ class BreakoutAnalysis:
 @dataclass
 class StrategyParams:
     """可配置的策略參數 (SessionTrendFollow / MACDOnlyStrategy)"""
-    strategy: str = "trend"              # "trend" | "macd"
-    tp_ticks: int = 75                   # 5-200 tick
+    strategy: str = "trend"              # "trend" | "macd" | "reversion"
+    tp_ticks: int = 150                  # 5-200 tick
     sl_ticks: int = 50                   # 5-200 tick
     trail_sl_ticks: int = 5             # 5-200 tick — new SL offset from entry after trail triggers
     # MACD params (hardcoded 12/26/9 — not user-configurable)

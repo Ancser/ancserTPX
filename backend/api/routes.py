@@ -64,7 +64,7 @@ class BacktestRequest(BaseModel):
     initial_capital: float = 50000.0
     # Strategy params
     strategy: str = "trend"
-    tp_ticks: int = 75
+    tp_ticks: int = 150
     sl_ticks: int = 50
     trail_sl_ticks: int = 5
     candle_seconds: int = 30
@@ -1181,7 +1181,7 @@ class LiveStartRequest(BaseModel):
     value_area_pct: float = 0.80
     # Strategy params
     strategy: str = "trend"
-    tp_ticks: int = 75
+    tp_ticks: int = 150
     sl_ticks: int = 50
     trail_sl_ticks: int = 5
     candle_seconds: int = 30
@@ -1657,6 +1657,15 @@ _PRESETS_FILE = os.path.join(
     "data", "presets.json"
 )
 
+_DEFAULT_PRESET_NAME = "TR 50SL 150TP 5 TRAIL SL"
+_DEFAULT_PRESET_PARAMS = {
+    "strategy": "trend",
+    "tp_ticks": 150,
+    "sl_ticks": 50,
+    "trail_sl_ticks": 5,
+    "candle_seconds": 60,
+}
+
 
 def _load_presets_file() -> dict:
     try:
@@ -1665,7 +1674,13 @@ def _load_presets_file() -> dict:
                 return _json.load(f)
     except Exception:
         pass
-    return {"presets": {}, "last_used_bt": "default", "last_used_live": "default"}
+    return {
+        "presets": {
+            _DEFAULT_PRESET_NAME: dict(_DEFAULT_PRESET_PARAMS),
+        },
+        "last_used_bt": _DEFAULT_PRESET_NAME,
+        "last_used_live": _DEFAULT_PRESET_NAME,
+    }
 
 
 def _save_presets_file(data: dict):

@@ -96,6 +96,10 @@ class LiveTradingEngine:
             from backend.strategy.macd_strategy import MACDOnlyStrategy
             self.trend_follow = MACDOnlyStrategy(params=self.strategy_params)
             self.strategies = ["macd"]
+        elif _strat == "reversion":
+            from backend.strategy.reversion import SessionReversion
+            self.trend_follow = SessionReversion(params=self.strategy_params)
+            self.strategies = ["reversion"]
         else:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
             self.strategies = ["trend_follow"]

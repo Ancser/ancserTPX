@@ -29,6 +29,22 @@ logger = logging.getLogger(__name__)
 
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
+SESSION_BUFFER_MINUTES = 30
+SESSION_STARTS_UTC_MINUTES = (
+    22 * 60,
+    7 * 60,
+    11 * 60,
+    13 * 60 + 30,
+    20 * 60,
+)
+
+
+def _in_session_buffer(candle: Candle) -> bool:
+    current_minutes = candle.timestamp.hour * 60 + candle.timestamp.minute
+    for session_start in SESSION_STARTS_UTC_MINUTES:
+        if 0 <= current_minutes - session_start < SESSION_BUFFER_MINUTES:
+            return True
+    return False
 
 
 class MACDOnlyStrategy:
@@ -105,6 +121,9 @@ class MACDOnlyStrategy:
             # After-hours filter (20:00–22:00 UTC = 13:00–15:00 PT)
             h = candle.timestamp.hour
             if 20 <= h < 22:
+                self._prev_hist = hist
+                return None
+            if _in_session_buffer(candle):
                 self._prev_hist = hist
                 return None
 

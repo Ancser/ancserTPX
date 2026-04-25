@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Tuple
 
-from backend.db.models import Metrics, Trade, StrategyType
+from backend.db.models import ExitReason, Metrics, Trade, StrategyType
 
 
 class MetricsCalculator:
@@ -40,6 +40,8 @@ class MetricsCalculator:
         if not completed:
             return Metrics()
 
+        tp_hits = [t for t in completed if t.exit_reason == ExitReason.TP]
+        non_tp = [t for t in completed if t.exit_reason != ExitReason.TP]
         wins = [t for t in completed if t.pnl > 0]
         losses = [t for t in completed if t.pnl <= 0]
 
@@ -49,15 +51,15 @@ class MetricsCalculator:
         avg_win = sum(win_pnls) / len(win_pnls) if win_pnls else 0
         avg_loss = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0
 
-        wr = len(wins) / len(completed) if completed else 0
+        wr = len(tp_hits) / len(completed) if completed else 0
 
         dd, dd_pct = self.max_drawdown(completed, initial_capital)
 
         total_pnl = sum(t.pnl for t in completed)
         metrics = Metrics(
             total_trades=len(completed),
-            wins=len(wins),
-            losses=len(losses),
+            wins=len(tp_hits),
+            losses=len(non_tp),
             win_rate=wr,
             avg_win=avg_win,
             avg_loss=avg_loss,
@@ -88,18 +90,20 @@ class MetricsCalculator:
         """Calculate metrics for a subset of trades."""
         if not trades:
             return Metrics()
+        tp_hits = [t for t in trades if t.exit_reason == ExitReason.TP]
+        non_tp = [t for t in trades if t.exit_reason != ExitReason.TP]
         wins = [t for t in trades if t.pnl > 0]
         losses = [t for t in trades if t.pnl <= 0]
         win_pnls = [t.pnl for t in wins]
         loss_pnls = [t.pnl for t in losses]
         avg_w = sum(win_pnls) / len(win_pnls) if win_pnls else 0
         avg_l = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0
-        wr = len(wins) / len(trades)
+        wr = len(tp_hits) / len(trades)
         dd, dd_pct = self.max_drawdown(trades, initial_capital)
         return Metrics(
             total_trades=len(trades),
-            wins=len(wins),
-            losses=len(losses),
+            wins=len(tp_hits),
+            losses=len(non_tp),
             win_rate=wr,
             avg_win=avg_w,
             avg_loss=avg_l,
@@ -116,8 +120,8 @@ class MetricsCalculator:
         completed = [t for t in trades if t.pnl is not None]
         if not completed:
             return 0.0
-        wins = sum(1 for t in completed if t.pnl > 0)
-        return wins / len(completed)
+        tp_hits = sum(1 for t in completed if t.exit_reason == ExitReason.TP)
+        return tp_hits / len(completed)
 
     @staticmethod
     def expectancy(trades: List[Trade]) -> float:

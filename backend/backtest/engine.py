@@ -54,6 +54,9 @@ class BacktestEngine:
         if _strat == "macd":
             from backend.strategy.macd_strategy import MACDOnlyStrategy
             self.trend_follow = MACDOnlyStrategy(params=self.strategy_params)
+        elif _strat == "reversion":
+            from backend.strategy.reversion import SessionReversion
+            self.trend_follow = SessionReversion(params=self.strategy_params)
         else:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
 
@@ -275,9 +278,9 @@ class BacktestEngine:
                     self._execute_exit(candle, pos.tp_price, ExitReason.TP)
                 else:
                     # Open near TP → likely went down first → SL hit first
-                    self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+                    self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
             elif hit_sl:
-                self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+                self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
             elif hit_tp:
                 self._execute_exit(candle, pos.tp_price, ExitReason.TP)
         else:  # SELL
@@ -289,9 +292,9 @@ class BacktestEngine:
                 if dist_sl <= dist_tp:
                     self._execute_exit(candle, pos.tp_price, ExitReason.TP)
                 else:
-                    self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+                    self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
             elif hit_sl:
-                self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+                self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
             elif hit_tp:
                 self._execute_exit(candle, pos.tp_price, ExitReason.TP)
 
@@ -307,10 +310,13 @@ class BacktestEngine:
             return
         if pos.direction == Direction.BUY:
             if candle.low <= pos.sl_price:
-                self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+                self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
         else:  # SELL
             if candle.high >= pos.sl_price:
-                self._execute_exit(candle, pos.sl_price, ExitReason.SL)
+                self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
+
+    def _stop_exit_reason(self) -> ExitReason:
+        return ExitReason.TRAIL_SL if self._trail_sl_triggered else ExitReason.SL
 
     def _cancel_pending_order(self):
         """Cancel a pending limit order and notify the strategy."""
@@ -421,7 +427,7 @@ class BacktestEngine:
             return
 
         slippage = self.config.slippage_ticks * self.TICK_SIZE
-        if reason == ExitReason.SL:
+        if reason in (ExitReason.SL, ExitReason.TRAIL_SL):
             if pos.direction == Direction.BUY:
                 exit_price -= slippage
             else:
@@ -456,6 +462,7 @@ class BacktestEngine:
         self._trades.append(pos)
         self._last_closed_trade = pos
         self._open_position = None
+        self._trail_sl_triggered = False
 
         # Notify strategy of trade close
         self.trend_follow.notify_trade_closed(reason.value)

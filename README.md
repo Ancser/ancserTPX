@@ -1,49 +1,51 @@
 # ancserTPX
 
-NQ (Nasdaq 100 E-mini) futures auto-trading system on **TopstepX** (ProjectX API).
+English | [繁體中文](README_ZH.md)
 
-1-minute candle session-based trend-follow strategy with automated SL/TP management.
+ancserTPX is an NQ (Nasdaq 100 E-mini) futures auto-trading system built on **TopstepX (ProjectX API)**.
+
+The system is centered around **1-minute candles** and supports both backtesting and live monitoring / trading.
 
 ---
 
-## Strategy
+## Strategy Overview
 
-**Session Trend Follow** — detects consolidation zones (Volume Profile: VAH/VAL/POC) across 4 sessions, then trades breakouts.
+The main strategy is **Session Trend Follow**. It builds Volume Profile zones (VAH / VAL / POC) for each market session, then looks for entries after a breakout.
 
-| Session | Time (ET) | Time (UTC) |
-|---------|-----------|------------|
+| Session | Time (ET) | UTC |
+|---------|-----------|-----|
 | ASIA | 6:00 PM - 3:00 AM | 22:00 - 07:00 |
-| PRE (Europe/Pre-market) | 3:00 AM - 9:30 AM | 07:00 - 13:30 |
-| RTH (Regular Trading Hours) | 9:30 AM - 4:00 PM | 13:30 - 20:00 |
-| AH (After Hours) | 4:00 PM - 6:00 PM | 20:00 - 22:00 |
+| EURO | 3:00 AM - 7:00 AM | 07:00 - 11:00 |
+| PRE | 7:00 AM - 9:30 AM | 11:00 - 13:30 |
+| RTH | 9:30 AM - 4:00 PM | 13:30 - 20:00 |
+| AH | 4:00 PM - 6:00 PM | 20:00 - 22:00 |
 
-- **Entry**: 5 consecutive 1m closes outside VAH/VAL → limit order at 50% retracement
-- **Stop Loss**: 50 ticks (12.5 pts = $250)
-- **Take Profit**: 3x SL (150 ticks = 37.5 pts = $750)
-- **Flatten**: All positions closed at 12:45 PM PT daily
+Current default trading settings:
+
+- **Entry**: after 5 consecutive 1-minute closes outside VAH / VAL, place a limit order at the 50% retracement
+- **Stop Loss**: 50 ticks
+- **Take Profit**: 150 ticks
+- **Trail SL**: 5 ticks
+- **Flatten**: all positions are closed daily at 12:45 PM PT
 
 ---
 
-## Setup
+## Before You Start
 
-### 1. Prerequisites
+### 1. Requirements
 
-- **Python 3.10 ~ 3.13** — [python.org/downloads](https://www.python.org/downloads/)
-  - Do NOT use 3.14 (beta, packages not supported yet)
-  - Windows: check "Add Python to PATH" during install
-  - macOS: `brew install python@3.13` or download from python.org
-- **Git** (optional) — for cloning the repo
+- **Python 3.10 ~ 3.13**
+- **Git** (optional, for cloning the repo)
 
-### 2. ProjectX API set up
+### 2. ProjectX API Setup
 
 1. Go to https://dashboard.projectx.com/dashboard
-2. Make new account
-3. Buy ProjectX API Access (50% off coupon: topstep)
-4. Link to Topstep X account
+2. Create a ProjectX account
+3. Enable ProjectX API Access
+4. Link your TopstepX account
 5. Go to https://topstepx.com/settings
-6. Navigate to **API** section
-8. Copy the key to .env
-
+6. Open the **API** page
+7. Copy your API key
 
 ### 3. Configure `.env`
 
@@ -55,25 +57,21 @@ TOPSTEPX_API_KEY=your_api_key_here
 TOPSTEPX_CONTRACT_ID=CON.F.US.ENQ.M26
 ```
 
-Accounts are auto-detected from the API — only active (`canTrade`) accounts are shown.
+---
 
-### 4. Install & Run
+## Install & Start
 
-**Windows:**
+Run the matching files for your operating system:
 
-```
-install.bat        # first time — installs Python dependencies
-start.bat          # launches server + opens browser
-```
+### Windows
 
-**macOS / Linux:**
+- First-time install: `install.bat`
+- Start the app: `start.bat`
 
-Open **Terminal** (Spotlight search "Terminal" or `Cmd+Space` → type "Terminal"), `cd` to the project folder, then:
+### macOS
 
-```bash
-make install       # first time — installs Python dependencies
-make start         # launches server + opens browser
-```
+- First-time install: `install.sh`
+- Start the app: `start.sh`
 
 ---
 
@@ -81,40 +79,15 @@ make start         # launches server + opens browser
 
 ### Backtest
 
-1. Open browser (auto-opens at `http://localhost:8001`)
-2. Click **CONNECT** (auto-connected from .env)
-3. Click **RUN BACKTEST** — draws zones + trade signals on chart
+1. Load historical data
+2. Choose a strategy or preset
+3. Click **EXECUTE BACKTEST**
 
 ### Live Trading
 
-1. Connect to API (auto-connected from .env)
-2. Switch to **LIVE MONITOR** tab
-3. Select your trading account from the dropdown
-4. Click **START LIVE** — engine monitors market and auto-trades
-5. **Ctrl+C** in terminal to stop (do NOT close with X button)
-
----
-
-## Project Structure
-
-```
-ancserTPX/
-├── backend/
-│   ├── main.py              # FastAPI server entry
-│   ├── api/routes.py        # REST API endpoints
-│   ├── broker/topstepx.py   # ProjectX API client (REST + SignalR)
-│   ├── live/engine.py       # Live trading engine
-│   └── strategy/
-│       ├── consolidation.py # Volume Profile zone detection
-│       └── trend_follow.py  # Session trend-follow strategy
-├── frontend/
-│   └── static/index.html    # Single-page trading UI
-├── .env                     # Credentials (not committed)
-├── .env.example             # Template for .env
-├── install.bat / install.sh # One-click environment setup
-├── start.bat / start.sh     # One-click launch
-└── kill_old.ps1             # Cleanup zombie processes (Windows)
-```
+1. Select a trading account
+2. Click **GO LIVE**
+3. Use **STOP** or **FLATTEN** when you want to stop trading or close positions manually
 
 ---
 

@@ -19,11 +19,15 @@
   5. 固定風報比 1:3
 """
 
-from typing import Optional
+import logging
+from typing import List, Optional
 from backend.db.models import (
-    Candle, ConsolidationZone, TradeSignal,
+    Candle, ConsolidationZone, TradeSignal, StrategyParams,
     Direction, StrategyType, ZoneStatus
 )
+
+logger = logging.getLogger(__name__)
+POINT_VALUE = 20.0
 
 
 class ReversionStrategy:
@@ -117,3 +121,199 @@ class ReversionStrategy:
     def _check_touch_low(self, price_low: float, level: float) -> bool:
         """K 線低點是否觸及或低於 buy level"""
         return price_low <= level + self.touch_tolerance
+
+
+# ══════════════════════════════════════════════════════════
+# Session-based Reversion (mirror of SessionTrendFollow)
+# ══════════════════════════════════════════════════════════
+
+class SessionReversion:
+    """
+    Session-based mean-reversion strategy (與 SessionTrendFollow 同基礎，方向相反).
+
+    規則:
+      1. 等待 SessionZoneDetector 報告區間成熟
+      2. 連續 5 根 1m close 都在 [VAL, VAH] 範圍內 → 確認區間有效
+      3. 第 5 根 close 偏向 VAH (≥ POC) → SELL LIMIT @ VAH (fade 上沿)
+         第 5 根 close 偏向 VAL (< POC) → BUY  LIMIT @ VAL (fade 下沿)
+      4. SL: VAH/VAL 外側 ± sl_ticks × tick_size  (區間破位即停損)
+      5. TP: entry ± tp_ticks × tick_size         (與 Trend 同)
+      6. 掛單超時取消 (entry_timeout)
+
+    對比 Trend：
+      Trend     —  5 根 close 出界 → 順勢突破做多/做空
+      Reversion —  5 根 close 範圍內 → 反向掛單做空/做多 (賭區間繼續守住)
+    """
+
+    BREAKOUT_CONFIRM_CANDLES = 5   # 連續 5 根 close 在 [VAL, VAH] 內
+    TICK_SIZE = 0.25
+
+    def __init__(self, params: Optional[StrategyParams] = None):
+        p = params or StrategyParams()
+        self.SL_TICKS = p.sl_ticks
+        self.TP_TICKS = p.tp_ticks
+        _candle_secs = getattr(p, 'candle_seconds', 30)
+        _cpm = max(1, 60 // _candle_secs)
+        self.PENDING_TIMEOUT_CANDLES = 5 * _cpm   # 5 min hardcoded
+
+        self._state = "idle"  # idle | watching | confirmed | in_trade
+        self._consecutive_inside: int = 0
+        self._fade_direction: Optional[str] = None  # "up" = fade VAH, "down" = fade VAL
+        self._ref_zone: Optional[ConsolidationZone] = None
+        self._recent_candles: List[Candle] = []
+
+    def reset(self):
+        self._state = "idle"
+        self._consecutive_inside = 0
+        self._fade_direction = None
+        self._ref_zone = None
+        self._recent_candles = []
+
+    def reset_state_only(self):
+        """Alias for reset() — keeps interface compatible with MACDOnlyStrategy."""
+        self.reset()
+
+    def warmup(self, candle: Candle):
+        """Feed candle during warm-up without generating signals (no-op)."""
+        pass
+
+    def evaluate(
+        self,
+        candle: Candle,
+        zone: Optional[ConsolidationZone],
+        is_mature: bool,
+    ) -> Optional[TradeSignal]:
+        """
+        每根 1m K 線調用一次.
+        Lookback: 看最近 5 根 close 是否都在 [VAL, VAH] 內.
+        """
+        self._recent_candles.append(candle)
+        if len(self._recent_candles) > 20:
+            self._recent_candles = self._recent_candles[-20:]
+
+        if not zone or not is_mature:
+            return None
+
+        # No operation on AH (After Hours 20:00 - 22:00 UTC)
+        h = candle.timestamp.hour
+        if 20 <= h < 22:
+            return None
+
+        if self._state in ("confirmed", "in_trade"):
+            return None
+
+        vah = zone.vah_80
+        val = zone.val_80
+        poc = zone.poc
+
+        n = self.BREAKOUT_CONFIRM_CANDLES
+        recent = self._recent_candles[-n:] if len(self._recent_candles) >= n else self._recent_candles
+
+        # Count consecutive inside-range from the END (most recent)
+        inside_count = 0
+        for c in reversed(recent):
+            if val <= c.close <= vah:
+                inside_count += 1
+            else:
+                break
+
+        self._consecutive_inside = inside_count
+
+        if inside_count == 0:
+            self._state = "idle"
+            self._fade_direction = None
+            return None
+
+        self._state = "watching"
+
+        # ── 5 consecutive inside → confirmed range, place fade order ──
+        if inside_count >= n:
+            # Fade direction: latest close above POC → fade VAH (sell), else fade VAL (buy)
+            self._fade_direction = "up" if candle.close >= poc else "down"
+            self._state = "confirmed"
+            self._ref_zone = zone
+            return self._generate_signal(candle, zone, self._fade_direction)
+
+        return None
+
+    def _generate_signal(
+        self,
+        candle: Candle,
+        zone: ConsolidationZone,
+        direction: str,
+    ) -> TradeSignal:
+        """
+        Entry = VAH (fade up) or VAL (fade down)
+        SL    = beyond the VA edge by sl_ticks (range break = lose)
+        TP    = entry ± tp_ticks (toward POC)
+        """
+        sl_points = self.SL_TICKS * self.TICK_SIZE
+        tp_points = self.TP_TICKS * self.TICK_SIZE
+
+        if direction == "up":
+            # Fade VAH: SELL limit at VAH, SL above range, TP toward POC
+            entry = zone.vah_80
+            sl = entry + sl_points
+            tp = entry - tp_points
+            trade_dir = Direction.SELL
+        else:
+            # Fade VAL: BUY limit at VAL, SL below range, TP toward POC
+            entry = zone.val_80
+            sl = entry - sl_points
+            tp = entry + tp_points
+            trade_dir = Direction.BUY
+
+        sl_dollars = abs(entry - sl) * POINT_VALUE
+        tp_dollars = abs(tp - entry) * POINT_VALUE
+
+        logger.info(
+            f"[SessionReversion] FADE {direction.upper()} confirmed | "
+            f"entry={entry:.2f} SL={sl:.2f} TP={tp:.2f} | "
+            f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f} | "
+            f"zone={zone.zone_id}"
+        )
+
+        edge_label = "SELL@VAH" if direction == "up" else "BUY@VAL"
+        return TradeSignal(
+            strategy=StrategyType.REVERSION,
+            direction=trade_dir,
+            entry_price=entry,
+            sl_price=sl,
+            tp_price=tp,
+            zone_id=zone.zone_id,
+            reason=(
+                f"SESSION REV {edge_label} | "
+                f"5-bar inside-range fade | "
+                f"SL {self.SL_TICKS}t(${sl_dollars:.0f}) TP {self.TP_TICKS}t(${tp_dollars:.0f})"
+            ),
+            timestamp=candle.timestamp,
+        )
+
+    def notify_trade_closed(self, exit_reason: str):
+        self._state = "idle"
+        self._consecutive_inside = 0
+        self._fade_direction = None
+
+    def notify_order_cancelled(self):
+        """Order cancelled (timeout/flatten). Keep counter — re-check next bar."""
+        if self._state == "confirmed":
+            logger.info(
+                f"[SessionReversion] Order cancelled → watching "
+                f"(keep count={self._consecutive_inside}, dir={self._fade_direction})"
+            )
+        self._state = "watching"
+
+    def get_phase_label(self) -> str:
+        if self._state == "idle":
+            return "等待範圍"
+        elif self._state == "watching":
+            return f"範圍內({self._consecutive_inside}/{self.BREAKOUT_CONFIRM_CANDLES} bar)"
+        elif self._state == "confirmed":
+            return "入場準備"
+        elif self._state == "in_trade":
+            return "持倉中"
+        return self._state
+
+    @property
+    def raw_state(self) -> str:
+        return self._state
