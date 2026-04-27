@@ -59,8 +59,8 @@ class MetricsCalculator:
         total_pnl = sum(t.pnl for t in completed)
         metrics = Metrics(
             total_trades=len(completed),
-            wins=len(tp_hits),
-            losses=len(non_tp),
+            wins=len(wins),
+            losses=len(losses),
             win_rate=wr,
             avg_win=avg_win,
             avg_loss=avg_loss,
