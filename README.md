@@ -32,12 +32,7 @@ Current default trading settings:
 
 ## Before You Start
 
-### 1. Requirements
-
-- **Python 3.10 ~ 3.13**
-- **Git** (optional, for cloning the repo)
-
-### 2. ProjectX API Setup
+### 1. ProjectX API Setup
 
 1. Go to https://dashboard.projectx.com/dashboard and enable ProjectX API Access
 2. Link your TopstepX account
@@ -45,7 +40,7 @@ Current default trading settings:
 4. Open the **API** page
 5. Copy your API key
 
-### 3. Configure `.env`
+### 2. Configure `.env`
 
 Create a `.env` file in the project root:
 

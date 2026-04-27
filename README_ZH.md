@@ -32,12 +32,7 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 
 ## 安裝前準備
 
-### 1. 系統需求
-
-- **Python 3.10 ~ 3.13**
-- **Git**（可選，用於 clone 專案）
-
-### 2. ProjectX API 設定
+### 1. ProjectX API 設定
 
 1. 前往 https://dashboard.projectx.com/dashboard 並開通 ProjectX API Access
 2. 綁定 TopstepX 帳戶
@@ -45,7 +40,7 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 4. 進入 **API** 頁面
 5. 複製 API Key
 
-### 3. 設定 `.env`
+### 2. 設定 `.env`
 
 在專案根目錄建立 `.env`：
 

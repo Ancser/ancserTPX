@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 echo ""
 echo "  ========================================"
 echo "   ancserTPX - One-Click Install"
@@ -7,56 +8,132 @@ echo ""
 
 cd "$(dirname "$0")"
 
-# ── Check Python ──
+PY=""
+PY_VERSION="3.13"
+
+# ── [1/4] Locate or auto-install Python ──
 echo "  [1/4] Checking Python..."
-if command -v python3 &>/dev/null; then
-    PY=python3
-elif command -v python &>/dev/null; then
-    PY=python
+
+find_python() {
+    for cand in python3.13 python3 python; do
+        if command -v "$cand" &>/dev/null; then
+            local minor
+            minor=$("$cand" -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
+            local major
+            major=$("$cand" -c "import sys; print(sys.version_info.major)" 2>/dev/null || echo "0")
+            if [ "$major" = "3" ] && [ "$minor" -ge 9 ] && [ "$minor" -le 13 ]; then
+                PY="$cand"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+if find_python; then
+    echo "        $($PY --version) ready"
 else
-    echo "  [ERROR] Python not found!"
-    echo "  Install: brew install python3  (macOS)"
-    echo "       or: sudo apt install python3 python3-pip  (Linux)"
-    exit 1
-fi
-PY_VER=$($PY -c "import sys; print(sys.version_info.minor)")
-echo "        $($PY --version)"
-if [ "$PY_VER" -gt 13 ] 2>/dev/null; then
-    echo "  [ERROR] Python 3.14+ is not supported (packages have no pre-built wheels)"
-    echo "  Install Python 3.13: brew install python@3.13"
-    exit 1
+    echo "        Python 3.9-3.13 not found - auto-installing..."
+    OS="$(uname -s)"
+
+    case "$OS" in
+        Darwin*)
+            # macOS: try Homebrew
+            if command -v brew &>/dev/null; then
+                echo "        Using Homebrew..."
+                brew install python@3.13 || true
+            else
+                echo "        Homebrew not found - installing Homebrew first..."
+                /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || {
+                    echo ""
+                    echo "  [ERROR] Could not install Homebrew automatically."
+                    echo "  Please install Python manually: https://www.python.org/downloads/"
+                    exit 1
+                }
+                # Try to source brew env
+                if [ -x /opt/homebrew/bin/brew ]; then
+                    eval "$(/opt/homebrew/bin/brew shellenv)"
+                elif [ -x /usr/local/bin/brew ]; then
+                    eval "$(/usr/local/bin/brew shellenv)"
+                fi
+                brew install python@3.13 || true
+            fi
+            ;;
+        Linux*)
+            # Linux: try apt / dnf / yum / pacman
+            if command -v apt-get &>/dev/null; then
+                echo "        Using apt..."
+                sudo apt-get update -qq
+                sudo apt-get install -y python3.13 python3.13-venv python3-pip 2>/dev/null \
+                    || sudo apt-get install -y python3 python3-venv python3-pip
+            elif command -v dnf &>/dev/null; then
+                echo "        Using dnf..."
+                sudo dnf install -y python3.13 python3-pip 2>/dev/null \
+                    || sudo dnf install -y python3 python3-pip
+            elif command -v yum &>/dev/null; then
+                echo "        Using yum..."
+                sudo yum install -y python3 python3-pip
+            elif command -v pacman &>/dev/null; then
+                echo "        Using pacman..."
+                sudo pacman -Sy --noconfirm python python-pip
+            else
+                echo ""
+                echo "  [ERROR] No supported package manager found (apt/dnf/yum/pacman)."
+                echo "  Please install Python 3.13 manually."
+                exit 1
+            fi
+            ;;
+        *)
+            echo ""
+            echo "  [ERROR] Unsupported OS: $OS"
+            echo "  Please install Python 3.13 manually: https://www.python.org/downloads/"
+            exit 1
+            ;;
+    esac
+
+    if find_python; then
+        echo "        $($PY --version) installed"
+    else
+        echo ""
+        echo "  [ERROR] Python install ran but python3 not found in PATH."
+        echo "  Please open a NEW terminal and run install.sh again."
+        exit 1
+    fi
 fi
 
-# ── Check pip ──
+# ── [2/4] pip ──
 echo "  [2/4] Checking pip..."
-$PY -m pip --version &>/dev/null
-if [ $? -ne 0 ]; then
-    echo "  [ERROR] pip not found!"
-    echo "  Install: $PY -m ensurepip --upgrade"
-    exit 1
+if ! $PY -m pip --version &>/dev/null; then
+    echo "        pip missing - bootstrapping with ensurepip..."
+    $PY -m ensurepip --upgrade &>/dev/null || {
+        echo "  [ERROR] pip bootstrap failed."
+        exit 1
+    }
 fi
 echo "        pip OK"
 
-# ── Install dependencies ──
+# ── [3/4] Dependencies ──
 echo "  [3/4] Installing dependencies..."
-$PY -m pip install -r backend/requirements.txt --quiet
-if [ $? -ne 0 ]; then
+$PY -m pip install --upgrade pip --quiet
+$PY -m pip install -r backend/requirements.txt --quiet || {
     echo "  [ERROR] Failed to install dependencies!"
     exit 1
-fi
+}
 echo "        All packages installed"
 
-# ── Check .env ──
+# ── [4/4] .env ──
 echo "  [4/4] Checking .env..."
 if [ -f ".env" ]; then
     echo "        .env found"
 else
-    cp .env.example .env 2>/dev/null
-    echo "        .env created from template"
+    echo "        .env not found - creating from template..."
+    cp .env.example .env 2>/dev/null || true
     echo ""
     echo "  ============================================"
     echo "   IMPORTANT: Edit .env with your credentials"
-    echo "     nano .env"
+    echo "   Open .env and fill in:"
+    echo "     TOPSTEPX_USERNAME=your_email"
+    echo "     TOPSTEPX_API_KEY=your_key"
     echo "  ============================================"
     echo ""
 fi
@@ -64,6 +141,6 @@ fi
 echo ""
 echo "  ========================================"
 echo "   Setup complete!"
-echo "   Run: ./start.sh"
+echo "   Run ./start.sh to launch ancserTPX"
 echo "  ========================================"
 echo ""
