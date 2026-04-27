@@ -4101,13 +4101,20 @@ function _alignBacktestToLiveDays(backtestTrades, liveStats) {
 
 function renderMetrics(m, backtestTrades) {
     const panel = document.getElementById('metrics-panel');
-    // Defensive: ensure panel is visible even if a prior tab switch added .hidden
-    panel.classList.remove('hidden');
+    // Only show the metrics panel when the BACKTEST tab is active.
+    // If user is on LIVE, keep it hidden — data still gets rendered into the
+    // grid below and will appear next time they switch back to BACKTEST.
+    const backtestActive = document.querySelector('.tab.active')?.dataset?.tab === 'backtest';
     panel.style.display = 'block';
-    // Scroll the sidebar so the newly-rendered panel is actually in view
-    setTimeout(() => {
-        try { panel.scrollIntoView({behavior: 'smooth', block: 'nearest'}); } catch(_){}
-    }, 0);
+    if (backtestActive) {
+        panel.classList.remove('hidden');
+        // Scroll the sidebar so the newly-rendered panel is actually in view
+        setTimeout(() => {
+            try { panel.scrollIntoView({behavior: 'smooth', block: 'nearest'}); } catch(_){}
+        }, 0);
+    } else {
+        panel.classList.add('hidden');
+    }
 
     // Clean up old per-strategy breakdown
     const oldSub = document.getElementById('strategy-breakdown');
