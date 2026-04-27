@@ -480,15 +480,70 @@ class LiveTradingEngine:
             self._log_event(f"Market 平倉異常: {e} → 需手動平倉!", "error")
 
     async def flatten_now(self):
-        """Emergency flatten all positions."""
+        """Emergency flatten all positions AND cancel any working SL/TP/entry orders.
+
+        TopstepX's flatten/closeContract only nets the position — it does NOT
+        cancel working bracket orders. If we don't cancel them here, the SL
+        stop-market and TP limit stay live on the book and can open a new,
+        unintended reverse position when price later touches them.
+        """
+        # ── Snapshot the order IDs we need to cancel BEFORE we null them ──
+        sl_id = self._sl_order_id
+        tp_id = self._tp_order_id
+        pending_id = self._pending_order_id
+
+        # ── Cancel working SL / TP / pending-entry orders first ──
+        # Run cancels concurrently — they're independent broker calls.
+        cancel_tasks = []
+        if sl_id:
+            cancel_tasks.append(self._cancel_with_retry(sl_id, "SL (flatten)"))
+        if tp_id:
+            cancel_tasks.append(self._cancel_with_retry(tp_id, "TP (flatten)"))
+        if pending_id:
+            cancel_tasks.append(self._cancel_with_retry(pending_id, "ENTRY (flatten)"))
+
+        if cancel_tasks:
+            try:
+                await asyncio.gather(*cancel_tasks, return_exceptions=True)
+            except Exception as e:
+                # gather with return_exceptions=True shouldn't throw, but be defensive
+                self._log_event(f"取消 working orders 異常: {e}", "error")
+
+        # ── Net out any open position ──
         try:
             results = await self.client.flatten_all(self.account_id)
             self._log_event(f"緊急平倉完成: {len(results)} orders")
-            self._open_position = None
-            self._sl_order_id = None
-            self._tp_order_id = None
         except Exception as e:
             self._log_event(f"緊急平倉失敗: {e}", "error")
+
+        # ── Final sweep: query broker for ANY remaining open orders on our
+        # contract and force-cancel them. Catches orders we lost track of
+        # (e.g., after a restart) or whose cancel call dropped silently.
+        try:
+            open_orders = await self.client.get_open_orders(self.account_id)
+            sweep_tasks = []
+            for od in open_orders:
+                if od.get("contractId") != self.contract_id:
+                    continue
+                oid = od.get("id") or od.get("orderId")
+                if oid:
+                    sweep_tasks.append(self._cancel_with_retry(oid, "SWEEP (flatten)"))
+            if sweep_tasks:
+                self._log_event(f"flatten 後掃出 {len(sweep_tasks)} 張殘留 working order → 取消")
+                await asyncio.gather(*sweep_tasks, return_exceptions=True)
+        except Exception as e:
+            self._log_event(f"flatten 殘留掃描失敗: {e}", "error")
+
+        # ── Clear local references regardless of broker result ──
+        self._open_position = None
+        self._sl_order_id = None
+        self._tp_order_id = None
+        self._pending_order_id = None
+        self._pending_signal = None
+        self._pending_age = 0
+        self._active_signal = None
+        self._fill_price = None
+        self._trail_sl_triggered = False
 
     # ── Main Loop ──────────────────────────────────────────
 
