@@ -1185,7 +1185,9 @@ class LiveTradingEngine:
                 if self._fill_price:
                     pnl_info = f" | entry_fill={self._fill_price:.2f}"
 
-                # Detect exit reason by comparing market price to SL/TP levels
+                # Detect exit reason by comparing market price to SL/TP levels.
+                # If trail SL was triggered (sig.sl_price was updated to entry±trail_pts),
+                # an SL-side hit is a TRAIL SL exit, not a regular SL.
                 exit_reason = "unknown"
                 if self._active_signal and self._last_market_price:
                     sl_p = self._active_signal.sl_price
@@ -1193,7 +1195,7 @@ class LiveTradingEngine:
                     mkt = self._last_market_price
                     # Whichever level is closer to current market price is the one that hit
                     if abs(mkt - sl_p) < abs(mkt - tp_p):
-                        exit_reason = "sl"
+                        exit_reason = "trail_sl" if self._trail_sl_triggered else "sl"
                     else:
                         exit_reason = "tp"
                 if exit_reason == "unknown":

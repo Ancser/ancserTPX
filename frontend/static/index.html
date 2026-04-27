@@ -4207,10 +4207,6 @@ function renderMetrics(m, backtestTrades) {
         { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },
-        { label: 'TP/SL/TRAIL',
-          value: backtestStats.tp + '/' + backtestStats.sl + '/' + backtestStats.trail_sl +
-                 paren(liveStats ? (liveStats.tp + '/' + liveStats.sl + '/' + liveStats.trail_sl) : ''),
-          cls: '' },
         { label: 'AVG $ TP/SL/TRAIL',
           value: fmtAvgTriple(backtestStats) + paren(liveStats ? fmtAvgTriple(liveStats) : ''),
           cls: '' },

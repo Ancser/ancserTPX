@@ -476,6 +476,14 @@ class BacktestEngine:
         )
 
     def _force_exit(self, candle: Candle, reason: ExitReason):
+        # If trail SL was already triggered (profit locked), classify the forced
+        # exit as TRAIL_SL — the trail mechanism is what protected this trade,
+        # the clock just happened to end the day before the stop was touched.
+        # Without this, profitable trail-protected positions closed by 12:45 PT
+        # auto-flatten end up in the 'other' bucket and disappear from
+        # TP/SL/TRAIL counts and AVG $ stats.
+        if reason == ExitReason.FLATTEN and self._trail_sl_triggered:
+            reason = ExitReason.TRAIL_SL
         self._execute_exit(candle, candle.close, reason)
 
     @staticmethod
