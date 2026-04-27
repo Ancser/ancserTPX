@@ -926,7 +926,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.10.2
+        0.10.3
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1254,7 +1254,7 @@
 // ancserTPX Frontend
 // ============================================
 
-// Auto-detect port from current page URL (supports dynamic port in start.bat)
+// Auto-detect port from current page URL (supports dynamic port in start-Win11.bat)
 const API = window.location.origin + '/api';
 let chart = null;
 let candleSeries = null;
@@ -3966,10 +3966,9 @@ function getTradeExitBucket(trade) {
 function summarizeTradeOutcomes(trades) {
     const summary = {
         total: 0,
-        tp: 0,
-        sl: 0,
-        trail_sl: 0,
-        other: 0,
+        tp: 0, sl: 0, trail_sl: 0, other: 0,
+        // Sum of PnL per bucket — used to compute avg $ per exit type
+        tp_pnl: 0, sl_pnl: 0, trail_sl_pnl: 0, other_pnl: 0,
         sessions: {},
     };
     SESSION_CODES.forEach(code => {
@@ -3979,10 +3978,11 @@ function summarizeTradeOutcomes(trades) {
     (trades || []).forEach(trade => {
         summary.total += 1;
         const bucket = getTradeExitBucket(trade);
-        if (bucket === 'tp') summary.tp += 1;
-        else if (bucket === 'sl') summary.sl += 1;
-        else if (bucket === 'trail_sl') summary.trail_sl += 1;
-        else summary.other += 1;
+        const pnl = +(trade && trade.pnl) || 0;
+        if (bucket === 'tp')            { summary.tp += 1;        summary.tp_pnl += pnl; }
+        else if (bucket === 'sl')       { summary.sl += 1;        summary.sl_pnl += pnl; }
+        else if (bucket === 'trail_sl') { summary.trail_sl += 1;  summary.trail_sl_pnl += pnl; }
+        else                            { summary.other += 1;     summary.other_pnl += pnl; }
 
         const refIso = trade && (trade.entry_time || trade.exit_time);
         if (!refIso) return;
@@ -4062,8 +4062,8 @@ function _computeTradeStats(trades) {
     return {
         total_pnl: total,
         trades: count,
-        wins: exitSummary.tp,
-        losses: count - exitSummary.tp,
+        wins: wins.length,
+        losses: losses.length,
         win_rate: winRate,
         avg_win: avgWin,
         avg_loss: avgLoss,
@@ -4082,6 +4082,10 @@ function _computeTradeStats(trades) {
         sl: exitSummary.sl,
         trail_sl: exitSummary.trail_sl,
         other: exitSummary.other,
+        // Avg PnL per exit bucket — exposes the huge $ difference between TP / TRAIL / SL
+        avg_tp_pnl:       exitSummary.tp       ? exitSummary.tp_pnl       / exitSummary.tp       : 0,
+        avg_sl_pnl:       exitSummary.sl       ? exitSummary.sl_pnl       / exitSummary.sl       : 0,
+        avg_trail_sl_pnl: exitSummary.trail_sl ? exitSummary.trail_sl_pnl / exitSummary.trail_sl : 0,
         session_tp: exitSummary.sessions,
     };
 }
@@ -4171,7 +4175,7 @@ function renderMetrics(m, backtestTrades) {
     const winRatePrimary = backtestStats.trades ? backtestStats.win_rate : win_rate;
     const winRateLive    = liveStats ? liveStats.win_rate : null;
 
-    // Winrate TP/SL/TRAIL — % of trades that exited via each path
+    // Exit-path distribution — % of trades that exited via each reason (NOT win rate)
     const fmtPctTriple = (s) => {
         const t = s && s.trades ? s.trades : 0;
         if (!t) return '--';
@@ -4179,6 +4183,12 @@ function renderMetrics(m, backtestTrades) {
         const sl = ((s.sl / t) * 100).toFixed(0);
         const tr = ((s.trail_sl / t) * 100).toFixed(0);
         return tp + '%/' + sl + '%/' + tr + '%';
+    };
+    // Avg $ per exit bucket — shows the magnitude gap between full TP, trail SL, full SL
+    const fmtAvgTriple = (s) => {
+        if (!s || !s.trades) return '--';
+        const sign = (v) => (v >= 0 ? '+' : '') + Math.round(v);
+        return sign(s.avg_tp_pnl || 0) + '/' + sign(s.avg_sl_pnl || 0) + '/' + sign(s.avg_trail_sl_pnl || 0);
     };
 
     const items = [
@@ -4194,12 +4204,15 @@ function renderMetrics(m, backtestTrades) {
         { label: 'CALMAR',
           value: (m.calmar_ratio != null ? m.calmar_ratio : 0).toFixed(2) + paren(liveStats ? (liveStats.calmar != null ? liveStats.calmar : 0).toFixed(2) : ''),
           cls: (m.calmar_ratio || 0) >= 1 ? 'pos' : '' },
-        { label: 'WINRATE TP/SL/TRAIL',
+        { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },
         { label: 'TP/SL/TRAIL',
           value: backtestStats.tp + '/' + backtestStats.sl + '/' + backtestStats.trail_sl +
                  paren(liveStats ? (liveStats.tp + '/' + liveStats.sl + '/' + liveStats.trail_sl) : ''),
+          cls: '' },
+        { label: 'AVG $ TP/SL/TRAIL',
+          value: fmtAvgTriple(backtestStats) + paren(liveStats ? fmtAvgTriple(liveStats) : ''),
           cls: '' },
         { label: 'RR RATIO',
           value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),

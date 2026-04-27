@@ -58,15 +58,23 @@ TOPSTEPX_API_KEY=your_api_key_here
 
 Run the matching files for your operating system:
 
-### Windows
+### Windows 11
 
-- First-time install: `install.bat`
-- Start the app: `start.bat`
+- First-time install: double-click `install-Win11.bat`
+- Start the app: double-click `start-Win11.bat`
+
+> If Windows shows a SmartScreen warning, click **More info → Run anyway**.
 
 ### macOS
 
-- First-time install: `install.sh`
-- Start the app: `start.sh`
+- First-time install: double-click `install-Mac.command`
+- Start the app: double-click `start-Mac.command`
+
+> **First launch only:** macOS will block the file with "cannot be opened because it is from an unidentified developer".
+> Fix: **right-click** the file → **Open** → click **Open** in the dialog. Only needed once per file.
+>
+> A Terminal window will open and run automatically — you don't need to type anything.
+> Keep the Terminal window open while using ancserTPX. Closing it stops the server.
 
 ---
 

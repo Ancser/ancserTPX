@@ -96,7 +96,7 @@ else
     else
         echo ""
         echo "  [ERROR] Python install ran but python3 not found in PATH."
-        echo "  Please open a NEW terminal and run install.sh again."
+        echo "  Please open a NEW terminal and run install-Mac.command again."
         exit 1
     fi
 fi
@@ -141,6 +141,6 @@ fi
 echo ""
 echo "  ========================================"
 echo "   Setup complete!"
-echo "   Run ./start.sh to launch ancserTPX"
+echo "   Double-click start-Mac.command to launch ancserTPX"
 echo "  ========================================"
 echo ""

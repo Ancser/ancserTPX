@@ -58,15 +58,23 @@ TOPSTEPX_API_KEY=your_api_key_here
 
 請依照你的作業系統執行對應檔案：
 
-### Windows
+### Windows 11
 
-- 首次安裝：`install.bat`
-- 啟動程式：`start.bat`
+- 首次安裝：雙擊 `install-Win11.bat`
+- 啟動程式：雙擊 `start-Win11.bat`
+
+> 若 Windows 跳出 SmartScreen 警告，點 **「其他資訊」→「仍要執行」**。
 
 ### macOS
 
-- 首次安裝：`install.sh`
-- 啟動程式：`start.sh`
+- 首次安裝：雙擊 `install-Mac.command`
+- 啟動程式：雙擊 `start-Mac.command`
+
+> **第一次執行**：macOS 會擋下，跳出「無法打開，因為來自未識別的開發者」。
+> 解法：**對檔案按右鍵 → 打開 → 在對話框再點「打開」**。每個檔案只需做一次。
+>
+> 接著會自動跳出 Terminal 視窗執行，不用輸入任何指令。
+> 使用 ancserTPX 期間請保持 Terminal 視窗打開，關掉就停掉伺服器了。
 
 ---
 

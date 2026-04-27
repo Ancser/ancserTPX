@@ -40,8 +40,9 @@ class MetricsCalculator:
         if not completed:
             return Metrics()
 
-        tp_hits = [t for t in completed if t.exit_reason == ExitReason.TP]
-        non_tp = [t for t in completed if t.exit_reason != ExitReason.TP]
+        # Win = positive PnL (TP hits AND profitable trail-SL stops both count as wins).
+        # Trail SL set at entry + N ticks locks in a small profit, so its PnL is usually
+        # positive — counting it as a "loss" because exit_reason != TP was a mis-classification.
         wins = [t for t in completed if t.pnl > 0]
         losses = [t for t in completed if t.pnl <= 0]
 
@@ -51,7 +52,7 @@ class MetricsCalculator:
         avg_win = sum(win_pnls) / len(win_pnls) if win_pnls else 0
         avg_loss = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0
 
-        wr = len(tp_hits) / len(completed) if completed else 0
+        wr = len(wins) / len(completed) if completed else 0
 
         dd, dd_pct = self.max_drawdown(completed, initial_capital)
 
@@ -90,20 +91,18 @@ class MetricsCalculator:
         """Calculate metrics for a subset of trades."""
         if not trades:
             return Metrics()
-        tp_hits = [t for t in trades if t.exit_reason == ExitReason.TP]
-        non_tp = [t for t in trades if t.exit_reason != ExitReason.TP]
         wins = [t for t in trades if t.pnl > 0]
         losses = [t for t in trades if t.pnl <= 0]
         win_pnls = [t.pnl for t in wins]
         loss_pnls = [t.pnl for t in losses]
         avg_w = sum(win_pnls) / len(win_pnls) if win_pnls else 0
         avg_l = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0
-        wr = len(tp_hits) / len(trades)
+        wr = len(wins) / len(trades) if trades else 0
         dd, dd_pct = self.max_drawdown(trades, initial_capital)
         return Metrics(
             total_trades=len(trades),
-            wins=len(tp_hits),
-            losses=len(non_tp),
+            wins=len(wins),
+            losses=len(losses),
             win_rate=wr,
             avg_win=avg_w,
             avg_loss=avg_l,
@@ -117,11 +116,12 @@ class MetricsCalculator:
 
     @staticmethod
     def win_rate(trades: List[Trade]) -> float:
+        """Win rate based on PnL > 0 (TP + profitable trail-SL both count)."""
         completed = [t for t in trades if t.pnl is not None]
         if not completed:
             return 0.0
-        tp_hits = sum(1 for t in completed if t.exit_reason == ExitReason.TP)
-        return tp_hits / len(completed)
+        wins = sum(1 for t in completed if t.pnl > 0)
+        return wins / len(completed)
 
     @staticmethod
     def expectancy(trades: List[Trade]) -> float:

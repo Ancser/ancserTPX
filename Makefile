@@ -1,5 +1,5 @@
 install:
-	@bash install.sh
+	@bash install-Mac.command
 
 start:
-	@bash start.sh
+	@bash start-Mac.command

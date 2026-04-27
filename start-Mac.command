@@ -13,7 +13,7 @@ if command -v python3 &>/dev/null; then
 elif command -v python &>/dev/null; then
     PY=python
 else
-    echo "  [ERROR] Python not found! Run install.sh first."
+    echo "  [ERROR] Python not found! Run install-Mac.command first."
     exit 1
 fi
 

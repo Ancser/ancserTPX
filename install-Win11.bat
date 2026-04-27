@@ -64,7 +64,7 @@ if exist "%PY_INSTALL_DIR%\python.exe" (
 
 echo.
 echo  [ERROR] Python install ran but python.exe not found at expected path.
-echo  Please open a NEW cmd window and run install.bat again.
+echo  Please open a NEW cmd window and run install-Win11.bat again.
 pause
 exit /b 1
 
@@ -117,7 +117,7 @@ if exist ".env" (
 echo.
 echo  ========================================
 echo   Setup complete!
-echo   Run start.bat to launch ancserTPX
+echo   Run start-Win11.bat to launch ancserTPX
 echo  ========================================
 echo.
 pause

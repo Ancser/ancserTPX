@@ -177,7 +177,7 @@ async def main():
 下一步:
   1. 把上面顯示的 Account ID 填入 .env
   2. 把正確的 Contract ID 填入 .env
-  3. 跑 start.bat 啟動網頁
+  3. 跑 start-Win11.bat 啟動網頁
   4. 在網頁上執行回測
 """)
 

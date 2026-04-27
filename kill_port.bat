@@ -1,6 +1,6 @@
 @echo off
 :: Kill all processes listening on port 8001
-:: Called by start.bat, can also be run standalone
+:: Called by start-Win11.bat, can also be run standalone
 
 echo  Killing processes on port 8001...
 
