@@ -1,11 +1,22 @@
 # ============================================================
 # 文件: backend/backtest/engine.py
-# 狀態: v3.0 — Session-based zone + SessionTrendFollow only
-# 變更:
-#   - Removed ConsolidationDetector, ReversionStrategy, TrendFollowStrategy
-#   - Removed run_with_replay()
-#   - Uses SessionZoneDetector + SessionTrendFollow only
-#   - Flatten time: UTC 19:45 (PT 12:45)
+# 功能: 回測引擎 — SessionZone + SessionTrendFollow / MACD / Reversion
+# 主要職責:
+#   1. 逐根 1m K 線餵入 → Zone 偵測 → 策略 evaluate
+#   2. 掛限價單 / 市價單 → fill / SL / TP / Trail / Flatten 模擬
+#   3. PnL 計算: gross = Δ * point_value * contracts；net = gross − commission − fees
+#   4. 突破後 60 分鐘的價格路徑追蹤 (MFE/MAE in ticks, trail/SL/TP 順序)
+# 版本變更 (v0.11):
+#   - POINT_VALUE 由 contract 動態決定 (NQ=$20, MNQ=$2)
+#   - contracts 從 strategy_params.contract_size 取得 (預設 3 × MNQ)
+#   - commission/fees 由 BacktestConfig.commission_rt / fees_rt 取得
+#     (routes 會根據 contract_id 帶入正確費率 — MNQ ≈ $1.20/口, NQ ≈ $3.80/口)
+#   - 新增 post-breakout 60m 追蹤器: 把 MFE/MAE/破線順序 寫到 trade 物件
+#   - trail_enabled=False 時 _check_trailing_sl 直接 short-circuit, 讓部位跑滿 SL/TP
+# 關聯:
+#   ← backend/api/routes.py (POST /backtest/run, /ml/run)
+#   → backend/strategy/consolidation.py / trend_follow.py / reversion.py / macd_strategy.py
+#   → backend/db/models.py (Trade, Metrics, get_point_value)
 # ============================================================
 """
 回測引擎 v3 — SessionTrendFollow Only
@@ -23,16 +34,24 @@ from backend.db.models import (
     Candle, Trade, TradeSignal, BacktestConfig, BacktestResult,
     Metrics, ConsolidationZone, BreakoutAnalysis, StrategyParams,
     Direction, ExitReason, StrategyType, ZoneStatus,
+    get_point_value, get_tick_size,
 )
 from backend.strategy.consolidation import SessionZoneDetector
 from backend.strategy.trend_follow import SessionTrendFollow
 
 logger = logging.getLogger(__name__)
 
+# How long after entry we keep tracking price action for the post-breakout
+# stats (MFE / MAE / trail-or-SL-then-TP path). 60 candles ≈ 1h on 1m bars.
+POST_BREAKOUT_WINDOW_MIN = 60
+# Trail SL trigger threshold — must match the live engine constant.
+TRAIL_TRIGGER_TICKS = 20
+
 
 class BacktestEngine:
     """回測引擎 v3 — Session Zone + SessionTrendFollow"""
 
+    # Default fallbacks. Real values set per-instance from contract_id below.
     POINT_VALUE = 20.0
     TICK_SIZE = 0.25
     # PT 12:45 = UTC 19:45
@@ -44,6 +63,14 @@ class BacktestEngine:
                  zone_timeline: Optional[List[dict]] = None):
         self.config = config or BacktestConfig()
         self.strategy_params = strategy_params or StrategyParams()
+
+        # Resolve contract specs once. NQ=$20, MNQ=$2; tick size 0.25 for both.
+        _cid = getattr(self.strategy_params, "contract_id", "") or "CON.F.US.MNQ.M26"
+        self.contract_id = _cid
+        self.contract_size = max(1, int(getattr(self.strategy_params, "contract_size", 1) or 1))
+        # Per-instance values shadow class defaults so multi-contract ML scans work.
+        self.POINT_VALUE = get_point_value(_cid)
+        self.TICK_SIZE = get_tick_size(_cid)
 
         # Session-based zone detector (skipped when zone_timeline is provided)
         self.detector = SessionZoneDetector(
@@ -79,6 +106,10 @@ class BacktestEngine:
         self._last_closed_trade: Optional[Trade] = None
         # Trailing SL state (forced ON — one-time trigger per position)
         self._trail_sl_triggered: bool = False
+        # Active post-breakout trackers (one per recently-entered trade).
+        # We keep tracking even after the trade exits, since the user wants to
+        # know whether price would have reached TP within 60m even if SL fired first.
+        self._breakout_trackers: List[dict] = []
 
     def run(self, candles: List[Candle]) -> BacktestResult:
         """執行回測 (1m candles)"""
@@ -117,6 +148,9 @@ class BacktestEngine:
         if candles and self._zone_timeline is None:
             self.detector.close_final_zone(candles[-1])
 
+        # Flush any 60m post-breakout windows that didn't naturally close.
+        self._finalize_breakout_trackers()
+
         from backend.backtest.metrics import MetricsCalculator
         calc = MetricsCalculator()
         metrics = calc.calculate_all(self._trades, self.config.initial_capital)
@@ -148,6 +182,7 @@ class BacktestEngine:
         self._daily_pnl = {}
         self._last_closed_trade = None
         self._trail_sl_triggered = False
+        self._breakout_trackers = []
         self._near_data_end = False   # live-edge guard flag
         self._zi = 0                  # zone timeline index
         if self._zone_timeline is None:
@@ -156,6 +191,11 @@ class BacktestEngine:
 
     def _process_candle(self, candle: Candle):
         self._equity_curve.append((candle.timestamp, self._capital))
+
+        # Advance any active 60m post-breakout trackers BEFORE we touch
+        # position state — they keep tracking even after the trade exits.
+        if self._breakout_trackers:
+            self._update_breakout_trackers(candle)
 
         # ── Zone state: either live detector or pre-computed timeline ──
         if self._zone_timeline is not None:
@@ -382,7 +422,9 @@ class BacktestEngine:
             sl_price=signal.sl_price,
             tp_price=signal.tp_price,
             zone_id=signal.zone_id,
-            contracts=1,
+            contracts=self.contract_size,
+            point_value=self.POINT_VALUE,
+            contract_id=self.contract_id,
             vol_ratio=signal.vol_ratio,
             is_big_trend=signal.is_big_trend,
             breakout_range=signal.breakout_range,
@@ -390,16 +432,158 @@ class BacktestEngine:
         )
         self._open_position = trade
         self._trail_sl_triggered = False
+
+        # Spawn a 60m post-breakout tracker. We track price action for
+        # POST_BREAKOUT_WINDOW_MIN minutes regardless of when (or whether)
+        # the trade actually exits — the user wants to know how price
+        # behaved within 1h after breakout, not just up to the exit.
+        trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 5) * self.TICK_SIZE
+        if signal.direction == Direction.BUY:
+            trail_lvl = fill_price + trail_pts
+        else:
+            trail_lvl = fill_price - trail_pts
+        self._breakout_trackers.append({
+            "trade": trade,
+            "direction": signal.direction,
+            "entry_price": fill_price,
+            "sl_price": signal.sl_price,
+            "tp_price": signal.tp_price,
+            "trail_lvl": trail_lvl,        # entry ± trail_sl_ticks×tick (where trail-SL would sit)
+            "deadline": candle.timestamp + timedelta(minutes=POST_BREAKOUT_WINDOW_MIN),
+            "max_fav_ticks": 0.0,
+            "max_adv_ticks": 0.0,
+            "ever_hit_trail": False,
+            "ever_hit_sl": False,
+            "ever_hit_tp": False,
+            "first_event": None,            # one of "trail" / "sl" / "tp" / None
+        })
+
         logger.debug(
             f"入場: {trade.strategy.value} {trade.direction.value} "
             f"@ {fill_price:.2f} | SL={trade.sl_price:.2f} TP={trade.tp_price:.2f}"
         )
 
+    def _update_breakout_trackers(self, candle: Candle):
+        """Advance each active post-breakout tracker with this candle's range.
+
+        Updates MFE/MAE and detects which level (trail / sl / tp) is crossed
+        first. When a candle straddles multiple levels, the open-distance
+        heuristic (open closer to high vs low) decides which extreme came
+        first — same heuristic _check_exit uses for SL/TP ambiguity.
+        """
+        if not self._breakout_trackers:
+            return
+
+        keep: List[dict] = []
+        for tr in self._breakout_trackers:
+            # The entry candle itself is the "breakout" candle — start tracking
+            # from the NEXT candle. Skip if candle.timestamp == entry_time.
+            if candle.timestamp <= tr["trade"].entry_time:
+                keep.append(tr)
+                continue
+
+            # Window expired → finalize and write back to the trade.
+            if candle.timestamp >= tr["deadline"]:
+                t = tr["trade"]
+                t.post_breakout_max_favorable_ticks = round(tr["max_fav_ticks"], 2)
+                t.post_breakout_max_adverse_ticks   = round(tr["max_adv_ticks"], 2)
+                t.post_breakout_reached_tp          = bool(tr["ever_hit_tp"])
+                t.post_breakout_broke_trail_first   = (tr["first_event"] == "trail")
+                t.post_breakout_broke_sl_first      = (tr["first_event"] == "sl")
+                continue  # do not re-add — tracker is done
+
+            entry = tr["entry_price"]
+            direction = tr["direction"]
+
+            # MFE / MAE in ticks for this candle's range.
+            if direction == Direction.BUY:
+                fav = (candle.high - entry) / self.TICK_SIZE
+                adv = (entry - candle.low) / self.TICK_SIZE
+            else:
+                fav = (entry - candle.low) / self.TICK_SIZE
+                adv = (candle.high - entry) / self.TICK_SIZE
+            if fav > tr["max_fav_ticks"]:
+                tr["max_fav_ticks"] = fav
+            if adv > tr["max_adv_ticks"]:
+                tr["max_adv_ticks"] = adv
+
+            # Detect level crossings during this candle.
+            sl_p = tr["sl_price"]
+            tp_p = tr["tp_price"]
+            trail_p = tr["trail_lvl"]
+            if direction == Direction.BUY:
+                hit_sl = candle.low <= sl_p
+                hit_tp = candle.high >= tp_p
+                hit_trail = candle.low <= trail_p   # adverse retrace through trail-SL level
+                # Heuristic: if open is closer to high, low likely came first (adverse first).
+                open_to_high = candle.high - candle.open
+                open_to_low  = candle.open - candle.low
+                adverse_first = open_to_high <= open_to_low
+            else:
+                hit_sl = candle.high >= sl_p
+                hit_tp = candle.low <= tp_p
+                hit_trail = candle.high >= trail_p
+                open_to_high = candle.high - candle.open
+                open_to_low  = candle.open - candle.low
+                adverse_first = open_to_low <= open_to_high
+
+            if hit_sl:
+                tr["ever_hit_sl"] = True
+            if hit_tp:
+                tr["ever_hit_tp"] = True
+            if hit_trail:
+                tr["ever_hit_trail"] = True
+
+            if tr["first_event"] is None:
+                # Order events within this candle. SL is more adverse than trail
+                # (trail sits between entry and SL), so SL implies trail too.
+                # If only one event fires, that's the first event. If multiple
+                # fire on this candle, use adverse_first to decide whether
+                # adverse (sl/trail) or favorable (tp) came first.
+                events_adverse = []
+                if hit_sl:
+                    events_adverse.append("sl")
+                elif hit_trail:
+                    events_adverse.append("trail")
+                events_fav = ["tp"] if hit_tp else []
+
+                if events_adverse and events_fav:
+                    tr["first_event"] = events_adverse[0] if adverse_first else events_fav[0]
+                elif events_adverse:
+                    tr["first_event"] = events_adverse[0]
+                elif events_fav:
+                    tr["first_event"] = events_fav[0]
+
+            keep.append(tr)
+
+        self._breakout_trackers = keep
+
+    def _finalize_breakout_trackers(self):
+        """End-of-backtest: flush any trackers whose 60m window did not close
+        because the data ran out. Whatever stats we accumulated still go on
+        the trade — partial windows are better than no signal at all."""
+        for tr in self._breakout_trackers:
+            t = tr["trade"]
+            t.post_breakout_max_favorable_ticks = round(tr["max_fav_ticks"], 2)
+            t.post_breakout_max_adverse_ticks   = round(tr["max_adv_ticks"], 2)
+            t.post_breakout_reached_tp          = bool(tr["ever_hit_tp"])
+            t.post_breakout_broke_trail_first   = (tr["first_event"] == "trail")
+            t.post_breakout_broke_sl_first      = (tr["first_event"] == "sl")
+        self._breakout_trackers = []
+
     def _check_trailing_sl(self, candle: Candle):
-        """Trailing SL (forced ON): if price moves ≥ 20 ticks from entry, move SL to entry ± trail_sl_ticks.
+        """Trailing SL (opt-in via strategy_params.trail_enabled, default ON):
+        if price moves ≥ 20 ticks from entry, move SL to entry ± trail_sl_ticks.
         trail_sl_ticks=5 (default) → new SL = entry ± 5 ticks locked profit.
         Tick-based trigger is contract-agnostic. One-time trigger per position.
+
+        Disabling lets the trade run all the way to TP or full SL — useful when
+        post-breakout stats show many trades dipping back through the trail
+        level before reaching TP (a high TP↶TRAIL count means trail is
+        cutting off would-be winners).
         """
+        if not getattr(self.strategy_params, 'trail_enabled', True):
+            return
         if self._trail_sl_triggered:
             return
         pos = self._open_position
@@ -441,10 +625,13 @@ class BacktestEngine:
             else:
                 exit_price += slippage
 
+        # Use the per-trade point_value (set on entry) so multi-contract
+        # backtests with different specs (e.g. NQ vs MNQ) PnL correctly.
+        pt_val = getattr(pos, "point_value", self.POINT_VALUE) or self.POINT_VALUE
         if pos.direction == Direction.BUY:
-            gross_pnl = (exit_price - pos.entry_price) * self.POINT_VALUE * pos.contracts
+            gross_pnl = (exit_price - pos.entry_price) * pt_val * pos.contracts
         else:
-            gross_pnl = (pos.entry_price - exit_price) * self.POINT_VALUE * pos.contracts
+            gross_pnl = (pos.entry_price - exit_price) * pt_val * pos.contracts
 
         # Deduct round-turn commission + exchange/regulatory fees per contract
         commission = self.config.commission_rt * pos.contracts

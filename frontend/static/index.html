@@ -926,7 +926,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.10.3
+        0.11.0
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -952,8 +952,16 @@
                     <input type="password" id="apikey" placeholder="your_api_key">
                 </div>
                 <div class="form-group">
+                    <label>CONTRACT</label>
+                    <select id="contract-preset" onchange="onContractPresetChange()">
+                        <option value="CON.F.US.MNQ.M26" selected>MNQ (Micro NQ — $2/pt)</option>
+                        <option value="CON.F.US.ENQ.M26">NQ (Mini NQ — $20/pt)</option>
+                        <option value="">CUSTOM…</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label>CONTRACT ID</label>
-                    <input type="text" id="contract-id" placeholder="auto-detect NQ">
+                    <input type="text" id="contract-id" placeholder="auto-detect" value="CON.F.US.MNQ.M26">
                 </div>
                 <div class="form-row">
                     <div class="form-group">
@@ -1011,6 +1019,19 @@
                     <option value="reversion" disabled>REVERSION</option>
                 </select>
             </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:2;">
+                    <label>CONTRACT</label>
+                    <select id="contract-bt">
+                        <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
+                        <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>SIZE</label>
+                    <input type="number" id="size-bt" min="1" max="50" step="1" value="3">
+                </div>
+            </div>
             <div class="form-group">
                 <label>SL <span id="sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
                 <input type="range" id="sl-ticks-bt" min="5" max="200" step="5" value="50"
@@ -1021,9 +1042,14 @@
                 <input type="range" id="tp-ticks-bt" min="5" max="200" step="5" value="150"
                     oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value">
             </div>
-            <!-- Trail SL (forced ON) — configurable new SL position -->
+            <!-- Trail SL — checkbox toggles whole mechanism, slider sets locked offset -->
             <div class="form-group">
-                <label>TRAIL SL <span id="trail-sl-ticks-bt-val" style="color:var(--accent)">5</span> TICKS</label>
+                <label style="display:flex;align-items:center;gap:6px;">
+                    <input type="checkbox" id="trail-enabled-bt" checked
+                        style="margin:0;cursor:pointer;"
+                        onchange="onTrailToggle('bt')">
+                    TRAIL SL <span id="trail-sl-ticks-bt-val" style="color:var(--accent)">5</span> TICKS
+                </label>
                 <input type="range" id="trail-sl-ticks-bt" min="5" max="200" step="5" value="5"
                     oninput="document.getElementById('trail-sl-ticks-bt-val').textContent=this.value">
             </div>
@@ -1081,6 +1107,19 @@
                         <option value="reversion" disabled>REVERSION</option>
                     </select>
                 </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;">
+                        <label>CONTRACT</label>
+                        <select id="contract-live">
+                            <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
+                            <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>SIZE</label>
+                        <input type="number" id="size-live" min="1" max="50" step="1" value="3">
+                    </div>
+                </div>
                 <div class="form-group">
                     <label>SL <span id="sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
                     <input type="range" id="sl-ticks-live" min="5" max="200" step="5" value="50"
@@ -1091,9 +1130,14 @@
                     <input type="range" id="tp-ticks-live" min="5" max="200" step="5" value="150"
                         oninput="document.getElementById('tp-ticks-live-val').textContent=this.value">
                 </div>
-                <!-- Trail SL (forced ON) — configurable new SL position -->
+                <!-- Trail SL — checkbox toggles whole mechanism, slider sets locked offset -->
                 <div class="form-group">
-                    <label>TRAIL SL <span id="trail-sl-ticks-live-val" style="color:var(--accent)">5</span> TICKS</label>
+                    <label style="display:flex;align-items:center;gap:6px;">
+                        <input type="checkbox" id="trail-enabled-live" checked
+                            style="margin:0;cursor:pointer;"
+                            onchange="onTrailToggle('live')">
+                        TRAIL SL <span id="trail-sl-ticks-live-val" style="color:var(--accent)">5</span> TICKS
+                    </label>
                     <input type="range" id="trail-sl-ticks-live" min="5" max="200" step="5" value="5"
                         oninput="document.getElementById('trail-sl-ticks-live-val').textContent=this.value">
                 </div>
@@ -1344,18 +1388,27 @@ const DEFAULT_STRATEGY_PARAMS = {
     tp_ticks: 150,
     sl_ticks: 50,
     trail_sl_ticks: 5,
+    trail_enabled: true,
     candle_seconds: 60,
+    contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
+    contract_size: 3,
 };
 
 function collectStrategyParams(mode) {
     const _int = (id) => { const el = document.getElementById(id); return el ? parseInt(el.value) || 0 : 0; };
     const _val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+    const _chk = (id) => { const el = document.getElementById(id); return el ? !!el.checked : true; };
+    const cidEl = document.getElementById('contract-' + mode);
+    const sizeEl = document.getElementById('size-' + mode);
     return {
         strategy: _val('strategy-' + mode),
         tp_ticks: _int('tp-ticks-' + mode),
         sl_ticks: _int('sl-ticks-' + mode),
         trail_sl_ticks: _int('trail-sl-ticks-' + mode) || 5,
+        trail_enabled: _chk('trail-enabled-' + mode),
         candle_seconds: 60,   // 1m bars platform-wide
+        contract_id: (cidEl && cidEl.value) || DEFAULT_STRATEGY_PARAMS.contract_id,
+        contract_size: Math.max(1, sizeEl ? parseInt(sizeEl.value) || 1 : 3),
     };
 }
 
@@ -1369,10 +1422,56 @@ function applyStrategyParams(mode, params) {
     _setVal('tp-ticks-' + mode + '-val', p.tp_ticks);
     _set('sl-ticks-' + mode, p.sl_ticks);
     _setVal('sl-ticks-' + mode + '-val', p.sl_ticks);
-    // Trail SL slider + display value
+    // Trail SL slider + display value + enable checkbox
     const tst = p.trail_sl_ticks != null ? p.trail_sl_ticks : 5;
     _set('trail-sl-ticks-' + mode, tst);
     _setVal('trail-sl-ticks-' + mode + '-val', tst);
+    const trailChk = document.getElementById('trail-enabled-' + mode);
+    if (trailChk) {
+        trailChk.checked = (p.trail_enabled !== false);  // default true for v0.10 presets
+        onTrailToggle(mode);
+    }
+    // Contract & size — fall back to defaults when preset is older than v0.11.
+    const cidEl = document.getElementById('contract-' + mode);
+    if (cidEl) {
+        const wanted = p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id;
+        // If the preset's contract isn't in the dropdown, append it so we don't silently lose the value.
+        if (!Array.from(cidEl.options).some(o => o.value === wanted)) {
+            const opt = document.createElement('option');
+            opt.value = wanted; opt.textContent = wanted;
+            cidEl.appendChild(opt);
+        }
+        cidEl.value = wanted;
+    }
+    const sizeEl = document.getElementById('size-' + mode);
+    if (sizeEl) sizeEl.value = (p.contract_size != null ? p.contract_size : 3);
+}
+
+// CONTRACT preset dropdown in the connect panel — fills the contract-id text input.
+function onContractPresetChange() {
+    const sel = document.getElementById('contract-preset');
+    const inp = document.getElementById('contract-id');
+    if (!sel || !inp) return;
+    if (sel.value) inp.value = sel.value;
+    inp.focus();
+}
+
+// Trail-SL master toggle — greys out the slider + label when unchecked so the
+// user can see at a glance that trailing-SL is OFF for this run.
+function onTrailToggle(mode) {
+    const chk = document.getElementById('trail-enabled-' + mode);
+    const slider = document.getElementById('trail-sl-ticks-' + mode);
+    const valSpan = document.getElementById('trail-sl-ticks-' + mode + '-val');
+    if (!chk) return;
+    const enabled = !!chk.checked;
+    if (slider) {
+        slider.disabled = !enabled;
+        slider.style.opacity = enabled ? '1' : '0.4';
+    }
+    if (valSpan) {
+        valSpan.style.opacity = enabled ? '1' : '0.4';
+        valSpan.style.textDecoration = enabled ? 'none' : 'line-through';
+    }
 }
 
 
@@ -1797,10 +1896,11 @@ async function goLive() {
     document.getElementById('btn-flatten').disabled = false;
 
     // ── Call /live/start to start the live trading engine ──
+    // stratParams now carries contract_id + contract_size (v0.11), so the
+    // /live/start request reflects whatever the user picked in LIVE PARAMS.
     const stratParams = collectStrategyParams('live');
     const liveParams = {
         account_id: liveAccount.id,
-        contract_id: liveAccount.contract_id || 'CON.F.US.ENQ.M26',
         value_area_pct: 0.80,
         ...stratParams,
     };
@@ -4225,6 +4325,36 @@ function renderMetrics(m, backtestTrades) {
                  paren(liveStats ? liveStats.maxDayPct.toFixed(1) + '%' : ''),
           cls: passCls(maxDayPassFinal) },
     ];
+
+    // ── 60-min post-breakout stats (v0.11) ──
+    // For each completed trade, the engine tracks the 60 minutes after entry:
+    // max favorable/adverse ticks, and which level (trail / SL / TP) was first
+    // crossed. These cards summarise that window across the run.
+    const pbN     = m.post_breakout_sample_size || 0;
+    const pbFav   = m.post_breakout_avg_max_fav_ticks;
+    const pbAdv   = m.post_breakout_avg_max_adv_ticks;
+    const pbClean = m.post_breakout_tp_clean || 0;
+    const pbTrail = m.post_breakout_tp_after_trail || 0;
+    const pbSl    = m.post_breakout_tp_after_sl || 0;
+    if (pbN > 0) {
+        items.push(
+            { label: 'POST60 AVG +TICKS',
+              value: (pbFav != null ? pbFav.toFixed(1) : '--') + ' (' + pbN + ')',
+              cls: 'pos' },
+            { label: 'POST60 AVG -TICKS',
+              value: (pbAdv != null ? pbAdv.toFixed(1) : '--') + ' (' + pbN + ')',
+              cls: 'neg' },
+            { label: 'TP CLEAN',
+              value: pbClean + '',
+              cls: 'pos' },
+            { label: 'TP↶TRAIL',
+              value: pbTrail + '',
+              cls: '' },
+            { label: 'TP↶SL',
+              value: pbSl + '',
+              cls: 'neg' },
+        );
+    }
 
     grid.innerHTML = items.map(i => `
         <div class="metric-card">

@@ -1,20 +1,25 @@
 # ============================================================
 # 文件: backend/db/models.py
-# 狀態: 已完成
-# 問題: 無
-# 關聯文件: ← 幾乎所有後端文件依賴此文件
-# 函數結構:
-#   - Candle(dataclass)         : 單根 K 線數據
-#   - VolumeProfileResult(dc)   : VP 計算結果 (POC/VAH/VAL)
-#   - ConsolidationZone(dc)     : 盤整區間完整定義
-#   - TradeSignal(dc)           : 策略發出的交易信號
-#   - Trade(dc)                 : 已成交交易紀錄
-#   - BreakoutAnalysis(dc)      : 突破成交量分析
-#   - BacktestConfig(dc)        : 回測參數配置
-#   - BacktestResult(dc)        : 回測完整結果
-#   - Metrics(dc)               : 績效指標集合
-#   - RiskStatus(dc)            : 風控狀態快照
-#   - OrderRequest/Response(dc) : TopstepX 訂單格式
+# 功能: 共用的資料結構 (dataclasses) 定義 — 全後端共用的型別契約
+# 主要職責:
+#   1. 市場資料: Candle / VolumeProfileResult
+#   2. 策略狀態: ConsolidationZone / TradeSignal / Trade / BreakoutAnalysis
+#   3. 配置/結果: StrategyParams / BacktestConfig / BacktestResult / Metrics
+#   4. 風控: RiskStatus / RiskCheckResult
+#   5. Broker DTO: OrderRequest / OrderResponse / AccountInfo
+# 重要欄位:
+#   - StrategyParams.contract_id  : 預設合約代碼 (如 CON.F.US.MNQ.M26)
+#   - StrategyParams.contract_size: 下單口數 (1..N)
+#   - StrategyParams.trail_enabled: trail SL 主開關 (v0.11+)
+#   - Trade.contracts             : 此筆交易實際使用的口數
+#   - Trade.point_value           : 此合約每點美元值 (NQ=$20, MNQ=$2)
+#   - Metrics.post_breakout_*     : 突破確認後 60 分鐘的 MFE/MAE/路徑統計
+# 合約規格 (_CONTRACT_SPECS):
+#   - point_value, tick_size, commission_rt, fees_rt (per-contract round-turn)
+#   - 由 get_point_value / get_tick_size / get_commission_rt / get_fees_rt 取用
+# 關聯:
+#   ← backend/api/routes.py / backtest/engine.py / live/engine.py / strategy/* / broker/*
+# 狀態: 已完成 (v0.11 加入 contract_id / size / fees / trail_enabled / post-breakout stats)
 # ============================================================
 
 from __future__ import annotations
@@ -243,10 +248,18 @@ class Trade:
     exit_reason: Optional[ExitReason] = None
     zone_id: str = ""
     contracts: int = 1
+    point_value: float = 20.0          # NQ=$20, MNQ=$2 (per single contract)
+    contract_id: str = ""              # which TopstepX contract was used
     vol_ratio: Optional[float] = None
     is_big_trend: bool = False
     breakout_range: Optional[float] = None  # for TP timeout recalc
     macd_hist: Optional[float] = None       # MACD histogram value at entry
+    # Post-breakout 60-minute path tracking (filled by backtest engine after exit)
+    post_breakout_max_favorable_ticks: Optional[float] = None
+    post_breakout_max_adverse_ticks: Optional[float] = None
+    post_breakout_broke_trail_first: Optional[bool] = None
+    post_breakout_broke_sl_first: Optional[bool] = None
+    post_breakout_reached_tp: Optional[bool] = None
 
     @property
     def is_open(self) -> bool:
@@ -295,9 +308,13 @@ class StrategyParams:
     tp_ticks: int = 150                  # 5-200 tick
     sl_ticks: int = 50                   # 5-200 tick
     trail_sl_ticks: int = 5             # 5-200 tick — new SL offset from entry after trail triggers
+    trail_enabled: bool = True          # v0.11+: master switch for trailing-SL mechanism
     # MACD params (hardcoded 12/26/9 — not user-configurable)
     # Candle interval (seconds)
     candle_seconds: int = 30             # 30 for live 30s bars; 60 for 1m backtest
+    # Contract & sizing (v0.11+) — preferred default 3 × Micro NQ
+    contract_id: str = "CON.F.US.MNQ.M26"  # full contractId (NQ=ENQ, MNQ=MNQ)
+    contract_size: int = 3                 # number of contracts per order (1..N)
     # --- Removed (hardcoded internally) ---
     # entry_mode: always "100RE" (VAH/VAL entry)
     # entry_timeout_minutes: hardcoded 10 min inside strategy
@@ -356,6 +373,13 @@ class Metrics:
     max_consecutive_losses: int = 0
     total_pnl: float = 0.0
     daily_pnl: Dict[str, float] = field(default_factory=dict)
+    # Post-breakout 1-hour path statistics (averaged across all confirmed-breakout trades)
+    post_breakout_sample_size: int = 0          # how many trades produced these stats
+    post_breakout_avg_max_fav_ticks: float = 0.0  # avg MFE in ticks within 60m
+    post_breakout_avg_max_adv_ticks: float = 0.0  # avg MAE in ticks within 60m
+    post_breakout_tp_clean: int = 0             # trades that hit TP without ever touching trail level
+    post_breakout_tp_after_trail: int = 0       # hit TP but first crossed trail-trigger
+    post_breakout_tp_after_sl: int = 0          # hit TP but first crossed SL price
     # 按策略分類
     reversion_metrics: Optional[Metrics] = None
     trend_follow_metrics: Optional[Metrics] = None
@@ -415,3 +439,65 @@ class AccountInfo:
     open_pnl: float
     closed_pnl: float
     daily_pnl: float
+
+
+# ── Contract metadata helpers ────────────────────────────────
+
+# Per-contract specs. Mini NQ ($20/pt) vs Micro NQ ($2/pt). Tick size 0.25 for both.
+# commission_rt / fees_rt are TopstepX round-turn costs PER CONTRACT — applied as
+# `rt_cost * pos.contracts` in the backtest engine. Using the wrong rate is what
+# made 10×MNQ look 75% worse than 1×NQ in v0.11.
+_CONTRACT_SPECS = {
+    "ENQ": {"point_value": 20.0, "tick_size": 0.25, "label": "NQ (Mini)",
+            "commission_rt": 1.00, "fees_rt": 2.80},   # NQ Mini RT ≈ $3.80
+    "NQ":  {"point_value": 20.0, "tick_size": 0.25, "label": "NQ (Mini)",
+            "commission_rt": 1.00, "fees_rt": 2.80},
+    "MNQ": {"point_value": 2.0,  "tick_size": 0.25, "label": "MNQ (Micro)",
+            "commission_rt": 0.74, "fees_rt": 0.46},   # MNQ Micro RT ≈ $1.20
+}
+
+
+def _extract_symbol(contract_id: str) -> str:
+    """Pull the symbol token out of a contract id like 'CON.F.US.MNQ.M26' → 'MNQ'."""
+    if not contract_id:
+        return "ENQ"
+    parts = contract_id.split(".")
+    # Standard ProjectX form: CON.F.US.<SYMBOL>.<EXPIRY>
+    if len(parts) >= 4:
+        return parts[3].upper()
+    return contract_id.upper()
+
+
+def get_point_value(contract_id: str) -> float:
+    """Return the per-contract dollar value of one point. NQ=$20, MNQ=$2."""
+    sym = _extract_symbol(contract_id)
+    spec = _CONTRACT_SPECS.get(sym)
+    return float(spec["point_value"]) if spec else 20.0
+
+
+def get_tick_size(contract_id: str) -> float:
+    """Return the contract tick size (default 0.25)."""
+    sym = _extract_symbol(contract_id)
+    spec = _CONTRACT_SPECS.get(sym)
+    return float(spec["tick_size"]) if spec else 0.25
+
+
+def get_contract_label(contract_id: str) -> str:
+    """Return a human-friendly label for a contract id."""
+    sym = _extract_symbol(contract_id)
+    spec = _CONTRACT_SPECS.get(sym)
+    return spec["label"] if spec else sym
+
+
+def get_commission_rt(contract_id: str) -> float:
+    """Per-contract round-turn commission. NQ ≈ $1.00, MNQ ≈ $0.74."""
+    sym = _extract_symbol(contract_id)
+    spec = _CONTRACT_SPECS.get(sym)
+    return float(spec["commission_rt"]) if spec else 1.00
+
+
+def get_fees_rt(contract_id: str) -> float:
+    """Per-contract round-turn exchange/regulatory fees. NQ ≈ $2.80, MNQ ≈ $0.46."""
+    sym = _extract_symbol(contract_id)
+    spec = _CONTRACT_SPECS.get(sym)
+    return float(spec["fees_rt"]) if spec else 2.80

@@ -1,20 +1,17 @@
 # ============================================================
 # 文件: backend/backtest/metrics.py
-# 狀態: 已完成
-# 問題: 無
-# 關聯文件:
-#   ← backend/backtest/engine.py  (回測完成後調用)
-#   ← backend/api/routes.py       (API 查詢績效)
-#   → backend/db/models.py        (Trade, Metrics)
-# 函數結構:
-#   - MetricsCalculator.calculate_all(trades, capital) -> Metrics
-#   - MetricsCalculator.win_rate(trades) -> float
-#   - MetricsCalculator.expectancy(trades) -> float
-#   - MetricsCalculator.max_drawdown(trades, capital) -> (float, float)
-#   - MetricsCalculator.sharpe_ratio(trades) -> float
-#   - MetricsCalculator.profit_factor(trades) -> float
-#   - MetricsCalculator.max_consecutive_losses(trades) -> int
-#   - MetricsCalculator.daily_pnl_summary(trades) -> dict
+# 功能: 績效指標計算 — 把成交 Trade 列表彙總成 Metrics dataclass
+# 主要 API:
+#   - calculate_all(trades, capital) → Metrics
+#   - 子方法: win_rate / expectancy / max_drawdown / calmar_ratio /
+#             profit_factor / max_consecutive_losses / daily_pnl_summary
+# 版本變更 (v0.11):
+#   - 新增 _aggregate_post_breakout: 彙總 60 分鐘 MFE/MAE/路徑統計
+#   - 把這些欄位填入 Metrics.post_breakout_* (供前端顯示)
+# 勝率定義: pnl > 0 即為 win — TP 與賺錢的 trail-SL 都算勝
+# 關聯:
+#   ← backend/backtest/engine.py
+#   → backend/db/models.py (Trade, Metrics)
 # ============================================================
 """
 績效指標計算模組
@@ -74,6 +71,8 @@ class MetricsCalculator:
             total_pnl=total_pnl,
             daily_pnl=self.daily_pnl_summary(completed),
         )
+
+        self._aggregate_post_breakout(completed, metrics)
 
         # ── Per-strategy breakdown ──
         # Reversion / Trend Follow
@@ -205,3 +204,43 @@ class MetricsCalculator:
                 date_str = t.exit_time.strftime("%Y-%m-%d")
                 daily[date_str] = daily.get(date_str, 0) + t.pnl
         return daily
+
+    @staticmethod
+    def _aggregate_post_breakout(trades: List[Trade], metrics: Metrics) -> None:
+        """Aggregate the per-trade 60m post-breakout fields onto Metrics.
+
+        Buckets only count trades whose post-breakout window populated a value
+        (post_breakout_max_favorable_ticks is not None). Trades that never had
+        a tracker (e.g. pre-v0.11 cached results) are skipped silently.
+
+        TP-clean   : reached TP within 60m, did NOT first cross trail or SL
+        TP-trail   : reached TP within 60m, but first crossed the trail level
+        TP-SL      : reached TP within 60m, but first crossed the SL level
+        """
+        sample = [t for t in trades if t.post_breakout_max_favorable_ticks is not None]
+        if not sample:
+            return
+
+        fav_total = sum(t.post_breakout_max_favorable_ticks or 0 for t in sample)
+        adv_total = sum(t.post_breakout_max_adverse_ticks or 0 for t in sample)
+        n = len(sample)
+
+        tp_clean = 0
+        tp_after_trail = 0
+        tp_after_sl = 0
+        for t in sample:
+            if not t.post_breakout_reached_tp:
+                continue
+            if t.post_breakout_broke_sl_first:
+                tp_after_sl += 1
+            elif t.post_breakout_broke_trail_first:
+                tp_after_trail += 1
+            else:
+                tp_clean += 1
+
+        metrics.post_breakout_sample_size      = n
+        metrics.post_breakout_avg_max_fav_ticks = round(fav_total / n, 2) if n else 0.0
+        metrics.post_breakout_avg_max_adv_ticks = round(adv_total / n, 2) if n else 0.0
+        metrics.post_breakout_tp_clean         = tp_clean
+        metrics.post_breakout_tp_after_trail   = tp_after_trail
+        metrics.post_breakout_tp_after_sl      = tp_after_sl

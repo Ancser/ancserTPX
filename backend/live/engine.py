@@ -1,20 +1,22 @@
 # ============================================================
 # 文件: backend/live/engine.py
-# 狀態: 正在修改 — 已移除 MTF, 僅保留原始模式
-# 問題:
-#   1. [BUG] 僅監控模式 (status=僅監控) 原因不明
-#   2. [BUG] 歷史 zone 來自連接時加載的數據
-#   3. [TODO] _sync_position 中 capital 追蹤邏輯可能不準
-#   4. [TODO] SL/TP order 狀態追蹤不完整
-# 關聯文件:
-#   ← backend/api/routes.py     (/live/start, /live/stop, /live/status)
-#   → backend/strategy/consolidation.py  (zone 偵測)
-#   → backend/strategy/trend_follow.py   (趨勢跟隨)
-#   → backend/strategy/reversion.py      (均值回歸)
-#   → backend/broker/topstepx.py         (API 下單)
-# ============================================================
-# 即時交易引擎 — 在 Practice 帳戶上執行策略下單
-# 僅支援原始策略 (trend_follow / reversion), 1 分鐘 K 線
+# 功能: 即時交易引擎 — Practice 帳戶上執行 SessionTrendFollow / MACD / Reversion
+# 主要職責:
+#   1. 30s 輪詢 1m K 線 → SessionZoneDetector → 策略 evaluate
+#   2. Limit / Market 入場下單；fill 後掛 Stop SL + Limit TP (bracket)
+#   3. Trail SL: UPNL ≥ 20 ticks → SL 移到 entry ± trail_sl_ticks (一次性)
+#   4. 收盤前 (12:30 PT 取消 pending / 12:45 PT flatten) 強制平倉
+#   5. _sync_position 偵測 fill / close → 寫 trade 到 _trades + data/live_exits.json
+# 版本變更 (v0.11):
+#   - 接受 contract_size 參數 — 所有 OrderRequest 都用 self.contract_size
+#   - POINT_VALUE 動態解析 (NQ=$20, MNQ=$2)
+#   - 部位平倉時把 exit_reason (TP/SL/TRAIL_SL/FLATTEN) 寫入 live_exits.json
+#     讓 routes._pair_fills_to_trades 能正確分類 (修復 trail_sl 被歸入 TP/SL bug)
+#   - strategy_params.trail_enabled=False 時 _check_trailing_sl_live 立即返回
+# 關聯:
+#   ← backend/api/routes.py
+#   → backend/strategy/consolidation.py / trend_follow.py / reversion.py / macd_strategy.py
+#   → backend/broker/topstepx.py
 # ============================================================
 """
 Live Trading Engine
@@ -35,7 +37,7 @@ from typing import Dict, List, Optional
 from backend.db.models import (
     Candle, TradeSignal, OrderRequest, OrderResponse,
     ConsolidationZone, Direction, StrategyType, ZoneStatus, BarUnit,
-    StrategyParams,
+    StrategyParams, get_point_value, get_tick_size,
 )
 from backend.strategy.consolidation import SessionZoneDetector
 from backend.strategy.trend_follow import SessionTrendFollow
@@ -44,6 +46,7 @@ from backend.broker.topstepx import TopstepXClient
 logger = logging.getLogger(__name__)
 
 ENGINE_VERSION = "v4.0-session-2026-03-29"  # Session-based overnight zone
+# Default fallbacks for legacy paths — actual values come from contract on init.
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
 
@@ -64,6 +67,7 @@ class LiveTradingEngine:
         # Strategy params (simplified — SessionTrendFollow only)
         value_area_pct: float = 0.80,
         slippage_ticks: int = 1,
+        contract_size: int = 1,
         # Engine manages SL/TP — MUST be False to protect positions
         skip_engine_sl_tp: bool = False,
         # Configurable strategy params
@@ -85,6 +89,14 @@ class LiveTradingEngine:
         self.strategies: List[str] = []
         self.slippage_ticks = slippage_ticks
         self.strategy_params = strategy_params or StrategyParams()
+        # Contract sizing — prefer the strategy_params value, fall back to ctor arg.
+        self.contract_size = max(
+            1,
+            int(getattr(self.strategy_params, "contract_size", contract_size) or contract_size or 1),
+        )
+        # Per-contract market specs (NQ=$20/pt, MNQ=$2/pt; both 0.25 tick).
+        self.point_value = get_point_value(contract_id)
+        self.tick_size = get_tick_size(contract_id)
 
         # Session-based zone detector (overnight zone with maturity)
         self.detector = SessionZoneDetector(
@@ -122,6 +134,8 @@ class LiveTradingEngine:
         self._position_just_closed: bool = False  # skip strategy eval on same tick as close
         self._position_age: int = 0              # candles since position opened (for display)
         self._trail_sl_triggered: bool = False    # trailing SL: one-time trigger per position
+        self._entry_time: Optional[datetime] = None  # when current position opened (UTC)
+        self._force_exit_reason: Optional[str] = None  # set by flatten_now / emergency close
         self._daily_pnl: float = 0.0
         self._today: str = ""
         self._capital: float = 0.0
@@ -136,6 +150,10 @@ class LiveTradingEngine:
         self._zone_file = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "data", "live_zones.json"
+        )
+        self._exits_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data", "live_exits.json"
         )
 
     @property
@@ -232,6 +250,58 @@ class LiveTradingEngine:
         except Exception as e:
             logger.warning(f"Failed to load zones: {e}")
             return False
+
+    def _persist_exit_record(
+        self,
+        exit_reason: str,
+        entry_time: Optional[datetime],
+        exit_time: datetime,
+        entry_price: Optional[float],
+        sl_price: Optional[float],
+        tp_price: Optional[float],
+        direction: Optional[str],
+        trail_triggered: bool,
+    ):
+        """Append a single exit record to data/live_exits.json so trade-history
+        can map fills (which only carry pnl) to true exit reason buckets
+        (TP / SL / TRAIL_SL / FLATTEN / MANUAL).
+
+        Best-effort: file errors are logged but never raised — losing one row
+        is preferable to crashing the engine on a disk hiccup.
+        """
+        try:
+            existing: List[dict] = []
+            if os.path.exists(self._exits_file):
+                try:
+                    with open(self._exits_file, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                        if isinstance(loaded, list):
+                            existing = loaded
+                except Exception:
+                    existing = []
+
+            existing.append({
+                "account_id": self.account_id,
+                "contract_id": self.contract_id,
+                "exit_reason": exit_reason,
+                "exit_time": exit_time.isoformat() if exit_time else None,
+                "entry_time": entry_time.isoformat() if entry_time else None,
+                "entry_price": entry_price,
+                "sl_price": sl_price,
+                "tp_price": tp_price,
+                "direction": direction,
+                "trail_triggered": trail_triggered,
+                "size": self.contract_size,
+            })
+            # Keep file bounded — last 5k rows is far more than any practice run will produce.
+            if len(existing) > 5000:
+                existing = existing[-5000:]
+
+            os.makedirs(os.path.dirname(self._exits_file), exist_ok=True)
+            with open(self._exits_file, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to persist exit record: {e}")
 
     def get_status(self) -> Dict:
         """Return current engine state for frontend."""
@@ -459,6 +529,13 @@ class LiveTradingEngine:
         """Place a market order to close position when SL/TP placement fails.
         Called when Stop order is rejected (price already past SL level).
         """
+        # Treat reject-on-SL as an SL exit (price already past SL level).
+        # If trail had triggered, the heuristic in _sync_position promotes to trail_sl.
+        if reason in ("SL_REJECTED", "SL_EXCEPTION"):
+            self._force_exit_reason = "trail_sl" if self._trail_sl_triggered else "sl"
+        elif reason == "DOUBLE_FILL":
+            self._force_exit_reason = "flatten"
+
         self._log_event(f"[{reason}] 緊急 Market 平倉 side={'SELL' if side == 2 else 'BUY'}")
         try:
             mkt_order = OrderRequest(
@@ -466,7 +543,7 @@ class LiveTradingEngine:
                 contract_id=self.contract_id,
                 order_type=2,  # Market
                 side=side,
-                size=1,
+                size=self.contract_size,
             )
             resp = await self.client.place_order(mkt_order)
             if resp.success:
@@ -487,6 +564,12 @@ class LiveTradingEngine:
         stop-market and TP limit stay live on the book and can open a new,
         unintended reverse position when price later touches them.
         """
+        # Tag the resulting close so _sync_position records it correctly.
+        # If trail SL was already triggered, _sync_position will reclassify
+        # this flatten as TRAIL_SL (the position was already in profit-protect mode).
+        if self._open_position is not None or self._fill_price is not None:
+            self._force_exit_reason = "flatten"
+
         # ── Snapshot the order IDs we need to cancel BEFORE we null them ──
         sl_id = self._sl_order_id
         tp_id = self._tp_order_id
@@ -795,7 +878,7 @@ class LiveTradingEngine:
             contract_id=self.contract_id,
             order_type=1,  # Limit
             side=side,
-            size=1,
+            size=self.contract_size,
             limit_price=signal.entry_price,
         )
 
@@ -837,7 +920,7 @@ class LiveTradingEngine:
             contract_id=self.contract_id,
             order_type=2,   # Market
             side=side,
-            size=1,
+            size=self.contract_size,
         )
 
         try:
@@ -863,9 +946,12 @@ class LiveTradingEngine:
             return False
 
     async def _check_trailing_sl_live(self):
-        """Live trailing SL (forced ON): price moves ≥ 20 ticks in favour → move SL to entry ± trail_sl_ticks.
+        """Live trailing SL (opt-in via strategy_params.trail_enabled, default ON):
+        price moves ≥ 20 ticks in favour → move SL to entry ± trail_sl_ticks.
         Tick-based trigger (contract-agnostic). One-time per position.
         """
+        if not getattr(self.strategy_params, 'trail_enabled', True):
+            return
         if self._trail_sl_triggered or not self._active_signal or not self._fill_price:
             return
         sig = self._active_signal
@@ -899,7 +985,7 @@ class LiveTradingEngine:
             contract_id=self.contract_id,
             order_type=3,   # Stop
             side=sl_side,
-            size=1,
+            size=self.contract_size,
             stop_price=new_sl,
         )
         try:
@@ -1025,7 +1111,7 @@ class LiveTradingEngine:
                 contract_id=self.contract_id,
                 order_type=3,  # Internal 3 → broker converts to API type 4 (Stop)
                 side=sl_side,
-                size=1,
+                size=self.contract_size,
                 stop_price=sig.sl_price,
             )
             try:
@@ -1054,7 +1140,7 @@ class LiveTradingEngine:
                 contract_id=self.contract_id,
                 order_type=1,  # Limit
                 side=sl_side,
-                size=1,
+                size=self.contract_size,
                 limit_price=sig.tp_price,
             )
             try:
@@ -1101,7 +1187,7 @@ class LiveTradingEngine:
                 if self._fill_price and self._pending_signal:
                     entry = self._pending_signal.entry_price
                     slippage = abs(self._fill_price - entry)
-                    slippage_dollars = slippage * POINT_VALUE
+                    slippage_dollars = slippage * self.point_value * self.contract_size
                     if slippage > 5.0:
                         self._log_event(
                             f"[FILL MISMATCH] entry={entry:.2f} fill={self._fill_price:.2f} "
@@ -1142,6 +1228,8 @@ class LiveTradingEngine:
 
                 # Save signal for SL/TP retry, then clear pending state
                 self._active_signal = self._pending_signal  # keep for SL/TP reference
+                self._entry_time = datetime.utcnow()
+                self._force_exit_reason = None
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
@@ -1185,23 +1273,35 @@ class LiveTradingEngine:
                 if self._fill_price:
                     pnl_info = f" | entry_fill={self._fill_price:.2f}"
 
-                # Detect exit reason by comparing market price to SL/TP levels.
-                # If trail SL was triggered (sig.sl_price was updated to entry±trail_pts),
-                # an SL-side hit is a TRAIL SL exit, not a regular SL.
+                # Exit reason resolution order:
+                #   1. Force-exit flag set by flatten_now / emergency close
+                #   2. Heuristic: closer of SL/TP to last market price wins,
+                #      with SL-side hits reclassified as trail_sl when the
+                #      trail trigger fired earlier in this position.
                 exit_reason = "unknown"
-                if self._active_signal and self._last_market_price:
+                forced = self._force_exit_reason
+                if forced:
+                    if forced == "flatten" and self._trail_sl_triggered:
+                        exit_reason = "trail_sl"
+                    else:
+                        exit_reason = forced
+                elif self._active_signal and self._last_market_price:
                     sl_p = self._active_signal.sl_price
                     tp_p = self._active_signal.tp_price
                     mkt = self._last_market_price
-                    # Whichever level is closer to current market price is the one that hit
                     if abs(mkt - sl_p) < abs(mkt - tp_p):
                         exit_reason = "trail_sl" if self._trail_sl_triggered else "sl"
                     else:
                         exit_reason = "tp"
                 if exit_reason == "unknown":
-                    exit_reason = "tp"
+                    exit_reason = "trail_sl" if self._trail_sl_triggered else "tp"
 
                 entry_fill = self._fill_price  # save before clearing
+                exit_time_dt = datetime.utcnow()
+                # Snapshot for persistence before we clear active_signal.
+                _sig_for_log = self._active_signal
+                _entry_t = self._entry_time
+
                 self._log_event(
                     f"持倉已平 ({exit_reason.upper()} 觸發){pnl_info}"
                 )
@@ -1214,6 +1314,7 @@ class LiveTradingEngine:
                 self._tp_order_id = None
                 self._fill_price = None
                 self._active_signal = None
+                self._entry_time = None
 
                 for oid, label in [(sl_id, "SL"), (tp_id, "TP")]:
                     if oid:
@@ -1234,14 +1335,29 @@ class LiveTradingEngine:
                 self._pending_age = 0
 
                 self._trades.append({
-                    "time": datetime.utcnow().isoformat(),
+                    "time": exit_time_dt.isoformat(),
                     "type": "closed",
                     "entry_price": entry_fill,
+                    "exit_reason": exit_reason,
                 })
+
+                # Persist exit reason so /live/trade-history can bucket the
+                # matching TopstepX fill into TP / SL / TRAIL_SL correctly.
+                self._persist_exit_record(
+                    exit_reason=exit_reason,
+                    entry_time=_entry_t,
+                    exit_time=exit_time_dt,
+                    entry_price=entry_fill,
+                    sl_price=_sig_for_log.sl_price if _sig_for_log else None,
+                    tp_price=_sig_for_log.tp_price if _sig_for_log else None,
+                    direction=_sig_for_log.direction.value if _sig_for_log else None,
+                    trail_triggered=self._trail_sl_triggered,
+                )
 
                 # Notify strategy with actual exit reason
                 self.trend_follow.notify_trade_closed(exit_reason)
                 self._position_just_closed = True  # skip new entry this tick
+                self._force_exit_reason = None
 
             # Update capital (every 60s to reduce API calls)
             now_ts = time_mod.time()

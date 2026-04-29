@@ -1,29 +1,23 @@
 # ============================================================
 # 文件: backend/api/routes.py
-# 狀態: 已完成 (已檢查 1 次)
-# 問題: 無
-# 關聯文件:
-#   <- backend/main.py              (掛載路由)
-#   -> backend/backtest/engine.py    (回測)
-#   -> backend/broker/topstepx.py    (API 數據)
-#   -> backend/data/market_simulator.py (市場模擬器)
-#   -> backend/strategy/*            (策略)
-#   -> backend/db/models.py          (數據模型)
-# 函數結構:
-#   - GET  /health                   : 健康檢查
-#   - POST /backtest/run             : 執行回測
-#   - GET  /backtest/results         : 列出回測結果
-#   - POST /data/load-sample         : 載入靜態模擬數據
-#   - POST /data/fetch-historical    : 從 TopstepX 拉取歷史數據
-#   - POST /data/aggregate           : 1m->5m 聚合
-#   - POST /simulator/start          : 啟動市場模擬器
-#   - POST /simulator/stop           : 停止模擬器
-#   - POST /simulator/speed          : 變更速度
-#   - GET  /simulator/status         : 模擬器狀態
-#   - GET  /simulator/candles        : 模擬器 K 線數據
-#   - GET  /simulator/orderbook      : Order book 快照
-#   - GET  /simulator/ticks          : 最近 tick 數據
-#   - GET  /simulator/live-strategy  : 即時策略狀態 (zones, trades, metrics)
+# 功能: FastAPI REST 路由 — 連接 (config/connect)、歷史資料、回測、即時引擎、
+#       模擬器、預設參數、交易紀錄合併。所有前端呼叫都從這裡進來。
+# 主要群組:
+#   - /health, /config                       : 健康檢查 + .env 預覽
+#   - /data/{candles,fetch-historical,aggregate,detect-zones,latest-candles}
+#   - /backtest/{run,results}                : 回測執行 + 列表
+#   - /ml/{run,progress,results}             : ML grid search
+#   - /live/{start,stop,status,trade-history,...}
+#   - /simulator/{start,stop,speed,status,...}
+#   - /presets/{list,save,use,delete}        : 參數 preset
+# 版本變更 (v0.11):
+#   1. BacktestRequest / LiveStartRequest 加入 contract_id + contract_size
+#   2. _pair_fills_to_trades 動態解析 NQ/MNQ 的 point_value
+#   3. 合併 data/live_exits.json 的 exit_reason，修正 live trade 的 trail_sl 分類
+# 關聯:
+#   <- backend/main.py
+#   -> backend/backtest/engine.py / live/engine.py / broker/topstepx.py
+#   -> backend/strategy/* / db/models.py
 # ============================================================
 """
 REST API 路由
@@ -38,7 +32,11 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.db.models import BacktestConfig, BarUnit, Candle, StrategyParams
+from backend.db.models import (
+    BacktestConfig, BarUnit, Candle, StrategyParams,
+    get_point_value, get_contract_label,
+    get_commission_rt, get_fees_rt, _extract_symbol,
+)
 from backend.backtest.engine import BacktestEngine
 from backend.strategy.volume_profile import VolumeProfileCalculator
 
@@ -67,7 +65,11 @@ class BacktestRequest(BaseModel):
     tp_ticks: int = 150
     sl_ticks: int = 50
     trail_sl_ticks: int = 5
+    trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
+    # Contract & sizing (defaults to 3× Micro NQ)
+    contract_id: str = "CON.F.US.MNQ.M26"
+    contract_size: int = 3
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -150,6 +152,13 @@ class MetricsResponse(BaseModel):
     max_consecutive_losses: int
     total_pnl: float
     daily_pnl: Dict[str, float] = {}
+    # Post-breakout 60m path stats (averaged across confirmed-breakout trades)
+    post_breakout_sample_size: int = 0
+    post_breakout_avg_max_fav_ticks: float = 0.0
+    post_breakout_avg_max_adv_ticks: float = 0.0
+    post_breakout_tp_clean: int = 0
+    post_breakout_tp_after_trail: int = 0
+    post_breakout_tp_after_sl: int = 0
     # Per-strategy breakdown
     reversion: Optional[SubMetricsResponse] = None
     trend_follow: Optional[SubMetricsResponse] = None
@@ -756,9 +765,16 @@ async def run_backtest(req: BacktestRequest):
             detail="請先通過 /api/data/fetch-historical 拉取數據"
         )
 
+    # v0.11+: derive symbol + per-contract fees from the chosen contract_id so
+    # the trade journal shows /MNQ when MNQ is selected and 10×MNQ doesn't get
+    # stuck paying 10× the NQ Mini fee schedule.
+    bt_symbol = _extract_symbol(req.contract_id)
     config = BacktestConfig(
         strategies=["trend_follow"],
         initial_capital=req.initial_capital,
+        symbol=bt_symbol,
+        commission_rt=get_commission_rt(req.contract_id),
+        fees_rt=get_fees_rt(req.contract_id),
     )
 
     strategy_params = StrategyParams(
@@ -766,7 +782,10 @@ async def run_backtest(req: BacktestRequest):
         tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
         trail_sl_ticks=req.trail_sl_ticks,
+        trail_enabled=bool(req.trail_enabled),
         candle_seconds=req.candle_seconds,
+        contract_id=req.contract_id,
+        contract_size=max(1, int(req.contract_size or 1)),
     )
 
     engine = BacktestEngine(
@@ -874,6 +893,12 @@ async def run_backtest(req: BacktestRequest):
         max_consecutive_losses=m.max_consecutive_losses,
         total_pnl=m.total_pnl,
         daily_pnl=m.daily_pnl or {},
+        post_breakout_sample_size=getattr(m, "post_breakout_sample_size", 0),
+        post_breakout_avg_max_fav_ticks=getattr(m, "post_breakout_avg_max_fav_ticks", 0.0),
+        post_breakout_avg_max_adv_ticks=getattr(m, "post_breakout_avg_max_adv_ticks", 0.0),
+        post_breakout_tp_clean=getattr(m, "post_breakout_tp_clean", 0),
+        post_breakout_tp_after_trail=getattr(m, "post_breakout_tp_after_trail", 0),
+        post_breakout_tp_after_sl=getattr(m, "post_breakout_tp_after_sl", 0),
         reversion=_sub_resp(m.reversion_metrics),
         trend_follow=_sub_resp(m.trend_follow_metrics),
     )
@@ -951,9 +976,16 @@ class MLRunRequest(BaseModel):
     initial_capital: float = 50000.0
     start_date: str = ""
     end_date: str = ""
+    # v0.11+: contract / size / trail switch — keep parity with BacktestRequest
+    contract_id: str = "CON.F.US.MNQ.M26"
+    contract_size: int = 3
+    trail_enabled: bool = True
 
 
-def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs, zone_timeline) -> dict:
+def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs, zone_timeline,
+                      contract_id: str = "CON.F.US.MNQ.M26",
+                      contract_size: int = 3,
+                      trail_enabled: bool = True) -> dict:
     """Run one backtest combination synchronously (called from process pool).
     zone_timeline is pre-computed once and shared across all combos — avoids re-running
     the expensive SessionZoneDetector for every parameter combination.
@@ -966,7 +998,10 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs, zone_
         sl_ticks=sl,
         tp_ticks=tp,
         trail_sl_ticks=trail,
+        trail_enabled=bool(trail_enabled),
         candle_seconds=cand_secs,
+        contract_id=contract_id,
+        contract_size=max(1, int(contract_size or 1)),
     )
     engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline)
     try:
@@ -1059,10 +1094,14 @@ async def ml_run(req: MLRunRequest):
     from concurrent.futures import ThreadPoolExecutor
     from backend.db.models import BacktestConfig
 
+    bt_symbol = _extract_symbol(req.contract_id)
     config_base = BacktestConfig(
         initial_capital=req.initial_capital,
         start_date=req.start_date,
         end_date=req.end_date,
+        symbol=bt_symbol,
+        commission_rt=get_commission_rt(req.contract_id),
+        fees_rt=get_fees_rt(req.contract_id),
     )
     cand_secs = req.candle_seconds
 
@@ -1126,8 +1165,12 @@ async def ml_run(req: MLRunRequest):
                     initial_capital=config_base.initial_capital,
                     start_date=config_base.start_date,
                     end_date=config_base.end_date,
+                    symbol=config_base.symbol,
+                    commission_rt=config_base.commission_rt,
+                    fees_rt=config_base.fees_rt,
                 ),
-                strategy, sl, tp, trail, cand_secs, zone_timeline
+                strategy, sl, tp, trail, cand_secs, zone_timeline,
+                req.contract_id, req.contract_size, req.trail_enabled,
             )
             for strategy, sl, tp, trail in combos
         ]
@@ -1183,13 +1226,15 @@ _live_engine = None
 
 class LiveStartRequest(BaseModel):
     account_id: int
-    contract_id: str = "CON.F.US.ENQ.M26"
+    contract_id: str = "CON.F.US.MNQ.M26"
+    contract_size: int = 3
     value_area_pct: float = 0.80
     # Strategy params
     strategy: str = "trend"
     tp_ticks: int = 150
     sl_ticks: int = 50
     trail_sl_ticks: int = 5
+    trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
 
 
@@ -1269,13 +1314,17 @@ async def live_start(req: LiveStartRequest):
         tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
         trail_sl_ticks=req.trail_sl_ticks,
+        trail_enabled=bool(req.trail_enabled),
         candle_seconds=req.candle_seconds,
+        contract_id=req.contract_id,
+        contract_size=max(1, int(req.contract_size or 1)),
     )
 
     _live_engine = LiveTradingEngine(
         client=_topstepx_client,
         account_id=req.account_id,
         contract_id=req.contract_id,
+        contract_size=live_strategy_params.contract_size,
         value_area_pct=req.value_area_pct,
         skip_engine_sl_tp=False,  # Engine places SL/TP after fill
         strategy_params=live_strategy_params,
@@ -1416,6 +1465,15 @@ _TRADE_HISTORY_FILE = os.path.join(
     "data", "trade_history.json"
 )
 
+# Live engine writes confirmed exit reasons here (TP / SL / TRAIL_SL / FLATTEN).
+# We merge by (account_id, contract_id, exit_time) so live trade history can
+# accurately bucket trail-SL exits — without this, TP-vs-SL is inferred from
+# pnl sign which collapses TRAIL into TP/SL.
+_LIVE_EXITS_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "data", "live_exits.json"
+)
+
 
 def _load_trade_history_cache() -> List[dict]:
     try:
@@ -1431,6 +1489,57 @@ def _save_trade_history_cache(trades: List[dict]):
     os.makedirs(os.path.dirname(_TRADE_HISTORY_FILE), exist_ok=True)
     with open(_TRADE_HISTORY_FILE, "w", encoding="utf-8") as f:
         _json.dump(trades, f, indent=2)
+
+
+def _load_live_exits() -> List[dict]:
+    """Read the persisted live-engine exit log written by LiveTradingEngine.
+    Each row: {account_id, contract_id, exit_time, exit_reason, entry_time, ...}.
+    Tolerates a missing or malformed file."""
+    try:
+        if os.path.exists(_LIVE_EXITS_FILE):
+            with open(_LIVE_EXITS_FILE, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+                if isinstance(data, list):
+                    return data
+    except Exception:
+        pass
+    return []
+
+
+def _build_exit_index(exits: List[dict]) -> Dict[tuple, str]:
+    """Index exits as {(account_id, contract_id, exit_time_str): reason} for
+    O(1) lookup during fill pairing. Time matches are loose: we keep the ISO
+    string as written by the engine, and pairing tries a few variants."""
+    idx: Dict[tuple, str] = {}
+    for e in exits or []:
+        try:
+            acc = e.get("account_id")
+            cid = e.get("contract_id") or ""
+            etime = (e.get("exit_time") or "").strip()
+            reason = e.get("exit_reason") or ""
+            if acc is None or not etime or not reason:
+                continue
+            idx[(acc, cid, etime)] = reason
+            # Also key without seconds for fuzzy match
+            if "T" in etime and len(etime) >= 16:
+                idx.setdefault((acc, cid, etime[:16]), reason)
+        except Exception:
+            continue
+    return idx
+
+
+def _lookup_exit_reason(idx: Dict[tuple, str], account_id, contract_id, exit_time: str) -> Optional[str]:
+    if not exit_time:
+        return None
+    cid = contract_id or ""
+    candidates = [exit_time, exit_time[:19] if len(exit_time) > 19 else exit_time]
+    if "T" in exit_time and len(exit_time) >= 16:
+        candidates.append(exit_time[:16])
+    for c in candidates:
+        v = idx.get((account_id, cid, c))
+        if v:
+            return v
+    return None
 
 
 def _normalize_topstep_fill(t: dict) -> dict:
@@ -1487,8 +1596,15 @@ def _normalize_topstep_fill(t: dict) -> dict:
 def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
     """Pair opening fills with closing fills into round-trip trades per
     (account_id, contract_id) using FIFO. Unpaired fills become single-point
-    entries so nothing is dropped."""
+    entries so nothing is dropped.
+
+    Exit reasons are merged from data/live_exits.json (written by the live
+    engine on every position-close). Without that merge, the only signal is
+    pnl sign, which silently collapses trail-SL exits into the TP / SL
+    buckets and breaks the live performance breakdown.
+    """
     fills_sorted = sorted(fills, key=lambda f: f.get("time") or "")
+    exit_idx = _build_exit_index(_load_live_exits())
 
     open_legs: Dict[tuple, list] = {}
     trades: List[dict] = []
@@ -1510,11 +1626,17 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
             _ep = float(opener["price"] or 0)
             _xp = float(f["price"] or 0)
             _sz = opener.get("size") or f.get("size") or 1
-            _NQ_POINT = 20.0
+            _cid = f.get("contract_id") or ""
+            _pt = get_point_value(_cid)  # NQ=$20, MNQ=$2
             if opener["direction"] == "buy":
-                _gross_pnl = (_xp - _ep) * _NQ_POINT * _sz
+                _gross_pnl = (_xp - _ep) * _pt * _sz
             else:
-                _gross_pnl = (_ep - _xp) * _NQ_POINT * _sz
+                _gross_pnl = (_ep - _xp) * _pt * _sz
+            # Prefer the engine-recorded reason; fall back to pnl sign only when
+            # we have nothing better (e.g. trades that pre-date the exit log).
+            reason = _lookup_exit_reason(exit_idx, f.get("account_id"), _cid, f.get("time") or "")
+            if not reason:
+                reason = "tp" if _gross_pnl >= 0 else "sl"
             trades.append({
                 "trade_id": str(opener["fill_id"]) + "_" + str(f["fill_id"]),
                 "direction": opener["direction"],
@@ -1526,13 +1648,16 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 "pnl": round(_gross_pnl, 2),  # gross P&L from price movement
                 "commission": 1.0,
                 "fees": 2.80,
-                "exit_reason": "tp" if _gross_pnl >= 0 else "sl",
+                "exit_reason": reason,
                 "account_id": f.get("account_id"),
-                "contract_id": f.get("contract_id"),
+                "contract_id": _cid,
                 "source": "topstep",
             })
         else:
             # Orphan closer — keep as single point so nothing is lost
+            reason = _lookup_exit_reason(
+                exit_idx, f.get("account_id"), f.get("contract_id") or "", f.get("time") or ""
+            ) or ("tp" if (f["pnl"] or 0) >= 0 else "sl")
             trades.append({
                 "trade_id": str(f["fill_id"]),
                 "direction": f["direction"],
@@ -1544,7 +1669,7 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 "pnl": round(float(f["pnl"] or 0), 2),  # use API pnl; no paired prices
                 "commission": 1.0,
                 "fees": 2.80,
-                "exit_reason": "tp" if (f["pnl"] or 0) >= 0 else "sl",
+                "exit_reason": reason,
                 "account_id": f.get("account_id"),
                 "contract_id": f.get("contract_id"),
                 "source": "topstep",
@@ -1669,7 +1794,10 @@ _DEFAULT_PRESET_PARAMS = {
     "tp_ticks": 150,
     "sl_ticks": 50,
     "trail_sl_ticks": 5,
+    "trail_enabled": True,
     "candle_seconds": 60,
+    "contract_id": "CON.F.US.MNQ.M26",
+    "contract_size": 3,
 }
 
 
