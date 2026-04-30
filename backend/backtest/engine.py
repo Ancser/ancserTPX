@@ -44,8 +44,6 @@ logger = logging.getLogger(__name__)
 # How long after entry we keep tracking price action for the post-breakout
 # stats (MFE / MAE / trail-or-SL-then-TP path). 60 candles ≈ 1h on 1m bars.
 POST_BREAKOUT_WINDOW_MIN = 60
-# Trail SL trigger threshold — must match the live engine constant.
-TRAIL_TRIGGER_TICKS = 20
 
 
 class BacktestEngine:
@@ -54,6 +52,7 @@ class BacktestEngine:
     # Default fallbacks. Real values set per-instance from contract_id below.
     POINT_VALUE = 20.0
     TICK_SIZE = 0.25
+    TRAIL_TICK_STEP = 5
     # PT 12:45 = UTC 19:45
     FLATTEN_TIME_UTC = time(19, 45)
     PRE_FLATTEN_UTC = time(19, 30)
@@ -110,6 +109,27 @@ class BacktestEngine:
         # We keep tracking even after the trade exits, since the user wants to
         # know whether price would have reached TP within 60m even if SL fired first.
         self._breakout_trackers: List[dict] = []
+
+    @classmethod
+    def _floor_ticks_to_step(cls, ticks: float) -> int:
+        try:
+            n = abs(float(ticks))
+        except (TypeError, ValueError):
+            return 0
+        return int(n // cls.TRAIL_TICK_STEP) * cls.TRAIL_TICK_STEP
+
+    def _resolved_trail_ticks(self) -> int:
+        sl_ticks = abs(int(getattr(self.strategy_params, 'sl_ticks', 50) or 50))
+        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
+        trail_ticks = int(getattr(self.strategy_params, 'trail_sl_ticks', 5) or 0)
+        trigger_pct = getattr(self.strategy_params, 'trail_trigger_pct', 0.30)
+        if trigger_pct > 1:
+            trigger_pct = trigger_pct / 100.0
+        if trigger_pct <= 0:
+            return 0
+
+        max_positive = max(0, self._floor_ticks_to_step(tp_ticks * trigger_pct) - self.TRAIL_TICK_STEP)
+        return max(-sl_ticks, min(min(tp_ticks, max_positive), trail_ticks))
 
     def run(self, candles: List[Candle]) -> BacktestResult:
         """執行回測 (1m candles)"""
@@ -246,7 +266,7 @@ class BacktestEngine:
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
-                # ── Trailing SL (forced ON): UPNL > 20 ticks → move SL to entry ± trail_sl_ticks ──
+                # ── Trailing SL: trigger at configured TP%, then move SL from entry ──
                 self._check_trailing_sl(candle)
                 return  # still open, don't open new
 
@@ -437,7 +457,8 @@ class BacktestEngine:
         # POST_BREAKOUT_WINDOW_MIN minutes regardless of when (or whether)
         # the trade actually exits — the user wants to know how price
         # behaved within 1h after breakout, not just up to the exit.
-        trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 5) * self.TICK_SIZE
+        trail_ticks = self._resolved_trail_ticks()
+        trail_pts = trail_ticks * self.TICK_SIZE
         if signal.direction == Direction.BUY:
             trail_lvl = fill_price + trail_pts
         else:
@@ -573,9 +594,10 @@ class BacktestEngine:
 
     def _check_trailing_sl(self, candle: Candle):
         """Trailing SL (opt-in via strategy_params.trail_enabled, default ON):
-        if price moves ≥ 20 ticks from entry, move SL to entry ± trail_sl_ticks.
+        if price moves enough to reach the configured fraction of TP, move SL
+        to entry +/- trail_sl_ticks.
         trail_sl_ticks=5 (default) → new SL = entry ± 5 ticks locked profit.
-        Tick-based trigger is contract-agnostic. One-time trigger per position.
+        One-time trigger per position.
 
         Disabling lets the trade run all the way to TP or full SL — useful when
         post-breakout stats show many trades dipping back through the trail
@@ -590,22 +612,29 @@ class BacktestEngine:
         if not pos:
             return
         mkt = candle.close
-        # Trigger: 20 ticks price movement (tick-based, contract-agnostic)
-        TRAIL_TRIGGER_TICKS = 20
         if pos.direction == Direction.BUY:
             ticks_moved = (mkt - pos.entry_price) / self.TICK_SIZE
         else:
             ticks_moved = (pos.entry_price - mkt) / self.TICK_SIZE
-        if ticks_moved >= TRAIL_TRIGGER_TICKS:
+
+        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
+        trigger_pct = getattr(self.strategy_params, 'trail_trigger_pct', 0.30)
+        if trigger_pct > 1:
+            trigger_pct = trigger_pct / 100.0
+        if trigger_pct <= 0:
+            return
+        trigger_ticks = max(1.0, tp_ticks * trigger_pct)
+        if ticks_moved >= trigger_ticks:
             self._trail_sl_triggered = True
-            trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 5) * self.TICK_SIZE
+            trail_ticks = self._resolved_trail_ticks()
+            trail_pts = trail_ticks * self.TICK_SIZE
             if pos.direction == Direction.BUY:
                 pos.sl_price = pos.entry_price + trail_pts
             else:
                 pos.sl_price = pos.entry_price - trail_pts
             logger.debug(
                 f"Trail SL: {ticks_moved:.1f} ticks moved → SL moved to {pos.sl_price:.2f} "
-                f"(+{trail_pts:.2f} pts from entry)"
+                f"({trail_ticks}t from entry, trigger={trigger_pct:.0%} TP)"
             )
 
     def _execute_exit(self, candle: Candle, exit_price: float, reason: ExitReason):

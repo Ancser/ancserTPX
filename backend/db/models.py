@@ -307,7 +307,8 @@ class StrategyParams:
     strategy: str = "trend"              # "trend" | "macd" | "reversion"
     tp_ticks: int = 150                  # 5-200 tick
     sl_ticks: int = 50                   # 5-200 tick
-    trail_sl_ticks: int = 5             # 5-200 tick — new SL offset from entry after trail triggers
+    trail_sl_ticks: int = 5             # -SL..TP ticks from entry after trail triggers
+    trail_trigger_pct: float = 0.30     # trigger trail when price reaches this fraction of TP
     trail_enabled: bool = True          # v0.11+: master switch for trailing-SL mechanism
     # MACD params (hardcoded 12/26/9 — not user-configurable)
     # Candle interval (seconds)

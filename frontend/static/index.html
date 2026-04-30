@@ -366,6 +366,50 @@
         .btn-ml:disabled:hover {
             box-shadow: none;
         }
+        .ml-run-wrap {
+            position: relative;
+            display: flex;
+            width: 100%;
+        }
+        .ml-run-wrap #btn-run-all {
+            flex: 1;
+        }
+        .ml-filter-btn {
+            flex: 0 0 34px;
+            width: 34px;
+            padding: 0 !important;
+            border-left: 0;
+            font-size: 12px;
+        }
+        .ml-filter-panel {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: calc(100% + 5px);
+            z-index: 60;
+            width: 184px;
+            padding: 8px;
+            background: var(--bg2);
+            border: 1px solid var(--border-h);
+            box-shadow: 0 10px 24px rgba(0,0,0,0.45);
+        }
+        .ml-filter-panel.open {
+            display: block;
+        }
+        .ml-fix-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            height: 24px;
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 10px;
+            color: var(--text2);
+            letter-spacing: 0.8px;
+        }
+        .ml-fix-row input {
+            margin: 0;
+            cursor: pointer;
+        }
 
         .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text2); }
         .btn-outline:hover { border-color: var(--text2); color: var(--text); }
@@ -926,7 +970,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.11.0
+        0.11.1
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1022,41 +1066,61 @@
             <div class="form-row">
                 <div class="form-group" style="flex:2;">
                     <label>CONTRACT</label>
-                    <select id="contract-bt">
+                    <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt')">
                         <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
                         <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                     </select>
                 </div>
                 <div class="form-group" style="flex:1;">
                     <label>SIZE</label>
-                    <input type="number" id="size-bt" min="1" max="50" step="1" value="3">
+                    <select id="size-bt" onchange="updateTrailBounds('bt')"></select>
                 </div>
             </div>
             <div class="form-group">
                 <label>SL <span id="sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
                 <input type="range" id="sl-ticks-bt" min="5" max="200" step="5" value="50"
-                    oninput="document.getElementById('sl-ticks-bt-val').textContent=this.value">
+                    oninput="document.getElementById('sl-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
             </div>
             <div class="form-group">
                 <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">150</span> ticks</label>
                 <input type="range" id="tp-ticks-bt" min="5" max="200" step="5" value="150"
-                    oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value">
+                    oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
             </div>
-            <!-- Trail SL — checkbox toggles whole mechanism, slider sets locked offset -->
+            <!-- Trail trigger controls whether Trail SL is active. -->
             <div class="form-group">
-                <label style="display:flex;align-items:center;gap:6px;">
-                    <input type="checkbox" id="trail-enabled-bt" checked
-                        style="margin:0;cursor:pointer;"
-                        onchange="onTrailToggle('bt')">
-                    TRAIL SL <span id="trail-sl-ticks-bt-val" style="color:var(--accent)">5</span> TICKS
+                <label>TRAIL TP TRIGGER</label>
+                <select id="trail-trigger-pct-bt" onchange="updateTrailBounds('bt')">
+                    <option value="0">OFF</option>
+                    <option value="0.10">10%</option>
+                    <option value="0.30" selected>30%</option>
+                    <option value="0.50">50%</option>
+                    <option value="0.70">70%</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>
+                    TRAIL SL <span id="trail-sl-pct-bt-val" style="color:var(--accent)">+5% TP</span>
+                    <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">5t / $7.50</span>
                 </label>
-                <input type="range" id="trail-sl-ticks-bt" min="5" max="200" step="5" value="5"
-                    oninput="document.getElementById('trail-sl-ticks-bt-val').textContent=this.value">
+                <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
+                <input type="hidden" id="trail-sl-ticks-bt" value="5">
             </div>
 
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
-                <button class="btn btn-ml" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run all SL/TP/Trail combos and rank results">MACHINE LEARNING</button>
+                <div class="ml-run-wrap">
+                    <button class="btn btn-ml" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run all selected ML combos and rank results">MACHINE LEARNING</button>
+                    <button class="btn btn-ml ml-filter-btn" id="btn-ml-filter" onclick="toggleMLFixedDropdown(event)" disabled title="Fixed ML params">v</button>
+                    <div class="ml-filter-panel" id="ml-fixed-panel">
+                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-strategy" checked> STRATEGY</label>
+                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-contract" checked> CONTRACT</label>
+                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-size" checked> SIZE</label>
+                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-tp"> TP</label>
+                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-sl"> SL</label>
+                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-trail-trigger"> TRAIL TRIGGER</label>
+                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-trail"> TRAIL SL</label>
+                    </div>
+                </div>
             </div>
             <!-- ML progress bar -->
             <div id="ml-progress-wrap" style="display:none;margin-top:7px;">
@@ -1110,36 +1174,44 @@
                 <div class="form-row">
                     <div class="form-group" style="flex:2;">
                         <label>CONTRACT</label>
-                        <select id="contract-live">
+                        <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live')">
                             <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
                             <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                         </select>
                     </div>
                     <div class="form-group" style="flex:1;">
                         <label>SIZE</label>
-                        <input type="number" id="size-live" min="1" max="50" step="1" value="3">
+                        <select id="size-live" onchange="updateTrailBounds('live')"></select>
                     </div>
                 </div>
                 <div class="form-group">
                     <label>SL <span id="sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
                     <input type="range" id="sl-ticks-live" min="5" max="200" step="5" value="50"
-                        oninput="document.getElementById('sl-ticks-live-val').textContent=this.value">
+                        oninput="document.getElementById('sl-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
                 </div>
                 <div class="form-group">
                     <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">150</span> ticks</label>
                     <input type="range" id="tp-ticks-live" min="5" max="200" step="5" value="150"
-                        oninput="document.getElementById('tp-ticks-live-val').textContent=this.value">
+                        oninput="document.getElementById('tp-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
                 </div>
-                <!-- Trail SL — checkbox toggles whole mechanism, slider sets locked offset -->
+                <!-- Trail trigger controls whether Trail SL is active. -->
                 <div class="form-group">
-                    <label style="display:flex;align-items:center;gap:6px;">
-                        <input type="checkbox" id="trail-enabled-live" checked
-                            style="margin:0;cursor:pointer;"
-                            onchange="onTrailToggle('live')">
-                        TRAIL SL <span id="trail-sl-ticks-live-val" style="color:var(--accent)">5</span> TICKS
+                    <label>TRAIL TP TRIGGER</label>
+                    <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
+                        <option value="0">OFF</option>
+                        <option value="0.10">10%</option>
+                        <option value="0.30" selected>30%</option>
+                        <option value="0.50">50%</option>
+                        <option value="0.70">70%</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>
+                        TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+5% TP</span>
+                        <span id="trail-sl-ticks-live-val" style="color:var(--text2)">5t / $7.50</span>
                     </label>
-                    <input type="range" id="trail-sl-ticks-live" min="5" max="200" step="5" value="5"
-                        oninput="document.getElementById('trail-sl-ticks-live-val').textContent=this.value">
+                    <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
+                    <input type="hidden" id="trail-sl-ticks-live" value="5">
                 </div>
             </div>
             <div class="panel">
@@ -1219,16 +1291,17 @@
                             <thead id="ml-thead">
                                 <tr>
                                     <th class="ml-sort-th" data-col="strategy" style="width:52px;" onclick="mlSortBy('strategy')">STRAT <span class="sa">↕</span></th>
+                                    <th class="ml-sort-th" data-col="contract" style="width:48px;" onclick="mlSortBy('contract')">CON <span class="sa">↕</span></th>
+                                    <th class="ml-sort-th" data-col="size"     style="width:34px;" onclick="mlSortBy('size')">SZ <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="sl"       style="width:40px;" onclick="mlSortBy('sl')">SL <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="tp"       style="width:40px;" onclick="mlSortBy('tp')">TP <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="trail"    style="width:44px;" onclick="mlSortBy('trail')">TRAIL <span class="sa">↕</span></th>
+                                    <th class="ml-sort-th" data-col="trigger"  style="width:48px;" onclick="mlSortBy('trigger')">TRIG <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="trades"   style="width:44px;" onclick="mlSortBy('trades')">TRADES <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="win_rate" style="width:52px;" onclick="mlSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="pnl"      style="width:68px;" onclick="mlSortBy('pnl')">TOTAL PNL <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="max_dd"   style="width:60px;" onclick="mlSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="calmar"   style="width:52px;" onclick="mlSortBy('calmar')">CALMAR <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="pf"       style="width:52px;" onclick="mlSortBy('pf')">P.FACTOR <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="consist"  style="width:52px;" onclick="mlSortBy('consist')">CONSIST <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="best_day" style="width:60px;" onclick="mlSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="worst_day"style="width:60px;" onclick="mlSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
                                     <th class="ml-sort-th sort-active sort-desc" data-col="score" style="width:52px;" onclick="mlSortBy('score')">SCORE <span class="sa">↓</span></th>
@@ -1388,27 +1461,218 @@ const DEFAULT_STRATEGY_PARAMS = {
     tp_ticks: 150,
     sl_ticks: 50,
     trail_sl_ticks: 5,
+    trail_sl_pct: 0.05,
+    trail_trigger_pct: 0.30,
     trail_enabled: true,
     candle_seconds: 60,
     contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
     contract_size: 3,
 };
 
-function collectStrategyParams(mode) {
-    const _int = (id) => { const el = document.getElementById(id); return el ? parseInt(el.value) || 0 : 0; };
-    const _val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
-    const _chk = (id) => { const el = document.getElementById(id); return el ? !!el.checked : true; };
+const MNQ_SIZE_CHOICES = [1, 3, 5, 10];
+const TRAIL_TICK_STEP = 5;
+const TRAIL_SL_PCT_CHOICES = [-0.50, -0.25, -0.10, 0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50];
+const TRAIL_TRIGGER_PCT_CHOICES = [0, 0.10, 0.30, 0.50, 0.70];
+
+function contractSymbolFromId(contractId) {
+    const cid = (contractId || '').toUpperCase();
+    return cid.indexOf('.MNQ.') >= 0 || cid === 'MNQ' ? 'MNQ' : 'NQ';
+}
+
+function contractLabelFromId(contractId) {
+    return contractSymbolFromId(contractId) === 'MNQ' ? 'MNQ' : 'NQ';
+}
+
+function pointValueForContract(contractId) {
+    return contractSymbolFromId(contractId) === 'MNQ' ? 2 : 20;
+}
+
+function tickDollarValue(contractId, size) {
+    return pointValueForContract(contractId) * 0.25 * normalizeContractSize(contractId, size);
+}
+
+function fmtPct(pct) {
+    const n = Math.round(Math.abs(pct) * 100);
+    if (pct > 0) return '+' + n + '% TP';
+    if (pct < 0) return '-' + n + '% SL';
+    return 'BE';
+}
+
+function fmtSigned(n, suffix) {
+    if (n > 0) return '+' + n + suffix;
+    if (n < 0) return '-' + Math.abs(n) + suffix;
+    return '0' + suffix;
+}
+
+function fmtMoney(n) {
+    const abs = Math.abs(n);
+    const text = abs >= 10 ? abs.toFixed(0) : abs.toFixed(2);
+    if (n > 0) return '+$' + text;
+    if (n < 0) return '-$' + text;
+    return '$0';
+}
+
+function floorTicksToStep(ticks) {
+    const n = Math.abs(Number(ticks) || 0);
+    return Math.floor(n / TRAIL_TICK_STEP) * TRAIL_TICK_STEP;
+}
+
+function trailTicksFromPct(pct, slTicks, tpTicks, triggerPct) {
+    const sl = Math.abs(parseInt(slTicks, 10) || 0);
+    const tp = Math.abs(parseInt(tpTicks, 10) || 0);
+    const p = Math.max(-0.50, Math.min(0.50, parseFloat(pct) || 0));
+    const trigger = parseFloat(triggerPct) || 0;
+    if (trigger <= 0) return 0;
+    let ticks = p < 0 ? -floorTicksToStep(sl * Math.abs(p)) : floorTicksToStep(tp * p);
+    const maxPositive = Math.max(0, floorTicksToStep(tp * trigger) - TRAIL_TICK_STEP);
+    if (ticks > maxPositive) ticks = maxPositive;
+    return Math.max(-sl, Math.min(tp, ticks));
+}
+
+function trailPctFromTicks(ticks, slTicks, tpTicks) {
+    const t = parseInt(ticks, 10) || 0;
+    const sl = Math.abs(parseInt(slTicks, 10) || 0);
+    const tp = Math.abs(parseInt(tpTicks, 10) || 0);
+    const raw = t < 0 ? (sl ? t / sl : -0.10) : (tp ? t / tp : 0.05);
+    return TRAIL_SL_PCT_CHOICES.reduce((best, pct) =>
+        Math.abs(pct - raw) < Math.abs(best - raw) ? pct : best, TRAIL_SL_PCT_CHOICES[0]);
+}
+
+function allowedSizesForContract(contractId) {
+    return contractSymbolFromId(contractId) === 'MNQ' ? MNQ_SIZE_CHOICES : [1];
+}
+
+function normalizeContractSize(contractId, size) {
+    const allowed = allowedSizesForContract(contractId);
+    const n = parseInt(size, 10);
+    return allowed.includes(n) ? n : (contractSymbolFromId(contractId) === 'MNQ' ? 3 : 1);
+}
+
+function syncSizeOptions(mode, wantedSize) {
     const cidEl = document.getElementById('contract-' + mode);
     const sizeEl = document.getElementById('size-' + mode);
+    if (!cidEl || !sizeEl) return;
+    const wanted = wantedSize != null ? wantedSize : sizeEl.value;
+    const allowed = allowedSizesForContract(cidEl.value);
+    const normalized = normalizeContractSize(cidEl.value, wanted);
+    sizeEl.innerHTML = '';
+    allowed.forEach(size => {
+        const opt = document.createElement('option');
+        opt.value = String(size);
+        opt.textContent = String(size);
+        sizeEl.appendChild(opt);
+    });
+    sizeEl.value = String(normalized);
+}
+
+function updateTrailBounds(mode, preferredTrailPct) {
+    const slEl = document.getElementById('sl-ticks-' + mode);
+    const tpEl = document.getElementById('tp-ticks-' + mode);
+    const trailPctEl = document.getElementById('trail-sl-pct-' + mode);
+    const trailTicksEl = document.getElementById('trail-sl-ticks-' + mode);
+    const triggerEl = document.getElementById('trail-trigger-pct-' + mode);
+    const pctSpan = document.getElementById('trail-sl-pct-' + mode + '-val');
+    const valSpan = document.getElementById('trail-sl-ticks-' + mode + '-val');
+    if (!slEl || !tpEl || !trailPctEl || !trailTicksEl || !triggerEl) return;
+
+    const sl = Math.abs(parseInt(slEl.value, 10) || 0);
+    const tp = Math.abs(parseInt(tpEl.value, 10) || 0);
+    const cidEl = document.getElementById('contract-' + mode);
+    const sizeEl = document.getElementById('size-' + mode);
+    const contractId = (cidEl && cidEl.value) || DEFAULT_STRATEGY_PARAMS.contract_id;
+    const size = sizeEl ? sizeEl.value : DEFAULT_STRATEGY_PARAMS.contract_size;
+    const tickValue = tickDollarValue(contractId, size);
+
+    const parsedTrigger = parseFloat(triggerEl.value);
+    const triggerSelected = Number.isFinite(parsedTrigger) ? parsedTrigger : DEFAULT_STRATEGY_PARAMS.trail_trigger_pct;
+    triggerEl.innerHTML = '';
+    TRAIL_TRIGGER_PCT_CHOICES.forEach(pct => {
+        const ticks = floorTicksToStep(tp * pct);
+        const opt = document.createElement('option');
+        opt.value = pct === 0 ? '0' : pct.toFixed(2);
+        opt.textContent = pct === 0
+            ? 'OFF'
+            : Math.round(pct * 100) + '% (' + ticks + 't / ' + fmtMoney(ticks * tickValue) + ')';
+        triggerEl.appendChild(opt);
+    });
+    triggerEl.value = TRAIL_TRIGGER_PCT_CHOICES.includes(triggerSelected)
+        ? (triggerSelected === 0 ? '0' : triggerSelected.toFixed(2))
+        : DEFAULT_STRATEGY_PARAMS.trail_trigger_pct.toFixed(2);
+    const triggerPct = parseFloat(triggerEl.value) || 0;
+    const trailEnabled = triggerPct > 0;
+
+    const oldPct = preferredTrailPct != null ? preferredTrailPct : parseFloat(trailPctEl.value);
+    const choices = trailEnabled
+        ? TRAIL_SL_PCT_CHOICES.filter(pct => pct <= 0 || (pct <= 0.50 && pct < triggerPct - 1e-9))
+        : [0];
+    const wantedPct = Number.isFinite(oldPct) ? oldPct : DEFAULT_STRATEGY_PARAMS.trail_sl_pct;
+    const selectedPct = choices.includes(wantedPct)
+        ? wantedPct
+        : choices.reduce((best, pct) =>
+            Math.abs(pct - wantedPct) < Math.abs(best - wantedPct) ? pct : best, choices[0]);
+
+    trailPctEl.innerHTML = '';
+    choices.forEach(pct => {
+        const ticks = trailTicksFromPct(pct, sl, tp, triggerPct);
+        const opt = document.createElement('option');
+        opt.value = pct.toFixed(2);
+        opt.textContent = trailEnabled
+            ? fmtPct(pct) + ' (' + fmtSigned(ticks, 't') + ' / ' + fmtMoney(ticks * tickValue) + ')'
+            : 'OFF';
+        trailPctEl.appendChild(opt);
+    });
+    trailPctEl.value = selectedPct.toFixed(2);
+    const trailTicks = trailTicksFromPct(selectedPct, sl, tp, triggerPct);
+    trailTicksEl.value = String(trailTicks);
+    trailPctEl.disabled = !trailEnabled;
+    trailPctEl.style.opacity = trailEnabled ? '1' : '0.4';
+    if (pctSpan) {
+        pctSpan.textContent = trailEnabled ? fmtPct(selectedPct) : 'OFF';
+        pctSpan.style.opacity = trailEnabled ? '1' : '0.4';
+    }
+    if (valSpan) {
+        valSpan.textContent = trailEnabled
+            ? fmtSigned(trailTicks, 't') + ' / ' + fmtMoney(trailTicks * tickValue)
+            : '0t / ' + fmtMoney(0);
+        valSpan.style.opacity = trailEnabled ? '1' : '0.4';
+    }
+}
+
+function collectStrategyParams(mode) {
+    const _int = (id) => {
+        const el = document.getElementById(id);
+        if (!el) return 0;
+        const n = parseInt(el.value, 10);
+        return Number.isNaN(n) ? 0 : n;
+    };
+    const _float = (id, fallback) => {
+        const el = document.getElementById(id);
+        if (!el) return fallback;
+        const n = parseFloat(el.value);
+        return Number.isNaN(n) ? fallback : n;
+    };
+    const _val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+    const cidEl = document.getElementById('contract-' + mode);
+    const sizeEl = document.getElementById('size-' + mode);
+    const contractId = (cidEl && cidEl.value) || DEFAULT_STRATEGY_PARAMS.contract_id;
+    const slTicks = _int('sl-ticks-' + mode);
+    const tpTicks = _int('tp-ticks-' + mode);
+    const triggerPct = _float('trail-trigger-pct-' + mode, DEFAULT_STRATEGY_PARAMS.trail_trigger_pct);
+    const trailPct = _float('trail-sl-pct-' + mode, DEFAULT_STRATEGY_PARAMS.trail_sl_pct);
+    const trailTicks = trailTicksFromPct(trailPct, slTicks, tpTicks, triggerPct);
+    const trailTicksEl = document.getElementById('trail-sl-ticks-' + mode);
+    if (trailTicksEl) trailTicksEl.value = String(trailTicks);
     return {
         strategy: _val('strategy-' + mode),
-        tp_ticks: _int('tp-ticks-' + mode),
-        sl_ticks: _int('sl-ticks-' + mode),
-        trail_sl_ticks: _int('trail-sl-ticks-' + mode) || 5,
-        trail_enabled: _chk('trail-enabled-' + mode),
+        tp_ticks: tpTicks,
+        sl_ticks: slTicks,
+        trail_sl_ticks: trailTicks,
+        trail_sl_pct: trailPct,
+        trail_trigger_pct: triggerPct,
+        trail_enabled: triggerPct > 0,
         candle_seconds: 60,   // 1m bars platform-wide
-        contract_id: (cidEl && cidEl.value) || DEFAULT_STRATEGY_PARAMS.contract_id,
-        contract_size: Math.max(1, sizeEl ? parseInt(sizeEl.value) || 1 : 3),
+        contract_id: contractId,
+        contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
     };
 }
 
@@ -1417,25 +1681,9 @@ function applyStrategyParams(mode, params) {
     const _set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
     const _setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     _set('strategy-' + mode, p.strategy);
-    // SL/TP sliders + display values
-    _set('tp-ticks-' + mode, p.tp_ticks);
-    _setVal('tp-ticks-' + mode + '-val', p.tp_ticks);
-    _set('sl-ticks-' + mode, p.sl_ticks);
-    _setVal('sl-ticks-' + mode + '-val', p.sl_ticks);
-    // Trail SL slider + display value + enable checkbox
-    const tst = p.trail_sl_ticks != null ? p.trail_sl_ticks : 5;
-    _set('trail-sl-ticks-' + mode, tst);
-    _setVal('trail-sl-ticks-' + mode + '-val', tst);
-    const trailChk = document.getElementById('trail-enabled-' + mode);
-    if (trailChk) {
-        trailChk.checked = (p.trail_enabled !== false);  // default true for v0.10 presets
-        onTrailToggle(mode);
-    }
-    // Contract & size — fall back to defaults when preset is older than v0.11.
     const cidEl = document.getElementById('contract-' + mode);
     if (cidEl) {
         const wanted = p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id;
-        // If the preset's contract isn't in the dropdown, append it so we don't silently lose the value.
         if (!Array.from(cidEl.options).some(o => o.value === wanted)) {
             const opt = document.createElement('option');
             opt.value = wanted; opt.textContent = wanted;
@@ -1443,8 +1691,26 @@ function applyStrategyParams(mode, params) {
         }
         cidEl.value = wanted;
     }
-    const sizeEl = document.getElementById('size-' + mode);
-    if (sizeEl) sizeEl.value = (p.contract_size != null ? p.contract_size : 3);
+    syncSizeOptions(mode, p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size);
+    // SL/TP sliders + display values
+    _set('tp-ticks-' + mode, p.tp_ticks);
+    _setVal('tp-ticks-' + mode + '-val', p.tp_ticks);
+    _set('sl-ticks-' + mode, p.sl_ticks);
+    _setVal('sl-ticks-' + mode + '-val', p.sl_ticks);
+    const triggerPct = p.trail_enabled === false
+        ? 0
+        : (p.trail_trigger_pct != null
+            ? parseFloat(p.trail_trigger_pct)
+            : DEFAULT_STRATEGY_PARAMS.trail_trigger_pct);
+    const trailPct = p.trail_sl_pct != null
+        ? parseFloat(p.trail_sl_pct)
+        : trailPctFromTicks(
+            p.trail_sl_ticks != null ? p.trail_sl_ticks : DEFAULT_STRATEGY_PARAMS.trail_sl_ticks,
+            p.sl_ticks,
+            p.tp_ticks
+        );
+    _set('trail-trigger-pct-' + mode, triggerPct === 0 ? '0' : triggerPct.toFixed(2));
+    updateTrailBounds(mode, trailPct);
 }
 
 // CONTRACT preset dropdown in the connect panel — fills the contract-id text input.
@@ -1456,22 +1722,9 @@ function onContractPresetChange() {
     inp.focus();
 }
 
-// Trail-SL master toggle — greys out the slider + label when unchecked so the
-// user can see at a glance that trailing-SL is OFF for this run.
+// Kept for older event hooks; trigger OFF now controls the disabled state.
 function onTrailToggle(mode) {
-    const chk = document.getElementById('trail-enabled-' + mode);
-    const slider = document.getElementById('trail-sl-ticks-' + mode);
-    const valSpan = document.getElementById('trail-sl-ticks-' + mode + '-val');
-    if (!chk) return;
-    const enabled = !!chk.checked;
-    if (slider) {
-        slider.disabled = !enabled;
-        slider.style.opacity = enabled ? '1' : '0.4';
-    }
-    if (valSpan) {
-        valSpan.style.opacity = enabled ? '1' : '0.4';
-        valSpan.style.textDecoration = enabled ? 'none' : 'line-through';
-    }
+    updateTrailBounds(mode);
 }
 
 
@@ -1629,6 +1882,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const startStr = start.toISOString().slice(0, 10);
     document.getElementById('start-date').value = startStr;
     document.getElementById('end-date').value = endStr;
+    ['bt', 'live'].forEach(mode => {
+        syncSizeOptions(mode);
+        updateTrailBounds(mode);
+        onTrailToggle(mode);
+    });
 
     // Auto-connect after env config loads
     setTimeout(() => {
@@ -3378,6 +3636,7 @@ async function connectAPI() {
         document.getElementById('data-count').value = data.candles_count + ' bars';
         document.getElementById('btn-backtest').disabled = false;
         document.getElementById('btn-run-all').disabled = false;
+        document.getElementById('btn-ml-filter').disabled = false;
         _updateDataInfo(data.first, data.last, 'conn', data.candles_count);
 
         log('Connected // Contract: ' + data.contract_id, 'success');
@@ -3630,16 +3889,17 @@ function _mlSortVal(r, col) {
     switch (col) {
         case 'rank':      return r.rank || 0;
         case 'strategy':  return (r.strategy || '').toLowerCase();
+        case 'contract':  return contractLabelFromId(r.contract_id || '').toLowerCase();
+        case 'size':      return r.contract_size || 0;
         case 'sl':        return r.sl || 0;
         case 'tp':        return r.tp || 0;
-        case 'trail':     return r.trail || 0;
+        case 'trail':     return r.trail_pct != null ? Number(r.trail_pct) : (r.trail || 0);
+        case 'trigger':   return r.trail_trigger_pct || 0;
         case 'trades':    return r.total_trades || 0;
         case 'win_rate':  return r.win_rate || 0;
         case 'pnl':       return r.total_pnl || 0;
         case 'max_dd':    return r.max_drawdown || 0;
         case 'calmar':    return r.calmar_ratio || 0;
-        case 'pf':        return r.profit_factor || 0;
-        case 'consist':   return r.consistency_pct || 0;
         case 'best_day': { const v = Object.values(r.daily_pnl || {}); return v.length ? Math.max(...v) : 0; }
         case 'worst_day':{ const v = Object.values(r.daily_pnl || {}); return v.length ? Math.min(...v) : 0; }
         case 'score':     return r.score || 0;
@@ -3702,13 +3962,51 @@ function _stopMLProgress(success) {
     }
 }
 
+function toggleMLFixedDropdown(event) {
+    if (event) event.stopPropagation();
+    const panel = document.getElementById('ml-fixed-panel');
+    if (panel) panel.classList.toggle('open');
+}
+
+function getMLFixedParams() {
+    const pairs = [
+        ['strategy', 'ml-fix-strategy'],
+        ['contract', 'ml-fix-contract'],
+        ['size', 'ml-fix-size'],
+        ['tp', 'ml-fix-tp'],
+        ['sl', 'ml-fix-sl'],
+        ['trail_trigger', 'ml-fix-trail-trigger'],
+        ['trail', 'ml-fix-trail'],
+    ];
+    return pairs.filter(([, id]) => {
+        const el = document.getElementById(id);
+        return el && el.checked;
+    }).map(([key]) => key);
+}
+
+document.addEventListener('click', (e) => {
+    const panel = document.getElementById('ml-fixed-panel');
+    const wrap = document.querySelector('.ml-run-wrap');
+    if (panel && wrap && !wrap.contains(e.target)) panel.classList.remove('open');
+});
+
 async function runAllCombinations() {
     const btn = document.getElementById('btn-run-all');
+    const filterBtn = document.getElementById('btn-ml-filter');
     btn.disabled = true;
+    if (filterBtn) filterBtn.disabled = true;
+    const fixedParams = getMLFixedParams();
+    const mlPanel = document.getElementById('ml-fixed-panel');
+    if (mlPanel) mlPanel.classList.remove('open');
 
     // ML uses the same date range as Execute Backtest (date pickers / slider).
     const dataOk = await _ensureBacktestData(btn);
-    if (!dataOk) { btn.disabled = false; btn.textContent = 'MACHINE LEARNING'; return; }
+    if (!dataOk) {
+        btn.disabled = false;
+        if (filterBtn) filterBtn.disabled = false;
+        btn.textContent = 'MACHINE LEARNING';
+        return;
+    }
 
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
 
@@ -3734,11 +4032,20 @@ async function runAllCombinations() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                strategy: params.strategy,
+                strategy: fixedParams.includes('strategy') ? params.strategy : 'all',
+                tp_ticks: params.tp_ticks,
+                sl_ticks: params.sl_ticks,
+                trail_sl_ticks: params.trail_sl_ticks,
+                trail_sl_pct: params.trail_sl_pct,
+                trail_trigger_pct: params.trail_trigger_pct,
+                trail_enabled: params.trail_enabled,
+                contract_id: params.contract_id,
+                contract_size: params.contract_size,
                 candle_seconds: params.candle_seconds,
                 initial_capital: capital,
                 start_date: startDate,
                 end_date: endDate,
+                fixed_params: fixedParams,
             }),
         });
 
@@ -3747,13 +4054,14 @@ async function runAllCombinations() {
         _mlResults = data.results || [];
         renderMLResults(_mlResults);
         // status row removed — result count logged below
-        log('ML run complete: ' + _mlResults.length + ' combos', 'success');
+        log('ML run complete: ' + _mlResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
         success = true;
     } catch(e) {
         log('ML run failed: ' + e.message, 'error');
     } finally {
         _stopMLProgress(success);
         btn.disabled = false;
+        if (filterBtn) filterBtn.disabled = false;
         btn.textContent = 'MACHINE LEARNING';
     }
 }
@@ -3764,7 +4072,7 @@ function renderMLResults(results) {
     tbody.innerHTML = '';
 
     if (!results || results.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="15" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="16" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
         return;
     }
 
@@ -3790,12 +4098,13 @@ function renderMLResults(results) {
         const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
         const score = (r.score || 0).toFixed(1);
         const scoreColor = (r.score || 0) >= 0 ? 'var(--cyan)' : 'var(--red)';
-        const pf = r.profit_factor || 0;
-
-        // Consistency: % profitable days (0–1 in backend, multiply × 100)
-        const consist = r.consistency_pct != null ? (r.consistency_pct * 100).toFixed(0) + '%' : '—';
-        // max_day_pct is already ×100 on backend side
-        const maxDayPct = r.max_day_pct != null ? r.max_day_pct.toFixed(1) + '%' : '—';
+        const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
+        const contractSize = r.contract_size || 1;
+        const triggerPct = r.trail_trigger_pct || 0;
+        const triggerLabel = triggerPct > 0 ? Math.round(triggerPct * 100) + '%' : 'OFF';
+        const trailLabel = triggerPct > 0 && r.trail_pct != null
+            ? fmtPct(parseFloat(r.trail_pct)) + ' / ' + fmtSigned(r.trail || 0, 't')
+            : 'OFF';
 
         // Best/worst day from daily_pnl dict
         const daily = r.daily_pnl || {};
@@ -3809,16 +4118,17 @@ function renderMLResults(results) {
         const tr = document.createElement('tr');
         tr.innerHTML =
             '<td>' + (r.strategy || '—').toUpperCase() + '</td>' +
+            '<td style="text-align:center;">' + contractLabel + '</td>' +
+            '<td style="text-align:center;">' + contractSize + '</td>' +
             '<td style="text-align:center;">' + (r.sl || 0) + '</td>' +
             '<td style="text-align:center;">' + (r.tp || 0) + '</td>' +
-            '<td style="text-align:center;">' + (r.trail || 0) + '</td>' +
+            '<td style="text-align:center;">' + trailLabel + '</td>' +
+            '<td style="text-align:center;">' + triggerLabel + '</td>' +
             '<td style="text-align:center;">' + (r.total_trades || 0) + '</td>' +
             '<td style="text-align:center;color:' + (parseFloat(wr) >= 50 ? 'var(--green)' : '') + ';">' + wr + '%</td>' +
             '<td style="text-align:right;color:' + pnlColor + ';">$' + pnl.toFixed(0) + '</td>' +
             '<td style="text-align:right;color:var(--red);">$' + dd.toFixed(0) + '</td>' +
             '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
-            '<td style="text-align:center;">' + (pf >= 999 ? '∞' : pf.toFixed(2)) + '</td>' +
-            '<td style="text-align:center;">' + consist + '</td>' +
             '<td style="text-align:right;color:var(--green);">' + bestDay + '</td>' +
             '<td style="text-align:right;color:var(--red);">' + worstDay + '</td>' +
             '<td style="text-align:center;color:' + scoreColor + ';font-weight:600;">' + score + '</td>' +
@@ -3840,7 +4150,7 @@ async function saveMLPreset(origRank) {
     const r = _mlResults.find(x => (x.rank || 0) === origRank);
     if (!r) return;
 
-    // Auto-name: TR/MA/RE/RETR  SL  TP  TRAIL  e.g. "TR 60 200 5" / "RE 50 150 5" / "RETR 30 120 10"
+    // Auto-name follows the ML table order: strategy, contract, size, SL, TP, trail, trigger.
     const strat = (r.strategy || 'trend').toLowerCase();
     const prefix = (
         strat === 'macd'             ? 'MA'   :
@@ -3848,14 +4158,30 @@ async function saveMLPreset(origRank) {
         strat === 'trend_reversion'  ? 'RETR' :
         'TR'
     );
-    const presetName = prefix + ' ' + (r.sl || 0) + ' ' + (r.tp || 0) + ' ' + (r.trail || 0);
+    const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
+    const contractSize = r.contract_size || 1;
+    const triggerPct = r.trail_trigger_pct != null ? r.trail_trigger_pct : 0.30;
+    const trailEnabled = triggerPct > 0;
+    const trailPct = trailEnabled && r.trail_pct != null
+        ? parseFloat(r.trail_pct)
+        : trailPctFromTicks(r.trail || 0, r.sl || 0, r.tp || 0);
+    const presetName = prefix + ' ' + contractLabel + 'x' + contractSize +
+        ' SL' + (r.sl || 0) + ' TP' + (r.tp || 0) +
+        (trailEnabled
+            ? ' TRAIL' + fmtPct(trailPct) + '/' + (r.trail || 0) + 't TRIG' + Math.round(triggerPct * 100)
+            : ' TRAIL OFF');
 
     const params = {
         strategy: strat,
         tp_ticks: r.tp,
         sl_ticks: r.sl,
         trail_sl_ticks: r.trail,
-        candle_seconds: r.candle_seconds || 30,
+        trail_sl_pct: trailPct,
+        trail_trigger_pct: triggerPct,
+        trail_enabled: trailEnabled,
+        candle_seconds: r.candle_seconds || 60,
+        contract_id: r.contract_id || 'CON.F.US.MNQ.M26',
+        contract_size: contractSize,
     };
 
     try {
@@ -4325,36 +4651,6 @@ function renderMetrics(m, backtestTrades) {
                  paren(liveStats ? liveStats.maxDayPct.toFixed(1) + '%' : ''),
           cls: passCls(maxDayPassFinal) },
     ];
-
-    // ── 60-min post-breakout stats (v0.11) ──
-    // For each completed trade, the engine tracks the 60 minutes after entry:
-    // max favorable/adverse ticks, and which level (trail / SL / TP) was first
-    // crossed. These cards summarise that window across the run.
-    const pbN     = m.post_breakout_sample_size || 0;
-    const pbFav   = m.post_breakout_avg_max_fav_ticks;
-    const pbAdv   = m.post_breakout_avg_max_adv_ticks;
-    const pbClean = m.post_breakout_tp_clean || 0;
-    const pbTrail = m.post_breakout_tp_after_trail || 0;
-    const pbSl    = m.post_breakout_tp_after_sl || 0;
-    if (pbN > 0) {
-        items.push(
-            { label: 'POST60 AVG +TICKS',
-              value: (pbFav != null ? pbFav.toFixed(1) : '--') + ' (' + pbN + ')',
-              cls: 'pos' },
-            { label: 'POST60 AVG -TICKS',
-              value: (pbAdv != null ? pbAdv.toFixed(1) : '--') + ' (' + pbN + ')',
-              cls: 'neg' },
-            { label: 'TP CLEAN',
-              value: pbClean + '',
-              cls: 'pos' },
-            { label: 'TP↶TRAIL',
-              value: pbTrail + '',
-              cls: '' },
-            { label: 'TP↶SL',
-              value: pbSl + '',
-              cls: 'neg' },
-        );
-    }
 
     grid.innerHTML = items.map(i => `
         <div class="metric-card">

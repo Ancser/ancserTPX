@@ -26,11 +26,12 @@ REST API 路由
 from __future__ import annotations
 import os
 import logging
+import math
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.db.models import (
     BacktestConfig, BarUnit, Candle, StrategyParams,
@@ -47,6 +48,131 @@ router = APIRouter()
 def _env(key: str, default: str = "") -> str:
     """讀取 .env 環境變數"""
     return os.getenv(key, default)
+
+
+MNQ_SIZE_CHOICES = (1, 3, 5, 10)
+TRAIL_TICK_STEP = 5
+ML_TRAIL_PCT_CHOICES = (
+    -0.50, -0.25, -0.10,
+    0.0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
+)
+
+
+def _normalize_contract_size(contract_id: str, requested) -> int:
+    """Enforce the UI/API size contract: MNQ=1/3/5/10, NQ=1."""
+    sym = _extract_symbol(contract_id)
+    if sym in ("NQ", "ENQ"):
+        return 1
+    try:
+        size = int(requested or 1)
+    except (TypeError, ValueError):
+        size = 3
+    return size if size in MNQ_SIZE_CHOICES else 3
+
+
+def _normalize_trail_trigger_pct(value) -> float:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        pct = 0.30
+    if pct > 1:
+        pct = pct / 100.0
+    allowed = (0.0, 0.10, 0.30, 0.50, 0.70)
+    return min(allowed, key=lambda x: abs(x - pct))
+
+
+def _normalize_trail_pct(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return None
+    if abs(pct) > 1:
+        pct = pct / 100.0
+    return max(-0.50, min(0.50, pct))
+
+
+def _floor_ticks_to_step(ticks: float, step: int = TRAIL_TICK_STEP) -> int:
+    try:
+        n = abs(float(ticks))
+    except (TypeError, ValueError):
+        return 0
+    if step <= 1:
+        return int(n)
+    return int(n // step) * step
+
+
+def _trail_max_profit_ticks(tp_ticks, trigger_pct) -> int:
+    try:
+        tp = abs(int(tp_ticks or 0))
+    except (TypeError, ValueError):
+        tp = 0
+    trigger = _normalize_trail_trigger_pct(trigger_pct)
+    if trigger <= 0:
+        return 0
+    trigger_ticks = _floor_ticks_to_step(tp * trigger)
+    return max(0, trigger_ticks - TRAIL_TICK_STEP)
+
+
+def _clamp_trail_ticks(trail, sl_ticks, tp_ticks, trigger_pct: Optional[float] = None) -> int:
+    try:
+        t = int(trail or 0)
+    except (TypeError, ValueError):
+        t = 5
+    try:
+        sl = abs(int(sl_ticks or 0))
+        tp = abs(int(tp_ticks or 0))
+    except (TypeError, ValueError):
+        sl, tp = 50, 150
+    hi = tp
+    if trigger_pct is not None:
+        hi = min(hi, _trail_max_profit_ticks(tp, trigger_pct))
+    return max(-sl, min(hi, t))
+
+
+def _trail_ticks_from_pct(trail_pct, sl_ticks, tp_ticks, trigger_pct: Optional[float] = None) -> int:
+    pct = _normalize_trail_pct(trail_pct)
+    if pct is None:
+        pct = 0.05
+    if trigger_pct is not None and _normalize_trail_trigger_pct(trigger_pct) <= 0:
+        return 0
+    try:
+        sl = abs(int(sl_ticks or 0))
+        tp = abs(int(tp_ticks or 0))
+    except (TypeError, ValueError):
+        sl, tp = 50, 150
+
+    if pct < 0:
+        ticks = -_floor_ticks_to_step(sl * abs(pct))
+    else:
+        ticks = _floor_ticks_to_step(tp * pct)
+    return _clamp_trail_ticks(ticks, sl, tp, trigger_pct)
+
+
+def _resolve_trail_ticks(trail_ticks, trail_pct, sl_ticks, tp_ticks, trigger_pct) -> int:
+    pct = _normalize_trail_pct(trail_pct)
+    if pct is not None:
+        return _trail_ticks_from_pct(pct, sl_ticks, tp_ticks, trigger_pct)
+    return _clamp_trail_ticks(trail_ticks, sl_ticks, tp_ticks, trigger_pct)
+
+
+def _trail_grid_for(sl_ticks: int, tp_ticks: int, trigger_pct: float) -> List[Tuple[int, Optional[float]]]:
+    trigger = _normalize_trail_trigger_pct(trigger_pct)
+    if trigger <= 0:
+        return [(0, None)]
+    ticks_to_pct: Dict[int, float] = {}
+    pct_values = {
+        pct for pct in ML_TRAIL_PCT_CHOICES
+        if pct <= 0 or (pct <= 0.50 and pct < trigger - 1e-9)
+    }
+    pct_values.update({-0.50, 0.0})
+    for pct in sorted(pct_values):
+        ticks = _trail_ticks_from_pct(pct, sl_ticks, tp_ticks, trigger_pct)
+        prev = ticks_to_pct.get(ticks)
+        if prev is None or abs(pct) < abs(prev):
+            ticks_to_pct[ticks] = pct
+    return sorted((ticks, pct) for ticks, pct in ticks_to_pct.items())
 
 # ── 臨時存儲（後續改用 SQLite）──────────────────────────
 _backtest_results = []
@@ -65,6 +191,8 @@ class BacktestRequest(BaseModel):
     tp_ticks: int = 150
     sl_ticks: int = 50
     trail_sl_ticks: int = 5
+    trail_sl_pct: Optional[float] = None
+    trail_trigger_pct: float = 0.30
     trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
     # Contract & sizing (defaults to 3× Micro NQ)
@@ -768,6 +896,12 @@ async def run_backtest(req: BacktestRequest):
     # v0.11+: derive symbol + per-contract fees from the chosen contract_id so
     # the trade journal shows /MNQ when MNQ is selected and 10×MNQ doesn't get
     # stuck paying 10× the NQ Mini fee schedule.
+    contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
+    trail_trigger_pct = _normalize_trail_trigger_pct(req.trail_trigger_pct)
+    trail_sl_ticks = _resolve_trail_ticks(
+        req.trail_sl_ticks, req.trail_sl_pct, req.sl_ticks, req.tp_ticks, trail_trigger_pct
+    )
+
     bt_symbol = _extract_symbol(req.contract_id)
     config = BacktestConfig(
         strategies=["trend_follow"],
@@ -781,11 +915,12 @@ async def run_backtest(req: BacktestRequest):
         strategy=req.strategy,
         tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
-        trail_sl_ticks=req.trail_sl_ticks,
-        trail_enabled=bool(req.trail_enabled),
+        trail_sl_ticks=trail_sl_ticks,
+        trail_trigger_pct=trail_trigger_pct,
+        trail_enabled=bool(req.trail_enabled) and trail_trigger_pct > 0,
         candle_seconds=req.candle_seconds,
         contract_id=req.contract_id,
-        contract_size=max(1, int(req.contract_size or 1)),
+        contract_size=contract_size,
     )
 
     engine = BacktestEngine(
@@ -972,6 +1107,11 @@ def _precompute_zone_timeline(candles: list, value_area_pct: float = 0.80) -> li
 
 class MLRunRequest(BaseModel):
     strategy: str = "trend"
+    tp_ticks: int = 150
+    sl_ticks: int = 50
+    trail_sl_ticks: int = 5
+    trail_sl_pct: Optional[float] = None
+    trail_trigger_pct: float = 0.30
     candle_seconds: int = 30
     initial_capital: float = 50000.0
     start_date: str = ""
@@ -980,9 +1120,10 @@ class MLRunRequest(BaseModel):
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
     trail_enabled: bool = True
+    fixed_params: List[str] = Field(default_factory=list)
 
 
-def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs, zone_timeline,
+def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigger_pct, cand_secs, zone_timeline,
                       contract_id: str = "CON.F.US.MNQ.M26",
                       contract_size: int = 3,
                       trail_enabled: bool = True) -> dict:
@@ -998,10 +1139,11 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs, zone_
         sl_ticks=sl,
         tp_ticks=tp,
         trail_sl_ticks=trail,
+        trail_trigger_pct=trigger_pct,
         trail_enabled=bool(trail_enabled),
         candle_seconds=cand_secs,
         contract_id=contract_id,
-        contract_size=max(1, int(contract_size or 1)),
+        contract_size=_normalize_contract_size(contract_id, contract_size),
     )
     engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline)
     try:
@@ -1012,6 +1154,10 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs, zone_
             "sl": sl,
             "tp": tp,
             "trail": trail,
+            "trail_pct": trail_pct,
+            "trail_trigger_pct": trigger_pct,
+            "contract_id": contract_id,
+            "contract_size": _normalize_contract_size(contract_id, contract_size),
             "total_trades": m.total_trades,
             "wins": m.wins,
             "losses": m.losses,
@@ -1025,54 +1171,43 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, cand_secs, zone_
             "avg_loss": round(m.avg_loss, 2),
         }
     except Exception as e:
-        return {"strategy": strategy, "sl": sl, "tp": tp, "trail": trail, "error": str(e)}
+        return {
+            "strategy": strategy,
+            "sl": sl,
+            "tp": tp,
+            "trail": trail,
+            "trail_pct": trail_pct,
+            "trail_trigger_pct": trigger_pct,
+            "contract_id": contract_id,
+            "contract_size": _normalize_contract_size(contract_id, contract_size),
+            "error": str(e),
+        }
     finally:
         with _ml_progress_lock:
             _ml_progress["current"] += 1
 
 
 def _score_result(r: dict) -> float:
-    """Score a result 0–100. Higher = better. Negative = filtered out.
-
-    Two components (50 pts each):
-      50 pts  Max DD    — DD ≤ $2000 → full 50; DD ≥ $4500 → 0; linear between
-      50 pts  PnL       — PnL ≥ $10k → full 50; PnL ≤ $2k → 0; linear between
-
-    Hard filters (score < 0 → excluded from ranking):
-      • error in run
-      • PnL ≤ 0          (not profitable)
-      • trade count < 8  (not enough data)
-    """
+    """Score 0-100: 50 pts max DD decay, 50 pts PnL growth, both exponential."""
     if r.get("error"):
         return -999.0
 
-    trades = r.get("total_trades", 0)
-    pnl    = r.get("total_pnl", 0)
-    dd     = r.get("max_drawdown", 0)
+    trades = r.get("total_trades", 0) or 0
+    pnl = float(r.get("total_pnl", 0) or 0)
+    dd = abs(float(r.get("max_drawdown", 0) or 0))
 
     # ── Hard filters ──────────────────────────────────────────────────────
-    if pnl <= 0:
-        return -0.5
     if trades < 8:
         return -0.4
 
-    # ── 1. Max DD component (0–67 pts, weight 2) ──────────────────────────
-    # DD ≤ 2000 → 67 pts | DD ≥ 4500 → 0 pts | linear between
-    if dd <= 2000:
-        dd_score = 67.0
-    elif dd >= 4500:
-        dd_score = 0.0
-    else:
-        dd_score = 67.0 * (4500 - dd) / (4500 - 2000)
+    curve = 3.0
+    dd_x = max(0.0, min(1.0, dd / 3000.0))
+    pnl_x = max(0.0, min(1.0, pnl / 10000.0))
+    decay_floor = math.exp(-curve)
 
-    # ── 2. PnL component (0–33 pts, weight 1) ─────────────────────────────
-    # PnL ≥ 10000 → 33 pts | PnL ≤ 2000 → 0 pts | linear between
-    if pnl >= 10000:
-        pnl_score = 33.0
-    elif pnl <= 2000:
-        pnl_score = 0.0
-    else:
-        pnl_score = 33.0 * (pnl - 2000) / (10000 - 2000)
+    dd_score = 50.0 * (math.exp(-curve * dd_x) - decay_floor) / (1.0 - decay_floor)
+
+    pnl_score = 50.0 * (math.exp(curve * pnl_x) - 1.0) / (math.exp(curve) - 1.0)
 
     return round(dd_score + pnl_score, 2)
 
@@ -1117,35 +1252,63 @@ async def ml_run(req: MLRunRequest):
     )
     logger.info(f"[ML] Zone timeline ready ({len(zone_timeline)} entries)")
 
-    # Strategy selection: respect req.strategy ("trend" / "macd" / "reversion" / "trend_reversion");
-    # "all" or empty → sweep all four.
-    _req_strat = (req.strategy or "all").lower()
-    if _req_strat in ("trend", "macd", "reversion", "trend_reversion"):
-        all_strategies = [_req_strat]
+    fixed = {str(x).lower() for x in (req.fixed_params or [])}
+    valid_strategies = ("trend", "macd", "reversion", "trend_reversion")
+
+    req_strategy = (req.strategy or "all").lower()
+    if "strategy" in fixed and req_strategy in valid_strategies:
+        strategy_values = [req_strategy]
+    elif req_strategy in valid_strategies and req_strategy != "all":
+        strategy_values = [req_strategy]
     else:
-        all_strategies = ["trend", "macd", "reversion", "trend_reversion"]
-    logger.info(f"[ML] Strategy sweep: {all_strategies}")
+        strategy_values = list(valid_strategies)
 
-    # Search grid
-    sl_values    = [10, 20, 30, 40, 50, 60, 80, 100]
-    tp_values    = [20, 40, 60, 80, 100, 120, 150, 200]
-    trail_values = [5, 10, 20]
+    contract_values = (
+        [req.contract_id or "CON.F.US.MNQ.M26"]
+        if "contract" in fixed
+        else ["CON.F.US.MNQ.M26", "CON.F.US.ENQ.M26"]
+    )
 
-    param_combos = [
-        (sl, tp, trail)
-        for sl in sl_values
-        for tp in tp_values
-        for trail in trail_values
-        if tp > sl
-    ]
+    sl_values = [int(req.sl_ticks)] if "sl" in fixed else [10, 20, 30, 40, 50, 60, 80, 100]
+    tp_values = [int(req.tp_ticks)] if "tp" in fixed else [20, 40, 60, 80, 100, 120, 150, 200]
+    trigger_values = (
+        [_normalize_trail_trigger_pct(req.trail_trigger_pct)]
+        if "trail_trigger" in fixed
+        else [0.0, 0.10, 0.30, 0.50, 0.70]
+    )
 
-    combos = [
-        (strategy, sl, tp, trail)
-        for strategy in all_strategies
-        for sl, tp, trail in param_combos
-    ]
+    combos = []
+    for contract_id in contract_values:
+        if "size" in fixed:
+            size_values = [_normalize_contract_size(contract_id, req.contract_size)]
+        else:
+            sym = _extract_symbol(contract_id)
+            size_values = [1] if sym in ("NQ", "ENQ") else list(MNQ_SIZE_CHOICES)
+        for contract_size in size_values:
+            for strategy in strategy_values:
+                for sl in sl_values:
+                    for tp in tp_values:
+                        if tp <= 0 or sl <= 0 or tp <= sl:
+                            continue
+                        for trigger_pct in trigger_values:
+                            combo_trail_enabled = bool(req.trail_enabled) and trigger_pct > 0
+                            if not combo_trail_enabled:
+                                trail_values = [(0, None)]
+                            elif "trail" in fixed:
+                                fixed_trail = _resolve_trail_ticks(
+                                    req.trail_sl_ticks, req.trail_sl_pct, sl, tp, trigger_pct
+                                )
+                                fixed_pct = _normalize_trail_pct(req.trail_sl_pct)
+                                trail_values = [(fixed_trail, fixed_pct)]
+                            else:
+                                trail_values = _trail_grid_for(sl, tp, trigger_pct)
+                            for trail, trail_pct in trail_values:
+                                combos.append((strategy, contract_id, contract_size, sl, tp, trail, trail_pct, trigger_pct, combo_trail_enabled))
 
-    logger.info(f"[ML] Running {len(combos)} combos ({len(all_strategies)} strategies × {len(param_combos)} param sets)")
+    logger.info(
+        f"[ML] Running {len(combos)} combos | fixed={sorted(fixed)} | "
+        f"strategies={strategy_values} contracts={contract_values}"
+    )
 
     # Reset progress counter
     _ml_progress["current"] = 0
@@ -1165,14 +1328,14 @@ async def ml_run(req: MLRunRequest):
                     initial_capital=config_base.initial_capital,
                     start_date=config_base.start_date,
                     end_date=config_base.end_date,
-                    symbol=config_base.symbol,
-                    commission_rt=config_base.commission_rt,
-                    fees_rt=config_base.fees_rt,
+                    symbol=_extract_symbol(contract_id),
+                    commission_rt=get_commission_rt(contract_id),
+                    fees_rt=get_fees_rt(contract_id),
                 ),
-                strategy, sl, tp, trail, cand_secs, zone_timeline,
-                req.contract_id, req.contract_size, req.trail_enabled,
+                strategy, sl, tp, trail, trail_pct, trigger_pct, cand_secs, zone_timeline,
+                contract_id, contract_size, combo_trail_enabled,
             )
-            for strategy, sl, tp, trail in combos
+            for strategy, contract_id, contract_size, sl, tp, trail, trail_pct, trigger_pct, combo_trail_enabled in combos
         ]
         results = await asyncio.gather(*tasks)
 
@@ -1184,7 +1347,7 @@ async def ml_run(req: MLRunRequest):
     for rank, (r, score) in enumerate(scored, start=1):
         r["rank"] = rank
         r["score"] = score
-        r["pass_max_dd"] = r.get("max_drawdown", 9999) < 2000
+        r["pass_max_dd"] = r.get("max_drawdown", 9999) < 3000
         daily = r.get("daily_pnl", {})
         if daily and r.get("total_pnl", 0) > 0:
             pos_days = sum(1 for v in daily.values() if v > 0)
@@ -1234,6 +1397,8 @@ class LiveStartRequest(BaseModel):
     tp_ticks: int = 150
     sl_ticks: int = 50
     trail_sl_ticks: int = 5
+    trail_sl_pct: Optional[float] = None
+    trail_trigger_pct: float = 0.30
     trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
 
@@ -1309,15 +1474,22 @@ async def live_start(req: LiveStartRequest):
     except Exception as e:
         logger.error(f"[LIVE START] Failed to fetch fresh candles: {e} — using existing data")
 
+    contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
+    trail_trigger_pct = _normalize_trail_trigger_pct(req.trail_trigger_pct)
+    trail_sl_ticks = _resolve_trail_ticks(
+        req.trail_sl_ticks, req.trail_sl_pct, req.sl_ticks, req.tp_ticks, trail_trigger_pct
+    )
+
     live_strategy_params = StrategyParams(
         strategy=req.strategy,
         tp_ticks=req.tp_ticks,
         sl_ticks=req.sl_ticks,
-        trail_sl_ticks=req.trail_sl_ticks,
-        trail_enabled=bool(req.trail_enabled),
+        trail_sl_ticks=trail_sl_ticks,
+        trail_trigger_pct=trail_trigger_pct,
+        trail_enabled=bool(req.trail_enabled) and trail_trigger_pct > 0,
         candle_seconds=req.candle_seconds,
         contract_id=req.contract_id,
-        contract_size=max(1, int(req.contract_size or 1)),
+        contract_size=contract_size,
     )
 
     _live_engine = LiveTradingEngine(
@@ -1788,12 +1960,14 @@ _PRESETS_FILE = os.path.join(
     "data", "presets.json"
 )
 
-_DEFAULT_PRESET_NAME = "TR 50SL 150TP 5 TRAIL SL"
+_DEFAULT_PRESET_NAME = "TR 50SL 150TP +5% TRAIL SL"
 _DEFAULT_PRESET_PARAMS = {
     "strategy": "trend",
     "tp_ticks": 150,
     "sl_ticks": 50,
     "trail_sl_ticks": 5,
+    "trail_sl_pct": 0.05,
+    "trail_trigger_pct": 0.30,
     "trail_enabled": True,
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",

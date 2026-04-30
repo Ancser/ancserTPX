@@ -4,7 +4,7 @@
 # 主要職責:
 #   1. 30s 輪詢 1m K 線 → SessionZoneDetector → 策略 evaluate
 #   2. Limit / Market 入場下單；fill 後掛 Stop SL + Limit TP (bracket)
-#   3. Trail SL: UPNL ≥ 20 ticks → SL 移到 entry ± trail_sl_ticks (一次性)
+#   3. Trail SL: UPNL reaches configured TP% → SL moves to entry ± trail_sl_ticks
 #   4. 收盤前 (12:30 PT 取消 pending / 12:45 PT flatten) 強制平倉
 #   5. _sync_position 偵測 fill / close → 寫 trade 到 _trades + data/live_exits.json
 # 版本變更 (v0.11):
@@ -56,6 +56,7 @@ class LiveTradingEngine:
     """即時交易引擎 — Session 模式 (1m K 線, 晚盤 overnight zone)"""
 
     # 加州 12:45 PT = 15:45 ET = 14:45 CT = 19:45 UTC
+    TRAIL_TICK_STEP = 5
     FLATTEN_TIME_UTC = time(19, 45)     # UTC 19:45 = PT 12:45 flatten
     PRE_FLATTEN_UTC = time(19, 30)      # UTC 19:30 = PT 12:30 cancel pending
 
@@ -155,6 +156,27 @@ class LiveTradingEngine:
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "data", "live_exits.json"
         )
+
+    @classmethod
+    def _floor_ticks_to_step(cls, ticks: float) -> int:
+        try:
+            n = abs(float(ticks))
+        except (TypeError, ValueError):
+            return 0
+        return int(n // cls.TRAIL_TICK_STEP) * cls.TRAIL_TICK_STEP
+
+    def _resolved_trail_ticks(self) -> int:
+        sl_ticks = abs(int(getattr(self.strategy_params, 'sl_ticks', 50) or 50))
+        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
+        trail_ticks = int(getattr(self.strategy_params, 'trail_sl_ticks', 5) or 0)
+        trigger_pct = getattr(self.strategy_params, 'trail_trigger_pct', 0.30)
+        if trigger_pct > 1:
+            trigger_pct = trigger_pct / 100.0
+        if trigger_pct <= 0:
+            return 0
+
+        max_positive = max(0, self._floor_ticks_to_step(tp_ticks * trigger_pct) - self.TRAIL_TICK_STEP)
+        return max(-sl_ticks, min(min(tp_ticks, max_positive), trail_ticks))
 
     @property
     def is_running(self) -> bool:
@@ -755,7 +777,7 @@ class LiveTradingEngine:
                             "error"
                         )
 
-            # ── Trailing SL (forced ON): UPNL ≥ 20 ticks → move SL to entry ± trail_sl_ticks ──
+            # ── Trailing SL: trigger at configured TP%, then move SL from entry ──
             self._position_age += 1   # track for display only
             if self._last_market_price:
                 await self._check_trailing_sl_live()
@@ -946,10 +968,7 @@ class LiveTradingEngine:
             return False
 
     async def _check_trailing_sl_live(self):
-        """Live trailing SL (opt-in via strategy_params.trail_enabled, default ON):
-        price moves ≥ 20 ticks in favour → move SL to entry ± trail_sl_ticks.
-        Tick-based trigger (contract-agnostic). One-time per position.
-        """
+        """Live trailing SL: trigger at a configured fraction of TP, once."""
         if not getattr(self.strategy_params, 'trail_enabled', True):
             return
         if self._trail_sl_triggered or not self._active_signal or not self._fill_price:
@@ -957,24 +976,31 @@ class LiveTradingEngine:
         sig = self._active_signal
         mkt = self._last_market_price
         if sig.direction == Direction.BUY:
-            ticks_moved = (mkt - self._fill_price) / TICK_SIZE
+            ticks_moved = (mkt - self._fill_price) / self.tick_size
         else:
-            ticks_moved = (self._fill_price - mkt) / TICK_SIZE
+            ticks_moved = (self._fill_price - mkt) / self.tick_size
 
-        TRAIL_TRIGGER_TICKS = 20
-        if ticks_moved < TRAIL_TRIGGER_TICKS:
+        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
+        trigger_pct = getattr(self.strategy_params, 'trail_trigger_pct', 0.30)
+        if trigger_pct > 1:
+            trigger_pct = trigger_pct / 100.0
+        if trigger_pct <= 0:
+            return
+        trigger_ticks = max(1.0, tp_ticks * trigger_pct)
+        if ticks_moved < trigger_ticks:
             return
 
         self._trail_sl_triggered = True
-        trail_pts = getattr(self.strategy_params, 'trail_sl_ticks', 5) * TICK_SIZE
+        trail_ticks = self._resolved_trail_ticks()
+        trail_pts = trail_ticks * self.tick_size
         if sig.direction == Direction.BUY:
             new_sl = self._fill_price + trail_pts
         else:
             new_sl = self._fill_price - trail_pts
         new_sl = self._round_to_tick(new_sl)
         self._log_event(
-            f"[TRAIL SL] +{ticks_moved:.0f} ticks → SL 移至 {new_sl:.2f} "
-            f"(entry={self._fill_price:.2f} +{trail_pts:.2f}pts)"
+            f"[TRAIL SL] +{ticks_moved:.0f} ticks ({trigger_pct:.0%} TP) -> SL {new_sl:.2f} "
+            f"(entry={self._fill_price:.2f}, offset={trail_ticks}t)"
         )
 
         # Place new breakeven SL FIRST, then cancel old SL only if new one succeeds.
