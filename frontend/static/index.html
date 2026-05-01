@@ -2141,6 +2141,7 @@ async function goLive() {
     }
 
     // ── Start candle polling + status polling (always, even if engine fails) ──
+    _cachedVPZones = null;  // clear backtest zones to avoid overlap with live zones
     _lastLiveCandleTime = '';  // reset
     if (_liveInterval) clearInterval(_liveInterval);
     _liveInterval = setInterval(pollLiveCandle, 1000); // every 1s (backend caches API calls)
@@ -2519,9 +2520,7 @@ async function pollLiveStatus() {
             const zoneKey = st.zones.map(z => z.zone_id + z.status + z.poc.toFixed(2) + z.num_candles).join('|');
             if (zoneKey !== window._lastLiveZoneKey) {
                 window._lastLiveZoneKey = zoneKey;
-                const liveZoneIds = new Set(st.zones.map(z => z.zone_id));
-                const merged = [...(_cachedVPZones || []).filter(z => !liveZoneIds.has(z.zone_id)), ...st.zones];
-                drawVolumeProfile(merged);
+                drawVolumeProfile(st.zones);
             }
         }
 
