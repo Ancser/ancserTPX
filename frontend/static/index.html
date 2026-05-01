@@ -970,7 +970,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.11.1
+        0.11.2
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1806,9 +1806,14 @@ async function deletePreset(mode) {
     const name = sel.value;
     if (name === 'default') { log('Cannot delete the Default preset', 'warn'); return; }
     try {
-        await fetch(API + '/presets/' + encodeURIComponent(name), {
-            method: 'DELETE',
+        const resp = await fetch(API + '/presets/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
         });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const result = await resp.json();
+        if (!result.success || !result.deleted) throw new Error('Preset not found: ' + name);
         await fetchPresets();
         refreshPresetDropdowns();
         // Reset both dropdowns to default if they were showing deleted preset
@@ -2756,7 +2761,7 @@ function initChart() {
 
 // -- Volume Profile Overlay (full-chart canvas) ---------------
 // Draws VP histogram at each zone's formed_at position
-// POC extends from zone start to zone end (or chart edge)
+// POC extends from zone start to the next session boundary.
 
 let vpOverlayCanvas = null;
 let positionLines = [];
@@ -2794,6 +2799,42 @@ const SESSION_BOUNDARIES = [
     { h: 13, m: 30, label: 'RTH'  },
     { h: 20, m: 0,  label: 'AH'   },
 ];
+
+function utcMsToChartTime(ms) {
+    const localOffset = new Date(ms).getTimezoneOffset() * -60;
+    return Math.floor(ms / 1000) + localOffset;
+}
+
+function getNextSessionBoundaryMs(isoStr) {
+    if (!isoStr) return null;
+    let s = String(isoStr);
+    if (!s.endsWith('Z') && !s.includes('+') && !s.includes('-', 10)) s += 'Z';
+    const formed = new Date(s);
+    if (isNaN(formed.getTime())) return null;
+
+    const dayMs = 86400000;
+    const startDay = new Date(formed.getTime() - dayMs);
+    startDay.setUTCHours(0, 0, 0, 0);
+    const formedMs = formed.getTime();
+    let best = null;
+
+    for (let d = startDay.getTime(); d <= formedMs + 2 * dayMs; d += dayMs) {
+        const day = new Date(d);
+        SESSION_BOUNDARIES.forEach(b => {
+            const boundaryMs = Date.UTC(
+                day.getUTCFullYear(),
+                day.getUTCMonth(),
+                day.getUTCDate(),
+                b.h, b.m, 0
+            );
+            if (boundaryMs > formedMs + 1000 && (best === null || boundaryMs < best)) {
+                best = boundaryMs;
+            }
+        });
+    }
+
+    return best;
+}
 
 function drawSessionDividers() {
     if (!candleSeries || !chart) return;
@@ -2845,8 +2886,7 @@ function drawSessionDividers() {
             if (bMs < fromMs - dayMs || bMs > toMs + dayMs) return;
 
             // Convert to lightweight-charts time (local offset hack used elsewhere)
-            const localOffset = new Date().getTimezoneOffset() * -60;
-            const chartTime = Math.floor(bMs / 1000) + localOffset;
+            const chartTime = utcMsToChartTime(bMs);
             const x = chart.timeScale().timeToCoordinate(chartTime);
             if (x === null || x < 0 || x > W) return;
 
@@ -2891,7 +2931,7 @@ function drawVolumeProfile(zones) {
         return chart.timeScale().timeToCoordinate(ts);
     };
 
-    // ── PASS 1: Draw zone bodies (histogram, background, VAH/VAL, entry levels) ──
+    // ── PASS 1: Draw zone bodies (histogram, background, VAH/VAL) ──
     zones.forEach(z => {
         // Skip FORMING zones — they haven't matured, no need to draw
         if (z.status === 'forming') return;
@@ -2955,11 +2995,11 @@ function drawVolumeProfile(zones) {
                 const isVA = p.price >= val && p.price <= vah;
 
                 if (isPOC) {
-                    ctx.fillStyle = `rgba(255, 167, 38, ${0.25 + p.pct * 0.4})`;
+                    ctx.fillStyle = `rgba(255, 48, 72, ${0.10 + p.pct * 0.12})`;
                 } else if (isVA) {
-                    ctx.fillStyle = `rgba(100, 220, 255, ${0.1 + p.pct * 0.25})`;
+                    ctx.fillStyle = `rgba(0, 229, 190, ${0.02 + p.pct * 0.08})`;
                 } else {
-                    ctx.fillStyle = `rgba(100, 220, 255, ${0.03 + p.pct * 0.08})`;
+                    ctx.fillStyle = `rgba(0, 229, 190, ${0.01 + p.pct * 0.035})`;
                 }
                 ctx.fillRect(histX, y - 1, barW, 2);
             });
@@ -2976,9 +3016,9 @@ function drawVolumeProfile(zones) {
                 const barW = histW * intensity;
 
                 if (Math.abs((yStep + stepH / 2) - yPOC) < stepH * 1.5) {
-                    ctx.fillStyle = `rgba(255, 167, 38, ${0.15 + intensity * 0.35})`;
+                    ctx.fillStyle = `rgba(255, 48, 72, ${0.08 + intensity * 0.12})`;
                 } else {
-                    ctx.fillStyle = `rgba(100, 220, 255, ${0.05 + intensity * 0.2})`;
+                    ctx.fillStyle = `rgba(0, 229, 190, ${0.015 + intensity * 0.07})`;
                 }
                 ctx.fillRect(histX, yStep, barW, Math.max(1, stepH - 1));
             }
@@ -3032,75 +3072,6 @@ function drawVolumeProfile(zones) {
         }
         ctx.setLineDash([]);
 
-        // ── SessionTrendFollow entry levels (midpoint entries) ──
-        // BUY entry = VAH + 50%×(H100-VAH), SELL entry = VAL - 50%×(VAL-L100)
-        // SL: BUY → VAH - 12.5pts, SELL → VAL + 12.5pts
-        // TP: 3× SL distance
-        if (!isLeft && vah > 0 && val > 0) {
-            const buyEntry = vah + 0.5 * (h100 - vah);
-            const sellEntry = val - 0.5 * (val - l100);
-            const slPts = 12.5; // 50 ticks × 0.25
-            const buySL = vah - slPts;
-            const sellSL = val + slPts;
-            const buyTP = buyEntry + Math.abs(buyEntry - buySL) * 3;
-            const sellTP = sellEntry - Math.abs(sellEntry - sellSL) * 3;
-
-            const yBuyEntry = priceToY(buyEntry);
-            const ySellEntry = priceToY(sellEntry);
-            const yBuySL = priceToY(buySL);
-            const ySellSL = priceToY(sellSL);
-            const yBuyTP = priceToY(buyTP);
-            const ySellTP = priceToY(sellTP);
-
-            ctx.setLineDash([2, 4]);
-            ctx.font = '8px "IBM Plex Mono", monospace';
-            ctx.textAlign = 'right';
-
-            // BUY entry (green dotted)
-            if (yBuyEntry >= 0 && yBuyEntry <= H) {
-                ctx.strokeStyle = 'rgba(0, 229, 160, 0.45)';
-                ctx.beginPath(); ctx.moveTo(x0, yBuyEntry); ctx.lineTo(x1, yBuyEntry); ctx.stroke();
-                ctx.fillStyle = 'rgba(0, 229, 160, 0.5)';
-                ctx.fillText('BUY ' + buyEntry.toFixed(1), x1 - 4, yBuyEntry + 10);
-            }
-            // BUY TP (green faint)
-            if (yBuyTP >= 0 && yBuyTP <= H) {
-                ctx.strokeStyle = 'rgba(0, 229, 160, 0.2)';
-                ctx.beginPath(); ctx.moveTo(x0, yBuyTP); ctx.lineTo(x1, yBuyTP); ctx.stroke();
-                ctx.fillStyle = 'rgba(0, 229, 160, 0.25)';
-                ctx.fillText('TP ' + buyTP.toFixed(0), x1 - 4, yBuyTP - 2);
-            }
-
-            // SELL entry (red dotted)
-            if (ySellEntry >= 0 && ySellEntry <= H) {
-                ctx.strokeStyle = 'rgba(255, 64, 96, 0.45)';
-                ctx.beginPath(); ctx.moveTo(x0, ySellEntry); ctx.lineTo(x1, ySellEntry); ctx.stroke();
-                ctx.fillStyle = 'rgba(255, 64, 96, 0.5)';
-                ctx.fillText('SELL ' + sellEntry.toFixed(1), x1 - 4, ySellEntry - 2);
-            }
-            // SELL TP (red faint)
-            if (ySellTP >= 0 && ySellTP <= H) {
-                ctx.strokeStyle = 'rgba(255, 64, 96, 0.2)';
-                ctx.beginPath(); ctx.moveTo(x0, ySellTP); ctx.lineTo(x1, ySellTP); ctx.stroke();
-                ctx.fillStyle = 'rgba(255, 64, 96, 0.25)';
-                ctx.fillText('TP ' + sellTP.toFixed(0), x1 - 4, ySellTP + 10);
-            }
-
-            // SL lines (orange thin)
-            ctx.strokeStyle = 'rgba(255, 167, 38, 0.25)';
-            if (yBuySL >= 0 && yBuySL <= H) {
-                ctx.beginPath(); ctx.moveTo(x0, yBuySL); ctx.lineTo(x1, yBuySL); ctx.stroke();
-                ctx.fillStyle = 'rgba(255, 167, 38, 0.3)';
-                ctx.fillText('SL', x1 - 4, yBuySL + 10);
-            }
-            if (ySellSL >= 0 && ySellSL <= H) {
-                ctx.beginPath(); ctx.moveTo(x0, ySellSL); ctx.lineTo(x1, ySellSL); ctx.stroke();
-                ctx.fillStyle = 'rgba(255, 167, 38, 0.3)';
-                ctx.fillText('SL', x1 - 4, ySellSL - 2);
-            }
-            ctx.setLineDash([]);
-        }
-
         // ── Zone ID + maturity label ──
         if (!isLeft) {
             const matureTag = z.mature ? ' [MATURE]' : '';
@@ -3124,19 +3095,14 @@ function drawVolumeProfile(zones) {
     });
 
     // ── PASS 2: Draw POC lines ──
-    // Active zones: POC from formed_at → last loaded candle (NOT canvas edge)
-    // Left zones: POC from formed_at → left_at ONLY (confirmed break = stop expanding)
-    let rightEdge = W - 60;
-    {
-        const cd = window._lastChartData;
-        if (cd && cd.length > 0) {
-            try {
-                const lastX = chart.timeScale().timeToCoordinate(cd[cd.length - 1].time);
-                if (lastX !== null) rightEdge = Math.min(rightEdge, lastX);
-            } catch(_) {}
-        }
-    }
-    const pocLabels = [];  // collect for right-edge price tags (active only)
+    // POC extends to the next session boundary, matching the session VP behavior.
+    const chartRight = W - 60;
+    const sessionEndToX = (isoStr) => {
+        const endMs = getNextSessionBoundaryMs(isoStr);
+        if (endMs === null) return null;
+        return chart.timeScale().timeToCoordinate(utcMsToChartTime(endMs));
+    };
+    const pocLabels = [];  // collect for POC price tags (active only)
 
     zones.forEach(z => {
         const is1m = z.timeframe === '1m';
@@ -3147,37 +3113,31 @@ function drawVolumeProfile(zones) {
         if (yPOC < -100 || yPOC > H + 100) return;
 
         const xStart = timeToX(z.formed_at);
-        // For LEFT zones: resolve both ends, skip if off-screen
+        const xSessionEnd = sessionEndToX(z.formed_at);
         let x0, x1;
         if (isLeft) {
             const xLeft = z.left_at ? timeToX(z.left_at) : null;
-            if (xStart === null && xLeft === null) return;
+            if (xStart === null && xLeft === null && xSessionEnd === null) return;
             x0 = xStart !== null ? xStart : -200;
-            // Cap left-zone POC width: use resolved xLeft, or a bounded fallback (max 400px)
-            x1 = xLeft !== null ? Math.min(rightEdge, xLeft) : x0 + Math.min(400, Math.max(80, (z.num_candles || 60) * 3));
-            x1 = Math.min(rightEdge, x1);
-            // Skip if entirely off-screen
-            if (x1 < 0 || x0 > W) return;
-            x0 = Math.max(-10, x0);
+            x1 = xSessionEnd !== null
+                ? xSessionEnd
+                : (xLeft !== null ? xLeft : x0 + Math.min(400, Math.max(80, (z.num_candles || 60) * 3)));
         } else {
             x0 = xStart !== null ? xStart : 0;
-            x1 = rightEdge;
+            x1 = xSessionEnd !== null ? xSessionEnd : chartRight;
         }
+        if (x1 < 0 || x0 > W) return;
+        x0 = Math.max(-10, x0);
+        x1 = Math.min(chartRight, x1);
         if (x1 <= x0 + 5) return;
 
         const activeAlpha = is1m ? 0.8 : 1.0;
         const leftAlpha = is1m ? 0.15 : 0.2;
         const alpha = isLeft ? leftAlpha : activeAlpha;
 
-        if (is1m) {
-            ctx.strokeStyle = `rgba(0, 229, 160, ${alpha})`;
-            ctx.lineWidth = isLeft ? 0.4 : 1.0;
-            ctx.setLineDash(isLeft ? [2, 6] : [4, 3]);
-        } else {
-            ctx.strokeStyle = `rgba(255, 167, 38, ${alpha})`;
-            ctx.lineWidth = isLeft ? 0.5 : 1.5;
-            ctx.setLineDash(isLeft ? [2, 6] : []);
-        }
+        ctx.strokeStyle = `rgba(255, 48, 72, ${alpha})`;
+        ctx.lineWidth = isLeft ? 0.5 : 1.5;
+        ctx.setLineDash(isLeft ? [2, 6] : (is1m ? [4, 3] : []));
 
         ctx.beginPath();
         ctx.moveTo(x0, yPOC);
@@ -3187,18 +3147,18 @@ function drawVolumeProfile(zones) {
 
         // Label only for ACTIVE zones (left zones: no label to reduce clutter)
         if (!isLeft) {
-            const pocColor = is1m ? `rgba(0, 229, 160, ${alpha})` : `rgba(255, 167, 38, ${alpha})`;
+            const pocColor = `rgba(255, 48, 72, ${alpha})`;
             const tfLabel = is1m ? '1m ' : '';
             ctx.fillStyle = pocColor;
             ctx.font = (is1m ? '9' : '10') + 'px "IBM Plex Mono", monospace';
             ctx.textAlign = 'left';
             const histW = 80;
             ctx.fillText(tfLabel + 'POC ' + poc.toFixed(0), x0 + histW + 4, yPOC - 4);
-            pocLabels.push({ y: yPOC, price: poc, is1m, alpha });
+            pocLabels.push({ y: yPOC, x: x1, price: poc, is1m, alpha });
         }
     });
 
-    // ── PASS 3: Right-edge POC price tags (active zones only, deduped) ──
+    // ── PASS 3: POC price tags (active zones only, deduped) ──
     pocLabels.sort((a, b) => a.y - b.y);
     let lastLabelY = -20;
     pocLabels.forEach(lbl => {
@@ -3207,19 +3167,17 @@ function drawVolumeProfile(zones) {
 
         const tagW = 58;
         const tagH = 14;
-        const tagX = rightEdge + 2;
+        const tagX = Math.min(W - tagW - 2, Math.max(2, lbl.x + 2));
         const tagY = lbl.y - tagH / 2;
 
-        ctx.fillStyle = lbl.is1m ? 'rgba(0, 229, 160, 0.2)' : 'rgba(255, 167, 38, 0.2)';
+        ctx.fillStyle = 'rgba(255, 48, 72, 0.2)';
         ctx.fillRect(tagX, tagY, tagW, tagH);
 
-        ctx.strokeStyle = lbl.is1m ? 'rgba(0, 229, 160, 0.5)' : 'rgba(255, 167, 38, 0.5)';
+        ctx.strokeStyle = 'rgba(255, 48, 72, 0.5)';
         ctx.lineWidth = 0.5;
         ctx.strokeRect(tagX, tagY, tagW, tagH);
 
-        ctx.fillStyle = lbl.is1m
-            ? `rgba(0, 229, 160, ${lbl.alpha})`
-            : `rgba(255, 167, 38, ${lbl.alpha})`;
+        ctx.fillStyle = `rgba(255, 48, 72, ${lbl.alpha})`;
         ctx.font = '9px "IBM Plex Mono", monospace';
         ctx.textAlign = 'center';
         const prefix = lbl.is1m ? '1m ' : '';

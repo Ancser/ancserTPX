@@ -2032,15 +2032,31 @@ async def use_preset(req: PresetUseRequest):
     return {"success": True}
 
 
-@router.delete("/presets/{name}")
-async def delete_preset(name: str):
-    """刪除 preset"""
+class PresetDeleteRequest(BaseModel):
+    name: str
+
+
+def _delete_preset_by_name(name: str):
     data = _load_presets_file()
-    if name in data["presets"]:
+    deleted = False
+    if name in data.get("presets", {}):
         del data["presets"][name]
+        deleted = True
         if data.get("last_used_bt") == name:
             data["last_used_bt"] = "default"
         if data.get("last_used_live") == name:
             data["last_used_live"] = "default"
         _save_presets_file(data)
-    return {"success": True}
+    return {"success": True, "deleted": deleted, "name": name}
+
+
+@router.post("/presets/delete")
+async def delete_preset_body(req: PresetDeleteRequest):
+    """Delete preset by JSON body; supports names containing '/', '%', and spaces."""
+    return _delete_preset_by_name(req.name)
+
+
+@router.delete("/presets/{name:path}")
+async def delete_preset(name: str):
+    """刪除 preset"""
+    return _delete_preset_by_name(name)
