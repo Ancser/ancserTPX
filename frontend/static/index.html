@@ -970,7 +970,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.11.3
+        0.11.4
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -2235,6 +2235,7 @@ async function stopLive() {
     if (window._liveTpLine) { try { candleSeries.removePriceLine(window._liveTpLine); } catch(e){} window._liveTpLine = null; }
     if (window._liveSlLine) { try { candleSeries.removePriceLine(window._liveSlLine); } catch(e){} window._liveSlLine = null; }
     if (window._liveEntryLine) { try { candleSeries.removePriceLine(window._liveEntryLine); } catch(e){} window._liveEntryLine = null; }
+    _setLiveRealtimeMarkers([]);
 }
 
 async function flattenLive() {
@@ -2464,7 +2465,8 @@ async function pollLiveStatus() {
         const sig = st.pending_signal;
         if (sig) {
             sigRow.style.display = 'flex';
-            const isLong = sig.direction === 'long';
+            const sigDir = String(sig.direction || '').toLowerCase();
+            const isLong = sigDir === 'long' || sigDir === 'buy';
             document.getElementById('lv-sig-direction').textContent = isLong ? '▲ LIMIT BUY' : '▼ LIMIT SELL';
             document.getElementById('lv-sig-direction').style.color = isLong ? 'var(--green)' : 'var(--red)';
             document.getElementById('lv-sig-entry').textContent = sig.entry_price.toFixed(2);
@@ -2561,7 +2563,8 @@ async function pollLiveStatus() {
 
             // Show pending signal as marker
             if (sig) {
-                const isLong = sig.direction === 'buy';
+                const sigDir = String(sig.direction || '').toLowerCase();
+                const isLong = sigDir === 'buy' || sigDir === 'long';
                 const localOffset = new Date().getTimezoneOffset() * -60;
                 liveMarkers.push({
                     time: Math.floor(Date.now() / 1000) + localOffset,
@@ -2584,10 +2587,7 @@ async function pollLiveStatus() {
                 });
             }
 
-            if (liveMarkers.length > 0) {
-                liveMarkers.sort((a, b) => a.time - b.time);
-                try { candleSeries.setMarkers(liveMarkers); } catch(e) {}
-            }
+            _setLiveRealtimeMarkers(liveMarkers);
         }
 
         // Log recent events
@@ -2632,6 +2632,9 @@ async function pollLiveCandle() {
             const bidx = _rawCandleBuffer.findIndex(x => x.time === t);
             const raw = { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 };
             if (bidx >= 0) _rawCandleBuffer[bidx] = raw; else _rawCandleBuffer.push(raw);
+            if (!window._lastChartData) window._lastChartData = [];
+            const cidx = window._lastChartData.findIndex(x => x.time === t);
+            if (cidx >= 0) window._lastChartData[cidx] = bar; else window._lastChartData.push(bar);
 
             // VWAP: update current day's last point
             if (vwapSeries && _rawCandleBuffer.length > 0) {
@@ -2649,7 +2652,9 @@ async function pollLiveCandle() {
         _lastLiveCandleTime = newestC.time || newestC.timestamp || '';
 
         if (updated > 0) {
-            log('K線更新: ' + lastC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');
+            window._lastChartData.sort((a, b) => a.time - b.time);
+            _refreshAllMarkers();
+            log('K線更新: ' + newestC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');
         }
     } catch(e) {
         // silent
@@ -4207,19 +4212,28 @@ let _overlaySyncRAF = null;
 let _overlaySyncData = null;
 let _backtestMarkers = [];
 let _liveMarkers = [];
+let _liveRealtimeMarkers = [];
 
 function _refreshAllMarkers() {
     if (!candleSeries) return;
-    let all = [..._backtestMarkers, ..._liveMarkers].sort((a, b) => a.time - b.time);
+    let persistent = [..._backtestMarkers, ..._liveMarkers];
+    let realtime = [..._liveRealtimeMarkers];
     // Drop markers whose time is before the first chart bar.
     // Lightweight Charts snaps older markers to the first bar → visual stacking.
     const cd = window._lastChartData;
     if (cd && cd.length > 0) {
         const firstT = cd[0].time;
         const lastT  = cd[cd.length - 1].time;
-        all = all.filter(m => m.time >= firstT && m.time <= lastT);
+        persistent = persistent.filter(m => m.time >= firstT && m.time <= lastT);
+        realtime = realtime.filter(m => m.time >= firstT);
     }
+    const all = [...persistent, ...realtime].sort((a, b) => a.time - b.time);
     try { candleSeries.setMarkers(all); } catch(e) {}
+}
+
+function _setLiveRealtimeMarkers(markers) {
+    _liveRealtimeMarkers = (markers || []).filter(m => m && m.time && !isNaN(m.time));
+    _refreshAllMarkers();
 }
 
 function renderChart(data) {
