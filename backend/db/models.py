@@ -422,10 +422,6 @@ class OrderRequest:
     size: int = 1
     limit_price: Optional[float] = None
     stop_price: Optional[float] = None
-    trail_price: Optional[float] = None
-    custom_tag: Optional[str] = None
-    stop_loss_bracket: Optional[Dict] = None
-    take_profit_bracket: Optional[Dict] = None
 
 
 @dataclass

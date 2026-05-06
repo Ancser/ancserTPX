@@ -1513,7 +1513,6 @@ async def live_start(req: LiveStartRequest):
         contract_id=req.contract_id,
         contract_size=live_strategy_params.contract_size,
         value_area_pct=req.value_area_pct,
-        skip_engine_sl_tp=True,  # TopstepX order brackets manage SL/TP from the entry order
         strategy_params=live_strategy_params,
     )
 
