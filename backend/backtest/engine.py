@@ -29,6 +29,7 @@ import uuid
 import logging
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from backend.db.models import (
     Candle, Trade, TradeSignal, BacktestConfig, BacktestResult,
@@ -44,6 +45,19 @@ logger = logging.getLogger(__name__)
 # How long after entry we keep tracking price action for the post-breakout
 # stats (MFE / MAE / trail-or-SL-then-TP path). 60 candles ≈ 1h on 1m bars.
 POST_BREAKOUT_WINDOW_MIN = 60
+
+
+_PT = ZoneInfo("America/Los_Angeles")
+_UTC_TZ = ZoneInfo("UTC")
+
+
+def _topstep_trade_date(utc_dt: datetime) -> str:
+    """TopStep trading date for a UTC timestamp. Day resets at PT 22:00."""
+    aware = utc_dt.replace(tzinfo=_UTC_TZ) if utc_dt.tzinfo is None else utc_dt
+    pt_dt = aware.astimezone(_PT)
+    if pt_dt.hour >= 22:
+        return (pt_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+    return pt_dt.strftime("%Y-%m-%d")
 
 
 class BacktestEngine:
@@ -105,6 +119,10 @@ class BacktestEngine:
         self._last_closed_trade: Optional[Trade] = None
         # Trailing SL state (forced ON — one-time trigger per position)
         self._trail_sl_triggered: bool = False
+        # Max profit lock (resets at PT 22:00)
+        self._max_profit_lock: int = getattr(self.strategy_params, 'max_profit_lock', 0) or 0
+        self._profit_lock_pnl: float = 0.0
+        self._profit_lock_ts_date: str = ""
         # Active post-breakout trackers (one per recently-entered trade).
         # We keep tracking even after the trade exits, since the user wants to
         # know whether price would have reached TP within 60m even if SL fired first.
@@ -202,6 +220,8 @@ class BacktestEngine:
         self._daily_pnl = {}
         self._last_closed_trade = None
         self._trail_sl_triggered = False
+        self._profit_lock_pnl = 0.0
+        self._profit_lock_ts_date = ""
         self._breakout_trackers = []
         self._near_data_end = False   # live-edge guard flag
         self._zi = 0                  # zone timeline index
@@ -238,6 +258,21 @@ class BacktestEngine:
             if self._pending_order:
                 self._cancel_pending_order()
             return
+
+        # Max profit lock — block new trades when daily PnL ≥ threshold (resets PT 22:00)
+        if self._max_profit_lock > 0:
+            ts_date = _topstep_trade_date(candle.timestamp)
+            if ts_date != self._profit_lock_ts_date:
+                self._profit_lock_pnl = 0.0
+                self._profit_lock_ts_date = ts_date
+            if self._profit_lock_pnl >= self._max_profit_lock:
+                if self._pending_order:
+                    self._cancel_pending_order()
+                if self._open_position:
+                    self._check_exit(candle)
+                    if self._open_position:
+                        self._check_trailing_sl(candle)
+                return
 
         # Flatten time (UTC 19:45 = PT 12:45)
         # Only flatten between 19:45-21:59 UTC (not after 22:00 = new session)
@@ -677,6 +712,12 @@ class BacktestEngine:
         self._capital += pnl
         date_str = candle.timestamp.strftime("%Y-%m-%d")
         self._daily_pnl[date_str] = self._daily_pnl.get(date_str, 0) + pnl
+        if self._max_profit_lock > 0:
+            ts_date = _topstep_trade_date(candle.timestamp)
+            if ts_date != self._profit_lock_ts_date:
+                self._profit_lock_pnl = 0.0
+                self._profit_lock_ts_date = ts_date
+            self._profit_lock_pnl += pnl
 
         self._trades.append(pos)
         self._last_closed_trade = pos

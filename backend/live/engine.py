@@ -33,6 +33,7 @@ import os
 import time as time_mod
 from datetime import datetime, time, timedelta
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from backend.db.models import (
     Candle, TradeSignal, OrderRequest, OrderResponse,
@@ -49,6 +50,9 @@ ENGINE_VERSION = "v4.0-session-2026-03-29"  # Session-based overnight zone
 # Default fallbacks for legacy paths — actual values come from contract on init.
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
+
+_PT = ZoneInfo("America/Los_Angeles")
+_UTC_TZ = ZoneInfo("UTC")
 
 
 
@@ -139,6 +143,8 @@ class LiveTradingEngine:
         self._force_exit_reason: Optional[str] = None  # set by flatten_now / emergency close
         self._daily_pnl: float = 0.0
         self._today: str = ""
+        self._max_profit_lock: int = getattr(self.strategy_params, 'max_profit_lock', 0) or 0
+        self._profit_locked: bool = False
         self._capital: float = 0.0
         self._candles_processed: int = 0
         self._skip_engine_sl_tp: bool = skip_engine_sl_tp
@@ -481,6 +487,8 @@ class LiveTradingEngine:
             "sl_order_id": self._sl_order_id,
             "tp_order_id": self._tp_order_id,
             "daily_pnl": self._daily_pnl,
+            "profit_locked": self._profit_locked,
+            "max_profit_lock": self._max_profit_lock,
             "capital": self._capital,
             "candles_processed": self._candles_processed,
             "last_market_price": self._last_market_price,
@@ -805,12 +813,15 @@ class LiveTradingEngine:
         """One iteration of the trading loop (1m candles — 30s bars stale on TopstepX)."""
         now = datetime.utcnow()
 
-        # Reset daily counters
-        today_str = now.strftime("%Y-%m-%d")
-        if today_str != self._today:
-            self._today = today_str
+        # Reset daily counters at PT 22:00 (TopStep day boundary)
+        aware_now = now.replace(tzinfo=_UTC_TZ)
+        pt_now = aware_now.astimezone(_PT)
+        ts_date = (pt_now + timedelta(days=1)).strftime("%Y-%m-%d") if pt_now.hour >= 22 else pt_now.strftime("%Y-%m-%d")
+        if ts_date != self._today:
+            self._today = ts_date
             self._daily_pnl = 0.0
-            self._log_event("新交易日 — 重置每日 PnL")
+            self._profit_locked = False
+            self._log_event("新交易日 — 重置每日 PnL (PT 22:00)")
 
         # Check position status from API (ALWAYS, even without new candle)
         await self._sync_position()
@@ -937,6 +948,18 @@ class LiveTradingEngine:
                 self._sl_order_id = None
                 self._tp_order_id = None
                 self._active_signal = None
+
+        # ── Max profit lock — block new trades when daily PnL ≥ threshold ──
+        if self._max_profit_lock > 0 and self._daily_pnl >= self._max_profit_lock:
+            if not self._profit_locked:
+                self._profit_locked = True
+                self._log_event(
+                    f"每日獲利鎖定: ${self._daily_pnl:,.0f} ≥ ${self._max_profit_lock} — "
+                    f"暫停新單至 PT 22:00"
+                )
+            if self._pending_order_id:
+                await self._cancel_pending()
+            return
 
         # ── Strategy evaluation ──
         active_zone = self.detector.get_active_zone()

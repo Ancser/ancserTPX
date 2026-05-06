@@ -316,6 +316,8 @@ class StrategyParams:
     # Contract & sizing (v0.11+) — preferred default 3 × Micro NQ
     contract_id: str = "CON.F.US.MNQ.M26"  # full contractId (NQ=ENQ, MNQ=MNQ)
     contract_size: int = 3                 # number of contracts per order (1..N)
+    # Max profit lock: 0=OFF, 150/500/1000 — block new trades when daily PnL ≥ threshold (resets PT 22:00)
+    max_profit_lock: int = 0
     # --- Removed (hardcoded internally) ---
     # entry_mode: always "100RE" (VAH/VAL entry)
     # entry_timeout_minutes: hardcoded 10 min inside strategy

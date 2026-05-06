@@ -1105,6 +1105,15 @@
                 <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
                 <input type="hidden" id="trail-sl-ticks-bt" value="5">
             </div>
+            <div class="form-group">
+                <label>MAX PROFIT LOCK</label>
+                <select id="max-profit-lock-bt">
+                    <option value="0" selected>OFF</option>
+                    <option value="150">$150</option>
+                    <option value="500">$500</option>
+                    <option value="1000">$1,000</option>
+                </select>
+            </div>
 
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
@@ -1119,6 +1128,7 @@
                         <label class="ml-fix-row"><input type="checkbox" id="ml-fix-sl"> SL</label>
                         <label class="ml-fix-row"><input type="checkbox" id="ml-fix-trail-trigger"> TRAIL TRIGGER</label>
                         <label class="ml-fix-row"><input type="checkbox" id="ml-fix-trail"> TRAIL SL</label>
+                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-profit-lock"> PROFIT LOCK</label>
                     </div>
                 </div>
             </div>
@@ -1213,6 +1223,15 @@
                     <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
                     <input type="hidden" id="trail-sl-ticks-live" value="5">
                 </div>
+                <div class="form-group">
+                    <label>MAX PROFIT LOCK</label>
+                    <select id="max-profit-lock-live">
+                        <option value="0" selected>OFF</option>
+                        <option value="150">$150</option>
+                        <option value="500">$500</option>
+                        <option value="1000">$1,000</option>
+                    </select>
+                </div>
             </div>
             <div class="panel">
                 <div class="panel-title">ACCOUNT</div>
@@ -1297,6 +1316,7 @@
                                     <th class="ml-sort-th" data-col="tp"       style="width:40px;" onclick="mlSortBy('tp')">TP <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="trail"    style="width:44px;" onclick="mlSortBy('trail')">TRAIL <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="trigger"  style="width:48px;" onclick="mlSortBy('trigger')">TRIG <span class="sa">↕</span></th>
+                                    <th class="ml-sort-th" data-col="lock"     style="width:44px;" onclick="mlSortBy('lock')">LOCK <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="trades"   style="width:44px;" onclick="mlSortBy('trades')">TRADES <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="win_rate" style="width:52px;" onclick="mlSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="pnl"      style="width:68px;" onclick="mlSortBy('pnl')">TOTAL PNL <span class="sa">↕</span></th>
@@ -1467,6 +1487,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     candle_seconds: 60,
     contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
     contract_size: 3,
+    max_profit_lock: 0,
 };
 
 const MNQ_SIZE_CHOICES = [1, 3, 5, 10];
@@ -1673,6 +1694,7 @@ function collectStrategyParams(mode) {
         candle_seconds: 60,   // 1m bars platform-wide
         contract_id: contractId,
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
+        max_profit_lock: _int('max-profit-lock-' + mode),
     };
 }
 
@@ -1711,6 +1733,7 @@ function applyStrategyParams(mode, params) {
         );
     _set('trail-trigger-pct-' + mode, triggerPct === 0 ? '0' : triggerPct.toFixed(2));
     updateTrailBounds(mode, trailPct);
+    _set('max-profit-lock-' + mode, String(p.max_profit_lock || 0));
 }
 
 // CONTRACT preset dropdown in the connect panel — fills the contract-id text input.
@@ -2436,9 +2459,12 @@ async function pollLiveStatus() {
             const pnl = st.daily_pnl || 0;
             const pnlStr = (pnl >= 0 ? '+' : '') + pnl.toFixed(0);
             const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+            const lockBadge = st.profit_locked
+                ? ' <span style="color:var(--amber);font-size:9px;letter-spacing:1px;">🔒 LOCKED</span>'
+                : '';
             document.getElementById('lv-capital').innerHTML =
                 '$' + st.capital.toLocaleString(undefined, {maximumFractionDigits: 0}) +
-                ' <span style="color:' + pnlColor + ';font-size:10px;">(' + pnlStr + ')</span>';
+                ' <span style="color:' + pnlColor + ';font-size:10px;">(' + pnlStr + ')</span>' + lockBadge;
         }
 
         // ── Phase — both top bar and left panel ──
@@ -3857,6 +3883,7 @@ function _mlSortVal(r, col) {
         case 'tp':        return r.tp || 0;
         case 'trail':     return r.trail_pct != null ? Number(r.trail_pct) : (r.trail || 0);
         case 'trigger':   return r.trail_trigger_pct || 0;
+        case 'lock':      return r.max_profit_lock || 0;
         case 'trades':    return r.total_trades || 0;
         case 'win_rate':  return r.win_rate || 0;
         case 'pnl':       return r.total_pnl || 0;
@@ -3939,6 +3966,7 @@ function getMLFixedParams() {
         ['sl', 'ml-fix-sl'],
         ['trail_trigger', 'ml-fix-trail-trigger'],
         ['trail', 'ml-fix-trail'],
+        ['profit_lock', 'ml-fix-profit-lock'],
     ];
     return pairs.filter(([, id]) => {
         const el = document.getElementById(id);
@@ -4003,6 +4031,7 @@ async function runAllCombinations() {
                 trail_enabled: params.trail_enabled,
                 contract_id: params.contract_id,
                 contract_size: params.contract_size,
+                max_profit_lock: params.max_profit_lock,
                 candle_seconds: params.candle_seconds,
                 initial_capital: capital,
                 start_date: startDate,
@@ -4086,6 +4115,7 @@ function renderMLResults(results) {
             '<td style="text-align:center;">' + (r.tp || 0) + '</td>' +
             '<td style="text-align:center;">' + trailLabel + '</td>' +
             '<td style="text-align:center;">' + triggerLabel + '</td>' +
+            '<td style="text-align:center;">' + (r.max_profit_lock ? '$' + r.max_profit_lock : 'OFF') + '</td>' +
             '<td style="text-align:center;">' + (r.total_trades || 0) + '</td>' +
             '<td style="text-align:center;color:' + (parseFloat(wr) >= 50 ? 'var(--green)' : '') + ';">' + wr + '%</td>' +
             '<td style="text-align:right;color:' + pnlColor + ';">$' + pnl.toFixed(0) + '</td>' +
@@ -4144,6 +4174,7 @@ async function saveMLPreset(origRank) {
         candle_seconds: r.candle_seconds || 60,
         contract_id: r.contract_id || 'CON.F.US.MNQ.M26',
         contract_size: contractSize,
+        max_profit_lock: r.max_profit_lock || 0,
     };
 
     try {

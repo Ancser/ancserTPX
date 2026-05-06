@@ -198,6 +198,7 @@ class BacktestRequest(BaseModel):
     # Contract & sizing (defaults to 3× Micro NQ)
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
+    max_profit_lock: int = 0              # 0=OFF, 150/500/1000
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -921,6 +922,7 @@ async def run_backtest(req: BacktestRequest):
         candle_seconds=req.candle_seconds,
         contract_id=req.contract_id,
         contract_size=contract_size,
+        max_profit_lock=req.max_profit_lock,
     )
 
     engine = BacktestEngine(
@@ -1120,13 +1122,15 @@ class MLRunRequest(BaseModel):
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
     trail_enabled: bool = True
+    max_profit_lock: int = 0              # 0=OFF, 150/500/1000
     fixed_params: List[str] = Field(default_factory=list)
 
 
 def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigger_pct, cand_secs, zone_timeline,
                       contract_id: str = "CON.F.US.MNQ.M26",
                       contract_size: int = 3,
-                      trail_enabled: bool = True) -> dict:
+                      trail_enabled: bool = True,
+                      max_profit_lock: int = 0) -> dict:
     """Run one backtest combination synchronously (called from process pool).
     zone_timeline is pre-computed once and shared across all combos — avoids re-running
     the expensive SessionZoneDetector for every parameter combination.
@@ -1144,6 +1148,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
         candle_seconds=cand_secs,
         contract_id=contract_id,
         contract_size=_normalize_contract_size(contract_id, contract_size),
+        max_profit_lock=max_profit_lock,
     )
     engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline)
     try:
@@ -1158,6 +1163,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "trail_trigger_pct": trigger_pct,
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
+            "max_profit_lock": max_profit_lock,
             "total_trades": m.total_trades,
             "wins": m.wins,
             "losses": m.losses,
@@ -1180,6 +1186,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "trail_trigger_pct": trigger_pct,
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
+            "max_profit_lock": max_profit_lock,
             "error": str(e),
         }
     finally:
@@ -1276,6 +1283,11 @@ async def ml_run(req: MLRunRequest):
         if "trail_trigger" in fixed
         else [0.0, 0.10, 0.30, 0.50, 0.70]
     )
+    profit_lock_values = (
+        [int(req.max_profit_lock)]
+        if "profit_lock" in fixed
+        else [0, 150, 500, 1000]
+    )
 
     combos = []
     for contract_id in contract_values:
@@ -1303,7 +1315,8 @@ async def ml_run(req: MLRunRequest):
                             else:
                                 trail_values = _trail_grid_for(sl, tp, trigger_pct)
                             for trail, trail_pct in trail_values:
-                                combos.append((strategy, contract_id, contract_size, sl, tp, trail, trail_pct, trigger_pct, combo_trail_enabled))
+                                for mpl in profit_lock_values:
+                                    combos.append((strategy, contract_id, contract_size, sl, tp, trail, trail_pct, trigger_pct, combo_trail_enabled, mpl))
 
     logger.info(
         f"[ML] Running {len(combos)} combos | fixed={sorted(fixed)} | "
@@ -1333,9 +1346,9 @@ async def ml_run(req: MLRunRequest):
                     fees_rt=get_fees_rt(contract_id),
                 ),
                 strategy, sl, tp, trail, trail_pct, trigger_pct, cand_secs, zone_timeline,
-                contract_id, contract_size, combo_trail_enabled,
+                contract_id, contract_size, combo_trail_enabled, mpl,
             )
-            for strategy, contract_id, contract_size, sl, tp, trail, trail_pct, trigger_pct, combo_trail_enabled in combos
+            for strategy, contract_id, contract_size, sl, tp, trail, trail_pct, trigger_pct, combo_trail_enabled, mpl in combos
         ]
         results = await asyncio.gather(*tasks)
 
@@ -1401,6 +1414,7 @@ class LiveStartRequest(BaseModel):
     trail_trigger_pct: float = 0.30
     trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
+    max_profit_lock: int = 0              # 0=OFF, 150/500/1000
 
 
 @router.post("/live/start")
@@ -1490,6 +1504,7 @@ async def live_start(req: LiveStartRequest):
         candle_seconds=req.candle_seconds,
         contract_id=req.contract_id,
         contract_size=contract_size,
+        max_profit_lock=req.max_profit_lock,
     )
 
     _live_engine = LiveTradingEngine(
