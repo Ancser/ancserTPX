@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import logging
 import math
+from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -326,6 +327,34 @@ async def get_config():
         "use_demo": use_demo,
         "env_loaded": bool(username and api_key),
     }
+
+
+@router.post("/save-config")
+async def save_config(body: dict):
+    """Save credentials to .env so they persist across restarts."""
+    env_path = Path(__file__).parent.parent.parent / ".env"
+
+    existing: dict[str, str] = {}
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                existing[k.strip()] = v.strip()
+
+    if body.get("username"):
+        existing["TOPSTEPX_USERNAME"] = body["username"]
+    if body.get("api_key"):
+        existing["TOPSTEPX_API_KEY"] = body["api_key"]
+
+    lines = [f"{k}={v}" for k, v in existing.items()]
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    os.environ["TOPSTEPX_USERNAME"] = existing.get("TOPSTEPX_USERNAME", "")
+    os.environ["TOPSTEPX_API_KEY"] = existing.get("TOPSTEPX_API_KEY", "")
+
+    logger.info(f".env saved: username={existing.get('TOPSTEPX_USERNAME', '')}")
+    return {"success": True}
 
 
 @router.get("/data/candles")

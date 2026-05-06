@@ -126,14 +126,12 @@ echo "  [4/4] Checking .env..."
 if [ -f ".env" ]; then
     echo "        .env found"
 else
-    echo "        .env not found - creating from template..."
-    cp .env.example .env 2>/dev/null || true
+    echo "        .env not found - creating blank..."
+    printf 'TOPSTEPX_USERNAME=\nTOPSTEPX_API_KEY=\n' > .env
     echo ""
     echo "  ============================================"
-    echo "   IMPORTANT: Edit .env with your credentials"
-    echo "   Open .env and fill in:"
-    echo "     TOPSTEPX_USERNAME=your_email"
-    echo "     TOPSTEPX_API_KEY=your_key"
+    echo "   Credentials will be saved from the Web UI"
+    echo "   Click CONNECT and enter your email + API key"
     echo "  ============================================"
     echo ""
 fi

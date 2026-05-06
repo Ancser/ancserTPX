@@ -34,6 +34,7 @@ import time as time_mod
 from datetime import datetime, time, timedelta
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
+import httpx
 
 from backend.db.models import (
     Candle, TradeSignal, OrderRequest, OrderResponse,
@@ -148,6 +149,11 @@ class LiveTradingEngine:
         self._last_market_price: Optional[float] = None
         self._last_candle_time: Optional[str] = None
         self._last_pnl_check: float = 0.0  # timestamp of last PNL check
+        # Network resilience
+        self._disconnected: bool = False
+        self._consecutive_errors: int = 0
+        self._last_safety_check: float = 0.0   # position size check (5 min)
+        self._position_open_ts: float = 0.0     # when position first detected (grace period)
         self._trades: List[Dict] = []
         self._log: List[str] = []
         self._last_status_log_minute: int = -1  # track minute for periodic status log
@@ -384,6 +390,7 @@ class LiveTradingEngine:
             "daily_pnl": self._daily_pnl,
             "profit_locked": self._profit_locked,
             "max_profit_lock": self._max_profit_lock,
+            "disconnected": self._disconnected,
             "capital": self._capital,
             "candles_processed": self._candles_processed,
             "last_market_price": self._last_market_price,
@@ -684,6 +691,7 @@ class LiveTradingEngine:
         self._active_signal = None
         self._fill_price = None
         self._trail_sl_triggered = False
+        self._position_open_ts = 0.0
 
     # ── Main Loop ──────────────────────────────────────────
 
@@ -695,8 +703,21 @@ class LiveTradingEngine:
         while self._running:
             try:
                 await self._tick()
+                # Reconnected after disconnect
+                if self._disconnected:
+                    self._disconnected = False
+                    self._consecutive_errors = 0
+                    self._log_event("網路恢復 — 恢復交易", "info")
             except Exception as e:
-                self._log_event(f"Tick error: {e}", "error")
+                self._consecutive_errors += 1
+                if not self._disconnected:
+                    self._disconnected = True
+                    self._log_event(f"網路斷線: {e} — 暫停新單", "error")
+                elif self._consecutive_errors % 12 == 0:
+                    self._log_event(
+                        f"仍然斷線 ({self._consecutive_errors} 次失敗): {e}",
+                        "error"
+                    )
 
             for _ in range(interval):
                 if not self._running:
@@ -723,6 +744,10 @@ class LiveTradingEngine:
         # Skip strategy evaluation on the same tick a position was just closed
         if self._position_just_closed:
             self._position_just_closed = False
+            return
+
+        # ── Disconnect guard — block new entries but keep monitoring ──
+        if self._disconnected:
             return
 
         # Get latest 1m candle (30s bars have ~6h settle delay on TopstepX)
@@ -1301,6 +1326,7 @@ class LiveTradingEngine:
                 # Save signal for SL/TP retry, then clear pending state
                 self._active_signal = self._pending_signal  # keep for SL/TP reference
                 self._entry_time = datetime.utcnow()
+                self._position_open_ts = time_mod.time()
                 self._force_exit_reason = None
                 self._pending_order_id = None
                 self._pending_signal = None
@@ -1433,6 +1459,25 @@ class LiveTradingEngine:
                 self._position_just_closed = True  # skip new entry this tick
                 self._force_exit_reason = None
 
+            # ── Position size audit (every 5 min, skip 60s after entry) ──
+            if has_position:
+                now_ts = time_mod.time()
+                grace_ok = not self._position_open_ts or (now_ts - self._position_open_ts >= 60)
+                if grace_ok and now_ts - self._last_safety_check >= 300:
+                    self._last_safety_check = now_ts
+                    actual_size = abs(positions[0].get('size', 0) or positions[0].get('qty', 0) or 0)
+                    expected = self.contract_size
+                    if actual_size > 0 and actual_size != expected:
+                        pos_side = positions[0].get('side', 0)
+                        self._log_event(
+                            f"[SAFETY] 倉位不對等! 預期={expected} 實際={actual_size} "
+                            f"side={'LONG' if pos_side == 0 else 'SHORT'} → 緊急全平",
+                            "error"
+                        )
+                        self._force_exit_reason = "flatten"
+                        await self.flatten_now()
+                        return
+
             # Update capital (every 60s to reduce API calls)
             now_ts = time_mod.time()
             if now_ts - self._last_pnl_check >= 60:
@@ -1450,6 +1495,10 @@ class LiveTradingEngine:
                             self._daily_pnl = pnl_change
                         break
 
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError,
+                httpx.WriteError, httpx.PoolTimeout) as e:
+            self._log_event(f"[SYNC ERROR] {e}", "error")
+            raise  # re-raise network errors for disconnect tracking
         except Exception as e:
             self._log_event(f"[SYNC ERROR] {e}", "error")
             logger.error(f"[SYNC] position sync failed: {e}", exc_info=True)

@@ -40,17 +40,9 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 4. 進入 **API** 頁面
 5. 複製 API Key
 
-### 2. 設定 `.env`
+### 2. 帳號設定
 
-在專案根目錄建立 `.env`：
-
-- `TOPSTEPX_USERNAME` — TopstepX 用戶郵箱
-- `TOPSTEPX_API_KEY` — ProjectX API Key
-
-```env
-TOPSTEPX_USERNAME=your_email@example.com
-TOPSTEPX_API_KEY=your_api_key_here
-```
+在網頁右上角 **CONNECT** 面板輸入 **郵箱** 和 **API Key**，首次連線成功後會自動保存到 `.env`，無需手動編輯檔案。
 
 ---
 

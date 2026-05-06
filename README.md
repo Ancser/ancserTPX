@@ -40,17 +40,9 @@ Current default trading settings:
 4. Open the **API** page
 5. Copy your API key
 
-### 2. Configure `.env`
+### 2. Credentials
 
-Create a `.env` file in the project root:
-
-- `TOPSTEPX_USERNAME` — your TopstepX account email
-- `TOPSTEPX_API_KEY` — your ProjectX API key
-
-```env
-TOPSTEPX_USERNAME=your_email@example.com
-TOPSTEPX_API_KEY=your_api_key_here
-```
+Enter your **email** and **API key** in the Web UI's top-right **CONNECT** panel. Credentials are saved to `.env` automatically on first connect — no manual file editing needed.
 
 ---
 

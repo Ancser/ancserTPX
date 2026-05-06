@@ -20,7 +20,7 @@ if errorlevel 1 (
 
 :: ── Kill old uvicorn processes ──
 echo  Killing old uvicorn processes...
-powershell -ExecutionPolicy Bypass -File "%~dp0kill_old.ps1"
+powershell -ExecutionPolicy Bypass -File "%~dp0backend\kill_old.ps1"
 timeout /t 3 /nobreak >nul
 
 :: ── Find a free port ──

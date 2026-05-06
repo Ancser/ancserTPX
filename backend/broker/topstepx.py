@@ -130,30 +130,58 @@ class TopstepXClient:
             )
         return self._http
 
-    async def _request(self, method: str, path: str, **kwargs) -> dict:
-        """通用 REST 請求 (自動重試認證)"""
-        client = await self._ensure_http()
-
-        resp = await client.request(method, path, **kwargs)
-
-        # Token 過期 -> 重新認證
-        if resp.status_code == 401:
-            logger.warning("Token 過期，重新認證...")
-            await self.authenticate()
-            client = await self._ensure_http()
-            resp = await client.request(method, path, **kwargs)
-
-        # Rate limit — exponential backoff
-        if resp.status_code == 429:
-            for wait in (3, 5, 10):
-                logger.warning(f"Rate limited (429), 等待 {wait}s...")
-                await asyncio.sleep(wait)
+    async def _request(self, method: str, path: str, _retries: int = 3, **kwargs) -> dict:
+        """通用 REST 請求 (自動重試認證 + transient error retry)"""
+        last_exc = None
+        for attempt in range(_retries):
+            try:
+                client = await self._ensure_http()
                 resp = await client.request(method, path, **kwargs)
-                if resp.status_code != 429:
-                    break
 
-        resp.raise_for_status()
-        return resp.json()
+                # Token 過期 -> 重新認證
+                if resp.status_code == 401:
+                    logger.warning("Token 過期，重新認證...")
+                    await self.authenticate()
+                    client = await self._ensure_http()
+                    resp = await client.request(method, path, **kwargs)
+
+                # Rate limit — exponential backoff
+                if resp.status_code == 429:
+                    for wait in (3, 5, 10):
+                        logger.warning(f"Rate limited (429), 等待 {wait}s...")
+                        await asyncio.sleep(wait)
+                        resp = await client.request(method, path, **kwargs)
+                        if resp.status_code != 429:
+                            break
+
+                # Transient server errors → retry
+                if resp.status_code >= 500:
+                    wait = (attempt + 1) * 3
+                    logger.warning(f"Server error {resp.status_code} on {path}, retry {attempt+1}/{_retries} in {wait}s")
+                    await asyncio.sleep(wait)
+                    continue
+
+                resp.raise_for_status()
+                return resp.json()
+
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError,
+                    httpx.WriteError, httpx.PoolTimeout) as e:
+                last_exc = e
+                wait = (attempt + 1) * 3
+                if attempt < _retries - 1:
+                    logger.warning(f"Network error on {path}: {e}, retry {attempt+1}/{_retries} in {wait}s")
+                    await asyncio.sleep(wait)
+                    # Force recreate HTTP client on connection errors
+                    if self._http and not self._http.is_closed:
+                        await self._http.aclose()
+                    self._http = None
+                else:
+                    logger.error(f"Network error on {path} after {_retries} retries: {e}")
+                    raise
+
+        if last_exc:
+            raise last_exc
+        raise httpx.ConnectError("_request failed after retries")
 
     # ── 帳戶 ─────────────────────────────────────────
 

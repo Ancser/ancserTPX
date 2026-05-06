@@ -970,7 +970,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.11.7
+        0.12.0
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -2112,7 +2112,7 @@ function updateLiveTopBar() {
 
     // Timeframe
     const tfEl = document.getElementById('lv-timeframe');
-    if (tfEl) { tfEl.textContent = '30s'; }
+    if (tfEl) { tfEl.textContent = '1min'; }
 
     // Zone status default
     const zsEl = document.getElementById('lv-zone-status');
@@ -2125,6 +2125,11 @@ function updateLiveTopBar() {
 
 async function goLive() {
     if (!liveAccount) { log('Select an account first', 'warn'); return; }
+
+    // Lock button immediately to prevent double-click
+    const goBtn = document.getElementById('btn-go-live');
+    if (goBtn.disabled) return;
+    goBtn.disabled = true;
 
     const statusEl = document.getElementById('live-status-text');
     statusEl.style.color = 'var(--amber)';
@@ -2178,7 +2183,6 @@ async function goLive() {
     updateLiveTopBar();
 
     // Update button states
-    document.getElementById('btn-go-live').disabled = true;
     document.getElementById('btn-stop-live').disabled = false;
     document.getElementById('btn-flatten').disabled = false;
 
@@ -2462,9 +2466,12 @@ async function pollLiveStatus() {
             const lockBadge = st.profit_locked
                 ? ' <span style="color:var(--amber);font-size:9px;letter-spacing:1px;">🔒 LOCKED</span>'
                 : '';
+            const dcBadge = st.disconnected
+                ? ' <span style="color:var(--red);font-size:9px;letter-spacing:1px;animation:blink 1s infinite;">⚠ OFFLINE</span>'
+                : '';
             document.getElementById('lv-capital').innerHTML =
                 '$' + st.capital.toLocaleString(undefined, {maximumFractionDigits: 0}) +
-                ' <span style="color:' + pnlColor + ';font-size:10px;">(' + pnlStr + ')</span>' + lockBadge;
+                ' <span style="color:' + pnlColor + ';font-size:10px;">(' + pnlStr + ')</span>' + lockBadge + dcBadge;
         }
 
         // ── Phase — both top bar and left panel ──
@@ -3626,6 +3633,21 @@ async function connectAPI() {
         document.getElementById('btn-run-all').disabled = false;
         document.getElementById('btn-ml-filter').disabled = false;
         _updateDataInfo(data.first, data.last, 'conn', data.candles_count);
+
+        // Auto-save credentials to .env if user typed them
+        if (username || apikey) {
+            const saveBody = {};
+            if (username) saveBody.username = username;
+            if (apikey) saveBody.api_key = apikey;
+            try {
+                await fetch(API + '/save-config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(saveBody)
+                });
+                log('Credentials saved to .env', 'success');
+            } catch(e) { /* silent */ }
+        }
 
         log('Connected // Contract: ' + data.contract_id, 'success');
         log('Loaded ' + data.candles_count + ' bars (' + data.interval + ') from ' + data.first + ' to ' + data.last, 'success');
