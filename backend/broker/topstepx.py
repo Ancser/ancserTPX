@@ -498,6 +498,8 @@ class TopstepXClient:
         logger.info(
             f"[ORDER SEND] {order_sides.get(order.side, '?')} {order_types.get(order.order_type, '?')} "
             f"size={order.size} limit={order.limit_price} stop={order.stop_price} "
+            f"trail={order.trail_price} sl_bracket={order.stop_loss_bracket} "
+            f"tp_bracket={order.take_profit_bracket} tag={order.custom_tag} "
             f"account={order.account_id} contract={order.contract_id} "
             f"(API: side={api_side}, type={api_type})"
         )
@@ -508,8 +510,12 @@ class TopstepXClient:
             "type": api_type,
             "side": api_side,
             "size": order.size,
-            "limitPrice": order.limit_price or 0,
-            "stopPrice": order.stop_price or 0,
+            "limitPrice": order.limit_price,
+            "stopPrice": order.stop_price,
+            "trailPrice": order.trail_price,
+            "customTag": order.custom_tag,
+            "stopLossBracket": order.stop_loss_bracket,
+            "takeProfitBracket": order.take_profit_bracket,
         }
 
         # Use direct request to capture 400 error body (not _request which raises)
@@ -543,6 +549,51 @@ class TopstepXClient:
             f"raw_keys={list(data.keys())}"
         )
         return resp
+
+    async def modify_order(
+        self,
+        account_id: int,
+        order_id: int,
+        *,
+        size: Optional[int] = None,
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        trail_price: Optional[float] = None,
+    ) -> bool:
+        """Modify an open order via ProjectX /api/Order/modify."""
+        payload = {
+            "accountId": account_id,
+            "orderId": order_id,
+            "size": size,
+            "limitPrice": limit_price,
+            "stopPrice": stop_price,
+            "trailPrice": trail_price,
+        }
+        logger.info(f"[ORDER MODIFY] order_id={order_id} payload={payload}")
+
+        try:
+            client = await self._ensure_http()
+            raw_resp = await client.request("POST", "/api/Order/modify", json=payload)
+
+            if raw_resp.status_code == 401:
+                await self.authenticate()
+                client = await self._ensure_http()
+                raw_resp = await client.request("POST", "/api/Order/modify", json=payload)
+
+            data = raw_resp.json()
+            success = data.get("success", False)
+            if raw_resp.status_code >= 400 or not success:
+                logger.error(
+                    f"[ORDER MODIFY ERROR] order_id={order_id} HTTP {raw_resp.status_code} | "
+                    f"payload={payload} | response={data}"
+                )
+                return False
+
+            logger.info(f"[ORDER MODIFY RESP] order_id={order_id} success={success}")
+            return True
+        except Exception as e:
+            logger.error(f"[ORDER MODIFY] order_id={order_id} exception: {e}")
+            return False
 
     async def cancel_order(self, account_id: int, order_id: int) -> bool:
         """取消訂單 — requires both accountId and orderId per TopstepX API."""

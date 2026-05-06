@@ -32,7 +32,7 @@ import logging
 import os
 import time as time_mod
 from datetime import datetime, time, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from backend.db.models import (
     Candle, TradeSignal, OrderRequest, OrderResponse,
@@ -69,7 +69,7 @@ class LiveTradingEngine:
         value_area_pct: float = 0.80,
         slippage_ticks: int = 1,
         contract_size: int = 1,
-        # Engine manages SL/TP — MUST be False to protect positions
+        # When True, the entry order uses TopstepX SL/TP brackets.
         skip_engine_sl_tp: bool = False,
         # Configurable strategy params
         strategy_params: Optional[StrategyParams] = None,
@@ -177,6 +177,139 @@ class LiveTradingEngine:
 
         max_positive = max(0, self._floor_ticks_to_step(tp_ticks * trigger_pct) - self.TRAIL_TICK_STEP)
         return max(-sl_ticks, min(min(tp_ticks, max_positive), trail_ticks))
+
+    def _entry_brackets(self) -> Dict[str, Optional[Dict[str, int]]]:
+        sl_ticks = abs(int(getattr(self.strategy_params, 'sl_ticks', 0) or 0))
+        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
+        return {
+            "stop_loss_bracket": {"ticks": sl_ticks, "type": 4} if sl_ticks > 0 else None,
+            "take_profit_bracket": {"ticks": tp_ticks, "type": 1} if tp_ticks > 0 else None,
+        }
+
+    def _has_required_entry_brackets(self) -> bool:
+        brackets = self._entry_brackets()
+        return bool(brackets["stop_loss_bracket"] and brackets["take_profit_bracket"])
+
+    def _sync_signal_prices_from_fill(self, signal: TradeSignal) -> None:
+        if not self._fill_price:
+            return
+        sl_ticks = abs(int(getattr(self.strategy_params, 'sl_ticks', 0) or 0))
+        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
+        if sl_ticks <= 0 or tp_ticks <= 0:
+            return
+        sl_pts = sl_ticks * self.tick_size
+        tp_pts = tp_ticks * self.tick_size
+        if signal.direction == Direction.BUY:
+            signal.sl_price = self._round_to_tick(self._fill_price - sl_pts)
+            signal.tp_price = self._round_to_tick(self._fill_price + tp_pts)
+        else:
+            signal.sl_price = self._round_to_tick(self._fill_price + sl_pts)
+            signal.tp_price = self._round_to_tick(self._fill_price - tp_pts)
+
+    @staticmethod
+    def _order_id(order: Dict[str, Any]) -> Optional[int]:
+        oid = order.get("id", order.get("orderId"))
+        try:
+            return int(oid) if oid is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _order_float(order: Dict[str, Any], *keys: str) -> Optional[float]:
+        for key in keys:
+            val = order.get(key)
+            if val is None:
+                continue
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def _order_contract_matches(self, order: Dict[str, Any]) -> bool:
+        contract = order.get("contractId") or order.get("contract_id") or order.get("contractID")
+        return contract == self.contract_id
+
+    async def _sweep_contract_open_orders(self, label: str) -> int:
+        try:
+            open_orders = await self.client.get_open_orders(self.account_id)
+        except Exception as e:
+            self._log_event(f"{label} residual order scan failed: {e}", "error")
+            return 0
+
+        cancel_tasks = []
+        for od in open_orders:
+            if not self._order_contract_matches(od):
+                continue
+            oid = self._order_id(od)
+            if oid:
+                cancel_tasks.append(self._cancel_with_retry(oid, f"SWEEP ({label})"))
+        if cancel_tasks:
+            self._log_event(f"{label} sweep found {len(cancel_tasks)} open order(s) -> cancel")
+            await asyncio.gather(*cancel_tasks, return_exceptions=True)
+        return len(cancel_tasks)
+
+    async def _sync_attached_bracket_orders(self, *, log_missing: bool = False) -> None:
+        if not self._active_signal:
+            return
+        try:
+            open_orders = await self.client.get_open_orders(self.account_id)
+        except Exception as e:
+            if log_missing:
+                self._log_event(f"[BRACKET] open order scan failed: {e}", "error")
+            return
+
+        sig = self._active_signal
+        close_api_side = 1 if sig.direction == Direction.BUY else 0
+        found_sl = None
+        found_tp = None
+        sl_candidates = []
+        tp_candidates = []
+        for od in open_orders:
+            if not self._order_contract_matches(od):
+                continue
+            try:
+                order_side = int(od.get("side"))
+            except (TypeError, ValueError):
+                continue
+            if order_side != close_api_side:
+                continue
+            try:
+                otype = int(od.get("type", od.get("orderType")))
+            except (TypeError, ValueError):
+                continue
+            oid = self._order_id(od)
+            if not oid:
+                continue
+            stop_price = self._order_float(od, "stopPrice", "stop_price")
+            limit_price = self._order_float(od, "limitPrice", "limit_price")
+
+            if otype in (4, 5) and stop_price is not None:
+                sl_candidates.append((oid, stop_price))
+                if abs(stop_price - sig.sl_price) <= self.tick_size * 2:
+                    found_sl = oid
+            if otype == 1 and limit_price is not None:
+                tp_candidates.append((oid, limit_price))
+                if abs(limit_price - sig.tp_price) <= self.tick_size * 2:
+                    found_tp = oid
+
+        if not found_sl and len(sl_candidates) == 1:
+            found_sl = sl_candidates[0][0]
+        if not found_tp and len(tp_candidates) == 1:
+            found_tp = tp_candidates[0][0]
+
+        if found_sl and found_sl != self._sl_order_id:
+            self._sl_order_id = found_sl
+            self._log_event(f"[BRACKET] linked SL order #{found_sl} @ {sig.sl_price:.2f}")
+        if found_tp and found_tp != self._tp_order_id:
+            self._tp_order_id = found_tp
+            self._log_event(f"[BRACKET] linked TP order #{found_tp} @ {sig.tp_price:.2f}")
+        if log_missing and (not found_sl or not found_tp):
+            self._log_event(
+                f"[BRACKET] attached order not found yet: SL={'ok' if found_sl else 'missing'} "
+                f"TP={'ok' if found_tp else 'missing'}",
+                "error",
+            )
 
     @property
     def is_running(self) -> bool:
@@ -776,6 +909,8 @@ class LiveTradingEngine:
                             "持倉中無 SL/TP 且無 signal（重啟後或手動入場）→ 需手動設定 SL/TP",
                             "error"
                         )
+            elif self._active_signal and (not self._sl_order_id or not self._tp_order_id):
+                await self._sync_attached_bracket_orders(log_missing=False)
 
             # ── Trailing SL: trigger at configured TP%, then move SL from entry ──
             self._position_age += 1   # track for display only
@@ -895,6 +1030,11 @@ class LiveTradingEngine:
                 f"[ZONE] signal 使用 zone_id={signal.zone_id} | 策略={signal.strategy.value}"
             )
 
+        brackets = self._entry_brackets()
+        if self._skip_engine_sl_tp and not self._has_required_entry_brackets():
+            self._log_event("[BRACKET] missing SL/TP ticks, block entry to avoid unprotected position", "error")
+            return False
+
         order = OrderRequest(
             account_id=self.account_id,
             contract_id=self.contract_id,
@@ -902,6 +1042,9 @@ class LiveTradingEngine:
             side=side,
             size=self.contract_size,
             limit_price=signal.entry_price,
+            custom_tag=f"ancser-{int(time_mod.time() * 1000)}",
+            stop_loss_bracket=brackets["stop_loss_bracket"],
+            take_profit_bracket=brackets["take_profit_bracket"],
         )
 
         try:
@@ -913,6 +1056,7 @@ class LiveTradingEngine:
                 self._log_event(
                     f"掛單成功 #{resp.order_id} | {dir_label} LIMIT @ {signal.entry_price:.2f} | "
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
+                    f"bracket={bool(brackets['stop_loss_bracket'] and brackets['take_profit_bracket'])} | "
                     f"策略={signal.strategy.value}"
                 )
                 return True
@@ -929,7 +1073,7 @@ class LiveTradingEngine:
             return False
 
     async def _place_market_entry(self, signal: TradeSignal) -> bool:
-        """Place a market order for MACD strategy. SL/TP placed after fill via _sync_position."""
+        """Place a market order with broker-side SL/TP brackets when enabled."""
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
@@ -937,12 +1081,20 @@ class LiveTradingEngine:
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "買" if signal.direction == Direction.BUY else "賣"
 
+        brackets = self._entry_brackets()
+        if self._skip_engine_sl_tp and not self._has_required_entry_brackets():
+            self._log_event("[BRACKET] missing SL/TP ticks, block entry to avoid unprotected position", "error")
+            return False
+
         order = OrderRequest(
             account_id=self.account_id,
             contract_id=self.contract_id,
             order_type=2,   # Market
             side=side,
             size=self.contract_size,
+            custom_tag=f"ancser-{int(time_mod.time() * 1000)}",
+            stop_loss_bracket=brackets["stop_loss_bracket"],
+            take_profit_bracket=brackets["take_profit_bracket"],
         )
 
         try:
@@ -954,7 +1106,8 @@ class LiveTradingEngine:
                 self._pending_age = 0
                 self._log_event(
                     f"市價單 #{resp.order_id} | {dir_label} MKT @ ~{signal.entry_price:.2f} | "
-                    f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f}"
+                    f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
+                    f"bracket={bool(brackets['stop_loss_bracket'] and brackets['take_profit_bracket'])}"
                 )
                 return True
             else:
@@ -1002,6 +1155,38 @@ class LiveTradingEngine:
             f"[TRAIL SL] +{ticks_moved:.0f} ticks ({trigger_pct:.0%} TP) -> SL {new_sl:.2f} "
             f"(entry={self._fill_price:.2f}, offset={trail_ticks}t)"
         )
+
+        if self._skip_engine_sl_tp:
+            if not self._sl_order_id:
+                await self._sync_attached_bracket_orders(log_missing=True)
+            if not self._sl_order_id:
+                self._log_event(
+                    "[TRAIL SL] cannot find attached SL order to modify; keep existing broker bracket unchanged",
+                    "error",
+                )
+                self._trail_sl_triggered = False
+                return
+
+            try:
+                ok = await self.client.modify_order(
+                    self.account_id,
+                    self._sl_order_id,
+                    size=self.contract_size,
+                    stop_price=new_sl,
+                )
+                if ok:
+                    sig.sl_price = new_sl
+                    self._log_event(f"[TRAIL SL] modified attached SL #{self._sl_order_id} -> {new_sl:.2f}")
+                else:
+                    self._log_event(
+                        f"[TRAIL SL] modify attached SL #{self._sl_order_id} failed; broker bracket unchanged",
+                        "error",
+                    )
+                    self._trail_sl_triggered = False
+            except Exception as e:
+                self._log_event(f"[TRAIL SL] modify attached SL exception: {e}", "error")
+                self._trail_sl_triggered = False
+            return
 
         # Place new breakeven SL FIRST, then cancel old SL only if new one succeeds.
         # This prevents the position from being unprotected if the new SL is rejected.
@@ -1226,6 +1411,13 @@ class LiveTradingEngine:
                             f"滑價={slippage:.2f} pts (${slippage_dollars:.0f})"
                         )
 
+                if self._skip_engine_sl_tp and self._fill_price and self._pending_signal:
+                    self._sync_signal_prices_from_fill(self._pending_signal)
+                    self._log_event(
+                        f"[BRACKET] fill-based prices SL={self._pending_signal.sl_price:.2f} "
+                        f"TP={self._pending_signal.tp_price:.2f}"
+                    )
+
                 # Record entry trade for chart markers
                 sig_dir = "buy"
                 sig = self._pending_signal
@@ -1261,6 +1453,9 @@ class LiveTradingEngine:
                 self._pending_age = 0
                 self._position_age = 0
                 self._trail_sl_triggered = False
+
+                if self._skip_engine_sl_tp:
+                    await self._sync_attached_bracket_orders(log_missing=True)
 
             # ── Transition 1b: Position exists but engine didn't place it ──
             # Double-fill scenario: both SL and TP filled in rapid succession,
@@ -1359,6 +1554,8 @@ class LiveTradingEngine:
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
+
+                await self._sweep_contract_open_orders("close")
 
                 self._trades.append({
                     "time": exit_time_dt.isoformat(),
