@@ -4157,11 +4157,13 @@ async function saveMLPreset(origRank) {
     const trailPct = trailEnabled && r.trail_pct != null
         ? parseFloat(r.trail_pct)
         : trailPctFromTicks(r.trail || 0, r.sl || 0, r.tp || 0);
+    const mpl = r.max_profit_lock || 0;
     const presetName = prefix + ' ' + contractLabel + 'x' + contractSize +
         ' SL' + (r.sl || 0) + ' TP' + (r.tp || 0) +
         (trailEnabled
             ? ' TRAIL' + fmtPct(trailPct) + '/' + (r.trail || 0) + 't TRIG' + Math.round(triggerPct * 100)
-            : ' TRAIL OFF');
+            : ' TRAIL OFF') +
+        (mpl > 0 ? ' LOCK' + mpl : '');
 
     const params = {
         strategy: strat,
