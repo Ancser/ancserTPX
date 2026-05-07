@@ -454,6 +454,13 @@ class SessionTrendFollow:
         Lookback 模式: 不用累進 +1 計數器, 而是直接看最近 5 根 K 線
         是否全部 close 在 VAH/VAL 之外. 這樣重啟腳本也能立即判定.
         """
+        # Session gap detection: clear buffer if > 60 min gap (flatten → new session)
+        if self._recent_candles:
+            last_ts = self._recent_candles[-1].timestamp
+            gap_minutes = (candle.timestamp - last_ts).total_seconds() / 60
+            if gap_minutes > 60:
+                self._recent_candles = []
+
         # Keep sliding window of recent candles
         self._recent_candles.append(candle)
         if len(self._recent_candles) > 20:

@@ -734,9 +734,14 @@ class LiveTradingEngine:
         ts_date = (pt_now + timedelta(days=1)).strftime("%Y-%m-%d") if pt_now.hour >= 22 else pt_now.strftime("%Y-%m-%d")
         if ts_date != self._today:
             self._today = ts_date
+            # Bug fix: update _capital to current balance so daily PnL starts from 0
+            if self._daily_pnl != 0:
+                self._capital = self._capital + self._daily_pnl
             self._daily_pnl = 0.0
             self._profit_locked = False
-            self._log_event("新交易日 — 重置每日 PnL (PT 22:00)")
+            self._log_event(
+                f"新交易日 — 重置每日 PnL (PT 22:00) | 新起始資金=${self._capital:,.0f}"
+            )
 
         # Check position status from API (ALWAYS, even without new candle)
         await self._sync_position()
@@ -1459,6 +1464,22 @@ class LiveTradingEngine:
                 self._position_just_closed = True  # skip new entry this tick
                 self._force_exit_reason = None
 
+                # Force immediate PnL update (don't wait 60s polling)
+                try:
+                    accounts = await self.client.get_accounts()
+                    for acc in accounts:
+                        if acc.get("id") == self.account_id:
+                            new_bal = acc.get("balance", self._capital)
+                            self._daily_pnl = new_bal - self._capital
+                            self._last_pnl_check = time_mod.time()
+                            self._log_event(
+                                f"[PNL] 平倉後更新: balance=${new_bal:,.0f} "
+                                f"daily_pnl=${self._daily_pnl:,.0f}"
+                            )
+                            break
+                except Exception as e:
+                    self._log_event(f"[PNL] 平倉後更新失敗: {e}", "error")
+
             # ── Position size audit (every 5 min, skip 60s after entry) ──
             if has_position:
                 now_ts = time_mod.time()
@@ -1478,9 +1499,9 @@ class LiveTradingEngine:
                         await self.flatten_now()
                         return
 
-            # Update capital (every 60s to reduce API calls)
+            # Update capital (every 15s — fast enough for profit lock & UI)
             now_ts = time_mod.time()
-            if now_ts - self._last_pnl_check >= 60:
+            if now_ts - self._last_pnl_check >= 15:
                 self._last_pnl_check = now_ts
                 accounts = await self.client.get_accounts()
                 for acc in accounts:
