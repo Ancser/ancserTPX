@@ -3,8 +3,8 @@
 # 功能: 即時交易引擎 — Practice 帳戶上執行 SessionTrendFollow / MACD / Reversion
 # 主要職責:
 #   1. 30s 輪詢 1m K 線 → SessionZoneDetector → 策略 evaluate
-#   2. Limit / Market 入場下單；fill 後掛 Stop SL + Limit TP
-#   3. Trail SL: UPNL reaches configured TP% → SL moves to entry ± trail_sl_ticks
+#   2. Limit / Market 入場；fill 後等待 Auto OCO 子單並修改到算法 SL/TP
+#   3. Trail SL: UPNL reaches configured TP% → modify Auto OCO SL to entry ± trail_sl_ticks
 #   4. 收盤前 (12:30 PT 取消 pending / 12:45 PT flatten) 強制平倉
 #   5. _sync_position 偵測 fill / close → 寫 trade 到 _trades + data/live_exits.json
 # 版本變更 (v0.11):
@@ -62,6 +62,8 @@ class LiveTradingEngine:
 
     # 加州 12:45 PT = 15:45 ET = 14:45 CT = 19:45 UTC
     TRAIL_TICK_STEP = 5
+    AUTO_OCO_FAILSAFE_SECONDS = 5 * 60
+    AUTO_OCO_SETTINGS_URL = "https://topstepx.com/settings?tab=risk-settings"
     FLATTEN_TIME_UTC = time(19, 45)     # UTC 19:45 = PT 12:45 flatten
     PRE_FLATTEN_UTC = time(19, 30)      # UTC 19:30 = PT 12:30 cancel pending
 
@@ -138,6 +140,8 @@ class LiveTradingEngine:
         self._position_just_closed: bool = False  # skip strategy eval on same tick as close
         self._position_age: int = 0              # candles since position opened (for display)
         self._trail_sl_triggered: bool = False    # trailing SL: one-time trigger per position
+        self._protection_synced: bool = False     # Auto OCO child orders moved to strategy prices
+        self._auto_oco_fail_safe_triggered: bool = False
         self._entry_time: Optional[datetime] = None  # when current position opened (UTC)
         self._force_exit_reason: Optional[str] = None  # set by flatten_now / emergency close
         self._daily_pnl: float = 0.0
@@ -195,9 +199,209 @@ class LiveTradingEngine:
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _order_float(order: Dict[str, Any], *keys: str) -> Optional[float]:
+        for key in keys:
+            value = order.get(key)
+            if value is None or value == "":
+                continue
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _order_int(order: Dict[str, Any], *keys: str) -> Optional[int]:
+        for key in keys:
+            value = order.get(key)
+            if value is None or value == "":
+                continue
+            try:
+                return int(float(value))
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @classmethod
+    def _order_type(cls, order: Dict[str, Any]) -> Optional[int]:
+        raw = order.get("type", order.get("orderType", order.get("order_type")))
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if text.isdigit():
+                return int(text)
+            if "trail" in text and "stop" in text:
+                return 5
+            if "stop" in text:
+                return 4
+            if "limit" in text:
+                return 1
+            if "market" in text:
+                return 2
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _order_side_api(cls, order: Dict[str, Any]) -> Optional[int]:
+        raw = order.get("side", order.get("orderSide", order.get("order_side")))
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            text = raw.strip().lower()
+            if text in ("0", "buy", "bid", "long"):
+                return 0
+            if text in ("1", "sell", "ask", "short"):
+                return 1
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
     def _order_contract_matches(self, order: Dict[str, Any]) -> bool:
         contract = order.get("contractId") or order.get("contract_id") or order.get("contractID")
         return contract == self.contract_id
+
+    @staticmethod
+    def _exit_api_side(signal: TradeSignal) -> int:
+        return 1 if signal.direction == Direction.BUY else 0
+
+    def _select_auto_oco_orders(
+        self,
+        open_orders: List[Dict[str, Any]],
+        signal: TradeSignal,
+    ) -> tuple[Optional[int], Optional[int]]:
+        close_side = self._exit_api_side(signal)
+        sl_candidates = []
+        tp_candidates = []
+
+        for order in open_orders:
+            if not self._order_contract_matches(order):
+                continue
+            oid = self._order_id(order)
+            if not oid:
+                continue
+
+            side = self._order_side_api(order)
+            if side is not None and side != close_side:
+                continue
+
+            size = self._order_int(order, "size", "quantity", "qty", "remainingSize", "openSize")
+            if size is not None and abs(size) != self.contract_size:
+                continue
+
+            order_type = self._order_type(order)
+            stop_price = self._order_float(order, "stopPrice", "stop_price")
+            limit_price = self._order_float(order, "limitPrice", "limit_price", "price")
+
+            # Auto OCO should use Stop Market for SL; the bot controls trailing by modifying it.
+            if order_type == 4 or (order_type is None and stop_price is not None):
+                sl_candidates.append((oid, stop_price))
+            elif order_type == 1 or (order_type is None and limit_price is not None):
+                tp_candidates.append((oid, limit_price))
+
+        def pick(candidates, target_price: float) -> Optional[int]:
+            if not candidates:
+                return None
+            oid, _ = min(
+                candidates,
+                key=lambda item: abs((item[1] if item[1] is not None else target_price) - target_price),
+            )
+            return oid
+
+        return pick(sl_candidates, signal.sl_price), pick(tp_candidates, signal.tp_price)
+
+    async def _scan_auto_oco_order_ids(self, signal: TradeSignal) -> tuple[Optional[int], Optional[int]]:
+        try:
+            open_orders = await self.client.get_open_orders(self.account_id)
+        except Exception as e:
+            self._log_event(f"[AUTO OCO] 掃描 SL/TP 失敗: {e}", "error")
+            return self._sl_order_id, self._tp_order_id
+
+        sl_id, tp_id = self._select_auto_oco_orders(open_orders, signal)
+        if sl_id:
+            self._sl_order_id = sl_id
+        if tp_id:
+            self._tp_order_id = tp_id
+        return self._sl_order_id, self._tp_order_id
+
+    async def _sync_auto_oco_protection(self, signal: TradeSignal, wait_seconds: float = 4.0) -> bool:
+        """Wait for Auto OCO SL/TP child orders and move them to strategy prices."""
+        if not signal or not self._open_position:
+            self._log_event("[AUTO OCO] 無 signal 或無持倉，跳過保護單同步", "error")
+            return False
+
+        deadline = time_mod.monotonic() + max(0.0, wait_seconds)
+        waiting_logged = False
+
+        while True:
+            sl_id, tp_id = await self._scan_auto_oco_order_ids(signal)
+            missing = []
+            if not sl_id:
+                missing.append("SL")
+            if not tp_id:
+                missing.append("TP")
+            if not missing:
+                break
+
+            if time_mod.monotonic() >= deadline:
+                self._protection_synced = False
+                self._log_event(
+                    f"[AUTO OCO] 等不到 {'+'.join(missing)} 子單；請確認 TopstepX 已啟用 Auto OCO preset",
+                    "error",
+                )
+                return False
+
+            if not waiting_logged:
+                self._log_event(f"[AUTO OCO] 等待 TopstepX 生成 {'+'.join(missing)} 子單...")
+                waiting_logged = True
+            await asyncio.sleep(0.25)
+
+        sl_price = self._round_to_tick(signal.sl_price)
+        tp_price = self._round_to_tick(signal.tp_price)
+        ok = True
+
+        try:
+            sl_resp = await self.client.modify_order(
+                self.account_id,
+                self._sl_order_id,
+                size=self.contract_size,
+                stop_price=sl_price,
+            )
+            if sl_resp.success:
+                self._log_event(f"[AUTO OCO] SL #{self._sl_order_id} -> {sl_price:.2f}")
+                signal.sl_price = sl_price
+            else:
+                ok = False
+                self._log_event(f"[AUTO OCO] SL 修改失敗: {sl_resp.error_message}", "error")
+        except Exception as e:
+            ok = False
+            self._log_event(f"[AUTO OCO] SL 修改異常: {e}", "error")
+
+        try:
+            tp_resp = await self.client.modify_order(
+                self.account_id,
+                self._tp_order_id,
+                size=self.contract_size,
+                limit_price=tp_price,
+            )
+            if tp_resp.success:
+                self._log_event(f"[AUTO OCO] TP #{self._tp_order_id} -> {tp_price:.2f}")
+                signal.tp_price = tp_price
+            else:
+                ok = False
+                self._log_event(f"[AUTO OCO] TP 修改失敗: {tp_resp.error_message}", "error")
+        except Exception as e:
+            ok = False
+            self._log_event(f"[AUTO OCO] TP 修改異常: {e}", "error")
+
+        self._protection_synced = ok
+        return ok
 
     async def _sweep_contract_open_orders(self, label: str) -> int:
         try:
@@ -446,6 +650,9 @@ class LiveTradingEngine:
             "pending_timeout": self.trend_follow.PENDING_TIMEOUT_CANDLES,
             "sl_order_id": self._sl_order_id,
             "tp_order_id": self._tp_order_id,
+            "protection_synced": self._protection_synced,
+            "auto_oco_fail_safe_triggered": self._auto_oco_fail_safe_triggered,
+            "auto_oco_settings_url": self.AUTO_OCO_SETTINGS_URL,
             "daily_pnl": self._daily_pnl,
             "profit_locked": self._profit_locked,
             "max_profit_lock": self._max_profit_lock,
@@ -548,6 +755,7 @@ class LiveTradingEngine:
         self._daily_pnl = 0.0
         self._trades = []
         self._log = []
+        self._auto_oco_fail_safe_triggered = False
 
         # Log candle date range
         if historical_candles:
@@ -756,7 +964,48 @@ class LiveTradingEngine:
         self._active_signal = None
         self._fill_price = None
         self._trail_sl_triggered = False
+        self._protection_synced = False
         self._position_open_ts = 0.0
+
+    def _auto_oco_missing_timed_out(self) -> bool:
+        """True when an engine-filled position stayed without SL/TP past the grace period."""
+        if not self._open_position:
+            return False
+        if self._sl_order_id and self._tp_order_id:
+            return False
+        if not self._position_open_ts:
+            return False
+        return (time_mod.time() - self._position_open_ts) >= self.AUTO_OCO_FAILSAFE_SECONDS
+
+    async def _flatten_and_pause_missing_auto_oco(self):
+        """Flatten and stop the engine when Auto OCO protection never appears."""
+        if self._auto_oco_fail_safe_triggered:
+            return
+        self._auto_oco_fail_safe_triggered = True
+
+        missing = []
+        if not self._sl_order_id:
+            missing.append("SL")
+        if not self._tp_order_id:
+            missing.append("TP")
+        missing_text = "+".join(missing) if missing else "SL/TP"
+        elapsed = time_mod.time() - self._position_open_ts if self._position_open_ts else 0.0
+
+        self._log_event(
+            f"[AUTO OCO] 入場成交後 {elapsed / 60:.1f} 分鐘仍沒有 {missing_text}。"
+            f"可能沒有設置 Auto OCO，立即平倉並暫停運行。設定連結: {self.AUTO_OCO_SETTINGS_URL}",
+            "error",
+        )
+
+        try:
+            await self.flatten_now()
+        finally:
+            self._running = False
+            self._save_zones()
+            self._log_event(
+                f"[AUTO OCO] 沒有設置 Auto OCO，已經暫停運行。請到 {self.AUTO_OCO_SETTINGS_URL}",
+                "error",
+            )
 
     # ── Main Loop ──────────────────────────────────────────
 
@@ -886,20 +1135,30 @@ class LiveTradingEngine:
 
         # ── If position open, verify SL/TP are in place ──
         if self._open_position:
+            if self._auto_oco_missing_timed_out():
+                if self._active_signal:
+                    await self._sync_auto_oco_protection(self._active_signal, wait_seconds=2.0)
+                if self._auto_oco_missing_timed_out():
+                    await self._flatten_and_pause_missing_auto_oco()
+                    return
+
             if self._active_signal:
-                if not self._sl_order_id or not self._tp_order_id:
+                if not self._sl_order_id or not self._tp_order_id or not self._protection_synced:
                     missing = []
                     if not self._sl_order_id:
                         missing.append("SL")
                     if not self._tp_order_id:
                         missing.append("TP")
+                    if self._sl_order_id and self._tp_order_id and not self._protection_synced:
+                        missing.append("PRICE")
                     self._log_event(
-                        f"持倉中缺少 {'+'.join(missing)} → 補掛",
+                        f"持倉中 Auto OCO {'+'.join(missing)} 未同步 → 重新掃描/修改",
                         "error"
                     )
-                    self._pending_signal = self._active_signal
-                    await self._place_sl_tp()
-                    self._pending_signal = None
+                    synced = await self._sync_auto_oco_protection(self._active_signal, wait_seconds=2.0)
+                    if not synced and self._auto_oco_missing_timed_out():
+                        await self._flatten_and_pause_missing_auto_oco()
+                        return
             elif not self._sl_order_id or not self._tp_order_id:
                 self._log_event(
                     "持倉中無 SL/TP 且無 signal（重啟後或手動入場）→ 需手動設定 SL/TP",
@@ -931,6 +1190,7 @@ class LiveTradingEngine:
                 self._sl_order_id = None
                 self._tp_order_id = None
                 self._active_signal = None
+                self._protection_synced = False
 
         # ── Max profit lock — block new trades when daily PnL ≥ threshold ──
         if self._max_profit_lock > 0 and self._daily_pnl >= self._max_profit_lock:
@@ -1144,41 +1404,34 @@ class LiveTradingEngine:
             f"(entry={self._fill_price:.2f}, offset={trail_ticks}t)"
         )
 
-        # Place new breakeven SL FIRST, then cancel old SL only if new one succeeds.
-        # This prevents the position from being unprotected if the new SL is rejected.
-        sl_side = 2 if sig.direction == Direction.BUY else 1
-        sl_order = OrderRequest(
-            account_id=self.account_id,
-            contract_id=self.contract_id,
-            order_type=3,   # Stop
-            side=sl_side,
-            size=self.contract_size,
-            stop_price=new_sl,
-        )
+        if not self._sl_order_id or not self._protection_synced:
+            synced = await self._sync_auto_oco_protection(sig, wait_seconds=2.0)
+            if not synced or not self._sl_order_id:
+                self._log_event("[TRAIL SL] 找不到可修改的 Auto OCO SL，保留原保護單並等待下次重試", "error")
+                self._trail_sl_triggered = False
+                return
+
         try:
-            resp = await self.client.place_order(sl_order)
+            resp = await self.client.modify_order(
+                self.account_id,
+                self._sl_order_id,
+                size=self.contract_size,
+                stop_price=new_sl,
+            )
             if resp.success:
-                new_sl_order_id = resp.order_id
-                self._log_event(f"保本 SL @ {new_sl:.2f} order=#{new_sl_order_id}")
-                # New SL confirmed — now safe to cancel the old one
-                if self._sl_order_id:
-                    try:
-                        await self.client.cancel_order(self.account_id, self._sl_order_id)
-                        self._log_event(f"舊 SL #{self._sl_order_id} 取消")
-                    except Exception as e:
-                        self._log_event(f"取消舊 SL 失敗 (新SL已生效): {e}", "error")
-                self._sl_order_id = new_sl_order_id
+                self._log_event(f"[TRAIL SL] SL #{self._sl_order_id} -> {new_sl:.2f}")
                 sig.sl_price = new_sl
+                self._protection_synced = True
             else:
-                # New SL rejected — old SL is still active, position stays protected
                 self._log_event(
-                    f"保本 SL 下單失敗: {resp.error_message} → 舊 SL 維持不動",
-                    "error"
+                    f"[TRAIL SL] 修改 SL 失敗: {resp.error_message} → 原 Auto OCO SL 維持不動",
+                    "error",
                 )
-                self._trail_sl_triggered = False  # allow retry on next candle
+                self._trail_sl_triggered = False
         except Exception as e:
-            self._log_event(f"保本 SL 異常: {e} → 舊 SL 維持不動", "error")
-            self._trail_sl_triggered = False  # allow retry on next candle
+            self._log_event(f"[TRAIL SL] 修改 SL 異常: {e} → 原 Auto OCO SL 維持不動", "error")
+            self._trail_sl_triggered = False
+        return
 
     async def _cancel_with_retry(self, order_id: Optional[int], label: str):
         """Cancel an order with retry."""
@@ -1247,81 +1500,17 @@ class LiveTradingEngine:
         return False
 
     async def _place_sl_tp(self):
-        """Place SL and TP orders for the current position.
-
-        Called immediately after fill detection in _sync_position.
-        Also retried in _tick if SL/TP orders are missing.
-        """
-        if not self._pending_signal or not self._open_position:
+        """Sync TopstepX Auto OCO SL/TP child orders to strategy prices."""
+        sig = self._pending_signal or self._active_signal
+        if not sig or not self._open_position:
             self._log_event(
-                f"[SL/TP] _place_sl_tp 跳過: signal={self._pending_signal is not None} "
+                f"[AUTO OCO] _place_sl_tp 跳過: signal={sig is not None} "
                 f"position={self._open_position is not None}",
-                "error"
+                "error",
             )
             return
 
-        sig = self._pending_signal
-        # SL/TP side = opposite of entry direction (close the position)
-        sl_side = 2 if sig.direction == Direction.BUY else 1
-        side_label = "SELL" if sl_side == 2 else "BUY"
-
-        self._log_event(
-            f"[SL/TP] 下單中: {side_label} SL(Stop)@{sig.sl_price:.2f} "
-            f"TP(Limit)@{sig.tp_price:.2f} | contract={self.contract_id} "
-            f"| existing SL=#{self._sl_order_id} TP=#{self._tp_order_id}"
-        )
-
-        # Place SL order (skip if already placed)
-        if not self._sl_order_id:
-            sl_order = OrderRequest(
-                account_id=self.account_id,
-                contract_id=self.contract_id,
-                order_type=3,  # Internal 3 → broker converts to API type 4 (Stop)
-                side=sl_side,
-                size=self.contract_size,
-                stop_price=sig.sl_price,
-            )
-            try:
-                sl_resp = await self.client.place_order(sl_order)
-                if sl_resp.success:
-                    self._sl_order_id = sl_resp.order_id
-                    self._log_event(f"SL 掛單成功 #{sl_resp.order_id} @ {sig.sl_price:.2f}")
-                else:
-                    self._log_event(
-                        f"SL 掛單失敗: code={sl_resp.error_code} msg={sl_resp.error_message}"
-                        f" → 價格可能已跌破 SL, 嘗試 Market 平倉",
-                        "error"
-                    )
-                    # SL rejected (price already past SL) → market close immediately
-                    await self._emergency_market_close(sl_side, "SL_REJECTED")
-                    return  # skip TP — position is being closed
-            except Exception as e:
-                self._log_event(f"SL 下單異常: {e} → 嘗試 Market 平倉", "error")
-                await self._emergency_market_close(sl_side, "SL_EXCEPTION")
-                return
-
-        # Place TP order (skip if already placed)
-        if not self._tp_order_id:
-            tp_order = OrderRequest(
-                account_id=self.account_id,
-                contract_id=self.contract_id,
-                order_type=1,  # Limit
-                side=sl_side,
-                size=self.contract_size,
-                limit_price=sig.tp_price,
-            )
-            try:
-                tp_resp = await self.client.place_order(tp_order)
-                if tp_resp.success:
-                    self._tp_order_id = tp_resp.order_id
-                    self._log_event(f"TP 掛單成功 #{tp_resp.order_id} @ {sig.tp_price:.2f}")
-                else:
-                    self._log_event(
-                        f"TP 掛單失敗: code={tp_resp.error_code} msg={tp_resp.error_message}",
-                        "error"
-                    )
-            except Exception as e:
-                self._log_event(f"TP 下單異常: {e}", "error")
+        await self._sync_auto_oco_protection(sig, wait_seconds=4.0)
 
     async def _sync_position(self):
         """Sync position state from exchange.
@@ -1381,9 +1570,12 @@ class LiveTradingEngine:
                 })
 
                 # Place SL/TP protection orders
+                self._position_open_ts = time_mod.time()
+                self._auto_oco_fail_safe_triggered = False
                 if self._pending_signal:
+                    self._protection_synced = False
                     self._log_event(
-                        f"[SL/TP] 準備下單 SL={self._pending_signal.sl_price:.2f} "
+                        f"[AUTO OCO] 等待並修改 SL={self._pending_signal.sl_price:.2f} "
                         f"TP={self._pending_signal.tp_price:.2f} "
                         f"dir={self._pending_signal.direction.value}"
                     )
@@ -1394,7 +1586,6 @@ class LiveTradingEngine:
                 # Save signal for SL/TP retry, then clear pending state
                 self._active_signal = self._pending_signal  # keep for SL/TP reference
                 self._entry_time = datetime.utcnow()
-                self._position_open_ts = time_mod.time()
                 self._force_exit_reason = None
                 self._pending_order_id = None
                 self._pending_signal = None
@@ -1480,6 +1671,7 @@ class LiveTradingEngine:
                 self._tp_order_id = None
                 self._fill_price = None
                 self._active_signal = None
+                self._protection_synced = False
                 self._entry_time = None
 
                 for oid, label in [(sl_id, "SL"), (tp_id, "TP")]:

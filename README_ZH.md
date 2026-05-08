@@ -44,6 +44,29 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 
 在網頁右上角 **CONNECT** 面板輸入 **郵箱** 和 **API Key**，首次連線成功後會自動保存到 `.env`，無需手動編輯檔案。
 
+### 3. TopstepX Auto OCO Preset
+
+即時交易的保護單依賴 TopstepX 的 **Auto OCO Bracket** preset。Bot 不會在入場單裡送 API bracket 欄位。
+
+建議在 TopstepX 這樣設定：
+
+- 開啟 [TopstepX Risk Settings](https://topstepx.com/settings?tab=risk-settings)
+- 啟用 **Auto OCO Brackets**
+- 建立一個給本 bot 使用的 preset
+- **Stop Loss Order Type**：`Stop Market`
+- **Take Profit Order Type**：`Limit`
+- 預設 ticks 距離設大一點，讓成交後帳戶立刻有保護單
+- 不要把 preset SL 設成 `Trailing Stop Market`；trail 由 bot 透過修改既有 Auto OCO stop order 來完成
+
+實際下單流程：
+
+1. Bot 只送普通入場單。
+2. 入場成交後，由 TopstepX 自動生成 Auto OCO SL/TP 子單。
+3. Bot 等待子單出現，篩選正確平倉方向，然後把 SL/TP 修改成策略算法計算出的價格。
+4. Trail SL 觸發後，Bot 會修改同一張 Auto OCO SL，不會另外新掛一張 stop order。
+
+如果 Auto OCO 子單沒有生成，live log 會出現 `[AUTO OCO]` 警告，Bot 不會退回到手動 bracket 下單。如果成交後 5 分鐘仍沒有 SL/TP，Bot 會先平倉、暫停 engine，並在 log 裡留下上面的 Risk Settings 連結。
+
 ---
 
 ## 安裝與啟動
@@ -80,8 +103,9 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 ### Live Trading
 
 1. 選擇交易帳戶
-2. 點擊 **GO LIVE**
-3. 需要停止或手動平倉時，使用 **STOP** 或 **FLATTEN**
+2. 確認 TopstepX Auto OCO preset 已啟用
+3. 點擊 **GO LIVE**
+4. 需要停止或手動平倉時，使用 **STOP** 或 **FLATTEN**
 
 ---
 

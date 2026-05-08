@@ -572,6 +572,69 @@ class TopstepXClient:
         )
         return resp
 
+    async def modify_order(
+        self,
+        account_id: int,
+        order_id: int,
+        *,
+        size: Optional[int] = None,
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+    ) -> OrderResponse:
+        """Modify an existing working order.
+
+        Used for TopstepX Auto OCO-created SL/TP orders. This intentionally does
+        not send bracket fields; entry orders stay plain, and protection orders
+        are adjusted after the platform creates them.
+        """
+        payload = {"accountId": account_id, "orderId": order_id}
+        if size is not None:
+            payload["size"] = size
+        if limit_price is not None:
+            payload["limitPrice"] = limit_price
+        if stop_price is not None:
+            payload["stopPrice"] = stop_price
+
+        logger.info(f"[ORDER MODIFY] order_id={order_id} payload={payload}")
+        try:
+            client = await self._ensure_http()
+            raw_resp = await client.request("POST", "/api/Order/modify", json=payload)
+
+            if raw_resp.status_code == 401:
+                await self.authenticate()
+                client = await self._ensure_http()
+                raw_resp = await client.request("POST", "/api/Order/modify", json=payload)
+
+            try:
+                data = raw_resp.json()
+            except Exception:
+                data = {"success": False, "errorMessage": raw_resp.text}
+
+            if raw_resp.status_code >= 400:
+                logger.error(
+                    f"[ORDER MODIFY ERROR] HTTP {raw_resp.status_code} | "
+                    f"payload={payload} | response={data}"
+                )
+
+            resp = OrderResponse(
+                order_id=data.get("orderId", order_id),
+                success=bool(data.get("success", raw_resp.status_code < 400)),
+                error_code=data.get("errorCode", 0),
+                error_message=data.get("errorMessage"),
+            )
+            logger.info(
+                f"[ORDER MODIFY RESP] success={resp.success} order_id={resp.order_id} "
+                f"error_code={resp.error_code} error_msg={resp.error_message}"
+            )
+            return resp
+        except Exception as e:
+            logger.error(f"[ORDER MODIFY] order_id={order_id} exception: {e}")
+            return OrderResponse(
+                order_id=order_id,
+                success=False,
+                error_message=str(e),
+            )
+
     async def cancel_order(self, account_id: int, order_id: int) -> bool:
         """取消訂單 — requires both accountId and orderId per TopstepX API."""
         logger.info(f"[ORDER CANCEL] account={account_id} order_id={order_id}")

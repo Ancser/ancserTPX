@@ -44,6 +44,29 @@ Current default trading settings:
 
 Enter your **email** and **API key** in the Web UI's top-right **CONNECT** panel. Credentials are saved to `.env` automatically on first connect — no manual file editing needed.
 
+### 3. TopstepX Auto OCO Preset
+
+Live trading relies on a TopstepX **Auto OCO Bracket** preset for protective orders. The bot does not send API bracket fields with the entry order.
+
+Recommended setup in TopstepX:
+
+- Open [TopstepX Risk Settings](https://topstepx.com/settings?tab=risk-settings)
+- Enable **Auto OCO Brackets**
+- Create a preset for this bot
+- **Stop Loss Order Type**: `Stop Market`
+- **Take Profit Order Type**: `Limit`
+- Use large enough default tick distances so the account is protected immediately after fill
+- Do not use `Trailing Stop Market` for the preset SL; trailing is handled by the bot by modifying the existing Auto OCO stop order
+
+Runtime behavior:
+
+1. The bot sends a plain entry order.
+2. After the entry fills, TopstepX creates the Auto OCO SL/TP child orders.
+3. The bot waits for those child orders, selects the correct exit direction, and modifies SL/TP to the strategy-calculated prices.
+4. When Trail SL triggers, the bot modifies the existing Auto OCO SL instead of placing a new stop order.
+
+If the Auto OCO child orders are not created, live logs will show an `[AUTO OCO]` warning and the bot will not fall back to manual bracket orders. If SL/TP are still missing 5 minutes after fill, the bot flattens the position, pauses the engine, and logs the Risk Settings link above.
+
 ---
 
 ## Install & Start
@@ -80,8 +103,9 @@ Run the matching files for your operating system:
 ### Live Trading
 
 1. Select a trading account
-2. Click **GO LIVE**
-3. Use **STOP** or **FLATTEN** when you want to stop trading or close positions manually
+2. Confirm the TopstepX Auto OCO preset is enabled
+3. Click **GO LIVE**
+4. Use **STOP** or **FLATTEN** when you want to stop trading or close positions manually
 
 ---
 
