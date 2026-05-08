@@ -970,7 +970,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.13.0
+        0.13.2
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -2053,6 +2053,7 @@ function onLiveAccountSwitch() {
 
 let _liveInterval = null;
 let _liveStatusInterval = null;
+let _liveStartInProgress = false;
 
 function getMarketSession() {
     // NQ CME Globex — all times converted to ET (New York)
@@ -2130,6 +2131,11 @@ async function goLive() {
     const goBtn = document.getElementById('btn-go-live');
     if (goBtn.disabled) return;
     goBtn.disabled = true;
+    _liveStartInProgress = true;
+    const stopBtn = document.getElementById('btn-stop-live');
+    if (stopBtn) stopBtn.disabled = true;
+    const flattenBtn = document.getElementById('btn-flatten');
+    if (flattenBtn) flattenBtn.disabled = true;
 
     const statusEl = document.getElementById('live-status-text');
     statusEl.style.color = 'var(--amber)';
@@ -2182,9 +2188,7 @@ async function goLive() {
     // Update top bar session info
     updateLiveTopBar();
 
-    // Update button states
-    document.getElementById('btn-stop-live').disabled = false;
-    document.getElementById('btn-flatten').disabled = false;
+    // Keep controls locked until /live/start confirms that the engine is running.
 
     // ── Call /live/start to start the live trading engine ──
     // stratParams now carries contract_id + contract_size (v0.11), so the
@@ -2218,15 +2222,26 @@ async function goLive() {
         statusEl.textContent = '僅監控';
     }
 
+    if (!engineStarted) _liveStartInProgress = false;
+
     if (engineStarted) {
-        statusEl.style.color = 'var(--green)';
-        statusEl.textContent = '交易中';
+        statusEl.style.color = 'var(--amber)';
+        statusEl.textContent = '啟動中...';
         const dot = document.getElementById('live-status-dot');
-        if (dot) { dot.style.background = 'var(--green)'; dot.style.boxShadow = '0 0 6px var(--green)'; }
-        log('即時交易啟動 — K線每秒更新 | 狀態每秒更新', 'success');
+        if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
+        const stopBtn = document.getElementById('btn-stop-live');
+        if (stopBtn) stopBtn.disabled = true;
+        const flattenBtn = document.getElementById('btn-flatten');
+        if (flattenBtn) flattenBtn.disabled = true;
+        log('即時交易引擎啟動中 — 等待狀態確認', 'success');
     } else {
         const dot = document.getElementById('live-status-dot');
         if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
+        goBtn.disabled = false;
+        const stopBtn = document.getElementById('btn-stop-live');
+        if (stopBtn) stopBtn.disabled = true;
+        const flattenBtn = document.getElementById('btn-flatten');
+        if (flattenBtn) flattenBtn.disabled = true;
         log('監控模式 — K線每秒更新 (交易引擎未啟動)', 'info');
     }
 
@@ -2236,6 +2251,7 @@ async function goLive() {
 
 async function stopLive() {
     const statusEl = document.getElementById('live-status-text');
+    _liveStartInProgress = false;
     try {
         const resp = await fetch(API + '/live/stop', { method: 'POST' });
         const data = await resp.json();
@@ -2389,6 +2405,33 @@ async function pollLiveStatus() {
         if (!resp.ok) return;
         const st = await resp.json();
         if (!st.running) {
+            if (_liveStartInProgress) {
+                const statusEl = document.getElementById('live-status-text');
+                if (statusEl) {
+                    statusEl.style.color = 'var(--amber)';
+                    statusEl.textContent = '啟動中...';
+                }
+                const dot = document.getElementById('live-status-dot');
+                if (dot) {
+                    dot.style.background = 'var(--amber)';
+                    dot.style.boxShadow = '0 0 6px var(--amber)';
+                }
+                const phaseText = st.phase || '構建區間中...';
+                const panelPhase = document.getElementById('live-position-text');
+                if (panelPhase) panelPhase.textContent = phaseText;
+                const phaseTopEl = document.getElementById('lv-phase-top');
+                if (phaseTopEl) {
+                    phaseTopEl.textContent = phaseText;
+                    phaseTopEl.style.color = 'var(--amber)';
+                }
+                const goBtn = document.getElementById('btn-go-live');
+                if (goBtn) goBtn.disabled = true;
+                const stopBtn = document.getElementById('btn-stop-live');
+                if (stopBtn) stopBtn.disabled = true;
+                const flattenBtn = document.getElementById('btn-flatten');
+                if (flattenBtn) flattenBtn.disabled = true;
+                return;
+            }
             const statusEl = document.getElementById('live-status-text');
             if (statusEl) {
                 statusEl.style.color = 'var(--text3)';
@@ -2432,8 +2475,30 @@ async function pollLiveStatus() {
             }
             const sigRow = document.getElementById('lv-signal-row');
             if (sigRow) sigRow.style.display = 'none';
+            const goBtn = document.getElementById('btn-go-live');
+            if (goBtn && liveAccount) goBtn.disabled = false;
+            const stopBtn = document.getElementById('btn-stop-live');
+            if (stopBtn) stopBtn.disabled = true;
+            const flattenBtn = document.getElementById('btn-flatten');
+            if (flattenBtn) flattenBtn.disabled = true;
             return;
         }
+
+        _liveStartInProgress = false;
+        const statusEl = document.getElementById('live-status-text');
+        if (statusEl) {
+            statusEl.style.color = 'var(--green)';
+            statusEl.textContent = '交易中';
+        }
+        const dot = document.getElementById('live-status-dot');
+        if (dot) {
+            dot.style.background = 'var(--green)';
+            dot.style.boxShadow = '0 0 6px var(--green)';
+        }
+        const stopBtn = document.getElementById('btn-stop-live');
+        if (stopBtn) stopBtn.disabled = false;
+        const flattenBtn = document.getElementById('btn-flatten');
+        if (flattenBtn) flattenBtn.disabled = false;
 
         // Show engine version in console for debugging
         if (st.engine_version && !window._loggedVersion) {
@@ -2558,7 +2623,8 @@ async function pollLiveStatus() {
             sigRow.style.display = 'flex';
             const sigDir = String(sig.direction || '').toLowerCase();
             const isLong = sigDir === 'long' || sigDir === 'buy';
-            document.getElementById('lv-sig-direction').textContent = isLong ? '▲ LIMIT BUY' : '▼ LIMIT SELL';
+            const orderType = String(sig.order_type || 'limit').toUpperCase();
+            document.getElementById('lv-sig-direction').textContent = isLong ? '▲ ' + orderType + ' BUY' : '▼ ' + orderType + ' SELL';
             document.getElementById('lv-sig-direction').style.color = isLong ? 'var(--green)' : 'var(--red)';
             document.getElementById('lv-sig-entry').textContent = sig.entry_price.toFixed(2);
             document.getElementById('lv-sig-sl').textContent = sig.sl_price.toFixed(2);
@@ -2586,7 +2652,7 @@ async function pollLiveStatus() {
                 window._liveEntryLine = candleSeries.createPriceLine({
                     price: sig.entry_price, color: '#FFD700', lineWidth: 1,
                     lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true,
-                    title: (isLong ? 'BUY' : 'SELL') + ' ' + sig.entry_price.toFixed(2),
+                    title: (isLong ? 'BUY' : 'SELL') + ' ' + orderType + ' ' + sig.entry_price.toFixed(2),
                 });
                 window._liveTpLine = candleSeries.createPriceLine({
                     price: sig.tp_price, color: '#00E5A0', lineWidth: 1,

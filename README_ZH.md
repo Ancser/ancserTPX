@@ -46,7 +46,7 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 
 ### 3. TopstepX Auto OCO Preset
 
-即時交易的保護單依賴 TopstepX 的 **Auto OCO Bracket** preset。Bot 不會在入場單裡送 API bracket 欄位。
+即時交易需要啟用 TopstepX **Auto OCO Brackets**。Bot 會在每一張 API 入場單裡送 `stopLossBracket` / `takeProfitBracket`；只在 preset 畫面打勾，裸 API 單不會自動附上 SL/TP。
 
 建議在 TopstepX 這樣設定：
 
@@ -55,14 +55,14 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 - 建立一個給本 bot 使用的 preset
 - **Stop Loss Order Type**：`Stop Market`
 - **Take Profit Order Type**：`Limit`
-- 預設 ticks 距離設大一點，讓成交後帳戶立刻有保護單
+- preset 的 ticks 只是備用/預設值；Bot 會在 API 入場單裡送策略計算出的 SL/TP ticks
 - 不要把 preset SL 設成 `Trailing Stop Market`；trail 由 bot 透過修改既有 Auto OCO stop order 來完成
 
 實際下單流程：
 
-1. Bot 只送普通入場單。
-2. 入場成交後，由 TopstepX 自動生成 Auto OCO SL/TP 子單。
-3. Bot 等待子單出現，篩選正確平倉方向，然後把 SL/TP 修改成策略算法計算出的價格。
+1. Bot 送出帶有 SL/TP bracket ticks 的入場單。
+2. 入場成交後，TopstepX 依照 API bracket 欄位生成 Auto OCO SL/TP 子單。
+3. Bot 等待子單出現，篩選正確平倉方向，然後確認/修改 SL/TP 到策略算法計算出的價格。
 4. Trail SL 觸發後，Bot 會修改同一張 Auto OCO SL，不會另外新掛一張 stop order。
 
 如果 Auto OCO 子單沒有生成，live log 會出現 `[AUTO OCO]` 警告，Bot 不會退回到手動 bracket 下單。如果成交後 5 分鐘仍沒有 SL/TP，Bot 會先平倉、暫停 engine，並在 log 裡留下上面的 Risk Settings 連結。

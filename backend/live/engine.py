@@ -712,6 +712,7 @@ class LiveTradingEngine:
                 "sl_price": sig.sl_price,
                 "tp_price": sig.tp_price,
                 "strategy": sig.strategy.value,
+                "order_type": getattr(sig, "order_type", "limit"),
             } if sig else None,
             "pending_age": self._pending_age,
             "pending_timeout": self.trend_follow.PENDING_TIMEOUT_CANDLES,
@@ -1328,6 +1329,19 @@ class LiveTradingEngine:
         """Round price to nearest NQ tick (0.25)."""
         return round(round(price / TICK_SIZE) * TICK_SIZE, 2)
 
+    def _entry_brackets_for_signal(self, signal: TradeSignal) -> tuple[Dict[str, int], Dict[str, int]]:
+        """Build ProjectX bracket payload using signed offsets from the entry price."""
+        sl_ticks = int(round((signal.sl_price - signal.entry_price) / self.tick_size))
+        tp_ticks = int(round((signal.tp_price - signal.entry_price) / self.tick_size))
+        if sl_ticks == 0:
+            sl_ticks = -1 if signal.direction == Direction.BUY else 1
+        if tp_ticks == 0:
+            tp_ticks = 1 if signal.direction == Direction.BUY else -1
+        return (
+            {"ticks": sl_ticks, "type": 4},  # Stop Market
+            {"ticks": tp_ticks, "type": 1},  # Limit
+        )
+
     async def _place_order(self, signal: TradeSignal) -> bool:
         """Place a limit order on the exchange.
 
@@ -1379,6 +1393,7 @@ class LiveTradingEngine:
                 f"[ZONE] signal 使用 zone_id={signal.zone_id} | 策略={signal.strategy.value}"
             )
 
+        stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
         order = OrderRequest(
             account_id=self.account_id,
             contract_id=self.contract_id,
@@ -1386,6 +1401,8 @@ class LiveTradingEngine:
             side=side,
             size=self.contract_size,
             limit_price=signal.entry_price,
+            stop_loss_bracket=stop_loss_bracket,
+            take_profit_bracket=take_profit_bracket,
         )
 
         try:
@@ -1397,6 +1414,7 @@ class LiveTradingEngine:
                 self._log_event(
                     f"掛單成功 #{resp.order_id} | {dir_label} LIMIT @ {signal.entry_price:.2f} | "
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
+                    f"bracket SL={stop_loss_bracket['ticks']}t TP={take_profit_bracket['ticks']}t | "
                     f"策略={signal.strategy.value}"
                 )
                 return True
@@ -1413,7 +1431,7 @@ class LiveTradingEngine:
             return False
 
     async def _place_market_entry(self, signal: TradeSignal) -> bool:
-        """Place a market order. SL/TP protection is placed after fill."""
+        """Place a market order with attached SL/TP brackets."""
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
@@ -1421,12 +1439,15 @@ class LiveTradingEngine:
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "買" if signal.direction == Direction.BUY else "賣"
 
+        stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
         order = OrderRequest(
             account_id=self.account_id,
             contract_id=self.contract_id,
             order_type=2,   # Market
             side=side,
             size=self.contract_size,
+            stop_loss_bracket=stop_loss_bracket,
+            take_profit_bracket=take_profit_bracket,
         )
 
         try:
@@ -1438,7 +1459,8 @@ class LiveTradingEngine:
                 self._pending_age = 0
                 self._log_event(
                     f"市價單 #{resp.order_id} | {dir_label} MKT @ ~{signal.entry_price:.2f} | "
-                    f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f}"
+                    f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
+                    f"bracket SL={stop_loss_bracket['ticks']}t TP={take_profit_bracket['ticks']}t"
                 )
                 return True
             else:

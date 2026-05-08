@@ -539,6 +539,10 @@ class TopstepXClient:
             "limitPrice": order.limit_price,
             "stopPrice": order.stop_price,
         }
+        if order.stop_loss_bracket is not None:
+            payload["stopLossBracket"] = order.stop_loss_bracket
+        if order.take_profit_bracket is not None:
+            payload["takeProfitBracket"] = order.take_profit_bracket
 
         # Use direct request to capture 400 error body (not _request which raises)
         client = await self._ensure_http()
@@ -583,9 +587,9 @@ class TopstepXClient:
     ) -> OrderResponse:
         """Modify an existing working order.
 
-        Used for TopstepX Auto OCO-created SL/TP orders. This intentionally does
-        not send bracket fields; entry orders stay plain, and protection orders
-        are adjusted after the platform creates them.
+        Used for TopstepX Auto OCO-created SL/TP orders. Entry orders send bracket
+        fields so protection is attached immediately; this call only adjusts the
+        child orders after the platform creates them.
         """
         payload = {"accountId": account_id, "orderId": order_id}
         if size is not None:

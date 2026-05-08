@@ -25,7 +25,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 
 
@@ -422,6 +422,8 @@ class OrderRequest:
     size: int = 1
     limit_price: Optional[float] = None
     stop_price: Optional[float] = None
+    stop_loss_bracket: Optional[Dict[str, Any]] = None
+    take_profit_bracket: Optional[Dict[str, Any]] = None
 
 
 @dataclass

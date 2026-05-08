@@ -1445,7 +1445,6 @@ class LiveStartRequest(BaseModel):
     candle_seconds: int = 30
     max_profit_lock: int = 0              # 0=OFF, 150/500/1000
 
-
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
     """啟動即時交易引擎"""
