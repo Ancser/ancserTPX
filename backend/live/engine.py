@@ -63,6 +63,7 @@ class LiveTradingEngine:
     # 加州 12:45 PT = 15:45 ET = 14:45 CT = 19:45 UTC
     TRAIL_TICK_STEP = 5
     AUTO_OCO_FAILSAFE_SECONDS = 5 * 60
+    AUTO_OCO_RETRY_SECONDS = 15.0
     AUTO_OCO_SETTINGS_URL = "https://topstepx.com/settings?tab=risk-settings"
     FLATTEN_TIME_UTC = time(19, 45)     # UTC 19:45 = PT 12:45 flatten
     PRE_FLATTEN_UTC = time(19, 30)      # UTC 19:30 = PT 12:30 cancel pending
@@ -142,6 +143,7 @@ class LiveTradingEngine:
         self._trail_sl_triggered: bool = False    # trailing SL: one-time trigger per position
         self._protection_synced: bool = False     # Auto OCO child orders moved to strategy prices
         self._auto_oco_fail_safe_triggered: bool = False
+        self._last_auto_oco_retry_ts: float = 0.0
         self._entry_time: Optional[datetime] = None  # when current position opened (UTC)
         self._force_exit_reason: Optional[str] = None  # set by flatten_now / emergency close
         self._daily_pnl: float = 0.0
@@ -152,6 +154,7 @@ class LiveTradingEngine:
         self._candles_processed: int = 0
         self._last_market_price: Optional[float] = None
         self._last_candle_time: Optional[str] = None
+        self._last_account_refresh: float = 0.0
         # Network resilience
         self._disconnected: bool = False
         self._consecutive_errors: int = 0
@@ -569,7 +572,7 @@ class LiveTradingEngine:
         except Exception as e:
             logger.warning(f"Failed to persist exit record: {e}")
 
-    async def _calc_pnl_from_trades(self) -> float:
+    async def _calc_pnl_from_trades(self, *, emit_log: bool = True) -> float:
         """Fallback: sum today's realized PnL from trade history.
 
         Uses the same field names as routes.py _parse_fill:
@@ -613,12 +616,76 @@ class LiveTradingEngine:
                         count += 1
                 except (ValueError, TypeError):
                     continue
-            if count > 0:
+            if emit_log and count > 0:
                 self._log_event(f"[PNL] 從 trade history 計算: ${total_pnl:,.0f} ({count} closes)")
             return total_pnl
         except Exception as e:
             logger.warning(f"Failed to calc PnL from trades: {e}")
             return 0.0
+
+    async def _refresh_account_snapshot(
+        self,
+        reason: str = "account",
+        *,
+        emit_log: bool = False,
+        attempts: int = 1,
+    ) -> bool:
+        """Refresh balance and daily PnL from account snapshot, with trade history fallback."""
+        def first_present(row: Dict, *keys: str):
+            for key in keys:
+                if key in row and row.get(key) is not None:
+                    return row.get(key)
+            return None
+
+        def as_float(value, default: float = 0.0) -> float:
+            if value is None:
+                return default
+            try:
+                return float(str(value).replace(",", "").replace("$", ""))
+            except (TypeError, ValueError):
+                return default
+
+        last_error: Optional[Exception] = None
+        tries = max(1, attempts)
+        for attempt in range(tries):
+            try:
+                accounts = await self.client.get_accounts()
+                account = next((acc for acc in accounts if acc.get("id") == self.account_id), None)
+                if not account:
+                    raise ValueError(f"account {self.account_id} not found")
+
+                balance = first_present(account, "balance", "Balance")
+                if balance is not None:
+                    self._capital = as_float(balance, self._capital)
+
+                open_pnl = first_present(account, "openPnl", "openPnL", "unrealizedPnl", "unrealizedPnL")
+                closed_pnl = first_present(account, "closedPnl", "closedPnL", "realizedPnl", "realizedPnL")
+                source = "account"
+                if open_pnl is not None or closed_pnl is not None:
+                    self._daily_pnl = as_float(open_pnl) + as_float(closed_pnl)
+                else:
+                    daily = first_present(account, "dailyPnl", "dailyPnL", "pnl", "PnL")
+                    if daily is not None:
+                        self._daily_pnl = as_float(daily)
+                    else:
+                        self._daily_pnl = await self._calc_pnl_from_trades(emit_log=emit_log)
+                        source = "trade history"
+
+                self._last_account_refresh = time_mod.time()
+                if emit_log:
+                    self._log_event(
+                        f"[PNL] {reason}: daily=${self._daily_pnl:,.0f} | "
+                        f"balance=${self._capital:,.0f} ({source})"
+                    )
+                return True
+            except Exception as e:
+                last_error = e
+                if attempt < tries - 1:
+                    await asyncio.sleep(0.5)
+
+        if emit_log and last_error:
+            self._log_event(f"[PNL] {reason} 更新失敗: {last_error}", "error")
+        return False
 
     def _get_topstep_trade_date(self) -> str:
         """Current TopStep trade date (CT 17:00 boundary)."""
@@ -662,7 +729,7 @@ class LiveTradingEngine:
             "last_market_price": self._last_market_price,
             "fill_price": self._fill_price,
             "zones": self._get_zone_summary(),
-            "phase": self._get_phase(),
+            "phase": self._get_phase() if self._running else "引擎已停止",
             "trades": self._trades[-10:],
             "log": self._log[-20:],
         }
@@ -756,6 +823,8 @@ class LiveTradingEngine:
         self._trades = []
         self._log = []
         self._auto_oco_fail_safe_triggered = False
+        self._last_auto_oco_retry_ts = 0.0
+        self._last_account_refresh = 0.0
 
         # Log candle date range
         if historical_candles:
@@ -796,21 +865,12 @@ class LiveTradingEngine:
         else:
             self._log_event("Warm-up 完成 | 尚無 session zone")
 
-        # Get initial account balance + today's PnL from trade history
+        # Get initial account balance + today's PnL from account snapshot
         try:
             positions = await self.client.get_positions(self.account_id)
             self._open_position = positions[0] if positions else None
-            accounts = await self.client.get_accounts()
-            for acc in accounts:
-                if acc.get("id") == self.account_id:
-                    self._capital = acc.get("balance", 0)
-                    break
             self._today = self._get_topstep_trade_date()
-            self._daily_pnl = await self._calc_pnl_from_trades()
-            self._log_event(
-                f"帳戶初始化: balance=${self._capital:,.0f} | "
-                f"今日PnL=${self._daily_pnl:,.0f} (trade history)"
-            )
+            await self._refresh_account_snapshot("帳戶初始化", emit_log=True, attempts=2)
         except Exception as e:
             self._log_event(f"取得帳戶資訊失敗: {e}", "error")
 
@@ -954,6 +1014,8 @@ class LiveTradingEngine:
         except Exception as e:
             self._log_event(f"flatten 殘留掃描失敗: {e}", "error")
 
+        await self._refresh_account_snapshot("flatten 後更新", emit_log=True, attempts=3)
+
         # ── Clear local references regardless of broker result ──
         self._open_position = None
         self._sl_order_id = None
@@ -966,6 +1028,7 @@ class LiveTradingEngine:
         self._trail_sl_triggered = False
         self._protection_synced = False
         self._position_open_ts = 0.0
+        self._last_auto_oco_retry_ts = 0.0
 
     def _auto_oco_missing_timed_out(self) -> bool:
         """True when an engine-filled position stayed without SL/TP past the grace period."""
@@ -1006,6 +1069,49 @@ class LiveTradingEngine:
                 f"[AUTO OCO] 沒有設置 Auto OCO，已經暫停運行。請到 {self.AUTO_OCO_SETTINGS_URL}",
                 "error",
             )
+
+    # ── Auto OCO fail-safe ─────────────────────────────────
+
+    async def _monitor_auto_oco_protection(self) -> bool:
+        """Retry Auto OCO sync every loop and fail-safe flatten when protection is missing."""
+        if not self._open_position:
+            return False
+
+        if self._auto_oco_missing_timed_out():
+            if self._active_signal:
+                await self._sync_auto_oco_protection(self._active_signal, wait_seconds=2.0)
+            if self._auto_oco_missing_timed_out():
+                await self._flatten_and_pause_missing_auto_oco()
+                return True
+
+        if self._active_signal:
+            if not self._sl_order_id or not self._tp_order_id or not self._protection_synced:
+                now_ts = time_mod.time()
+                if now_ts - self._last_auto_oco_retry_ts < self.AUTO_OCO_RETRY_SECONDS:
+                    return False
+                self._last_auto_oco_retry_ts = now_ts
+                missing = []
+                if not self._sl_order_id:
+                    missing.append("SL")
+                if not self._tp_order_id:
+                    missing.append("TP")
+                if self._sl_order_id and self._tp_order_id and not self._protection_synced:
+                    missing.append("PRICE")
+                self._log_event(
+                    f"持倉中 Auto OCO {'+'.join(missing)} 未同步 -> 重新掃描/修改",
+                    "error",
+                )
+                synced = await self._sync_auto_oco_protection(self._active_signal, wait_seconds=2.0)
+                if not synced and self._auto_oco_missing_timed_out():
+                    await self._flatten_and_pause_missing_auto_oco()
+                    return True
+        elif not self._sl_order_id or not self._tp_order_id:
+            self._log_event(
+                "持倉中無 SL/TP 且無 signal（重啟後或手動入場）-> 需手動設定 SL/TP",
+                "error",
+            )
+
+        return False
 
     # ── Main Loop ──────────────────────────────────────────
 
@@ -1057,6 +1163,14 @@ class LiveTradingEngine:
 
         # Check position status from API (ALWAYS, even without new candle)
         await self._sync_position()
+
+        if time_mod.time() - self._last_account_refresh >= 30:
+            await self._refresh_account_snapshot("status", emit_log=False)
+
+        if self._open_position:
+            stopped = await self._monitor_auto_oco_protection()
+            if stopped:
+                return
 
         # Skip strategy evaluation on the same tick a position was just closed
         if self._position_just_closed:
@@ -1133,39 +1247,8 @@ class LiveTradingEngine:
                 self._log_event(f"掛單超時 {timeout} 分鐘取消")
                 await self._cancel_pending()
 
-        # ── If position open, verify SL/TP are in place ──
+        # Auto OCO protection is monitored before the candle gate; trailing still needs price.
         if self._open_position:
-            if self._auto_oco_missing_timed_out():
-                if self._active_signal:
-                    await self._sync_auto_oco_protection(self._active_signal, wait_seconds=2.0)
-                if self._auto_oco_missing_timed_out():
-                    await self._flatten_and_pause_missing_auto_oco()
-                    return
-
-            if self._active_signal:
-                if not self._sl_order_id or not self._tp_order_id or not self._protection_synced:
-                    missing = []
-                    if not self._sl_order_id:
-                        missing.append("SL")
-                    if not self._tp_order_id:
-                        missing.append("TP")
-                    if self._sl_order_id and self._tp_order_id and not self._protection_synced:
-                        missing.append("PRICE")
-                    self._log_event(
-                        f"持倉中 Auto OCO {'+'.join(missing)} 未同步 → 重新掃描/修改",
-                        "error"
-                    )
-                    synced = await self._sync_auto_oco_protection(self._active_signal, wait_seconds=2.0)
-                    if not synced and self._auto_oco_missing_timed_out():
-                        await self._flatten_and_pause_missing_auto_oco()
-                        return
-            elif not self._sl_order_id or not self._tp_order_id:
-                self._log_event(
-                    "持倉中無 SL/TP 且無 signal（重啟後或手動入場）→ 需手動設定 SL/TP",
-                    "error"
-                )
-
-            # ── Trailing SL: trigger at configured TP%, then move SL from entry ──
             self._position_age += 1   # track for display only
             if self._last_market_price:
                 await self._check_trailing_sl_live()
@@ -1518,7 +1601,7 @@ class LiveTradingEngine:
         Handles three transitions:
           1. pending → filled:  position appears while _pending_order_id is set
           2. filled  → closed:  position disappears (SL/TP hit)
-          3. no change:         update capital only
+          3. no change:         keep local position state aligned
         """
         try:
             positions = await self.client.get_positions(self.account_id)
@@ -1572,6 +1655,7 @@ class LiveTradingEngine:
                 # Place SL/TP protection orders
                 self._position_open_ts = time_mod.time()
                 self._auto_oco_fail_safe_triggered = False
+                self._last_auto_oco_retry_ts = 0.0
                 if self._pending_signal:
                     self._protection_synced = False
                     self._log_event(
@@ -1673,6 +1757,8 @@ class LiveTradingEngine:
                 self._active_signal = None
                 self._protection_synced = False
                 self._entry_time = None
+                self._position_open_ts = 0.0
+                self._last_auto_oco_retry_ts = 0.0
 
                 for oid, label in [(sl_id, "SL"), (tp_id, "TP")]:
                     if oid:
@@ -1719,20 +1805,7 @@ class LiveTradingEngine:
                 self._position_just_closed = True  # skip new entry this tick
                 self._force_exit_reason = None
 
-                # Update PnL from trade history + refresh balance
-                try:
-                    self._daily_pnl = await self._calc_pnl_from_trades()
-                    accounts = await self.client.get_accounts()
-                    for acc in accounts:
-                        if acc.get("id") == self.account_id:
-                            self._capital = acc.get("balance", self._capital)
-                            break
-                    self._log_event(
-                        f"[PNL] 平倉後更新: daily=${self._daily_pnl:,.0f} | "
-                        f"balance=${self._capital:,.0f}"
-                    )
-                except Exception as e:
-                    self._log_event(f"[PNL] 平倉後更新失敗: {e}", "error")
+                await self._refresh_account_snapshot("平倉後更新", emit_log=True, attempts=3)
 
             # ── Position size audit (every 5 min, skip 60s after entry) ──
             if has_position:
@@ -1753,7 +1826,7 @@ class LiveTradingEngine:
                         await self.flatten_now()
                         return
 
-            # PnL updated only on position close (immediate API read above)
+            # Account snapshot refresh is handled by _tick and close/flatten transitions.
 
         except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError,
                 httpx.WriteError, httpx.PoolTimeout) as e:
