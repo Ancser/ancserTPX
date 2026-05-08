@@ -970,7 +970,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.12.1
+        0.12.2
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -2459,9 +2459,10 @@ async function pollLiveStatus() {
         }
 
         // ── Capital & PnL ──
+        // st.capital = real balance from API (already includes today's PnL)
+        // st.daily_pnl = today's realized PnL from trade history (for profit lock display)
         if (st.capital) {
             const pnl = st.daily_pnl || 0;
-            const currentBalance = st.capital + pnl;
             const pnlStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
             const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
             const lockBadge = st.profit_locked
@@ -2471,14 +2472,14 @@ async function pollLiveStatus() {
                 ? ' <span style="color:var(--red);font-size:9px;letter-spacing:1px;animation:blink 1s infinite;">⚠ OFFLINE</span>'
                 : '';
             document.getElementById('lv-capital').innerHTML =
-                '$' + currentBalance.toLocaleString(undefined, {maximumFractionDigits: 0}) +
+                '$' + st.capital.toLocaleString(undefined, {maximumFractionDigits: 0}) +
                 ' <span style="color:' + pnlColor + ';font-size:10px;">(' + pnlStr + ')</span>' + lockBadge + dcBadge;
 
             // Update account info badge with live balance
             const infoEl = document.getElementById('live-account-info');
             if (infoEl && liveAccount) {
                 const type = liveAccount.is_practice ? 'PRACTICE' : 'FUNDED';
-                let infoHtml = '<span style="color:var(--text2);">' + type + '</span> | Balance: <span style="color:var(--green);">$' + currentBalance.toLocaleString(undefined, {maximumFractionDigits: 0}) + '</span>';
+                let infoHtml = '<span style="color:var(--text2);">' + type + '</span> | Balance: <span style="color:var(--green);">$' + st.capital.toLocaleString(undefined, {maximumFractionDigits: 0}) + '</span>';
                 if (!liveAccount.is_practice) {
                     infoHtml += '<br><span style="color:var(--red);">WARNING: FUNDED ACCOUNT</span>';
                 }

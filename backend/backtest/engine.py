@@ -47,17 +47,17 @@ logger = logging.getLogger(__name__)
 POST_BREAKOUT_WINDOW_MIN = 60
 
 
-_PT = ZoneInfo("America/Los_Angeles")
+_CT = ZoneInfo("America/Chicago")
 _UTC_TZ = ZoneInfo("UTC")
 
 
 def _topstep_trade_date(utc_dt: datetime) -> str:
-    """TopStep trading date for a UTC timestamp. Day resets at PT 22:00."""
+    """TopStep trading date for a UTC timestamp. Day resets at CT 17:00 (CME new session)."""
     aware = utc_dt.replace(tzinfo=_UTC_TZ) if utc_dt.tzinfo is None else utc_dt
-    pt_dt = aware.astimezone(_PT)
-    if pt_dt.hour >= 22:
-        return (pt_dt + timedelta(days=1)).strftime("%Y-%m-%d")
-    return pt_dt.strftime("%Y-%m-%d")
+    ct_dt = aware.astimezone(_CT)
+    if ct_dt.hour >= 17:
+        return (ct_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+    return ct_dt.strftime("%Y-%m-%d")
 
 
 class BacktestEngine:

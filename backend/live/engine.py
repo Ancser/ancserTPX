@@ -52,7 +52,7 @@ ENGINE_VERSION = "v4.0-session-2026-03-29"  # Session-based overnight zone
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
 
-_PT = ZoneInfo("America/Los_Angeles")
+_CT = ZoneInfo("America/Chicago")
 _UTC_TZ = ZoneInfo("UTC")
 
 
@@ -148,7 +148,6 @@ class LiveTradingEngine:
         self._candles_processed: int = 0
         self._last_market_price: Optional[float] = None
         self._last_candle_time: Optional[str] = None
-        self._last_pnl_check: float = 0.0  # timestamp of last PNL check
         # Network resilience
         self._disconnected: bool = False
         self._consecutive_errors: int = 0
@@ -165,6 +164,7 @@ class LiveTradingEngine:
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "data", "live_exits.json"
         )
+        # daily_capital.json removed — PnL now read directly from API
 
     @classmethod
     def _floor_ticks_to_step(cls, ticks: float) -> int:
@@ -365,6 +365,65 @@ class LiveTradingEngine:
         except Exception as e:
             logger.warning(f"Failed to persist exit record: {e}")
 
+    async def _calc_pnl_from_trades(self) -> float:
+        """Fallback: sum today's realized PnL from trade history.
+
+        Uses the same field names as routes.py _parse_fill:
+          - PnL: profitAndLoss / ProfitAndLoss / pnl
+          - Timestamp: creationTimestamp / CreationTimestamp / timestamp
+        Only sums closing fills (profitAndLoss != 0).
+        """
+        try:
+            trades = await self.client.get_trade_history(self.account_id, days=2)
+            if not trades:
+                return 0.0
+            today = self._get_topstep_trade_date()
+            total_pnl = 0.0
+            count = 0
+            for t in trades:
+                # PnL field (same order as routes.py)
+                pnl_raw = t.get("profitAndLoss")
+                if pnl_raw is None:
+                    pnl_raw = t.get("ProfitAndLoss")
+                if pnl_raw is None:
+                    pnl_raw = t.get("pnl")
+                if not pnl_raw or float(pnl_raw) == 0:
+                    continue  # opening fill, no PnL
+
+                # Timestamp field
+                ts_str = (
+                    t.get("creationTimestamp")
+                    or t.get("CreationTimestamp")
+                    or t.get("timestamp")
+                    or t.get("fillTime")
+                    or ""
+                )
+                if not ts_str:
+                    continue
+                try:
+                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    ct = ts.astimezone(_CT)
+                    trade_date = (ct + timedelta(days=1)).strftime("%Y-%m-%d") if ct.hour >= 17 else ct.strftime("%Y-%m-%d")
+                    if trade_date == today:
+                        total_pnl += float(pnl_raw)
+                        count += 1
+                except (ValueError, TypeError):
+                    continue
+            if count > 0:
+                self._log_event(f"[PNL] 從 trade history 計算: ${total_pnl:,.0f} ({count} closes)")
+            return total_pnl
+        except Exception as e:
+            logger.warning(f"Failed to calc PnL from trades: {e}")
+            return 0.0
+
+    def _get_topstep_trade_date(self) -> str:
+        """Current TopStep trade date (CT 17:00 boundary)."""
+        now = datetime.utcnow().replace(tzinfo=_UTC_TZ)
+        ct = now.astimezone(_CT)
+        if ct.hour >= 17:
+            return (ct + timedelta(days=1)).strftime("%Y-%m-%d")
+        return ct.strftime("%Y-%m-%d")
+
     def get_status(self) -> Dict:
         """Return current engine state for frontend."""
         # Use active_signal (after fill) or pending_signal (before fill)
@@ -529,7 +588,7 @@ class LiveTradingEngine:
         else:
             self._log_event("Warm-up 完成 | 尚無 session zone")
 
-        # Get initial account balance
+        # Get initial account balance + today's PnL from trade history
         try:
             positions = await self.client.get_positions(self.account_id)
             self._open_position = positions[0] if positions else None
@@ -538,6 +597,12 @@ class LiveTradingEngine:
                 if acc.get("id") == self.account_id:
                     self._capital = acc.get("balance", 0)
                     break
+            self._today = self._get_topstep_trade_date()
+            self._daily_pnl = await self._calc_pnl_from_trades()
+            self._log_event(
+                f"帳戶初始化: balance=${self._capital:,.0f} | "
+                f"今日PnL=${self._daily_pnl:,.0f} (trade history)"
+            )
         except Exception as e:
             self._log_event(f"取得帳戶資訊失敗: {e}", "error")
 
@@ -728,19 +793,17 @@ class LiveTradingEngine:
         """One iteration of the trading loop (1m candles — 30s bars stale on TopstepX)."""
         now = datetime.utcnow()
 
-        # Reset daily counters at PT 22:00 (TopStep day boundary)
+        # Reset daily counters at CT 17:00 (CME new session = TopStep day boundary)
         aware_now = now.replace(tzinfo=_UTC_TZ)
-        pt_now = aware_now.astimezone(_PT)
-        ts_date = (pt_now + timedelta(days=1)).strftime("%Y-%m-%d") if pt_now.hour >= 22 else pt_now.strftime("%Y-%m-%d")
+        ct_now = aware_now.astimezone(_CT)
+        ts_date = (ct_now + timedelta(days=1)).strftime("%Y-%m-%d") if ct_now.hour >= 17 else ct_now.strftime("%Y-%m-%d")
         if ts_date != self._today:
             self._today = ts_date
-            # Bug fix: update _capital to current balance so daily PnL starts from 0
-            if self._daily_pnl != 0:
-                self._capital = self._capital + self._daily_pnl
+            # API's closedPnl/openPnl reset automatically at CME day boundary
             self._daily_pnl = 0.0
             self._profit_locked = False
             self._log_event(
-                f"新交易日 — 重置每日 PnL (PT 22:00) | 新起始資金=${self._capital:,.0f}"
+                f"新交易日 — PnL 重置 (CT 17:00)"
             )
 
         # Check position status from API (ALWAYS, even without new candle)
@@ -875,7 +938,7 @@ class LiveTradingEngine:
                 self._profit_locked = True
                 self._log_event(
                     f"每日獲利鎖定: ${self._daily_pnl:,.0f} ≥ ${self._max_profit_lock} — "
-                    f"暫停新單至 PT 22:00"
+                    f"暫停新單至 CT 17:00"
                 )
             if self._pending_order_id:
                 await self._cancel_pending()
@@ -1464,19 +1527,18 @@ class LiveTradingEngine:
                 self._position_just_closed = True  # skip new entry this tick
                 self._force_exit_reason = None
 
-                # Force immediate PnL update (don't wait 60s polling)
+                # Update PnL from trade history + refresh balance
                 try:
+                    self._daily_pnl = await self._calc_pnl_from_trades()
                     accounts = await self.client.get_accounts()
                     for acc in accounts:
                         if acc.get("id") == self.account_id:
-                            new_bal = acc.get("balance", self._capital)
-                            self._daily_pnl = new_bal - self._capital
-                            self._last_pnl_check = time_mod.time()
-                            self._log_event(
-                                f"[PNL] 平倉後更新: balance=${new_bal:,.0f} "
-                                f"daily_pnl=${self._daily_pnl:,.0f}"
-                            )
+                            self._capital = acc.get("balance", self._capital)
                             break
+                    self._log_event(
+                        f"[PNL] 平倉後更新: daily=${self._daily_pnl:,.0f} | "
+                        f"balance=${self._capital:,.0f}"
+                    )
                 except Exception as e:
                     self._log_event(f"[PNL] 平倉後更新失敗: {e}", "error")
 
@@ -1499,22 +1561,7 @@ class LiveTradingEngine:
                         await self.flatten_now()
                         return
 
-            # Update capital (every 15s — fast enough for profit lock & UI)
-            now_ts = time_mod.time()
-            if now_ts - self._last_pnl_check >= 15:
-                self._last_pnl_check = now_ts
-                accounts = await self.client.get_accounts()
-                for acc in accounts:
-                    if acc.get("id") == self.account_id:
-                        new_balance = acc.get("balance", self._capital)
-                        if self._capital > 0:
-                            pnl_change = new_balance - self._capital
-                            if abs(pnl_change - self._daily_pnl) > 1.0:
-                                self._log_event(
-                                    f"[PNL] balance={new_balance:.2f} daily_pnl={pnl_change:.2f}"
-                                )
-                            self._daily_pnl = pnl_change
-                        break
+            # PnL updated only on position close (immediate API read above)
 
         except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError,
                 httpx.WriteError, httpx.PoolTimeout) as e:
