@@ -22,6 +22,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ancserTPX</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any">
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -542,6 +543,7 @@
 
         /* ── Metrics ── */
         .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+        .metric-card.metric-wide { grid-column: 1 / -1; }
         .metric-card {
             background: var(--bg);
             border: 1px solid var(--border);
@@ -970,7 +972,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.13.2
+        0.13.3
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1114,7 +1116,6 @@
                     <option value="1000">$1,000</option>
                 </select>
             </div>
-
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
                 <div class="ml-run-wrap">
@@ -1148,12 +1149,6 @@
         <div class="panel" id="metrics-panel" style="display:none;">
             <div class="panel-title">PERFORMANCE (1 MONTH)</div>
             <div class="metrics-grid" id="metrics-grid"></div>
-            <div id="metrics-sessions-toggle"
-                 onclick="(function(){var b=document.getElementById('metrics-sessions-body');var c=document.getElementById('metrics-sessions-chev');var open=b.style.display!=='none';b.style.display=open?'none':'grid';c.style.transform=open?'rotate(0deg)':'rotate(180deg)';})()"
-                 style="margin-top:8px;display:flex;align-items:center;justify-content:center;gap:6px;height:14px;cursor:pointer;border-top:1px solid var(--border);">
-                <span id="metrics-sessions-chev" style="font-size:9px;color:var(--text2);transition:transform 0.15s;line-height:1;">▼</span>
-            </div>
-            <div class="metrics-grid" id="metrics-sessions-body" style="display:none;margin-top:4px;"></div>
         </div>
 
         <!-- Live Monitor Panel (hidden by default) -->
@@ -1488,6 +1483,8 @@ const DEFAULT_STRATEGY_PARAMS = {
     contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
     contract_size: 3,
     max_profit_lock: 0,
+    // Temporarily permanent: always use no stability wait after the session time buffer.
+    skip_zone_stability: true,
 };
 
 const MNQ_SIZE_CHOICES = [1, 3, 5, 10];
@@ -1695,6 +1692,7 @@ function collectStrategyParams(mode) {
         contract_id: contractId,
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
         max_profit_lock: _int('max-profit-lock-' + mode),
+        skip_zone_stability: true,
     };
 }
 
@@ -4178,6 +4176,7 @@ async function runAllCombinations() {
                 contract_id: params.contract_id,
                 contract_size: params.contract_size,
                 max_profit_lock: params.max_profit_lock,
+                skip_zone_stability: true,
                 candle_seconds: params.candle_seconds,
                 initial_capital: capital,
                 start_date: startDate,
@@ -4242,6 +4241,7 @@ function renderMLResults(results) {
         const trailLabel = triggerPct > 0 && r.trail_pct != null
             ? fmtPct(parseFloat(r.trail_pct)) + ' / ' + fmtSigned(r.trail || 0, 't')
             : 'OFF';
+        const lockLabel = r.max_profit_lock ? '$' + r.max_profit_lock : 'OFF';
 
         // Best/worst day from daily_pnl dict
         const daily = r.daily_pnl || {};
@@ -4261,7 +4261,7 @@ function renderMLResults(results) {
             '<td style="text-align:center;">' + (r.tp || 0) + '</td>' +
             '<td style="text-align:center;">' + trailLabel + '</td>' +
             '<td style="text-align:center;">' + triggerLabel + '</td>' +
-            '<td style="text-align:center;">' + (r.max_profit_lock ? '$' + r.max_profit_lock : 'OFF') + '</td>' +
+            '<td style="text-align:center;">' + lockLabel + '</td>' +
             '<td style="text-align:center;">' + (r.total_trades || 0) + '</td>' +
             '<td style="text-align:center;color:' + (parseFloat(wr) >= 50 ? 'var(--green)' : '') + ';">' + wr + '%</td>' +
             '<td style="text-align:right;color:' + pnlColor + ';">$' + pnl.toFixed(0) + '</td>' +
@@ -4323,6 +4323,7 @@ async function saveMLPreset(origRank) {
         contract_id: r.contract_id || 'CON.F.US.MNQ.M26',
         contract_size: contractSize,
         max_profit_lock: r.max_profit_lock || 0,
+        skip_zone_stability: true,
     };
 
     try {
@@ -4571,6 +4572,91 @@ function summarizeTradeOutcomes(trades) {
     return summary;
 }
 
+function getTradeStreakBucket(trade) {
+    const bucket = getTradeExitBucket(trade);
+    if (bucket === 'tp') return 'tp';
+    if (bucket === 'trail_sl') return 'trail';
+    return 'loss';
+}
+
+function computeExitStreakDistribution(trades) {
+    const sorted = [...(trades || [])].sort((a, b) => {
+        const ta = a.entry_time ? new Date(a.entry_time).getTime() : 0;
+        const tb = b.entry_time ? new Date(b.entry_time).getTime() : 0;
+        return ta - tb;
+    });
+    const counts = {
+        loss: { 1: 0, 2: 0, 3: 0 },
+        trail: { 1: 0, 2: 0, 3: 0 },
+        tp: { 1: 0, 2: 0, 3: 0 },
+    };
+    let last = null;
+    let streak = 0;
+    const flush = () => {
+        if (!last || streak <= 0) return;
+        counts[last][Math.min(streak, 3)] += 1;
+    };
+
+    for (const trade of sorted) {
+        const bucket = getTradeStreakBucket(trade);
+        if (bucket === last) {
+            streak += 1;
+        } else {
+            flush();
+            last = bucket;
+            streak = 1;
+        }
+    }
+    flush();
+
+    const order = [
+        ['loss', 1, '1 LOSS'], ['loss', 2, '2 LOSS'], ['loss', 3, '3+ LOSS'],
+        ['trail', 1, '1 TRAIL'], ['trail', 2, '2 TRAIL'], ['trail', 3, '3+ TRAIL'],
+        ['tp', 1, '1 FULL TP'], ['tp', 2, '2 FULL TP'], ['tp', 3, '3+ FULL TP'],
+    ];
+    const total = order.reduce((sum, [bucket, n]) => sum + counts[bucket][n], 0);
+    return {
+        total,
+        rows: order.map(([bucket, n, label]) => {
+            const count = counts[bucket][n];
+            return {
+                bucket,
+                label,
+                count,
+                pct: total ? (count / total) * 100 : 0,
+            };
+        }),
+    };
+}
+
+function renderExitStreakBars(trades) {
+    const dist = computeExitStreakDistribution(trades);
+    const colorFor = (bucket) => {
+        if (bucket === 'tp') return 'var(--green)';
+        if (bucket === 'trail') return 'var(--cyan)';
+        return 'var(--red)';
+    };
+    const rows = dist.rows.map(row => {
+        const width = Math.max(row.pct, row.count ? 2 : 0).toFixed(1);
+        return `
+            <div style="display:grid;grid-template-columns:92px minmax(120px,1fr) 86px;gap:8px;align-items:center;min-height:22px;">
+                <div class="label" style="font-size:10px;white-space:nowrap;">${row.label}</div>
+                <div style="height:8px;background:rgba(255,255,255,.07);border:1px solid var(--border);overflow:hidden;">
+                    <div style="height:100%;width:${width}%;background:${colorFor(row.bucket)};"></div>
+                </div>
+                <div class="value" style="font-size:11px;text-align:right;color:var(--text);">${row.pct.toFixed(1)}% (${row.count})</div>
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div style="grid-column:1/-1;border:1px solid var(--border);background:rgba(5,10,18,.45);padding:8px;margin-top:4px;">
+            <div class="label" style="margin-bottom:6px;">STREAK DISTRIBUTION</div>
+            ${dist.total ? rows : '<div class="value" style="font-size:12px;color:var(--text2);">NO STREAK DATA</div>'}
+        </div>
+    `;
+}
+
 // Compute summary metrics from a list of trades (used for backtest-day-span and live comparison)
 function _computeTradeStats(trades) {
     if (!trades || trades.length === 0) {
@@ -4752,20 +4838,31 @@ function renderMetrics(m, backtestTrades) {
     const winRateLive    = liveStats ? liveStats.win_rate : null;
 
     // Exit-path distribution — % of trades that exited via each reason (NOT win rate)
+    const fmtTpSlTrail = (tp, sl, trail) => (
+        '<span style="color:var(--green);">' + tp + '</span>/' +
+        '<span style="color:var(--red);">' + sl + '</span>/' +
+        '<span style="color:var(--white);">' + trail + '</span>'
+    );
     const fmtPctTriple = (s) => {
         const t = s && s.trades ? s.trades : 0;
         if (!t) return '--';
         const tp = ((s.tp / t) * 100).toFixed(0);
         const sl = ((s.sl / t) * 100).toFixed(0);
         const tr = ((s.trail_sl / t) * 100).toFixed(0);
-        return tp + '%/' + sl + '%/' + tr + '%';
+        return fmtTpSlTrail(tp + '%', sl + '%', tr + '%');
     };
     // Avg $ per exit bucket — shows the magnitude gap between full TP, trail SL, full SL
     const fmtAvgTriple = (s) => {
         if (!s || !s.trades) return '--';
         const sign = (v) => (v >= 0 ? '+' : '') + Math.round(v);
-        return sign(s.avg_tp_pnl || 0) + '/' + sign(s.avg_sl_pnl || 0) + '/' + sign(s.avg_trail_sl_pnl || 0);
+        return fmtTpSlTrail(sign(s.avg_tp_pnl || 0), sign(s.avg_sl_pnl || 0), sign(s.avg_trail_sl_pnl || 0));
     };
+    const fmtZoneExitBuckets = (stats) => {
+        if (!stats || !stats.trades) return '--';
+        return fmtPctTriple(stats);
+    };
+    const prevZoneStats = _computeTradeStats((backtestTrades || []).filter(t => t.zone_source === 'previous'));
+    const currentZoneStats = _computeTradeStats((backtestTrades || []).filter(t => t.zone_source === 'current'));
 
     const items = [
         { label: totalPnlLabel,
@@ -4780,26 +4877,28 @@ function renderMetrics(m, backtestTrades) {
         { label: 'CALMAR',
           value: (m.calmar_ratio != null ? m.calmar_ratio : 0).toFixed(2) + paren(liveStats ? (liveStats.calmar != null ? liveStats.calmar : 0).toFixed(2) : ''),
           cls: (m.calmar_ratio || 0) >= 1 ? 'pos' : '' },
+        { label: 'RR RATIO',
+          value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
+          cls: rr_ratio > 1 ? 'pos' : 'neg' },
+        { label: 'PROFIT FACTOR',
+          value: fmtPF(profit_factor) + paren(liveStats ? fmtPF(liveStats.profit_factor) : ''),
+          cls: 'pos' },
         { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },
         { label: 'AVG $ TP/SL/TRAIL',
           value: fmtAvgTriple(backtestStats) + paren(liveStats ? fmtAvgTriple(liveStats) : ''),
           cls: '' },
-        { label: 'RR RATIO',
-          value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
-          cls: rr_ratio > 1 ? 'pos' : 'neg' },
-        { label: 'PROFIT FACTOR',
-          value: fmtPF(profit_factor) + paren(liveStats ? fmtPF(liveStats.profit_factor) : ''),
-          cls: profit_factor >= 1.5 ? 'pos' : '' },
-        { label: 'Consistency',
-          value: maxStreakFinal + ' Days' +
-                 paren(liveStats ? (liveStats.maxStreak + ' Days') : ''),
-          cls: passCls(consec3PassFinal) },
-        { label: 'MAX DAY < 40%',
-          value: maxDayPctFinal.toFixed(1) + '%' +
-                 paren(liveStats ? liveStats.maxDayPct.toFixed(1) + '%' : ''),
-          cls: passCls(maxDayPassFinal) },
+        { label: 'PREV ZONE TP/SL/TRAIL',
+          value: fmtZoneExitBuckets(prevZoneStats),
+          cls: '' },
+        { label: 'CURRENT ZONE TP/SL/TRAIL',
+          value: fmtZoneExitBuckets(currentZoneStats),
+          cls: '' },
+        { label: 'ASIA TP', value: fmtSessionRate(backtestStats, 'ASIA'), cls: '' },
+        { label: 'EURO TP', value: fmtSessionRate(backtestStats, 'EURO'), cls: '' },
+        { label: 'PRE TP',  value: fmtSessionRate(backtestStats, 'PRE'), cls: '' },
+        { label: 'RTH TP',  value: fmtSessionRate(backtestStats, 'RTH'), cls: '' },
     ];
 
     grid.innerHTML = items.map(i => `
@@ -4807,24 +4906,7 @@ function renderMetrics(m, backtestTrades) {
             <div class="label">${i.label}</div>
             <div class="value ${i.cls}">${i.value}</div>
         </div>
-    `).join('');
-
-    // Render session breakdown into separate collapsible body
-    const sessionsBody = document.getElementById('metrics-sessions-body');
-    if (sessionsBody) {
-        const sessionItems = [
-            { label: 'ASIA TP', value: fmtSessionRate(backtestStats, 'ASIA') },
-            { label: 'EURO TP', value: fmtSessionRate(backtestStats, 'EURO') },
-            { label: 'PRE TP',  value: fmtSessionRate(backtestStats, 'PRE') },
-            { label: 'RTH TP',  value: fmtSessionRate(backtestStats, 'RTH') },
-        ];
-        sessionsBody.innerHTML = sessionItems.map(i => `
-            <div class="metric-card">
-                <div class="label">${i.label}</div>
-                <div class="value">${i.value}</div>
-            </div>
-        `).join('');
-    }
+    `).join('') + renderExitStreakBars(backtestTrades || []);
 }
 
 function renderTrades(trades) {

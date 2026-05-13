@@ -88,6 +88,7 @@ class BacktestEngine:
         # Session-based zone detector (skipped when zone_timeline is provided)
         self.detector = SessionZoneDetector(
             value_area_pct=self.config.value_area_pct,
+            skip_stability_wait=getattr(self.strategy_params, "skip_zone_stability", True),
         )
         # Strategy selection
         _strat = (self.strategy_params.strategy or "trend").lower()
@@ -325,23 +326,28 @@ class BacktestEngine:
                 # Fast path: zones already looked up above
                 eval_zone   = _active_zone
                 eval_mature = _is_mature
+                zone_source = "current"
                 if not eval_mature and _last_left:
                     eval_zone   = _last_left
                     eval_mature = True
+                    zone_source = "previous"
             else:
                 # Normal path
                 active_zone = self.detector.get_active_zone()
                 is_mature   = self.detector.is_zone_mature
                 eval_zone   = active_zone
                 eval_mature = is_mature
+                zone_source = "current"
                 if not is_mature:
                     prev = self.detector.get_last_left_zone()
                     if prev:
                         eval_zone   = prev
                         eval_mature = True
+                        zone_source = "previous"
 
             signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
             if signal:
+                signal.zone_source = zone_source
                 if getattr(signal, 'order_type', 'limit') == 'market':
                     # Market order: execute immediately at candle close
                     self._execute_entry(signal, candle)
@@ -477,6 +483,7 @@ class BacktestEngine:
             sl_price=signal.sl_price,
             tp_price=signal.tp_price,
             zone_id=signal.zone_id,
+            zone_source=getattr(signal, 'zone_source', None),
             contracts=self.contract_size,
             point_value=self.POINT_VALUE,
             contract_id=self.contract_id,

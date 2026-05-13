@@ -523,9 +523,11 @@ class SessionZoneDetector:
         self,
         value_area_pct: float = 0.80,
         tick_size: float = 0.25,
+        skip_stability_wait: bool = True,
     ):
         self.vp_calc = VolumeProfileCalculator(tick_size, value_area_pct)
         self.tick_size = tick_size
+        self.skip_stability_wait = bool(skip_stability_wait)
 
         self._active_zone: Optional[ConsolidationZone] = None
         self._all_zones: List[ConsolidationZone] = []
@@ -775,6 +777,12 @@ class SessionZoneDetector:
         # Condition 1: age ≥ min dev hours
         age_minutes = (candle.timestamp - zone.formed_at).total_seconds() / 60
         if age_minutes < min_dev_hours * 60:
+            return
+
+        # Temporarily permanent: use no stability wait after the session time buffer.
+        # Keep the stability code below intact so this can be re-enabled later.
+        if self.skip_stability_wait:
+            self._zone_mature = True
             return
 
         # Condition 2: last N candles drift < threshold

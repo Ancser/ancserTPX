@@ -199,6 +199,7 @@ class TradeSignal:
     tp_price: float
     zone_id: str
     reason: str
+    zone_source: Optional[str] = None      # "current" | "previous" (which zone generated the setup)
     timestamp: Optional[datetime] = None
     vol_ratio: Optional[float] = None  # 趨勢跟隨時的成交量比率
     is_big_trend: bool = False
@@ -247,6 +248,7 @@ class Trade:
     fees: float = 0.0                  # round-turn fees deducted
     exit_reason: Optional[ExitReason] = None
     zone_id: str = ""
+    zone_source: Optional[str] = None      # "current" | "previous" (set by backtest engine)
     contracts: int = 1
     point_value: float = 20.0          # NQ=$20, MNQ=$2 (per single contract)
     contract_id: str = ""              # which TopstepX contract was used
@@ -318,6 +320,9 @@ class StrategyParams:
     contract_size: int = 3                 # number of contracts per order (1..N)
     # Max profit lock: 0=OFF, 150/500/1000 — block new trades when daily PnL ≥ threshold (resets PT 22:00)
     max_profit_lock: int = 0
+    # Session-zone maturity controls
+    # Temporarily permanent: after min session buffer, do not wait for VAH/VAL drift stability.
+    skip_zone_stability: bool = True
     # --- Removed (hardcoded internally) ---
     # entry_mode: always "100RE" (VAH/VAL entry)
     # entry_timeout_minutes: hardcoded 10 min inside strategy
@@ -383,6 +388,18 @@ class Metrics:
     post_breakout_tp_clean: int = 0             # trades that hit TP without ever touching trail level
     post_breakout_tp_after_trail: int = 0       # hit TP but first crossed trail-trigger
     post_breakout_tp_after_sl: int = 0          # hit TP but first crossed SL price
+    # Zone-source performance: whether the setup used the current mature zone
+    # or the most recent previous/left zone.
+    previous_zone_trades: int = 0
+    previous_zone_wins: int = 0
+    previous_zone_win_rate: float = 0.0
+    previous_zone_avg_pnl: float = 0.0
+    previous_zone_total_pnl: float = 0.0
+    current_zone_trades: int = 0
+    current_zone_wins: int = 0
+    current_zone_win_rate: float = 0.0
+    current_zone_avg_pnl: float = 0.0
+    current_zone_total_pnl: float = 0.0
     # 按策略分類
     reversion_metrics: Optional[Metrics] = None
     trend_follow_metrics: Optional[Metrics] = None

@@ -200,6 +200,8 @@ class BacktestRequest(BaseModel):
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
     max_profit_lock: int = 0              # 0=OFF, 150/500/1000
+    # Temporarily permanent: no stability wait is always used after the session time buffer.
+    skip_zone_stability: bool = True
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -230,6 +232,7 @@ class TradeResponse(BaseModel):
     fees: float = 0.0
     exit_reason: Optional[str]
     zone_id: str
+    zone_source: Optional[str] = None
     vol_ratio: Optional[float]
     is_big_trend: bool
     macd_hist: Optional[float] = None
@@ -289,6 +292,16 @@ class MetricsResponse(BaseModel):
     post_breakout_tp_clean: int = 0
     post_breakout_tp_after_trail: int = 0
     post_breakout_tp_after_sl: int = 0
+    previous_zone_trades: int = 0
+    previous_zone_wins: int = 0
+    previous_zone_win_rate: float = 0.0
+    previous_zone_avg_pnl: float = 0.0
+    previous_zone_total_pnl: float = 0.0
+    current_zone_trades: int = 0
+    current_zone_wins: int = 0
+    current_zone_win_rate: float = 0.0
+    current_zone_avg_pnl: float = 0.0
+    current_zone_total_pnl: float = 0.0
     # Per-strategy breakdown
     reversion: Optional[SubMetricsResponse] = None
     trend_follow: Optional[SubMetricsResponse] = None
@@ -952,6 +965,7 @@ async def run_backtest(req: BacktestRequest):
         contract_id=req.contract_id,
         contract_size=contract_size,
         max_profit_lock=req.max_profit_lock,
+        skip_zone_stability=True,  # temporarily permanent no-stability-wait behavior
     )
 
     engine = BacktestEngine(
@@ -986,6 +1000,7 @@ async def run_backtest(req: BacktestRequest):
             fees=t.fees,
             exit_reason=t.exit_reason.value if t.exit_reason else None,
             zone_id=t.zone_id,
+            zone_source=getattr(t, "zone_source", None),
             vol_ratio=t.vol_ratio,
             is_big_trend=t.is_big_trend,
             macd_hist=getattr(t, 'macd_hist', None),
@@ -1065,6 +1080,16 @@ async def run_backtest(req: BacktestRequest):
         post_breakout_tp_clean=getattr(m, "post_breakout_tp_clean", 0),
         post_breakout_tp_after_trail=getattr(m, "post_breakout_tp_after_trail", 0),
         post_breakout_tp_after_sl=getattr(m, "post_breakout_tp_after_sl", 0),
+        previous_zone_trades=getattr(m, "previous_zone_trades", 0),
+        previous_zone_wins=getattr(m, "previous_zone_wins", 0),
+        previous_zone_win_rate=getattr(m, "previous_zone_win_rate", 0.0),
+        previous_zone_avg_pnl=getattr(m, "previous_zone_avg_pnl", 0.0),
+        previous_zone_total_pnl=getattr(m, "previous_zone_total_pnl", 0.0),
+        current_zone_trades=getattr(m, "current_zone_trades", 0),
+        current_zone_wins=getattr(m, "current_zone_wins", 0),
+        current_zone_win_rate=getattr(m, "current_zone_win_rate", 0.0),
+        current_zone_avg_pnl=getattr(m, "current_zone_avg_pnl", 0.0),
+        current_zone_total_pnl=getattr(m, "current_zone_total_pnl", 0.0),
         reversion=_sub_resp(m.reversion_metrics),
         trend_follow=_sub_resp(m.trend_follow_metrics),
     )
@@ -1106,7 +1131,11 @@ import threading as _threading
 _ml_progress_lock = _threading.Lock()
 
 
-def _precompute_zone_timeline(candles: list, value_area_pct: float = 0.80) -> list:
+def _precompute_zone_timeline(
+    candles: list,
+    value_area_pct: float = 0.80,
+    skip_zone_stability: bool = True,
+) -> list:
     """Run SessionZoneDetector ONCE on all candles.
     Returns a list[dict] — one entry per candle — with pre-computed zone state.
     Slim zones (candles list stripped) are safe for strategy evaluation.
@@ -1114,7 +1143,10 @@ def _precompute_zone_timeline(candles: list, value_area_pct: float = 0.80) -> li
     import copy
     from backend.strategy.consolidation import SessionZoneDetector
 
-    detector = SessionZoneDetector(value_area_pct=value_area_pct)
+    detector = SessionZoneDetector(
+        value_area_pct=value_area_pct,
+        skip_stability_wait=skip_zone_stability,
+    )
     timeline = []
 
     for candle in candles:
@@ -1152,6 +1184,8 @@ class MLRunRequest(BaseModel):
     contract_size: int = 3
     trail_enabled: bool = True
     max_profit_lock: int = 0              # 0=OFF, 150/500/1000
+    # Temporarily permanent: no stability wait is always used after the session time buffer.
+    skip_zone_stability: bool = True
     fixed_params: List[str] = Field(default_factory=list)
 
 
@@ -1159,7 +1193,8 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
                       contract_id: str = "CON.F.US.MNQ.M26",
                       contract_size: int = 3,
                       trail_enabled: bool = True,
-                      max_profit_lock: int = 0) -> dict:
+                      max_profit_lock: int = 0,
+                      skip_zone_stability: bool = True) -> dict:
     """Run one backtest combination synchronously (called from process pool).
     zone_timeline is pre-computed once and shared across all combos — avoids re-running
     the expensive SessionZoneDetector for every parameter combination.
@@ -1178,6 +1213,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
         contract_id=contract_id,
         contract_size=_normalize_contract_size(contract_id, contract_size),
         max_profit_lock=max_profit_lock,
+        skip_zone_stability=bool(skip_zone_stability),
     )
     engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline)
     try:
@@ -1193,6 +1229,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
             "max_profit_lock": max_profit_lock,
+            "skip_zone_stability": bool(skip_zone_stability),
             "total_trades": m.total_trades,
             "wins": m.wins,
             "losses": m.losses,
@@ -1216,6 +1253,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
             "max_profit_lock": max_profit_lock,
+            "skip_zone_stability": bool(skip_zone_stability),
             "error": str(e),
         }
     finally:
@@ -1281,13 +1319,7 @@ async def ml_run(req: MLRunRequest):
     candles = sorted(_historical_candles, key=lambda c: c.timestamp)
 
     # ── Phase 1: pre-compute zone timeline ONCE (replaces detector in every combo) ──
-    logger.info(f"[ML] Pre-computing zone timeline for {len(candles)} candles...")
     loop = asyncio.get_running_loop()
-    zone_timeline = await loop.run_in_executor(
-        None, _precompute_zone_timeline, candles, config_base.value_area_pct
-    )
-    logger.info(f"[ML] Zone timeline ready ({len(zone_timeline)} entries)")
-
     fixed = {str(x).lower() for x in (req.fixed_params or [])}
     valid_strategies = ("trend", "macd", "reversion", "trend_reversion")
 
@@ -1317,6 +1349,24 @@ async def ml_run(req: MLRunRequest):
         if "profit_lock" in fixed
         else [0, 150, 500, 1000]
     )
+    # Temporarily permanent: ML no longer sweeps/locks this option.
+    skip_zone_stability_values = [True]
+
+    zone_timelines = {}
+    for skip_stability in skip_zone_stability_values:
+        key = bool(skip_stability)
+        logger.info(
+            f"[ML] Pre-computing zone timeline for {len(candles)} candles "
+            f"(skip_stability={key})..."
+        )
+        zone_timelines[key] = await loop.run_in_executor(
+            None,
+            _precompute_zone_timeline,
+            candles,
+            config_base.value_area_pct,
+            key,
+        )
+    logger.info(f"[ML] Zone timelines ready ({len(zone_timelines)} variants)")
 
     combos = []
     for contract_id in contract_values:
@@ -1345,7 +1395,12 @@ async def ml_run(req: MLRunRequest):
                                 trail_values = _trail_grid_for(sl, tp, trigger_pct)
                             for trail, trail_pct in trail_values:
                                 for mpl in profit_lock_values:
-                                    combos.append((strategy, contract_id, contract_size, sl, tp, trail, trail_pct, trigger_pct, combo_trail_enabled, mpl))
+                                    for skip_stability in skip_zone_stability_values:
+                                        combos.append((
+                                            strategy, contract_id, contract_size, sl, tp,
+                                            trail, trail_pct, trigger_pct, combo_trail_enabled, mpl,
+                                            bool(skip_stability),
+                                        ))
 
     logger.info(
         f"[ML] Running {len(combos)} combos | fixed={sorted(fixed)} | "
@@ -1374,10 +1429,16 @@ async def ml_run(req: MLRunRequest):
                     commission_rt=get_commission_rt(contract_id),
                     fees_rt=get_fees_rt(contract_id),
                 ),
-                strategy, sl, tp, trail, trail_pct, trigger_pct, cand_secs, zone_timeline,
+                strategy, sl, tp, trail, trail_pct, trigger_pct, cand_secs,
+                zone_timelines[bool(skip_stability)],
                 contract_id, contract_size, combo_trail_enabled, mpl,
+                skip_stability,
             )
-            for strategy, contract_id, contract_size, sl, tp, trail, trail_pct, trigger_pct, combo_trail_enabled, mpl in combos
+            for (
+                strategy, contract_id, contract_size, sl, tp,
+                trail, trail_pct, trigger_pct, combo_trail_enabled, mpl,
+                skip_stability,
+            ) in combos
         ]
         results = await asyncio.gather(*tasks)
 
@@ -1444,6 +1505,8 @@ class LiveStartRequest(BaseModel):
     trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
     max_profit_lock: int = 0              # 0=OFF, 150/500/1000
+    # Temporarily permanent: no stability wait is always used after the session time buffer.
+    skip_zone_stability: bool = True
 
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
@@ -1533,6 +1596,7 @@ async def live_start(req: LiveStartRequest):
         contract_id=req.contract_id,
         contract_size=contract_size,
         max_profit_lock=req.max_profit_lock,
+        skip_zone_stability=True,  # temporarily permanent no-stability-wait behavior
     )
 
     _live_engine = LiveTradingEngine(
@@ -2014,6 +2078,7 @@ _DEFAULT_PRESET_PARAMS = {
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
+    "skip_zone_stability": True,
 }
 
 

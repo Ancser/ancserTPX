@@ -73,6 +73,7 @@ class MetricsCalculator:
         )
 
         self._aggregate_post_breakout(completed, metrics)
+        self._aggregate_zone_source(completed, metrics)
 
         # ── Per-strategy breakdown ──
         # Reversion / Trend Follow
@@ -244,3 +245,22 @@ class MetricsCalculator:
         metrics.post_breakout_tp_clean         = tp_clean
         metrics.post_breakout_tp_after_trail   = tp_after_trail
         metrics.post_breakout_tp_after_sl      = tp_after_sl
+
+    @staticmethod
+    def _aggregate_zone_source(trades: List[Trade], metrics: Metrics) -> None:
+        """Aggregate performance by whether the setup used current or previous zone."""
+
+        def _apply(prefix: str, bucket: List[Trade]) -> None:
+            total = len(bucket)
+            wins = sum(1 for t in bucket if (t.pnl or 0) > 0)
+            pnl = sum(t.pnl or 0 for t in bucket)
+            setattr(metrics, f"{prefix}_zone_trades", total)
+            setattr(metrics, f"{prefix}_zone_wins", wins)
+            setattr(metrics, f"{prefix}_zone_win_rate", (wins / total) if total else 0.0)
+            setattr(metrics, f"{prefix}_zone_avg_pnl", (pnl / total) if total else 0.0)
+            setattr(metrics, f"{prefix}_zone_total_pnl", pnl)
+
+        previous = [t for t in trades if getattr(t, "zone_source", None) == "previous"]
+        current = [t for t in trades if getattr(t, "zone_source", None) == "current"]
+        _apply("previous", previous)
+        _apply("current", current)

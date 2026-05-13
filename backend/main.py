@@ -90,6 +90,10 @@ def create_app() -> FastAPI:
                 headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
             )
 
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def serve_favicon():
+            return FileResponse(str(frontend_dir / "favicon.ico"))
+
     return app
 
 
