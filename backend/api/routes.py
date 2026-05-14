@@ -200,8 +200,8 @@ class BacktestRequest(BaseModel):
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
     max_profit_lock: int = 0              # 0=OFF, 150/500/1000
-    # Temporarily permanent: no stability wait is always used after the session time buffer.
-    skip_zone_stability: bool = True
+    # Zone stability is enabled by default; keep this flag for future experiments.
+    skip_zone_stability: bool = False
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -965,7 +965,7 @@ async def run_backtest(req: BacktestRequest):
         contract_id=req.contract_id,
         contract_size=contract_size,
         max_profit_lock=req.max_profit_lock,
-        skip_zone_stability=True,  # temporarily permanent no-stability-wait behavior
+        skip_zone_stability=False,
     )
 
     engine = BacktestEngine(
@@ -1134,7 +1134,7 @@ _ml_progress_lock = _threading.Lock()
 def _precompute_zone_timeline(
     candles: list,
     value_area_pct: float = 0.80,
-    skip_zone_stability: bool = True,
+    skip_zone_stability: bool = False,
 ) -> list:
     """Run SessionZoneDetector ONCE on all candles.
     Returns a list[dict] — one entry per candle — with pre-computed zone state.
@@ -1184,8 +1184,8 @@ class MLRunRequest(BaseModel):
     contract_size: int = 3
     trail_enabled: bool = True
     max_profit_lock: int = 0              # 0=OFF, 150/500/1000
-    # Temporarily permanent: no stability wait is always used after the session time buffer.
-    skip_zone_stability: bool = True
+    # Zone stability is enabled by default; keep this flag for future experiments.
+    skip_zone_stability: bool = False
     fixed_params: List[str] = Field(default_factory=list)
 
 
@@ -1194,7 +1194,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
                       contract_size: int = 3,
                       trail_enabled: bool = True,
                       max_profit_lock: int = 0,
-                      skip_zone_stability: bool = True) -> dict:
+                      skip_zone_stability: bool = False) -> dict:
     """Run one backtest combination synchronously (called from process pool).
     zone_timeline is pre-computed once and shared across all combos — avoids re-running
     the expensive SessionZoneDetector for every parameter combination.
@@ -1349,8 +1349,8 @@ async def ml_run(req: MLRunRequest):
         if "profit_lock" in fixed
         else [0, 150, 500, 1000]
     )
-    # Temporarily permanent: ML no longer sweeps/locks this option.
-    skip_zone_stability_values = [True]
+    # Zone stability is fixed ON; ML no longer sweeps/locks this option.
+    skip_zone_stability_values = [False]
 
     zone_timelines = {}
     for skip_stability in skip_zone_stability_values:
@@ -1505,8 +1505,8 @@ class LiveStartRequest(BaseModel):
     trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
     max_profit_lock: int = 0              # 0=OFF, 150/500/1000
-    # Temporarily permanent: no stability wait is always used after the session time buffer.
-    skip_zone_stability: bool = True
+    # Zone stability is enabled by default; keep this flag for future experiments.
+    skip_zone_stability: bool = False
 
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
@@ -1596,7 +1596,7 @@ async def live_start(req: LiveStartRequest):
         contract_id=req.contract_id,
         contract_size=contract_size,
         max_profit_lock=req.max_profit_lock,
-        skip_zone_stability=True,  # temporarily permanent no-stability-wait behavior
+        skip_zone_stability=False,
     )
 
     _live_engine = LiveTradingEngine(
@@ -2078,7 +2078,7 @@ _DEFAULT_PRESET_PARAMS = {
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
-    "skip_zone_stability": True,
+    "skip_zone_stability": False,
 }
 
 

@@ -88,7 +88,7 @@ class BacktestEngine:
         # Session-based zone detector (skipped when zone_timeline is provided)
         self.detector = SessionZoneDetector(
             value_area_pct=self.config.value_area_pct,
-            skip_stability_wait=getattr(self.strategy_params, "skip_zone_stability", True),
+            skip_stability_wait=getattr(self.strategy_params, "skip_zone_stability", False),
         )
         # Strategy selection
         _strat = (self.strategy_params.strategy or "trend").lower()

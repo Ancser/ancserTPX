@@ -321,8 +321,8 @@ class StrategyParams:
     # Max profit lock: 0=OFF, 150/500/1000 — block new trades when daily PnL ≥ threshold (resets PT 22:00)
     max_profit_lock: int = 0
     # Session-zone maturity controls
-    # Temporarily permanent: after min session buffer, do not wait for VAH/VAL drift stability.
-    skip_zone_stability: bool = True
+    # Zone stability is enabled by default; set True only for no-stability-wait experiments.
+    skip_zone_stability: bool = False
     # --- Removed (hardcoded internally) ---
     # entry_mode: always "100RE" (VAH/VAL entry)
     # entry_timeout_minutes: hardcoded 10 min inside strategy

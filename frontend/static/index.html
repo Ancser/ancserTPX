@@ -972,7 +972,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.13.3
+        0.13.4
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1483,8 +1483,8 @@ const DEFAULT_STRATEGY_PARAMS = {
     contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
     contract_size: 3,
     max_profit_lock: 0,
-    // Temporarily permanent: always use no stability wait after the session time buffer.
-    skip_zone_stability: true,
+    // Zone stability is enabled by default; keep this flag for future experiments.
+    skip_zone_stability: false,
 };
 
 const MNQ_SIZE_CHOICES = [1, 3, 5, 10];
@@ -1692,7 +1692,7 @@ function collectStrategyParams(mode) {
         contract_id: contractId,
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
         max_profit_lock: _int('max-profit-lock-' + mode),
-        skip_zone_stability: true,
+        skip_zone_stability: false,
     };
 }
 
@@ -4176,7 +4176,7 @@ async function runAllCombinations() {
                 contract_id: params.contract_id,
                 contract_size: params.contract_size,
                 max_profit_lock: params.max_profit_lock,
-                skip_zone_stability: true,
+                skip_zone_stability: false,
                 candle_seconds: params.candle_seconds,
                 initial_capital: capital,
                 start_date: startDate,
@@ -4323,7 +4323,7 @@ async function saveMLPreset(origRank) {
         contract_id: r.contract_id || 'CON.F.US.MNQ.M26',
         contract_size: contractSize,
         max_profit_lock: r.max_profit_lock || 0,
-        skip_zone_stability: true,
+        skip_zone_stability: false,
     };
 
     try {

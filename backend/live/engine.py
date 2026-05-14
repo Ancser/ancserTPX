@@ -108,7 +108,7 @@ class LiveTradingEngine:
         # Session-based zone detector (overnight zone with maturity)
         self.detector = SessionZoneDetector(
             value_area_pct=value_area_pct,
-            skip_stability_wait=getattr(self.strategy_params, "skip_zone_stability", True),
+            skip_stability_wait=getattr(self.strategy_params, "skip_zone_stability", False),
         )
         # Strategy selection
         _strat = (self.strategy_params.strategy or "trend").lower()

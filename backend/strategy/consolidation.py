@@ -523,7 +523,7 @@ class SessionZoneDetector:
         self,
         value_area_pct: float = 0.80,
         tick_size: float = 0.25,
-        skip_stability_wait: bool = True,
+        skip_stability_wait: bool = False,
     ):
         self.vp_calc = VolumeProfileCalculator(tick_size, value_area_pct)
         self.tick_size = tick_size
@@ -779,8 +779,7 @@ class SessionZoneDetector:
         if age_minutes < min_dev_hours * 60:
             return
 
-        # Temporarily permanent: use no stability wait after the session time buffer.
-        # Keep the stability code below intact so this can be re-enabled later.
+        # Optional no-wait experiment path; default keeps zone stability enabled.
         if self.skip_stability_wait:
             self._zone_mature = True
             return
