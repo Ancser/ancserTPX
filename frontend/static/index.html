@@ -257,6 +257,48 @@
         .form-group input::placeholder { color: var(--text3); }
         .form-row { display: flex; gap: 8px; }
         .form-row .form-group { flex: 1; }
+        .help-dot {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 13px;
+            height: 13px;
+            margin-left: 4px;
+            border-radius: 50%;
+            background: rgba(200, 208, 224, 0.12);
+            color: var(--text2);
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 9px;
+            line-height: 1;
+            cursor: help;
+            position: relative;
+            vertical-align: 1px;
+            text-transform: none;
+            letter-spacing: 0;
+        }
+        .help-dot:hover {
+            color: var(--white);
+            background: rgba(200, 208, 224, 0.22);
+        }
+        .help-tooltip {
+            display: none;
+            position: fixed;
+            max-width: 260px;
+            padding: 7px 9px;
+            background: var(--bg4);
+            border: 1px solid var(--border-h);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+            color: var(--text);
+            font-family: 'Noto Sans TC', 'IBM Plex Mono', monospace;
+            font-size: 11px;
+            line-height: 1.45;
+            letter-spacing: 0;
+            text-transform: none;
+            white-space: pre-line;
+            z-index: 20000;
+            pointer-events: none;
+        }
+        .help-tooltip.open { display: block; }
 
         /* ── Buttons ── */
         .btn {
@@ -325,8 +367,8 @@
             overflow: hidden;
             border: 1px solid var(--amber);
             color: var(--amber);
-            font-family: 'Orbitron', sans-serif;
-            font-size: 11px;
+            font-family: 'Rajdhani', sans-serif;
+            font-size: 13px;
             letter-spacing: 2px;
             font-weight: 600;
             background: repeating-linear-gradient(
@@ -384,10 +426,8 @@
         }
         .ml-filter-panel {
             display: none;
-            position: absolute;
-            right: 0;
-            top: calc(100% + 5px);
-            z-index: 60;
+            position: fixed;
+            z-index: 20000;
             width: 184px;
             padding: 8px;
             background: var(--bg2);
@@ -972,7 +1012,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.13.4
+        0.15.0
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1119,8 +1159,8 @@
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
                 <div class="ml-run-wrap">
-                    <button class="btn btn-ml" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run all selected ML combos and rank results">MACHINE LEARNING</button>
-                    <button class="btn btn-ml ml-filter-btn" id="btn-ml-filter" onclick="toggleMLFixedDropdown(event)" disabled title="Fixed ML params">v</button>
+                    <button class="btn btn-ml" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run full backtest combinations and rank results">FULL BACKTEST</button>
+                    <button class="btn btn-ml ml-filter-btn" id="btn-ml-filter" onclick="toggleMLFixedDropdown(event)" disabled title="Fixed Full backtest params">v</button>
                     <div class="ml-filter-panel" id="ml-fixed-panel">
                         <label class="ml-fix-row"><input type="checkbox" id="ml-fix-strategy" checked> STRATEGY</label>
                         <label class="ml-fix-row"><input type="checkbox" id="ml-fix-contract" checked> CONTRACT</label>
@@ -1293,7 +1333,7 @@
         <div class="bottom-panel" id="bottom-panel">
             <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
             <div class="bottom-tabs">
-                <div class="bottom-tab" data-btab="ml">MACHINE LEARNING</div>
+                <div class="bottom-tab" data-btab="ml">FULL BACKTEST</div>
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
@@ -1499,6 +1539,14 @@ function contractSymbolFromId(contractId) {
 
 function contractLabelFromId(contractId) {
     return contractSymbolFromId(contractId) === 'MNQ' ? 'MNQ' : 'NQ';
+}
+
+function displaySymbolFromTrade(t) {
+    if (t && t.symbol) return String(t.symbol).startsWith('/') ? t.symbol : '/' + t.symbol;
+    if (t && t.contract_id) return '/' + contractLabelFromId(t.contract_id);
+    const liveContract = document.getElementById('contract-live')?.value;
+    const btContract = document.getElementById('contract-bt')?.value;
+    return '/' + contractLabelFromId(liveContract || btContract || DEFAULT_STRATEGY_PARAMS.contract_id);
 }
 
 function pointValueForContract(contractId) {
@@ -1734,6 +1782,93 @@ function applyStrategyParams(mode, params) {
     _set('max-profit-lock-' + mode, String(p.max_profit_lock || 0));
 }
 
+function addHelpDot(label, tip) {
+    if (!label || label.querySelector('.help-dot')) return;
+    const dot = document.createElement('span');
+    dot.className = 'help-dot';
+    dot.textContent = '?';
+    dot.setAttribute('data-tip', tip);
+    dot.addEventListener('mouseenter', () => showHelpTooltip(dot));
+    dot.addEventListener('mouseleave', hideHelpTooltip);
+    label.appendChild(dot);
+}
+
+function getHelpTooltip() {
+    let tip = document.getElementById('global-help-tooltip');
+    if (!tip) {
+        tip = document.createElement('div');
+        tip.id = 'global-help-tooltip';
+        tip.className = 'help-tooltip';
+        document.body.appendChild(tip);
+    }
+    return tip;
+}
+
+function showHelpTooltip(dot) {
+    const text = dot ? dot.getAttribute('data-tip') : '';
+    if (!text) return;
+    const tip = getHelpTooltip();
+    tip.textContent = text;
+    tip.style.visibility = 'hidden';
+    tip.classList.add('open');
+
+    const rect = dot.getBoundingClientRect();
+    const pad = 10;
+    const tipW = tip.offsetWidth;
+    const tipH = tip.offsetHeight;
+    const top = Math.max(pad, Math.min(
+        rect.top + rect.height / 2 - tipH / 2,
+        window.innerHeight - tipH - pad
+    ));
+    const left = Math.max(pad, Math.min(
+        rect.right + pad,
+        window.innerWidth - tipW - pad
+    ));
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+    tip.style.visibility = 'visible';
+}
+
+function hideHelpTooltip() {
+    const tip = document.getElementById('global-help-tooltip');
+    if (tip) tip.classList.remove('open');
+}
+
+function decorateParamHelpDots() {
+    const tips = {
+        'preset-bt': 'Load or save the current settings.\n快速套用或保存目前設定。',
+        'preset-live': 'Load or save the live settings.\n快速套用或保存live設定。',
+        'strategy-bt': 'Choose the logic used for simulation.\n選擇回測使用的策略邏輯。',
+        'strategy-live': 'Choose the logic used for live trading.\n選擇live使用的策略邏輯。',
+        'contract-bt': 'Futures contract used for backtest data.\n回測資料使用的期貨合約。',
+        'contract-live': 'Futures contract used for live orders.\nlive下單使用的期貨合約。',
+        'size-bt': 'Number of contracts per trade.\n每筆交易的合約口數。',
+        'size-live': 'Number of contracts sent to ProjectX.\n送到ProjectX的合約口數。',
+        'sl-ticks-bt': 'Full stop loss distance in ticks.\n完整停損目標的ticks距離。',
+        'sl-ticks-live': 'Stop loss used by live Auto OCO protection.\nlive Auto OCO保護單使用的停損距離。',
+        'tp-ticks-bt': 'Full profit target distance in ticks.\n完整止盈目標的ticks距離。',
+        'tp-ticks-live': 'Profit target used by live Auto OCO protection.\nlive Auto OCO保護單使用的止盈距離。',
+        'trail-trigger-pct-bt': 'Moves SL after price reaches this percent of TP.\n價格到達TP百分比後移動SL。',
+        'trail-trigger-pct-live': 'Moves the live Auto OCO SL after trigger.\n觸發後修改live Auto OCO的SL。',
+        'trail-sl-pct-bt': 'New SL location after trigger, relative to entry.\n觸發後SL相對入場的位置。',
+        'trail-sl-pct-live': 'New live SL location after trigger.\n觸發後live SL要移到的位置。',
+        'max-profit-lock-bt': 'Blocks new entries after the daily threshold.\n日內達標後停止新交易。',
+        'max-profit-lock-live': 'Blocks new live entries after the daily threshold.\nlive日內達標後不再開新倉。',
+        'username': 'Topstep email.\nTopstep郵箱。',
+        'apikey': 'ProjectX API key.\nProjectX API。',
+        'contract-preset': 'Shortcut that fills the contractId.\n快速填入contractId。',
+        'contract-id': 'Futures contract ID, e.g. CON.F.US.MNQ.M26.\n期貨合約ID，例如 CON.F.US.MNQ.M26。',
+        'start-date': 'Start date used for historical data.\n歷史資料開始日期。',
+        'end-date': 'End date used for historical data.\n歷史資料結束日期。',
+        'data-count': 'Loaded 1-minute candle count.\n目前載入的1分鐘K線數量。',
+    };
+    Object.entries(tips).forEach(([id, tip]) => {
+        const el = document.getElementById(id);
+        const group = el ? el.closest('.form-group') : null;
+        addHelpDot(group ? group.querySelector('label') : null, tip);
+    });
+}
+
 // CONTRACT preset dropdown in the connect panel — fills the contract-id text input.
 function onContractPresetChange() {
     const sel = document.getElementById('contract-preset');
@@ -1896,6 +2031,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initChart();
     checkHealth();
     loadEnvConfig();
+    decorateParamHelpDots();
     updateClock();
     setInterval(updateClock, 1000);
 
@@ -1957,6 +2093,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ['ml','trades','execute','log'].forEach(id => {
                 document.getElementById('btab-' + id).classList.toggle('hidden', id !== tab);
             });
+            if (tab === 'log') scrollSystemLogToBottom();
         };
     });
 });
@@ -3917,28 +4054,46 @@ function _updateDataInfo(first, last, source, barCount) {
 // ── Backtest data lazy-loader ──────────────────────
 // Tracks which date range is currently loaded in the backend.
 // CONNECT only loads 14 days (fast); full range is fetched on first backtest/ML click.
-let _btDataRange = null;  // { start, end } once loaded for backtest
+let _btDataRange = null;  // { start, end, contract } once loaded for backtest
+
+function _profitLockBoundaryISO(dateStr) {
+    const parts = String(dateStr || '').split('-').map(Number);
+    if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return dateStr + 'T00:00:00Z';
+    // Follow profit-lock trading day boundary: California 3pm.
+    return new Date(parts[0], parts[1] - 1, parts[2], 15, 0, 0, 0).toISOString();
+}
 
 async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
     // overrideStart / overrideEnd let callers (e.g. ML) use a fixed window
     // instead of the date pickers. Falls back to date pickers when omitted.
     const startDate = overrideStart || document.getElementById('start-date').value;
     const endDate   = overrideEnd   || document.getElementById('end-date').value;
-
-    // Already loaded for this exact range → skip fetch
-    if (_btDataRange && _btDataRange.start === startDate && _btDataRange.end === endDate) {
-        return true;
-    }
-
-    btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data...';
-    log('Fetching backtest data (' + startDate + ' → ' + endDate + ')...', 'info');
-
-    const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / ML
-        start_time: startDate + 'T00:00:00Z',
-        end_time:   endDate   + 'T23:59:59Z' };
     const username   = document.getElementById('username').value.trim();
     const apikey     = document.getElementById('apikey').value.trim();
     const contractId = document.getElementById('contract-id').value.trim();
+    const sameContract = _btDataRange && (_btDataRange.contract || '') === (contractId || '');
+
+    // Already loaded for this exact range → skip fetch
+    if (sameContract && _btDataRange.start === startDate && _btDataRange.end === endDate) {
+        return true;
+    }
+
+    let fetchStartTime = startDate + 'T00:00:00Z';
+    let fetchLabel = startDate;
+    let appendFetch = false;
+    if (sameContract && _btDataRange.start === startDate && _btDataRange.end < endDate) {
+        fetchStartTime = _profitLockBoundaryISO(_btDataRange.end);
+        fetchLabel = _btDataRange.end + ' 15:00 PT';
+        appendFetch = true;
+    }
+
+    btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data...';
+    log((appendFetch ? 'Syncing new backtest data' : 'Fetching backtest data') + ' (' + fetchLabel + ' -> ' + endDate + ')...', 'info');
+
+    const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / ML
+        start_time: fetchStartTime,
+        end_time:   endDate   + 'T23:59:59Z',
+        append: appendFetch };
     if (username)    body.username    = username;
     if (apikey)      body.api_key     = apikey;
     if (contractId)  body.contract_id = contractId;
@@ -3952,9 +4107,9 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
         if (!resp.ok) { const e = await resp.json(); throw new Error(e.detail || resp.statusText); }
         const data = await resp.json();
         document.getElementById('data-count').value = data.candles_count + ' bars';
-        _btDataRange = { start: startDate, end: endDate };
+        _btDataRange = { start: startDate, end: endDate, contract: contractId || '' };
         _updateDataInfo(data.first, data.last, 'bt', data.candles_count);
-        log('Backtest data ready: ' + data.candles_count + ' bars', 'success');
+        log('Backtest data ready: ' + data.candles_count + ' bars' + (data.fetched_count != null ? ' (' + data.fetched_count + ' fetched)' : ''), 'success');
         // Refresh chart to show the full loaded range
         await fetchAndShowChart('1m');
         return true;
@@ -4008,7 +4163,7 @@ async function runBacktest() {
     }
 }
 
-// -- ML Optimizer -----------------------------------
+// -- Full Backtest -----------------------------------
 
 let _mlResults = [];
 let _mlProgressInterval = null;
@@ -4098,7 +4253,25 @@ function _stopMLProgress(success) {
 function toggleMLFixedDropdown(event) {
     if (event) event.stopPropagation();
     const panel = document.getElementById('ml-fixed-panel');
-    if (panel) panel.classList.toggle('open');
+    const btn = document.getElementById('btn-ml-filter');
+    if (!panel || !btn) return;
+    const open = !panel.classList.contains('open');
+    panel.classList.toggle('open', open);
+    if (!open) return;
+
+    const rect = btn.getBoundingClientRect();
+    const pad = 8;
+    panel.style.visibility = 'hidden';
+    const panelW = panel.offsetWidth;
+    const panelH = panel.offsetHeight;
+    const left = Math.min(rect.right + pad, window.innerWidth - panelW - pad);
+    const top = Math.max(pad, Math.min(
+        rect.top + rect.height / 2 - panelH / 2,
+        window.innerHeight - panelH - pad
+    ));
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+    panel.style.visibility = 'visible';
 }
 
 function getMLFixedParams() {
@@ -4133,18 +4306,18 @@ async function runAllCombinations() {
     const mlPanel = document.getElementById('ml-fixed-panel');
     if (mlPanel) mlPanel.classList.remove('open');
 
-    // ML uses the same date range as Execute Backtest (date pickers / slider).
+    // Full backtest uses the same date range as Execute Backtest (date pickers / slider).
     const dataOk = await _ensureBacktestData(btn);
     if (!dataOk) {
         btn.disabled = false;
         if (filterBtn) filterBtn.disabled = false;
-        btn.textContent = 'MACHINE LEARNING';
+        btn.textContent = 'FULL BACKTEST';
         return;
     }
 
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
 
-    // Switch to ML tab so user can watch
+    // Switch to Full backtest tab so user can watch
     document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
     document.querySelector('[data-btab="ml"]').classList.add('active');
     ['ml','trades','execute','log'].forEach(id => {
@@ -4190,15 +4363,18 @@ async function runAllCombinations() {
         _mlResults = data.results || [];
         renderMLResults(_mlResults);
         // status row removed — result count logged below
-        log('ML run complete: ' + _mlResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
+        log('Full backtest complete: ' + _mlResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
+        if (data.artifact && data.artifact.json) {
+            log('Full backtest AI file: ' + data.artifact.json, 'info');
+        }
         success = true;
     } catch(e) {
-        log('ML run failed: ' + e.message, 'error');
+        log('Full backtest failed: ' + e.message, 'error');
     } finally {
         _stopMLProgress(success);
         btn.disabled = false;
         if (filterBtn) filterBtn.disabled = false;
-        btn.textContent = 'MACHINE LEARNING';
+        btn.textContent = 'FULL BACKTEST';
     }
 }
 
@@ -4338,7 +4514,7 @@ async function saveMLPreset(origRank) {
         renderMLResults(_mlResults);   // re-render to show badge
         log('Preset saved: ' + presetName, 'success');
     } catch(e) {
-        log('ML preset save error: ' + e.message, 'error');
+        log('Full backtest preset save error: ' + e.message, 'error');
     }
 }
 
@@ -4954,7 +5130,7 @@ function renderTrades(trades) {
         const pnlClass = grossPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
         const dirLabel = t.direction === 'buy' ? 'Long' : 'Short';
         const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
-        const symbol = t.symbol || '/NQ';
+        const symbol = displaySymbolFromTrade(t);
         const size = t.size || t.contracts || 1;
         // Short trade ID (last 6 chars) so column stays narrow
         const id = t.trade_id ? String(t.trade_id).slice(-6) : (totalN - i);
@@ -5018,7 +5194,7 @@ function renderExecuteTrades(trades) {
         const pnlClass = grossPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
         const dirLabel = t.direction === 'buy' ? 'Long' : 'Short';
         const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
-        const symbol = '/NQ';
+        const symbol = displaySymbolFromTrade(t);
         const size = t.size || 1;
         const id = t.trade_id ? String(t.trade_id).split('_')[0].slice(-6) : '--';
         const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
@@ -5108,15 +5284,26 @@ function setStatus(type, text) {
     label.textContent = text;
 }
 
+function scrollSystemLogToBottom() {
+    const container = document.getElementById('log-container');
+    if (!container) return;
+    const bottomContent = container.closest('.bottom-content');
+    requestAnimationFrame(() => {
+        container.scrollTop = container.scrollHeight;
+        if (bottomContent) bottomContent.scrollTop = bottomContent.scrollHeight;
+    });
+}
+
 function log(msg, type) {
     type = type || '';
     const container = document.getElementById('log-container');
+    if (!container) return;
     const time = new Date().toLocaleTimeString('en-US', {hour12:false});
     const entry = document.createElement('div');
     entry.className = 'log-entry ' + type;
     entry.textContent = '[' + time + '] ' + msg;
     container.appendChild(entry);
-    container.scrollTop = container.scrollHeight;
+    scrollSystemLogToBottom();
 }
 
 function updateClock() {

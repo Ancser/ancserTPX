@@ -79,6 +79,7 @@ class TopstepXClient:
             self.DEMO_REST_URL if use_demo else self.DEFAULT_REST_URL
         )
         self.token: Optional[str] = None
+        self._token_acquired_at: Optional[datetime] = None
         self._http: Optional[httpx.AsyncClient] = None
         self._signalr_market = None
         self._signalr_user = None
@@ -115,12 +116,21 @@ class TopstepXClient:
             )
 
         self.token = data["token"]
+        self._token_acquired_at = datetime.now(timezone.utc)
+        if self._http and not self._http.is_closed:
+            self._http.headers.update({"Authorization": f"Bearer {self.token}"})
         logger.info("TopstepX 認證成功")
         return self.token
 
+    def _token_refresh_due(self) -> bool:
+        """ProjectX JWTs are about 24h; refresh before the edge so long runs stay alive."""
+        if not self.token or not self._token_acquired_at:
+            return True
+        return datetime.now(timezone.utc) - self._token_acquired_at >= timedelta(hours=23)
+
     async def _ensure_http(self) -> httpx.AsyncClient:
         """確保 HTTP client 存在且有 token"""
-        if not self.token:
+        if self._token_refresh_due():
             await self.authenticate()
         if not self._http or self._http.is_closed:
             self._http = httpx.AsyncClient(
@@ -128,6 +138,8 @@ class TopstepXClient:
                 headers={"Authorization": f"Bearer {self.token}"},
                 timeout=30,
             )
+        else:
+            self._http.headers.update({"Authorization": f"Bearer {self.token}"})
         return self._http
 
     async def _request(self, method: str, path: str, _retries: int = 3, **kwargs) -> dict:

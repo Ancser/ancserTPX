@@ -1188,8 +1188,10 @@ class LiveTradingEngine:
         if not candle:
             return
 
-        # Always update market price from latest candle close (even if same candle)
-        self._last_market_price = candle.close
+        # _fetch_latest_candle updates market price from the newest API bar.
+        # The returned candle is the newest CLOSED 1m bar used for strategy parity.
+        if self._last_market_price is None:
+            self._last_market_price = candle.close
 
         # Skip strategy evaluation if same candle as last tick
         candle_ts = candle.timestamp.isoformat()
@@ -1860,11 +1862,16 @@ class LiveTradingEngine:
             logger.error(f"[SYNC] position sync failed: {e}", exc_info=True)
 
     async def _fetch_latest_candle(self, unit_number: int = 30) -> Optional[Candle]:
-        """Fetch the most recent 1-minute candle from TopstepX API.
+        """Fetch the newest closed 1-minute candle from TopstepX API.
 
         NOTE: TopstepX 30s bar API has a ~6-hour settle delay — bars from
         sub-minute endpoints are never current. 1m bars are real-time.
         MACD/VWAP indicators run on 1m bars in live mode.
+
+        The newest 1m bar can still be forming. Strategy evaluation uses the
+        latest closed candle so live and backtest consume the same finalized
+        OHLC. All fetched bars are still merged into the shared data store by
+        timestamp, so early forming snapshots get replaced by final bars.
 
         TopstepX returns bars newest-first, so candles[-1] is the OLDEST.
         Must sort by timestamp to get the actual newest.
@@ -1879,15 +1886,20 @@ class LiveTradingEngine:
             if candles:
                 # Sort chronologically — API returns newest-first
                 candles.sort(key=lambda c: c.timestamp)
+                self._last_market_price = candles[-1].close
                 try:
-                    from backend.api.routes import _historical_candles
-                    last_stored = _historical_candles[-1] if _historical_candles else None
-                    for c in candles:
-                        if not last_stored or c.timestamp > last_stored.timestamp:
-                            _historical_candles.append(c)
+                    from backend.api.routes import _upsert_historical_candles
+                    _upsert_historical_candles(candles)
                 except Exception:
                     pass
-                return candles[-1]  # newest after sorting
+                now_utc = datetime.utcnow().replace(tzinfo=_UTC_TZ)
+                current_minute = now_utc.replace(second=0, microsecond=0)
+                def _as_utc(ts: datetime) -> datetime:
+                    return ts.replace(tzinfo=_UTC_TZ) if ts.tzinfo is None else ts.astimezone(_UTC_TZ)
+                closed = [c for c in candles if _as_utc(c.timestamp) < current_minute]
+                if not closed:
+                    return None
+                return closed[-1]
         except Exception as e:
             self._log_event(f"取得K線失敗: {e}", "error")
         return None

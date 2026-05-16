@@ -25,6 +25,7 @@ REST API 路由
 
 from __future__ import annotations
 import os
+import json
 import logging
 import math
 from pathlib import Path
@@ -182,6 +183,34 @@ _topstepx_client = None  # TopstepXClient instance (set after connect)
 _live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
 _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
 
+def _upsert_historical_candles(candles: List[Candle]) -> None:
+    """Merge candles by timestamp so forming-bar snapshots get replaced."""
+    global _historical_candles
+    if not candles:
+        return
+    def _key(c: Candle):
+        ts = c.timestamp
+        return ts.isoformat() if ts.tzinfo else ts.replace(tzinfo=None).isoformat()
+    by_ts = {_key(c): c for c in _historical_candles}
+    for c in candles:
+        by_ts[_key(c)] = c
+    _historical_candles = sorted(by_ts.values(), key=lambda c: c.timestamp.isoformat())
+
+async def _refresh_recent_historical_candles(contract_id: str, limit: int = 240) -> None:
+    """Refresh recent 1m bars before simulation so backtest uses final OHLC."""
+    if not _topstepx_client:
+        return
+    try:
+        candles = await _topstepx_client.get_historical_bars(
+            contract_id=contract_id,
+            unit=BarUnit.MINUTE,
+            unit_number=1,
+            limit=limit,
+        )
+        _upsert_historical_candles(candles)
+    except Exception as e:
+        logger.warning(f"Recent candle refresh skipped: {e}")
+
 
 # ── Pydantic 請求/回應模型 ────────────────────────────
 
@@ -213,6 +242,7 @@ class FetchHistoricalRequest(BaseModel):
     start_time: str = ""           # ISO format
     end_time: str = ""
     use_demo: Optional[bool] = None  # None = 從 .env 讀取
+    append: bool = False           # True = merge into existing historical candles
 
 
 class TradeResponse(BaseModel):
@@ -437,12 +467,8 @@ async def get_latest_candles(since: str = ""):
         if not candles:
             return {"candles": [], "count": 0}
 
-        # Append new candles to global store
-        if _historical_candles:
-            last_stored_ts = _historical_candles[-1].timestamp
-            for c in candles:
-                if c.timestamp > last_stored_ts:
-                    _historical_candles.append(c)
+        candles = sorted(candles, key=lambda c: c.timestamp)
+        _upsert_historical_candles(candles)
 
         # Filter by `since` if provided
         result = candles
@@ -450,7 +476,9 @@ async def get_latest_candles(since: str = ""):
             from datetime import datetime as dt
             try:
                 since_dt = dt.fromisoformat(since.replace("Z", "+00:00"))
-                result = [c for c in candles if c.timestamp > since_dt]
+                # Include the same timestamp so a forming 1m bar can update
+                # its OHLC/volume on the chart and in the shared backtest store.
+                result = [c for c in candles if c.timestamp >= since_dt]
             except Exception:
                 pass
 
@@ -885,15 +913,21 @@ async def fetch_historical(req: FetchHistoricalRequest):
             end_time=req.end_time,
         )
 
-        _historical_candles = candles
+        if req.append:
+            _upsert_historical_candles(candles)
+        else:
+            _historical_candles = sorted(candles, key=lambda c: c.timestamp)
+
+        stored = _historical_candles
 
         return {
             "success": True,
             "contract_id": contract_id,
-            "candles_count": len(candles),
+            "candles_count": len(stored),
+            "fetched_count": len(candles),
             "interval": f"{req.unit_number}{'m' if req.unit == 2 else 's'}",
-            "first": candles[0].timestamp.isoformat() if candles else None,
-            "last": candles[-1].timestamp.isoformat() if candles else None,
+            "first": stored[0].timestamp.isoformat() if stored else None,
+            "last": stored[-1].timestamp.isoformat() if stored else None,
         }
 
     except Exception as e:
@@ -935,6 +969,8 @@ async def run_backtest(req: BacktestRequest):
             status_code=400,
             detail="請先通過 /api/data/fetch-historical 拉取數據"
         )
+
+    await _refresh_recent_historical_candles(req.contract_id)
 
     # v0.11+: derive symbol + per-contract fees from the chosen contract_id so
     # the trade journal shows /MNQ when MNQ is selected and 10×MNQ doesn't get
@@ -1122,13 +1158,92 @@ async def list_backtests():
     ]
 
 
-# ── ML Optimizer: Run all SL/TP/Trail combinations ────────────────
+# ── Full Backtest: Run all SL/TP/Trail combinations ────────────────
 
 _ml_results_cache: List[dict] = []
 _ml_progress: dict = {"current": 0, "total": 0}
 
 import threading as _threading
 _ml_progress_lock = _threading.Lock()
+
+
+def _request_payload(model: BaseModel) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
+def _json_safe(value):
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_combinations: int) -> dict:
+    """Persist the latest Full backtest run in AI-readable JSON + compact Markdown."""
+    data_dir = Path(__file__).resolve().parents[2] / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    generated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    json_path = data_dir / "full_backtest_latest.json"
+    md_path = data_dir / "full_backtest_summary.md"
+
+    payload = {
+        "kind": "full_backtest_results",
+        "generated_at": generated_at,
+        "total_combinations": total_combinations,
+        "request": _json_safe(_request_payload(req)),
+        "results": _json_safe(ranked),
+        "top_results": _json_safe(ranked[:50]),
+    }
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2, default=str, allow_nan=False)
+
+    lines = [
+        "# Full Backtest Summary",
+        "",
+        f"- Generated: {generated_at}",
+        f"- Total combinations: {total_combinations}",
+        f"- Saved JSON: `{json_path}`",
+        "",
+        "| Rank | Strategy | Contract | Size | SL | TP | Trail | Trigger | Lock | Trades | Win% | PnL | Max DD | Calmar | PF | Score |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for r in ranked[:25]:
+        win_pct = round(float(r.get("win_rate", 0) or 0) * 100, 1)
+        trig_pct = round(float(r.get("trail_trigger_pct", 0) or 0) * 100, 1)
+        lines.append(
+            "| {rank} | {strategy} | {contract_id} | {contract_size} | {sl} | {tp} | {trail} | "
+            "{trigger}% | {lock} | {trades} | {win}% | ${pnl} | ${dd} | {calmar} | {pf} | {score} |".format(
+                rank=r.get("rank", ""),
+                strategy=r.get("strategy", ""),
+                contract_id=r.get("contract_id", ""),
+                contract_size=r.get("contract_size", ""),
+                sl=r.get("sl", ""),
+                tp=r.get("tp", ""),
+                trail=r.get("trail", ""),
+                trigger=trig_pct,
+                lock=r.get("max_profit_lock", ""),
+                trades=r.get("total_trades", ""),
+                win=win_pct,
+                pnl=r.get("total_pnl", ""),
+                dd=r.get("max_drawdown", ""),
+                calmar=r.get("calmar_ratio", ""),
+                pf=r.get("profit_factor", ""),
+                score=r.get("score", ""),
+            )
+        )
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    return {
+        "json": str(json_path),
+        "summary": str(md_path),
+        "generated_at": generated_at,
+    }
 
 
 def _precompute_zone_timeline(
@@ -1298,6 +1413,8 @@ async def ml_run(req: MLRunRequest):
     if not _historical_candles:
         raise HTTPException(400, "No candles loaded — fetch historical data first")
 
+    await _refresh_recent_historical_candles(req.contract_id)
+
     import asyncio
     import os
     from concurrent.futures import ThreadPoolExecutor
@@ -1356,7 +1473,7 @@ async def ml_run(req: MLRunRequest):
     for skip_stability in skip_zone_stability_values:
         key = bool(skip_stability)
         logger.info(
-            f"[ML] Pre-computing zone timeline for {len(candles)} candles "
+            f"[Full Backtest] Pre-computing zone timeline for {len(candles)} candles "
             f"(skip_stability={key})..."
         )
         zone_timelines[key] = await loop.run_in_executor(
@@ -1366,7 +1483,7 @@ async def ml_run(req: MLRunRequest):
             config_base.value_area_pct,
             key,
         )
-    logger.info(f"[ML] Zone timelines ready ({len(zone_timelines)} variants)")
+    logger.info(f"[Full Backtest] Zone timelines ready ({len(zone_timelines)} variants)")
 
     combos = []
     for contract_id in contract_values:
@@ -1403,7 +1520,7 @@ async def ml_run(req: MLRunRequest):
                                         ))
 
     logger.info(
-        f"[ML] Running {len(combos)} combos | fixed={sorted(fixed)} | "
+        f"[Full Backtest] Running {len(combos)} combos | fixed={sorted(fixed)} | "
         f"strategies={strategy_values} contracts={contract_values}"
     )
 
@@ -1463,23 +1580,26 @@ async def ml_run(req: MLRunRequest):
         ranked.append(r)
 
     _ml_results_cache = ranked
-    logger.info(f"[ML] Done. Top result: {ranked[0] if ranked else 'none'}")
+    artifact = _save_full_backtest_artifacts(req, ranked, len(combos))
+    logger.info(f"[Full Backtest] Done. Top result: {ranked[0] if ranked else 'none'}")
+    logger.info(f"[Full Backtest] AI-readable results saved: {artifact}")
 
     return {
         "total_combinations": len(combos),
         "results": ranked,
+        "artifact": artifact,
     }
 
 
 @router.get("/backtest/ml-results")
 async def get_ml_results():
-    """Return cached ML results from last run."""
+    """Return cached Full backtest results from last run."""
     return {"results": _ml_results_cache}
 
 
 @router.get("/backtest/ml-progress")
 async def get_ml_progress():
-    """Return current ML run progress (current / total combos done)."""
+    """Return current Full backtest progress (current / total combos done)."""
     return dict(_ml_progress)
 
 
@@ -2078,6 +2198,7 @@ _DEFAULT_PRESET_PARAMS = {
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
+    "max_profit_lock": 0,
     "skip_zone_stability": False,
 }
 
