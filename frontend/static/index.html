@@ -1012,7 +1012,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.15.0
+        0.15.1
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1356,10 +1356,9 @@
                                     <th class="ml-sort-th" data-col="win_rate" style="width:52px;" onclick="mlSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="pnl"      style="width:68px;" onclick="mlSortBy('pnl')">TOTAL PNL <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="max_dd"   style="width:60px;" onclick="mlSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="calmar"   style="width:52px;" onclick="mlSortBy('calmar')">CALMAR <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="best_day" style="width:60px;" onclick="mlSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="worst_day"style="width:60px;" onclick="mlSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th sort-active sort-desc" data-col="score" style="width:52px;" onclick="mlSortBy('score')">SCORE <span class="sa">↓</span></th>
+                                    <th class="ml-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="mlSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
                                     <th style="width:32px;"></th>
                                 </tr>
                             </thead>
@@ -2031,6 +2030,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initChart();
     checkHealth();
     loadEnvConfig();
+    loadFullBacktestResults();
     decorateParamHelpDots();
     updateClock();
     setInterval(updateClock, 1000);
@@ -2900,6 +2900,9 @@ let _lastLiveCandleTime = '';
 
 async function pollLiveCandle() {
     // Fetch fresh candles from API and append new bars
+    const session = getMarketSession();
+    if (session && session.label === 'CLOSED') return;
+
     try {
         const url = API + '/data/latest-candles' + (_lastLiveCandleTime ? '?since=' + encodeURIComponent(_lastLiveCandleTime) : '');
         const resp = await fetch(url);
@@ -2918,11 +2921,20 @@ async function pollLiveCandle() {
         for (const c of sorted) {
             const t = isoToChartTime(c.time || c.timestamp);
             const bar = { time: t, open: c.open, high: c.high, low: c.low, close: c.close };
-            try { candleSeries.update(bar); } catch(e) { continue; }
+            const raw = { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 };
 
             // Update raw buffer (upsert by time)
             const bidx = _rawCandleBuffer.findIndex(x => x.time === t);
-            const raw = { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume || 0 };
+            const prevRaw = bidx >= 0 ? _rawCandleBuffer[bidx] : null;
+            const unchanged = prevRaw &&
+                prevRaw.open === raw.open &&
+                prevRaw.high === raw.high &&
+                prevRaw.low === raw.low &&
+                prevRaw.close === raw.close &&
+                (prevRaw.volume || 0) === raw.volume;
+            if (unchanged) continue;
+
+            try { candleSeries.update(bar); } catch(e) { continue; }
             if (bidx >= 0) _rawCandleBuffer[bidx] = raw; else _rawCandleBuffer.push(raw);
             if (!window._lastChartData) window._lastChartData = [];
             const cidx = window._lastChartData.findIndex(x => x.time === t);
@@ -4169,7 +4181,7 @@ let _mlResults = [];
 let _mlProgressInterval = null;
 
 // ── ML column sort state ───────────────────────────
-let _mlSortCol = 'score';
+let _mlSortCol = 'calmar';
 let _mlSortDir = 'desc';   // 'desc' | 'asc'
 
 function _mlSortVal(r, col) {
@@ -4190,7 +4202,6 @@ function _mlSortVal(r, col) {
         case 'calmar':    return r.calmar_ratio || 0;
         case 'best_day': { const v = Object.values(r.daily_pnl || {}); return v.length ? Math.max(...v) : 0; }
         case 'worst_day':{ const v = Object.values(r.daily_pnl || {}); return v.length ? Math.min(...v) : 0; }
-        case 'score':     return r.score || 0;
         default:          return 0;
     }
 }
@@ -4215,6 +4226,21 @@ function mlSortBy(col) {
         }
     });
     renderMLResults(_mlResults);
+}
+
+async function loadFullBacktestResults() {
+    try {
+        const resp = await fetch(API + '/backtest/ml-results');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const results = (data.results || []).slice(0, 50);
+        if (!results.length) return;
+        _mlResults = results;
+        renderMLResults(_mlResults);
+        log('Loaded previous Full backtest top ' + _mlResults.length, 'info');
+    } catch(e) {
+        // Non-blocking: the table simply stays empty until the next run.
+    }
 }
 
 function _startMLProgress() {
@@ -4360,10 +4386,10 @@ async function runAllCombinations() {
 
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
-        _mlResults = data.results || [];
+        _mlResults = (data.results || []).slice(0, 50);
         renderMLResults(_mlResults);
         // status row removed — result count logged below
-        log('Full backtest complete: ' + _mlResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
+        log('Full backtest complete: showing top ' + _mlResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
         if (data.artifact && data.artifact.json) {
             log('Full backtest AI file: ' + data.artifact.json, 'info');
         }
@@ -4390,7 +4416,7 @@ function renderMLResults(results) {
 
     // Apply current sort
     const dir = _mlSortDir === 'desc' ? -1 : 1;
-    const sorted = [...results].sort((a, b) => {
+    const sorted = [...results].slice(0, 50).sort((a, b) => {
         const va = _mlSortVal(a, _mlSortCol);
         const vb = _mlSortVal(b, _mlSortCol);
         if (typeof va === 'string') return dir * va.localeCompare(vb);
@@ -4399,7 +4425,7 @@ function renderMLResults(results) {
 
     sorted.forEach(function(r, idx) {
         const rank = idx + 1;          // display rank (changes with sort)
-        const origRank = r.rank || rank; // original score rank (stable, used for save)
+        const origRank = r.rank || rank; // original rank (stable, used for save)
         // Backend uses flat fields: r.sl, r.tp, r.trail (not sl_ticks etc.)
         const dd = r.max_drawdown || 0;
         const ddColor = 'var(--red)';  // MAX DD always red
@@ -4408,8 +4434,6 @@ function renderMLResults(results) {
         const calmarColor = calmar >= 1 ? 'var(--green)' : '';
         const pnl = r.total_pnl || 0;
         const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-        const score = (r.score || 0).toFixed(1);
-        const scoreColor = (r.score || 0) >= 0 ? 'var(--cyan)' : 'var(--red)';
         const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
         const contractSize = r.contract_size || 1;
         const triggerPct = r.trail_trigger_pct || 0;
@@ -4425,7 +4449,7 @@ function renderMLResults(results) {
         const bestDay = dailyVals.length ? '$' + Math.max(...dailyVals).toFixed(0) : '—';
         const worstDay = dailyVals.length ? '$' + Math.min(...dailyVals).toFixed(0) : '—';
 
-        // ML# badge keyed by original score rank (stable across re-sorts)
+        // Preset badge keyed by original rank (stable across re-sorts)
         const savedLabel = _mlSavedMap[origRank] ? _mlSavedMap[origRank] : '';
 
         const tr = document.createElement('tr');
@@ -4442,10 +4466,9 @@ function renderMLResults(results) {
             '<td style="text-align:center;color:' + (parseFloat(wr) >= 50 ? 'var(--green)' : '') + ';">' + wr + '%</td>' +
             '<td style="text-align:right;color:' + pnlColor + ';">$' + pnl.toFixed(0) + '</td>' +
             '<td style="text-align:right;color:var(--red);">$' + dd.toFixed(0) + '</td>' +
-            '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
             '<td style="text-align:right;color:var(--green);">' + bestDay + '</td>' +
             '<td style="text-align:right;color:var(--red);">' + worstDay + '</td>' +
-            '<td style="text-align:center;color:' + scoreColor + ';font-weight:600;">' + score + '</td>' +
+            '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
             '<td style="text-align:center;">' +
                 '<button class="btn btn-outline" onclick="saveMLPreset(' + origRank + ')" ' +
                     'style="padding:2px 6px;font-size:10px;width:24px;height:24px;' +
@@ -4460,7 +4483,7 @@ function renderMLResults(results) {
 const _mlSavedMap = {};   // origRank → ML#N number
 
 async function saveMLPreset(origRank) {
-    // Find by original score rank (stable across sort order changes)
+    // Find by original rank (stable across sort order changes)
     const r = _mlResults.find(x => (x.rank || 0) === origRank);
     if (!r) return;
 
@@ -5290,19 +5313,37 @@ function scrollSystemLogToBottom() {
     const bottomContent = container.closest('.bottom-content');
     requestAnimationFrame(() => {
         container.scrollTop = container.scrollHeight;
-        if (bottomContent) bottomContent.scrollTop = bottomContent.scrollHeight;
+        const logTab = document.getElementById('btab-log');
+        if (bottomContent && logTab && !logTab.classList.contains('hidden')) {
+            bottomContent.scrollTop = bottomContent.scrollHeight;
+        }
     });
 }
+
+let _lastLogEntry = null;
+let _lastLogMsg = '';
+let _lastLogType = '';
+let _lastLogCount = 1;
 
 function log(msg, type) {
     type = type || '';
     const container = document.getElementById('log-container');
     if (!container) return;
     const time = new Date().toLocaleTimeString('en-US', {hour12:false});
+    if (_lastLogEntry && msg === _lastLogMsg && type === _lastLogType) {
+        _lastLogCount += 1;
+        _lastLogEntry.textContent = '[' + time + '] ' + msg + ' (' + _lastLogCount + ')';
+        scrollSystemLogToBottom();
+        return;
+    }
     const entry = document.createElement('div');
     entry.className = 'log-entry ' + type;
     entry.textContent = '[' + time + '] ' + msg;
     container.appendChild(entry);
+    _lastLogEntry = entry;
+    _lastLogMsg = msg;
+    _lastLogType = type;
+    _lastLogCount = 1;
     scrollSystemLogToBottom();
 }
 

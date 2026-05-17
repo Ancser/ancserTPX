@@ -1210,15 +1210,15 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
         f"- Total combinations: {total_combinations}",
         f"- Saved JSON: `{json_path}`",
         "",
-        "| Rank | Strategy | Contract | Size | SL | TP | Trail | Trigger | Lock | Trades | Win% | PnL | Max DD | Calmar | PF | Score |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Strategy | Contract | Size | SL | TP | Trail | Trigger | Lock | Trades | Win% | PnL | Max DD | PF | Calmar |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for r in ranked[:25]:
         win_pct = round(float(r.get("win_rate", 0) or 0) * 100, 1)
         trig_pct = round(float(r.get("trail_trigger_pct", 0) or 0) * 100, 1)
         lines.append(
             "| {rank} | {strategy} | {contract_id} | {contract_size} | {sl} | {tp} | {trail} | "
-            "{trigger}% | {lock} | {trades} | {win}% | ${pnl} | ${dd} | {calmar} | {pf} | {score} |".format(
+            "{trigger}% | {lock} | {trades} | {win}% | ${pnl} | ${dd} | {pf} | {calmar} |".format(
                 rank=r.get("rank", ""),
                 strategy=r.get("strategy", ""),
                 contract_id=r.get("contract_id", ""),
@@ -1232,9 +1232,8 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
                 win=win_pct,
                 pnl=r.get("total_pnl", ""),
                 dd=r.get("max_drawdown", ""),
-                calmar=r.get("calmar_ratio", ""),
                 pf=r.get("profit_factor", ""),
-                score=r.get("score", ""),
+                calmar=r.get("calmar_ratio", ""),
             )
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1244,6 +1243,39 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
         "summary": str(md_path),
         "generated_at": generated_at,
     }
+
+
+def _load_full_backtest_artifact() -> dict:
+    """Load the latest persisted Full backtest display payload."""
+    json_path = Path(__file__).resolve().parents[2] / "data" / "full_backtest_latest.json"
+    if not json_path.exists():
+        return {"results": [], "artifact": None}
+    try:
+        with json_path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        all_results = payload.get("results") or payload.get("top_results") or []
+        results = sorted(
+            all_results,
+            key=lambda r: (
+                float(r.get("calmar_ratio", 0) or 0) if not r.get("error") else -999999.0,
+                float(r.get("total_pnl", 0) or 0),
+                -abs(float(r.get("max_drawdown", 0) or 0)),
+            ),
+            reverse=True,
+        )[:50]
+        return {
+            "results": results,
+            "total_combinations": payload.get("total_combinations", len(all_results)),
+            "generated_at": payload.get("generated_at", ""),
+            "artifact": {
+                "json": str(json_path),
+                "summary": str(json_path.with_name("full_backtest_summary.md")),
+                "generated_at": payload.get("generated_at", ""),
+            },
+        }
+    except Exception as e:
+        logger.warning(f"[Full Backtest] Could not load latest artifact: {e}")
+        return {"results": [], "artifact": None}
 
 
 def _precompute_zone_timeline(
@@ -1374,31 +1406,6 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
     finally:
         with _ml_progress_lock:
             _ml_progress["current"] += 1
-
-
-def _score_result(r: dict) -> float:
-    """Score 0-100: 50 pts max DD decay, 50 pts PnL growth, both exponential."""
-    if r.get("error"):
-        return -999.0
-
-    trades = r.get("total_trades", 0) or 0
-    pnl = float(r.get("total_pnl", 0) or 0)
-    dd = abs(float(r.get("max_drawdown", 0) or 0))
-
-    # ── Hard filters ──────────────────────────────────────────────────────
-    if trades < 8:
-        return -0.4
-
-    curve = 3.0
-    dd_x = max(0.0, min(1.0, dd / 3000.0))
-    pnl_x = max(0.0, min(1.0, pnl / 10000.0))
-    decay_floor = math.exp(-curve)
-
-    dd_score = 50.0 * (math.exp(-curve * dd_x) - decay_floor) / (1.0 - decay_floor)
-
-    pnl_score = 50.0 * (math.exp(curve * pnl_x) - 1.0) / (math.exp(curve) - 1.0)
-
-    return round(dd_score + pnl_score, 2)
 
 
 @router.post("/backtest/ml-run")
@@ -1559,14 +1566,20 @@ async def ml_run(req: MLRunRequest):
         ]
         results = await asyncio.gather(*tasks)
 
-    # Score and rank
-    scored = [(r, _score_result(r)) for r in results]
-    scored.sort(key=lambda x: x[1], reverse=True)
+    # Rank by Calmar directly. Tie-break with total PnL, then lower drawdown.
+    ranked_source = sorted(
+        results,
+        key=lambda r: (
+            float(r.get("calmar_ratio", 0) or 0) if not r.get("error") else -999999.0,
+            float(r.get("total_pnl", 0) or 0),
+            -abs(float(r.get("max_drawdown", 0) or 0)),
+        ),
+        reverse=True,
+    )
 
     ranked = []
-    for rank, (r, score) in enumerate(scored, start=1):
+    for rank, r in enumerate(ranked_source, start=1):
         r["rank"] = rank
-        r["score"] = score
         r["pass_max_dd"] = r.get("max_drawdown", 9999) < 3000
         daily = r.get("daily_pnl", {})
         if daily and r.get("total_pnl", 0) > 0:
@@ -1579,14 +1592,14 @@ async def ml_run(req: MLRunRequest):
             r["max_day_pct"] = 0
         ranked.append(r)
 
-    _ml_results_cache = ranked
+    _ml_results_cache = ranked[:50]
     artifact = _save_full_backtest_artifacts(req, ranked, len(combos))
     logger.info(f"[Full Backtest] Done. Top result: {ranked[0] if ranked else 'none'}")
     logger.info(f"[Full Backtest] AI-readable results saved: {artifact}")
 
     return {
         "total_combinations": len(combos),
-        "results": ranked,
+        "results": ranked[:50],
         "artifact": artifact,
     }
 
@@ -1594,7 +1607,9 @@ async def ml_run(req: MLRunRequest):
 @router.get("/backtest/ml-results")
 async def get_ml_results():
     """Return cached Full backtest results from last run."""
-    return {"results": _ml_results_cache}
+    if _ml_results_cache:
+        return {"results": _ml_results_cache[:50]}
+    return _load_full_backtest_artifact()
 
 
 @router.get("/backtest/ml-progress")
