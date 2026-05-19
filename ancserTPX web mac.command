@@ -1,28 +1,34 @@
 #!/bin/bash
 echo ""
 echo "  ========================================"
-echo "   ancserTPX - NQ Futures Trading System"
+echo "   ancserTPX web"
 echo "  ========================================"
 echo ""
 
 cd "$(dirname "$0")"
 
-# ── Check Python ──
 if command -v python3 &>/dev/null; then
     PY=python3
 elif command -v python &>/dev/null; then
     PY=python
 else
-    echo "  [ERROR] Python not found! Run install-Mac.command first."
+    echo "  [ERROR] Python not found! Run ancserTPX install mac.command first."
     exit 1
 fi
 
-# ── Kill old uvicorn processes ──
-echo "  Killing old uvicorn processes..."
-pkill -f "uvicorn backend.main:app" 2>/dev/null
+echo "  Stopping old ancserTPX instances..."
+pkill -f "uvicorn backend.main:app" 2>/dev/null || true
+pkill -f "backend.terminal_live" 2>/dev/null || true
+pkill -f "terminal_live.py" 2>/dev/null || true
+for PORT_TO_KILL in $(seq 8000 8010); do
+    PIDS=$(lsof -tiTCP:$PORT_TO_KILL -sTCP:LISTEN 2>/dev/null || true)
+    if [ -n "$PIDS" ]; then
+        echo "  Killing PID(s) $PIDS on port $PORT_TO_KILL"
+        kill -9 $PIDS 2>/dev/null || true
+    fi
+done
 sleep 1
 
-# ── Find a free port ──
 PORT=8001
 while [ $PORT -le 8010 ]; do
     if ! lsof -iTCP:$PORT -sTCP:LISTEN &>/dev/null; then
@@ -38,11 +44,9 @@ if [ $PORT -gt 8010 ]; then
 fi
 echo "  [OK] Using port $PORT"
 
-# ── Clear cache ──
 echo "  Clearing bytecode cache..."
 find backend -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null
 
-# ── Clear zone data ──
 if [ -f "data/live_zones.json" ]; then
     echo "  Resetting zone cache..."
     echo '{"saved_at":"","active_zone_id":null,"zones":[]}' > data/live_zones.json
@@ -50,13 +54,12 @@ fi
 
 echo ""
 echo "  ============================================"
-echo "   Server starting on port $PORT"
+echo "   ancserTPX web starting on port $PORT"
 echo "   Web UI: http://localhost:$PORT"
 echo "   Use Ctrl+C to stop"
 echo "  ============================================"
 echo ""
 
-# ── Open browser ──
 if command -v open &>/dev/null; then
     open "http://localhost:$PORT"
 elif command -v xdg-open &>/dev/null; then
@@ -66,4 +69,4 @@ fi
 $PY -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
 
 echo ""
-echo "  Server stopped."
+echo "  ancserTPX web stopped."

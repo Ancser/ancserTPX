@@ -1,17 +1,17 @@
-# Kill all python uvicorn processes to prevent dual-engine trading
+# Kill all ancserTPX web/terminal processes to prevent dual-engine trading
 $killed = 0
 
-# Method 1: Kill python processes running uvicorn
+# Method 1: Kill python processes running uvicorn or terminal live
 Get-WmiObject Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -match 'uvicorn' } |
+    Where-Object { $_.CommandLine -match 'uvicorn' -or $_.CommandLine -match 'backend\.terminal_live' -or $_.CommandLine -match 'terminal_live\.py' } |
     ForEach-Object {
-        Write-Host "  Killing uvicorn PID $($_.ProcessId)"
+        Write-Host "  Killing ancserTPX PID $($_.ProcessId)"
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         $killed++
     }
 
-# Method 2: Kill anything listening on ports 8001-8010
-8001..8010 | ForEach-Object {
+# Method 2: Kill anything listening on ports 8000-8010
+8000..8010 | ForEach-Object {
     $port = $_
     Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty OwningProcess -Unique |

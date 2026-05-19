@@ -75,15 +75,17 @@ Run the matching files for your operating system:
 
 ### Windows 11
 
-- First-time install: double-click `install-Win11.bat`
-- Start the app: double-click `start-Win11.bat`
+- First-time install: double-click `ancserTPX install win.bat`
+- Web app: double-click `ancserTPX web win.bat`
+- Terminal-only LIVE: double-click `ancserTPX terminal win.bat`
 
 > If Windows shows a SmartScreen warning, click **More info → Run anyway**.
 
 ### macOS
 
-- First-time install: double-click `install-Mac.command`
-- Start the app: double-click `start-Mac.command`
+- First-time install: double-click `ancserTPX install mac.command`
+- Web app: double-click `ancserTPX web mac.command`
+- Terminal-only LIVE: double-click `ancserTPX terminal mac.command`
 
 > **First launch only:** macOS will block the file with "cannot be opened because it is from an unidentified developer".
 > Fix: **right-click** the file → **Open** → click **Open** in the dialog. Only needed once per file.
@@ -106,6 +108,15 @@ Run the matching files for your operating system:
 2. Confirm the TopstepX Auto OCO preset is enabled
 3. Click **GO LIVE**
 4. Use **STOP** or **FLATTEN** when you want to stop trading or close positions manually
+
+### Terminal-Only LIVE
+
+The terminal launcher skips the web UI and starts LIVE directly. It uses `.env`
+credentials, `TOPSTEPX_ACCOUNT_ID` when set, otherwise the first practice
+account, and the last used live preset from `data/presets.json`.
+
+Starting either Web or Terminal first stops any older ancserTPX Web/Terminal
+process and clears app ports `8000-8010`, so only one trading engine can run.
 
 ---
 

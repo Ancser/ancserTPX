@@ -1,5 +1,5 @@
 install:
-	@bash install-Mac.command
+	@bash "ancserTPX install mac.command"
 
 start:
-	@bash start-Mac.command
+	@bash "ancserTPX web mac.command"

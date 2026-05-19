@@ -3,6 +3,7 @@
 
 # Force LF line endings for shell scripts (Mac/Linux)
 *.sh text eol=lf
+*.command text eol=lf
 Makefile text eol=lf
 
 # Force CRLF for Windows batch files

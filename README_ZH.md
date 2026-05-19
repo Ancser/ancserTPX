@@ -75,15 +75,17 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 
 ### Windows 11
 
-- 首次安裝：雙擊 `install-Win11.bat`
-- 啟動程式：雙擊 `start-Win11.bat`
+- 首次安裝：雙擊 `ancserTPX install win.bat`
+- Web 版：雙擊 `ancserTPX web win.bat`
+- Terminal-only LIVE：雙擊 `ancserTPX terminal win.bat`
 
 > 若 Windows 跳出 SmartScreen 警告，點 **「其他資訊」→「仍要執行」**。
 
 ### macOS
 
-- 首次安裝：雙擊 `install-Mac.command`
-- 啟動程式：雙擊 `start-Mac.command`
+- 首次安裝：雙擊 `ancserTPX install mac.command`
+- Web 版：雙擊 `ancserTPX web mac.command`
+- Terminal-only LIVE：雙擊 `ancserTPX terminal mac.command`
 
 > **第一次執行**：macOS 會擋下，跳出「無法打開，因為來自未識別的開發者」。
 > 解法：**對檔案按右鍵 → 打開 → 在對話框再點「打開」**。每個檔案只需做一次。
@@ -106,6 +108,15 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 2. 確認 TopstepX Auto OCO preset 已啟用
 3. 點擊 **GO LIVE**
 4. 需要停止或手動平倉時，使用 **STOP** 或 **FLATTEN**
+
+### Terminal-Only LIVE
+
+Terminal 啟動檔不會開網頁，會直接啟動 LIVE engine。它會使用 `.env`
+裡的 TopstepX email/API key；如果有設定 `TOPSTEPX_ACCOUNT_ID` 就使用該帳戶，
+否則自動選第一個 practice 帳戶；策略參數使用 `data/presets.json` 裡最後使用的 live preset。
+
+啟動 Web 或 Terminal 任一版本前，都會先停止舊的 ancserTPX Web/Terminal process，
+並清掉 app ports `8000-8010`，避免同時跑兩個 trading engine。
 
 ---
 

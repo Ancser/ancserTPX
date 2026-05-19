@@ -1012,7 +1012,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.15.1
+        0.15.2
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1425,7 +1425,7 @@
 // ancserTPX Frontend
 // ============================================
 
-// Auto-detect port from current page URL (supports dynamic port in start-Win11.bat)
+// Auto-detect port from current page URL (supports dynamic launcher ports)
 const API = window.location.origin + '/api';
 let chart = null;
 let candleSeries = null;
@@ -2882,6 +2882,20 @@ async function pollLiveStatus() {
             _setLiveRealtimeMarkers(liveMarkers);
         }
 
+        const hasWorkingTrade = !!st.position || !!st.pending_order_id || !!st.pending_signal;
+        const closedTrades = (st.trades || []).filter(t => t && t.type === 'closed');
+        const newestClosed = closedTrades.length ? closedTrades[closedTrades.length - 1] : null;
+        const newestClosedKey = newestClosed
+            ? [newestClosed.time || '', newestClosed.exit_reason || '', newestClosed.entry_price || ''].join('|')
+            : '';
+        const newClosedTrade = !!newestClosedKey && newestClosedKey !== _lastLiveClosedKey;
+        const becameFlat = _lastLiveHadWorkingTrade && !hasWorkingTrade;
+        if (newClosedTrade || becameFlat) {
+            refreshTradeHistoryForCurrentAccount(newClosedTrade || becameFlat);
+        }
+        if (newestClosedKey) _lastLiveClosedKey = newestClosedKey;
+        _lastLiveHadWorkingTrade = hasWorkingTrade;
+
         // Log recent events
         if (st.log && st.log.length > 0) {
             const lastLog = st.log[st.log.length - 1];
@@ -3713,10 +3727,29 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
         } else {
             window._liveCompletedTrades = [];
             renderExecuteTrades([]);
+            drawLiveTradeMarkers([]);
+            if (backtestData && backtestData.metrics) {
+                renderMetrics(backtestData.metrics, backtestData.trades);
+            }
             log('[HISTORY] No live trades found (' + data.source + ')', 'info');
         }
     } catch(e) {
         // silent fail — cache may not exist yet
+    }
+}
+
+let _tradeHistoryRefreshInFlight = false;
+let _lastLiveHadWorkingTrade = false;
+let _lastLiveClosedKey = '';
+
+async function refreshTradeHistoryForCurrentAccount(refresh) {
+    if (_tradeHistoryRefreshInFlight) return;
+    _tradeHistoryRefreshInFlight = true;
+    try {
+        const accId = (liveAccount && liveAccount.id) ? liveAccount.id : (currentAccount ? currentAccount.id : 0);
+        await fetchAndDrawTradeHistory(refresh, accId);
+    } finally {
+        _tradeHistoryRefreshInFlight = false;
     }
 }
 
@@ -4166,6 +4199,7 @@ async function runBacktest() {
         renderChart(backtestData);
         renderMetrics(backtestData.metrics, backtestData.trades);
         renderTrades(backtestData.trades);
+        await refreshTradeHistoryForCurrentAccount(true);
 
     } catch(e) {
         log('Backtest failed: ' + e.message, 'error');
@@ -4709,11 +4743,11 @@ function drawTradeMarkers(trades) {
 
 function drawLiveTradeMarkers(trades) {
     _liveMarkers = (!trades || trades.length === 0) ? [] : trades.map(t => ({
-        time: isoToChartTime(t.entry_time),
+        time: isoToChartTime(t.exit_time || t.entry_time),
         position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
         color: '#ffa726',
         shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-        text: '$' + (t.pnl >= 0 ? '+' : '') + (t.pnl || 0).toFixed(0),
+        text: '$' + ((t.pnl || 0) >= 0 ? '+' : '-') + Math.abs(t.pnl || 0).toFixed(0),
     })).filter(m => m.time && !isNaN(m.time));
     _refreshAllMarkers();
 }

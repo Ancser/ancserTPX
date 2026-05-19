@@ -1,10 +1,10 @@
 @echo off
-title ancserTPX
+title ancserTPX web
 color 0A
 
 echo.
 echo  ========================================
-echo   ancserTPX - NQ Futures Trading System
+echo   ancserTPX web
 echo  ========================================
 echo.
 
@@ -18,12 +18,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: ── Kill old uvicorn processes ──
-echo  Killing old uvicorn processes...
+:: Kill old web/terminal instances and occupied app ports
+echo  Stopping old ancserTPX instances...
 powershell -ExecutionPolicy Bypass -File "%~dp0backend\kill_old.ps1"
-timeout /t 3 /nobreak >nul
+timeout /t 2 /nobreak >nul
 
-:: ── Find a free port ──
+:: Find a free port
 set PORT=8001
 
 :check_port
@@ -40,31 +40,30 @@ if %errorlevel% == 1 (
 )
 echo  [OK] Using port %PORT%
 
-:: ── Clear cache ──
+:: Clear cache
 echo  Clearing bytecode cache...
 for /d /r "backend" %%d in (__pycache__) do (
     if exist "%%d" rd /s /q "%%d" >nul 2>&1
 )
 
-:: ── Clear zone data ──
+:: Reset zone cache
 if exist "data\live_zones.json" (
     echo  Resetting zone cache...
     echo {"saved_at":"","active_zone_id":null,"zones":[]}> "data\live_zones.json"
 )
 
-:: ── Install deps ──
+:: Install deps if needed
 if not exist ".deps_installed" (
     echo  Installing dependencies...
-    pip install fastapi uvicorn httpx python-dotenv pydantic >nul 2>&1
+    pip install -r backend\requirements.txt >nul 2>&1
     echo done > .deps_installed
 )
 
-:: ── Start ──
 echo.
 echo  ============================================
-echo   Server starting on port %PORT%
+echo   ancserTPX web starting on port %PORT%
 echo   Web UI: http://localhost:%PORT%
-echo   Use Ctrl+C to stop (do NOT close with X)
+echo   Use Ctrl+C to stop
 echo  ============================================
 echo.
 
@@ -73,5 +72,5 @@ start "" http://localhost:%PORT%
 python -m uvicorn backend.main:app --host 0.0.0.0 --port %PORT%
 
 echo.
-echo  Server stopped.
+echo  ancserTPX web stopped.
 pause
