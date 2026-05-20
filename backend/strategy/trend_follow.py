@@ -22,7 +22,7 @@
 
 from __future__ import annotations
 import logging
-from typing import List, Optional
+from typing import List, Optional, Set, Tuple
 from backend.db.models import (
     Candle, ConsolidationZone, TradeSignal, StrategyParams,
     Direction, StrategyType, ZoneStatus
@@ -427,6 +427,7 @@ class SessionTrendFollow:
         self._breakout_direction: Optional[str] = None  # "up" | "down"
         self._ref_zone = None  # snapshot of zone at breakout
         self._recent_candles: List[Candle] = []  # lookback buffer
+        self._traded_breakouts: Set[Tuple[str, str]] = set()
 
     def reset(self):
         self._state = "idle"
@@ -434,6 +435,7 @@ class SessionTrendFollow:
         self._breakout_direction = None
         self._ref_zone = None
         self._recent_candles = []
+        self._traded_breakouts = set()
 
     def reset_state_only(self):
         """Alias for reset() — keeps interface compatible with MACDOnlyStrategy."""
@@ -516,6 +518,11 @@ class SessionTrendFollow:
 
         # ── 5 consecutive → confirmed breakout ──
         if self._consecutive_outside >= n:
+            breakout_key = (str(zone.zone_id), self._breakout_direction or "")
+            if breakout_key in self._traded_breakouts:
+                self._state = "idle"
+                return None
+            self._traded_breakouts.add(breakout_key)
             self._state = "confirmed"
             self._ref_zone = zone
             return self._generate_signal(candle, zone, self._breakout_direction)

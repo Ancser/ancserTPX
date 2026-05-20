@@ -1012,7 +1012,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.15.2
+        0.15.3
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -3705,11 +3705,15 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
         if (!resp.ok) return;
         const data = await resp.json();
         if (data.trades && data.trades.length > 0) {
-            window._liveCompletedTrades = data.trades;
-            log('[HISTORY] ' + data.count + ' live trades loaded (' + data.source + ') acct=' +
+            const trades = dedupeLiveCompletedTrades(data.trades);
+            window._liveCompletedTrades = trades;
+            const dedupeMsg = trades.length !== data.trades.length
+                ? ' / ' + trades.length + ' unique'
+                : '';
+            log('[HISTORY] ' + data.count + ' live trades loaded' + dedupeMsg + ' (' + data.source + ') acct=' +
                 (data.account_id || 'all'), 'info');
 
-            renderExecuteTrades(data.trades);
+            renderExecuteTrades(trades);
 
             // Re-render metrics comparison if backtest already ran
             if (backtestData && backtestData.metrics) {
@@ -3717,7 +3721,7 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
             }
 
             // setMarkers handles all viewports — no canvas redraw needed here
-            drawLiveTradeMarkers(data.trades);
+            drawLiveTradeMarkers(trades);
             if (_overlaySyncData) {
                 const sd = _overlaySyncData;
                 if (_cachedVPZones) drawVolumeProfile(_cachedVPZones);
@@ -3736,6 +3740,25 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
     } catch(e) {
         // silent fail — cache may not exist yet
     }
+}
+
+function dedupeLiveCompletedTrades(trades) {
+    const seen = new Set();
+    return (trades || []).filter(t => {
+        const entry = String(t.entry_time || '').slice(0, 19);
+        const exit = String(t.exit_time || '').slice(0, 19);
+        const key = [
+            entry,
+            exit,
+            t.direction || '',
+            Number(t.entry_price || 0).toFixed(2),
+            Number(t.exit_price || 0).toFixed(2),
+            Math.round(Number(t.pnl || 0)),
+        ].join('|');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 }
 
 let _tradeHistoryRefreshInFlight = false;
