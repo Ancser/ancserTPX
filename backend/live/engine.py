@@ -1188,8 +1188,8 @@ class LiveTradingEngine:
         if not candle:
             return
 
-        # _fetch_latest_candle updates market price from the newest API bar.
-        # The returned candle is the newest CLOSED 1m bar used for strategy parity.
+        # _fetch_latest_candle returns the newest available 1m bar, including the
+        # current forming bar when TopstepX provides it.
         if self._last_market_price is None:
             self._last_market_price = candle.close
 
@@ -1862,16 +1862,15 @@ class LiveTradingEngine:
             logger.error(f"[SYNC] position sync failed: {e}", exc_info=True)
 
     async def _fetch_latest_candle(self, unit_number: int = 30) -> Optional[Candle]:
-        """Fetch the newest closed 1-minute candle from TopstepX API.
+        """Fetch the newest available 1-minute candle from TopstepX API.
 
         NOTE: TopstepX 30s bar API has a ~6-hour settle delay — bars from
         sub-minute endpoints are never current. 1m bars are real-time.
         MACD/VWAP indicators run on 1m bars in live mode.
 
-        The newest 1m bar can still be forming. Strategy evaluation uses the
-        latest closed candle so live and backtest consume the same finalized
-        OHLC. All fetched bars are still merged into the shared data store by
-        timestamp, so early forming snapshots get replaced by final bars.
+        The newest 1m bar can still be forming; live trading intentionally uses
+        that timely bar. All fetched bars are still merged into the shared data
+        store by timestamp, so early forming snapshots get replaced by final bars.
 
         TopstepX returns bars newest-first, so candles[-1] is the OLDEST.
         Must sort by timestamp to get the actual newest.
@@ -1892,14 +1891,7 @@ class LiveTradingEngine:
                     _upsert_historical_candles(candles)
                 except Exception:
                     pass
-                now_utc = datetime.utcnow().replace(tzinfo=_UTC_TZ)
-                current_minute = now_utc.replace(second=0, microsecond=0)
-                def _as_utc(ts: datetime) -> datetime:
-                    return ts.replace(tzinfo=_UTC_TZ) if ts.tzinfo is None else ts.astimezone(_UTC_TZ)
-                closed = [c for c in candles if _as_utc(c.timestamp) < current_minute]
-                if not closed:
-                    return None
-                return closed[-1]
+                return candles[-1]
         except Exception as e:
             self._log_event(f"取得K線失敗: {e}", "error")
         return None
