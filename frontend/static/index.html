@@ -1012,7 +1012,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.15.3
+        0.15.4
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -2734,12 +2734,18 @@ async function pollLiveStatus() {
 
         // ── Phase — both top bar and left panel ──
         let phaseText = st.phase || '--';
-        document.getElementById('live-position-text').textContent = phaseText;
+        const phaseDisplayText = phaseText + (st.profit_locked ? ' \uD83D\uDD12' : '');
+        const panelPhaseEl = document.getElementById('live-position-text');
+        if (panelPhaseEl) {
+            panelPhaseEl.textContent = phaseDisplayText;
+            panelPhaseEl.style.color = st.profit_locked ? 'var(--amber)' : 'var(--text3)';
+        }
         const phaseTopEl = document.getElementById('lv-phase-top');
         if (phaseTopEl) {
-            phaseTopEl.textContent = phaseText;
+            phaseTopEl.textContent = phaseDisplayText;
             // Color based on phase
-            if (/交易中|持倉|TRADE/i.test(phaseText)) phaseTopEl.style.color = 'var(--green)';
+            if (st.profit_locked) phaseTopEl.style.color = 'var(--amber)';
+            else if (/交易中|持倉|TRADE/i.test(phaseText)) phaseTopEl.style.color = 'var(--green)';
             else if (/出界|break/i.test(phaseText)) phaseTopEl.style.color = 'var(--amber)';
             else if (/盤整|區間內/i.test(phaseText)) phaseTopEl.style.color = 'var(--cyan)';
             else phaseTopEl.style.color = 'var(--text3)';
@@ -5059,7 +5065,6 @@ function renderMetrics(m, backtestTrades) {
     const rr_ratio     = m.avg_rr_ratio;
     const max_dd       = m.max_drawdown;
     const sharpe       = m.sharpe_ratio;
-    const profit_factor = m.profit_factor;
 
     // Consistency metrics from backend daily_pnl
     const dailyEntries = Object.entries(m.daily_pnl || {}).sort((a, b) => a[0].localeCompare(b[0]));
@@ -5082,7 +5087,6 @@ function renderMetrics(m, backtestTrades) {
     const totalPnlLabel = daySpan > 0 ? ('TOTAL PNL (' + daySpan + 'd)') : 'TOTAL PNL';
 
     const paren = (v) => liveStats ? ' <span class="metric-real">(' + v + ')</span>' : '';
-    const fmtPF = (x) => x === Infinity ? 'INF' : (x || 0).toFixed(2);
     const fmtSessionRate = (stats, code) => {
         const s = stats && stats.session_tp ? stats.session_tp[code] : null;
         if (!s || !s.total) return '--';
@@ -5133,12 +5137,12 @@ function renderMetrics(m, backtestTrades) {
         { label: 'CALMAR',
           value: (m.calmar_ratio != null ? m.calmar_ratio : 0).toFixed(2) + paren(liveStats ? (liveStats.calmar != null ? liveStats.calmar : 0).toFixed(2) : ''),
           cls: (m.calmar_ratio || 0) >= 1 ? 'pos' : '' },
+        { label: 'TRADE COUNTS',
+          value: String(total_trades || 0) + paren(liveStats ? String(liveStats.trades || 0) : ''),
+          cls: '' },
         { label: 'RR RATIO',
           value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
           cls: rr_ratio > 1 ? 'pos' : 'neg' },
-        { label: 'PROFIT FACTOR',
-          value: fmtPF(profit_factor) + paren(liveStats ? fmtPF(liveStats.profit_factor) : ''),
-          cls: 'pos' },
         { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },

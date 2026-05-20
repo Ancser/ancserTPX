@@ -172,6 +172,10 @@ class LiveTradingEngine:
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "data", "live_exits.json"
         )
+        self._breakout_locks_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data", "live_breakout_locks.json"
+        )
         # daily_capital.json removed — PnL now read directly from API
 
     @classmethod
@@ -531,6 +535,7 @@ class LiveTradingEngine:
         tp_price: Optional[float],
         direction: Optional[str],
         trail_triggered: bool,
+        zone_id: Optional[str] = None,
     ):
         """Append a single exit record to data/live_exits.json so trade-history
         can map fills (which only carry pnl) to true exit reason buckets
@@ -560,6 +565,7 @@ class LiveTradingEngine:
                 "sl_price": sl_price,
                 "tp_price": tp_price,
                 "direction": direction,
+                "zone_id": zone_id,
                 "trail_triggered": trail_triggered,
                 "size": self.contract_size,
             })
@@ -572,6 +578,153 @@ class LiveTradingEngine:
                 json.dump(existing, f, indent=2)
         except Exception as e:
             logger.warning(f"Failed to persist exit record: {e}")
+
+    def _read_json_list_or_dict(self, path: str):
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return None
+
+    def _lock_date_for_ts(self, ts_str: Optional[str]) -> Optional[str]:
+        if not ts_str:
+            return None
+        try:
+            ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=_UTC_TZ)
+            ct = ts.astimezone(_CT)
+            if ct.hour >= 17:
+                return (ct + timedelta(days=1)).strftime("%Y-%m-%d")
+            return ct.strftime("%Y-%m-%d")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _breakout_direction_from_trade_direction(direction: Optional[str]) -> Optional[str]:
+        d = str(direction or "").lower()
+        if d in ("buy", "long", "up"):
+            return "up"
+        if d in ("sell", "short", "down"):
+            return "down"
+        return None
+
+    def _candidate_lock_zones(self) -> List[ConsolidationZone]:
+        zones: List[ConsolidationZone] = []
+        active = self.detector.get_active_zone()
+        prev = self.detector.get_last_left_zone()
+        for z in (active, prev):
+            if z and all(existing.zone_id != z.zone_id for existing in zones):
+                zones.append(z)
+        return zones
+
+    def _infer_lock_from_exit(self, row: Dict, zones: List[ConsolidationZone]) -> Optional[tuple[str, str]]:
+        direction = self._breakout_direction_from_trade_direction(row.get("direction"))
+        if not direction:
+            return None
+        if row.get("zone_id"):
+            return str(row.get("zone_id")), direction
+        try:
+            entry = float(row.get("entry_price"))
+        except (TypeError, ValueError):
+            return None
+        tolerance = max(self.tick_size * 8, 2.0)
+        for z in zones:
+            target = z.vah_80 if direction == "up" else z.val_80
+            if abs(entry - target) <= tolerance:
+                return z.zone_id, direction
+        return None
+
+    def _load_breakout_locks(self) -> set[tuple[str, str]]:
+        today = self._get_topstep_trade_date()
+        keys: set[tuple[str, str]] = set()
+
+        data = self._read_json_list_or_dict(self._breakout_locks_file)
+        records = data.get("locks", []) if isinstance(data, dict) else []
+        for row in records:
+            if not isinstance(row, dict):
+                continue
+            if row.get("trade_date") != today:
+                continue
+            if row.get("account_id") != self.account_id:
+                continue
+            if row.get("contract_id") != self.contract_id:
+                continue
+            zid = row.get("zone_id")
+            direction = row.get("direction")
+            if zid and direction:
+                keys.add((str(zid), str(direction)))
+
+        zones = self._candidate_lock_zones()
+        exits = self._read_json_list_or_dict(self._exits_file)
+        for row in (exits if isinstance(exits, list) else []):
+            if not isinstance(row, dict):
+                continue
+            if row.get("account_id") != self.account_id:
+                continue
+            if row.get("contract_id") != self.contract_id:
+                continue
+            if self._lock_date_for_ts(row.get("entry_time") or row.get("exit_time")) != today:
+                continue
+            inferred = self._infer_lock_from_exit(row, zones)
+            if inferred:
+                keys.add(inferred)
+
+        if hasattr(self.trend_follow, "set_traded_breakouts"):
+            self.trend_follow.set_traded_breakouts(keys)
+        return keys
+
+    def _persist_breakout_lock(self, signal: TradeSignal):
+        direction = self._breakout_direction_from_trade_direction(signal.direction.value)
+        if not signal.zone_id or not direction:
+            return
+        today = self._get_topstep_trade_date()
+        data = self._read_json_list_or_dict(self._breakout_locks_file)
+        if not isinstance(data, dict):
+            data = {"locks": []}
+        records = data.get("locks")
+        if not isinstance(records, list):
+            records = []
+            data["locks"] = records
+
+        key = (today, self.account_id, self.contract_id, str(signal.zone_id), direction)
+        for row in records:
+            if not isinstance(row, dict):
+                continue
+            row_key = (
+                row.get("trade_date"),
+                row.get("account_id"),
+                row.get("contract_id"),
+                str(row.get("zone_id")),
+                row.get("direction"),
+            )
+            if row_key == key:
+                return
+
+        records.append({
+            "trade_date": today,
+            "account_id": self.account_id,
+            "contract_id": self.contract_id,
+            "zone_id": str(signal.zone_id),
+            "direction": direction,
+            "entry_price": signal.entry_price,
+            "created_at": datetime.utcnow().isoformat(),
+        })
+        data["saved_at"] = datetime.utcnow().isoformat()
+        data["locks"] = records[-1000:]
+        try:
+            os.makedirs(os.path.dirname(self._breakout_locks_file), exist_ok=True)
+            with open(self._breakout_locks_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to persist breakout lock: {e}")
+
+    def _unlock_signal_breakout(self, signal: TradeSignal):
+        direction = self._breakout_direction_from_trade_direction(signal.direction.value)
+        if hasattr(self.trend_follow, "unlock_breakout") and signal.zone_id and direction:
+            self.trend_follow.unlock_breakout(signal.zone_id, direction)
 
     async def _calc_pnl_from_trades(self, *, emit_log: bool = True) -> float:
         """Fallback: sum today's realized PnL from trade history.
@@ -855,6 +1008,11 @@ class LiveTradingEngine:
             self.trend_follow.reset_state_only()
         else:
             self.trend_follow.reset()
+
+        locked = self._load_breakout_locks()
+        if locked:
+            labels = ", ".join(f"{zid}:{direction}" for zid, direction in sorted(locked))
+            self._log_event(f"載入 breakout 鎖: {labels}")
 
         active = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
@@ -1321,6 +1479,7 @@ class LiveTradingEngine:
             else:
                 placed = await self._place_order(signal)
             if not placed:
+                self._unlock_signal_breakout(signal)
                 strat.notify_order_cancelled()
             return
 
@@ -1414,6 +1573,7 @@ class LiveTradingEngine:
                 self._pending_order_id = resp.order_id
                 self._pending_signal = signal
                 self._pending_age = 0
+                self._persist_breakout_lock(signal)
                 self._log_event(
                     f"掛單成功 #{resp.order_id} | {dir_label} LIMIT @ {signal.entry_price:.2f} | "
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
@@ -1460,6 +1620,7 @@ class LiveTradingEngine:
                 self._pending_order_id = resp.order_id
                 self._pending_signal = signal
                 self._pending_age = 0
+                self._persist_breakout_lock(signal)
                 self._log_event(
                     f"市價單 #{resp.order_id} | {dir_label} MKT @ ~{signal.entry_price:.2f} | "
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
@@ -1823,6 +1984,7 @@ class LiveTradingEngine:
                     tp_price=_sig_for_log.tp_price if _sig_for_log else None,
                     direction=_sig_for_log.direction.value if _sig_for_log else None,
                     trail_triggered=self._trail_sl_triggered,
+                    zone_id=_sig_for_log.zone_id if _sig_for_log else None,
                 )
 
                 # Notify strategy with actual exit reason

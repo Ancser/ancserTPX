@@ -435,7 +435,24 @@ class SessionTrendFollow:
         self._breakout_direction = None
         self._ref_zone = None
         self._recent_candles = []
-        self._traded_breakouts = set()
+
+    def set_traded_breakouts(self, keys):
+        normalized: Set[Tuple[str, str]] = set()
+        for item in keys or []:
+            try:
+                zone_id, direction = item[:2]
+            except (TypeError, ValueError, IndexError):
+                continue
+            if zone_id and direction:
+                normalized.add((str(zone_id), str(direction)))
+        self._traded_breakouts = normalized
+
+    def mark_breakout_used(self, zone_id: str, direction: str):
+        if zone_id and direction:
+            self._traded_breakouts.add((str(zone_id), str(direction)))
+
+    def unlock_breakout(self, zone_id: str, direction: str):
+        self._traded_breakouts.discard((str(zone_id), str(direction)))
 
     def reset_state_only(self):
         """Alias for reset() — keeps interface compatible with MACDOnlyStrategy."""
