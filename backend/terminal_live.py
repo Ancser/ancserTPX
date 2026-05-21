@@ -182,17 +182,26 @@ def _resolve_trail_ticks(trail_ticks: Any, trail_pct: Any, sl_ticks: Any, tp_tic
     return _clamp_trail_ticks(trail_ticks, sl_ticks, tp_ticks, trigger_pct)
 
 
-def _load_default_preset() -> tuple[str, Dict[str, Any]]:
+def _load_default_preset() -> tuple[str, Dict[str, Any], str]:
     data = _load_presets_file()
     presets = data.get("presets") or {}
-    name = data.get("last_used_live") or data.get("last_used_bt") or DEFAULT_PRESET_NAME
-    params = presets.get(name)
-    if not isinstance(params, dict):
-        name = DEFAULT_PRESET_NAME
-        params = dict(DEFAULT_PRESET_PARAMS)
+    candidates = [
+        ("last_used_live", data.get("last_used_live")),
+        ("last_used_bt", data.get("last_used_bt")),
+    ]
+    for source, candidate in candidates:
+        name = str(candidate or "").strip()
+        params = presets.get(name)
+        if name and isinstance(params, dict):
+            merged = dict(DEFAULT_PRESET_PARAMS)
+            merged.update(params)
+            return name, merged, source
+
+    name = DEFAULT_PRESET_NAME
+    params = dict(DEFAULT_PRESET_PARAMS)
     merged = dict(DEFAULT_PRESET_PARAMS)
     merged.update(params)
-    return name, merged
+    return name, merged, "built_in_default"
 
 
 def _select_account(accounts: list[dict]) -> Optional[dict]:
@@ -267,7 +276,7 @@ async def run_terminal_live() -> int:
         logger.error("Missing TOPSTEPX_USERNAME or TOPSTEPX_API_KEY in .env")
         return 2
 
-    preset_name, preset = _load_default_preset()
+    preset_name, preset, preset_source = _load_default_preset()
     client = TopstepXClient(username=username, api_key=api_key, use_demo=use_demo)
     engine: Optional[LiveTradingEngine] = None
     stop_event = asyncio.Event()
@@ -286,7 +295,7 @@ async def run_terminal_live() -> int:
     try:
         logger.info("ancserTPX terminal starting")
         logger.info("API: %s | user=%s", "demo" if use_demo else "production", username)
-        logger.info("Preset: %s", preset_name)
+        logger.info("Preset: %s (%s)", preset_name, preset_source)
 
         await client.authenticate()
         accounts = await client.get_accounts()

@@ -182,6 +182,7 @@ _historical_candles: List[Candle] = []
 _topstepx_client = None  # TopstepXClient instance (set after connect)
 _live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
 _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
+FULL_BACKTEST_DISPLAY_LIMIT = 200
 
 def _upsert_historical_candles(candles: List[Candle]) -> None:
     """Merge candles by timestamp so forming-bar snapshots get replaced."""
@@ -1245,7 +1246,69 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
     }
 
 
-def _load_full_backtest_artifact() -> dict:
+def _full_backtest_sort_value(r: dict, col: str):
+    col = (col or "calmar").lower()
+    if col == "rank":
+        return r.get("rank") or 0
+    if col == "strategy":
+        return str(r.get("strategy") or "").lower()
+    if col == "contract":
+        return _extract_symbol(str(r.get("contract_id") or "")).lower()
+    if col == "size":
+        return r.get("contract_size") or 0
+    if col == "sl":
+        return r.get("sl") or 0
+    if col == "tp":
+        return r.get("tp") or 0
+    if col == "trail":
+        return r.get("trail_pct") if r.get("trail_pct") is not None else (r.get("trail") or 0)
+    if col == "trigger":
+        return r.get("trail_trigger_pct") or 0
+    if col == "lock":
+        return r.get("max_profit_lock") or 0
+    if col == "trades":
+        return r.get("total_trades") or 0
+    if col == "win_rate":
+        return r.get("win_rate") or 0
+    if col == "pnl":
+        return r.get("total_pnl") or 0
+    if col == "max_dd":
+        return r.get("max_drawdown") or 0
+    if col == "best_day":
+        vals = list((r.get("daily_pnl") or {}).values())
+        return max(vals) if vals else 0
+    if col == "worst_day":
+        vals = list((r.get("daily_pnl") or {}).values())
+        return min(vals) if vals else 0
+    return r.get("calmar_ratio") or 0
+
+
+def _sorted_full_backtest_results(
+    results: list,
+    sort_col: str = "calmar",
+    sort_dir: str = "desc",
+    limit: int = FULL_BACKTEST_DISPLAY_LIMIT,
+) -> list:
+    try:
+        limit = max(1, min(int(limit or FULL_BACKTEST_DISPLAY_LIMIT), 1000))
+    except (TypeError, ValueError):
+        limit = FULL_BACKTEST_DISPLAY_LIMIT
+    reverse = (sort_dir or "desc").lower() != "asc"
+    valid = [r for r in (results or []) if isinstance(r, dict) and not r.get("error")]
+    errors = [r for r in (results or []) if isinstance(r, dict) and r.get("error")]
+    sorted_valid = sorted(
+        valid,
+        key=lambda r: (_full_backtest_sort_value(r, sort_col), -(r.get("rank") or 0)),
+        reverse=reverse,
+    )
+    return (sorted_valid + errors)[:limit]
+
+
+def _load_full_backtest_artifact(
+    sort_col: str = "calmar",
+    sort_dir: str = "desc",
+    limit: int = FULL_BACKTEST_DISPLAY_LIMIT,
+) -> dict:
     """Load the latest persisted Full backtest display payload."""
     json_path = Path(__file__).resolve().parents[2] / "data" / "full_backtest_latest.json"
     if not json_path.exists():
@@ -1254,18 +1317,13 @@ def _load_full_backtest_artifact() -> dict:
         with json_path.open("r", encoding="utf-8") as f:
             payload = json.load(f)
         all_results = payload.get("results") or payload.get("top_results") or []
-        results = sorted(
-            all_results,
-            key=lambda r: (
-                float(r.get("calmar_ratio", 0) or 0) if not r.get("error") else -999999.0,
-                float(r.get("total_pnl", 0) or 0),
-                -abs(float(r.get("max_drawdown", 0) or 0)),
-            ),
-            reverse=True,
-        )[:50]
+        results = _sorted_full_backtest_results(all_results, sort_col, sort_dir, limit)
         return {
             "results": results,
             "total_combinations": payload.get("total_combinations", len(all_results)),
+            "shown": len(results),
+            "sort_col": sort_col,
+            "sort_dir": sort_dir,
             "generated_at": payload.get("generated_at", ""),
             "artifact": {
                 "json": str(json_path),
@@ -1592,24 +1650,44 @@ async def ml_run(req: MLRunRequest):
             r["max_day_pct"] = 0
         ranked.append(r)
 
-    _ml_results_cache = ranked[:50]
+    _ml_results_cache = ranked
     artifact = _save_full_backtest_artifacts(req, ranked, len(combos))
     logger.info(f"[Full Backtest] Done. Top result: {ranked[0] if ranked else 'none'}")
     logger.info(f"[Full Backtest] AI-readable results saved: {artifact}")
+    display_results = _sorted_full_backtest_results(
+        ranked, "calmar", "desc", FULL_BACKTEST_DISPLAY_LIMIT
+    )
 
     return {
         "total_combinations": len(combos),
-        "results": ranked[:50],
+        "results": display_results,
+        "shown": len(display_results),
         "artifact": artifact,
     }
 
 
 @router.get("/backtest/ml-results")
-async def get_ml_results():
+async def get_ml_results(
+    sort_col: str = "calmar",
+    sort_dir: str = "desc",
+    limit: int = FULL_BACKTEST_DISPLAY_LIMIT,
+):
     """Return cached Full backtest results from last run."""
     if _ml_results_cache:
-        return {"results": _ml_results_cache[:50]}
-    return _load_full_backtest_artifact()
+        results = _sorted_full_backtest_results(
+            _ml_results_cache, sort_col, sort_dir, limit
+        )
+        return {
+            "results": results,
+            "total_combinations": len(_ml_results_cache),
+            "shown": len(results),
+            "sort_col": sort_col,
+            "sort_dir": sort_dir,
+            "source": "cache",
+        }
+    payload = _load_full_backtest_artifact(sort_col, sort_dir, limit)
+    payload["source"] = "artifact"
+    return payload
 
 
 @router.get("/backtest/ml-progress")
@@ -2050,6 +2128,10 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
             reason = _lookup_exit_reason(exit_idx, f.get("account_id"), _cid, f.get("time") or "")
             if not reason:
                 reason = "tp" if _gross_pnl >= 0 else "sl"
+            elif reason == "tp" and _gross_pnl < 0:
+                reason = "sl"
+            elif reason == "sl" and _gross_pnl > 0:
+                reason = "tp"
             trades.append({
                 "trade_id": str(opener["fill_id"]) + "_" + str(f["fill_id"]),
                 "direction": opener["direction"],

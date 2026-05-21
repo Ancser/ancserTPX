@@ -425,6 +425,10 @@ class BacktestEngine:
     def _cancel_pending_order(self):
         """Cancel a pending limit order and notify the strategy."""
         if self._pending_order:
+            signal = self._pending_order
+            if hasattr(self.trend_follow, "unlock_breakout") and signal.zone_id:
+                direction = "up" if signal.direction == Direction.BUY else "down"
+                self.trend_follow.unlock_breakout(signal.zone_id, direction)
             self.trend_follow.notify_order_cancelled()
         self._pending_order = None
         self._pending_age = 0

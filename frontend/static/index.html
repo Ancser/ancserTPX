@@ -1012,7 +1012,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.15.4
+        0.15.5
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -4242,6 +4242,7 @@ async function runBacktest() {
 
 let _mlResults = [];
 let _mlProgressInterval = null;
+const ML_RESULTS_LIMIT = 200;
 
 // ── ML column sort state ───────────────────────────
 let _mlSortCol = 'calmar';
@@ -4269,7 +4270,7 @@ function _mlSortVal(r, col) {
     }
 }
 
-function mlSortBy(col) {
+async function mlSortBy(col) {
     if (_mlSortCol === col) {
         _mlSortDir = _mlSortDir === 'desc' ? 'asc' : 'desc';
     } else {
@@ -4288,19 +4289,24 @@ function mlSortBy(col) {
             arrow.textContent = '↕';
         }
     });
-    renderMLResults(_mlResults);
+    await loadFullBacktestResults();
 }
 
 async function loadFullBacktestResults() {
     try {
-        const resp = await fetch(API + '/backtest/ml-results');
+        const params = new URLSearchParams({
+            sort_col: _mlSortCol,
+            sort_dir: _mlSortDir,
+            limit: String(ML_RESULTS_LIMIT),
+        });
+        const resp = await fetch(API + '/backtest/ml-results?' + params.toString());
         if (!resp.ok) return;
         const data = await resp.json();
-        const results = (data.results || []).slice(0, 50);
+        const results = (data.results || []).slice(0, ML_RESULTS_LIMIT);
         if (!results.length) return;
         _mlResults = results;
         renderMLResults(_mlResults);
-        log('Loaded previous Full backtest top ' + _mlResults.length, 'info');
+        log('Loaded Full backtest top ' + _mlResults.length + ' by ' + _mlSortCol + ' ' + _mlSortDir, 'info');
     } catch(e) {
         // Non-blocking: the table simply stays empty until the next run.
     }
@@ -4449,7 +4455,7 @@ async function runAllCombinations() {
 
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
-        _mlResults = (data.results || []).slice(0, 50);
+        _mlResults = (data.results || []).slice(0, ML_RESULTS_LIMIT);
         renderMLResults(_mlResults);
         // status row removed — result count logged below
         log('Full backtest complete: showing top ' + _mlResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
@@ -4479,7 +4485,7 @@ function renderMLResults(results) {
 
     // Apply current sort
     const dir = _mlSortDir === 'desc' ? -1 : 1;
-    const sorted = [...results].slice(0, 50).sort((a, b) => {
+    const sorted = [...results].sort((a, b) => {
         const va = _mlSortVal(a, _mlSortCol);
         const vb = _mlSortVal(b, _mlSortCol);
         if (typeof va === 'string') return dir * va.localeCompare(vb);
@@ -4772,7 +4778,7 @@ function drawTradeMarkers(trades) {
 
 function drawLiveTradeMarkers(trades) {
     _liveMarkers = (!trades || trades.length === 0) ? [] : trades.map(t => ({
-        time: isoToChartTime(t.exit_time || t.entry_time),
+        time: isoToChartTime(t.entry_time),
         position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
         color: '#ffa726',
         shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',

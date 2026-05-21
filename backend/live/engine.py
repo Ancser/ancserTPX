@@ -726,6 +726,45 @@ class LiveTradingEngine:
         if hasattr(self.trend_follow, "unlock_breakout") and signal.zone_id and direction:
             self.trend_follow.unlock_breakout(signal.zone_id, direction)
 
+    def _remove_breakout_lock(self, signal: Optional[TradeSignal]):
+        if not signal:
+            return
+        direction = self._breakout_direction_from_trade_direction(signal.direction.value)
+        if not signal.zone_id or not direction:
+            return
+
+        self._unlock_signal_breakout(signal)
+
+        today = self._get_topstep_trade_date()
+        data = self._read_json_list_or_dict(self._breakout_locks_file)
+        if not isinstance(data, dict):
+            return
+        records = data.get("locks")
+        if not isinstance(records, list):
+            return
+
+        before = len(records)
+        data["locks"] = [
+            row for row in records
+            if not (
+                isinstance(row, dict)
+                and row.get("trade_date") == today
+                and row.get("account_id") == self.account_id
+                and row.get("contract_id") == self.contract_id
+                and str(row.get("zone_id")) == str(signal.zone_id)
+                and row.get("direction") == direction
+            )
+        ]
+        if len(data["locks"]) == before:
+            return
+        data["saved_at"] = datetime.utcnow().isoformat()
+        try:
+            os.makedirs(os.path.dirname(self._breakout_locks_file), exist_ok=True)
+            with open(self._breakout_locks_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to remove breakout lock: {e}")
+
     async def _calc_pnl_from_trades(self, *, emit_log: bool = True) -> float:
         """Fallback: sum today's realized PnL from trade history.
 
@@ -1065,8 +1104,12 @@ class LiveTradingEngine:
 
         if self._pending_order_id:
             try:
-                await self.client.cancel_order(self.account_id, self._pending_order_id)
-                self._log_event(f"取消掛單 #{self._pending_order_id}")
+                success = await self.client.cancel_order(self.account_id, self._pending_order_id)
+                if success:
+                    self._log_event(f"取消掛單 #{self._pending_order_id}")
+                    self._remove_breakout_lock(self._pending_signal)
+                else:
+                    self._log_event(f"取消掛單 #{self._pending_order_id} 失敗，保留 breakout 鎖", "error")
             except Exception as e:
                 self._log_event(f"取消掛單失敗: {e}", "error")
             self._pending_order_id = None
@@ -1746,6 +1789,7 @@ class LiveTradingEngine:
             return  # DON'T clear state — retry next tick
 
         if self._pending_signal:
+            self._remove_breakout_lock(self._pending_signal)
             self.trend_follow.notify_order_cancelled()
 
         self._pending_order_id = None
