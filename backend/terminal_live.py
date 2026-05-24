@@ -254,17 +254,28 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
 
 async def _fetch_warmup_candles(client: TopstepXClient, contract_id: str):
     now = datetime.utcnow()
-    start = (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
     end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    logger.info("Fetching warmup 1m candles: %s ~ %s", start, end)
-    candles = await client.get_historical_bars_paginated(
-        contract_id=contract_id,
-        unit=BarUnit.MINUTE,
-        unit_number=1,
-        start_time=start,
-        end_time=end,
-    )
-    return sorted(candles, key=lambda c: c.timestamp)
+    for days in (2, 7, 14):
+        start = (now - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        logger.info("Fetching warmup 1m candles (%sd): %s ~ %s", days, start, end)
+        candles = await client.get_historical_bars_paginated(
+            contract_id=contract_id,
+            unit=BarUnit.MINUTE,
+            unit_number=1,
+            start_time=start,
+            end_time=end,
+        )
+        if candles:
+            candles = sorted(candles, key=lambda c: c.timestamp)
+            logger.info(
+                "Warmup candles loaded: %s bars | %s ~ %s",
+                len(candles),
+                candles[0].timestamp.isoformat(),
+                candles[-1].timestamp.isoformat(),
+            )
+            return candles
+        logger.warning("No warmup candles in the last %s day(s); retrying wider range", days)
+    return []
 
 
 async def run_terminal_live() -> int:
