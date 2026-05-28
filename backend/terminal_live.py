@@ -9,6 +9,7 @@ as the web version, then keeps the process alive in the terminal.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import logging
 import os
 import signal
@@ -52,6 +53,29 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("ancserTPX.terminal")
+
+
+ES_CONTINUOUS = 0x80000000
+ES_SYSTEM_REQUIRED = 0x00000001
+
+
+def _set_sleep_inhibit(enabled: bool) -> None:
+    """Keep Windows awake while live terminal is running.
+
+    Uses ES_SYSTEM_REQUIRED only, so the display may turn off normally while
+    the computer itself stays awake. No effect on macOS/Linux.
+    """
+    if os.name != "nt":
+        return
+    flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED if enabled else ES_CONTINUOUS
+    try:
+        ctypes.windll.kernel32.SetThreadExecutionState(flags)
+        logger.info(
+            "Windows sleep inhibit %s (screen may still turn off)",
+            "enabled" if enabled else "released",
+        )
+    except Exception as exc:
+        logger.warning("Could not update Windows sleep inhibit: %s", exc)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -353,6 +377,7 @@ async def run_terminal_live() -> int:
             strategy_params=params,
         )
         await engine.start(candles)
+        _set_sleep_inhibit(True)
         logger.info("LIVE started. Press Ctrl+C to stop.")
 
         seen_logs: set[str] = set()
@@ -384,6 +409,7 @@ async def run_terminal_live() -> int:
         logger.error("Terminal live failed: %s", exc, exc_info=True)
         return 1
     finally:
+        _set_sleep_inhibit(False)
         if engine and engine.is_running:
             try:
                 await engine.stop()
