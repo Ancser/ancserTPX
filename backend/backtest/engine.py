@@ -148,7 +148,7 @@ class BacktestEngine:
             return 0
 
         max_positive = max(0, self._floor_ticks_to_step(tp_ticks * trigger_pct) - self.TRAIL_TICK_STEP)
-        return max(-sl_ticks, min(min(tp_ticks, max_positive), trail_ticks))
+        return max(0, min(min(tp_ticks, max_positive), trail_ticks))
 
     def run(self, candles: List[Candle]) -> BacktestResult:
         """執行回測 (1m candles)"""

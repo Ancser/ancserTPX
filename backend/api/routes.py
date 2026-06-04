@@ -55,8 +55,7 @@ def _env(key: str, default: str = "") -> str:
 MNQ_SIZE_CHOICES = (1, 3, 5, 10)
 TRAIL_TICK_STEP = 5
 ML_TRAIL_PCT_CHOICES = (
-    -0.50, -0.25, -0.10,
-    0.0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
+    0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
 )
 
 
@@ -70,6 +69,25 @@ def _normalize_contract_size(contract_id: str, requested) -> int:
     except (TypeError, ValueError):
         size = 3
     return size if size in MNQ_SIZE_CHOICES else 3
+
+
+def _normalize_trade_ticks(value, default: int) -> int:
+    try:
+        ticks = int(value or default)
+    except (TypeError, ValueError):
+        ticks = default
+    return max(50, min(200, ticks))
+
+
+def _normalize_value_area_pct(value, default: float = 0.80) -> float:
+    try:
+        pct = float(default if value is None else value)
+    except (TypeError, ValueError):
+        pct = default
+    if pct > 1:
+        pct = pct / 100.0
+    pct = math.floor(pct * 10 + 0.5) / 10.0
+    return max(0.40, min(1.0, pct))
 
 
 def _normalize_trail_trigger_pct(value) -> float:
@@ -92,7 +110,7 @@ def _normalize_trail_pct(value) -> Optional[float]:
         return None
     if abs(pct) > 1:
         pct = pct / 100.0
-    return max(-0.50, min(0.50, pct))
+    return max(0.05, min(0.50, pct))
 
 
 def _floor_ticks_to_step(ticks: float, step: int = TRAIL_TICK_STEP) -> int:
@@ -130,7 +148,7 @@ def _clamp_trail_ticks(trail, sl_ticks, tp_ticks, trigger_pct: Optional[float] =
     hi = tp
     if trigger_pct is not None:
         hi = min(hi, _trail_max_profit_ticks(tp, trigger_pct))
-    return max(-sl, min(hi, t))
+    return max(0, min(hi, t))
 
 
 def _trail_ticks_from_pct(trail_pct, sl_ticks, tp_ticks, trigger_pct: Optional[float] = None) -> int:
@@ -145,10 +163,7 @@ def _trail_ticks_from_pct(trail_pct, sl_ticks, tp_ticks, trigger_pct: Optional[f
     except (TypeError, ValueError):
         sl, tp = 50, 150
 
-    if pct < 0:
-        ticks = -_floor_ticks_to_step(sl * abs(pct))
-    else:
-        ticks = _floor_ticks_to_step(tp * pct)
+    ticks = _floor_ticks_to_step(tp * pct)
     return _clamp_trail_ticks(ticks, sl, tp, trigger_pct)
 
 
@@ -166,9 +181,8 @@ def _trail_grid_for(sl_ticks: int, tp_ticks: int, trigger_pct: float) -> List[Tu
     ticks_to_pct: Dict[int, float] = {}
     pct_values = {
         pct for pct in ML_TRAIL_PCT_CHOICES
-        if pct <= 0 or (pct <= 0.50 and pct < trigger - 1e-9)
+        if pct <= 0.50 and pct < trigger - 1e-9
     }
-    pct_values.update({-0.50, 0.0})
     for pct in sorted(pct_values):
         ticks = _trail_ticks_from_pct(pct, sl_ticks, tp_ticks, trigger_pct)
         prev = ticks_to_pct.get(ticks)
@@ -219,13 +233,14 @@ class BacktestRequest(BaseModel):
     initial_capital: float = 50000.0
     # Strategy params
     strategy: str = "trend"
-    tp_ticks: int = 150
-    sl_ticks: int = 50
-    trail_sl_ticks: int = 5
+    tp_ticks: int = 200
+    sl_ticks: int = 80
+    trail_sl_ticks: int = 10
     trail_sl_pct: Optional[float] = None
     trail_trigger_pct: float = 0.30
     trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
+    value_area_pct: float = 0.80
     # Contract & sizing (defaults to 3× Micro NQ)
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
@@ -315,6 +330,8 @@ class MetricsResponse(BaseModel):
     profit_factor: float
     max_consecutive_losses: int
     total_pnl: float
+    total_gain: float = 0.0
+    total_loss: float = 0.0
     daily_pnl: Dict[str, float] = {}
     # Post-breakout 60m path stats (averaged across confirmed-breakout trades)
     post_breakout_sample_size: int = 0
@@ -528,10 +545,11 @@ async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
     from backend.strategy.consolidation import SessionZoneDetector
     from backend.strategy.volume_profile import VolumeProfileCalculator
 
+    value_area_pct = _normalize_value_area_pct(req.value_area_pct)
     detector = SessionZoneDetector(
-        value_area_pct=req.value_area_pct,
+        value_area_pct=value_area_pct,
     )
-    vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=req.value_area_pct)
+    vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=value_area_pct)
 
     for c in _historical_candles:
         detector.update(c)
@@ -977,9 +995,12 @@ async def run_backtest(req: BacktestRequest):
     # the trade journal shows /MNQ when MNQ is selected and 10×MNQ doesn't get
     # stuck paying 10× the NQ Mini fee schedule.
     contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
+    sl_ticks = _normalize_trade_ticks(req.sl_ticks, 80)
+    tp_ticks = _normalize_trade_ticks(req.tp_ticks, 200)
+    value_area_pct = _normalize_value_area_pct(req.value_area_pct)
     trail_trigger_pct = _normalize_trail_trigger_pct(req.trail_trigger_pct)
     trail_sl_ticks = _resolve_trail_ticks(
-        req.trail_sl_ticks, req.trail_sl_pct, req.sl_ticks, req.tp_ticks, trail_trigger_pct
+        req.trail_sl_ticks, req.trail_sl_pct, sl_ticks, tp_ticks, trail_trigger_pct
     )
 
     bt_symbol = _extract_symbol(req.contract_id)
@@ -989,12 +1010,13 @@ async def run_backtest(req: BacktestRequest):
         symbol=bt_symbol,
         commission_rt=get_commission_rt(req.contract_id),
         fees_rt=get_fees_rt(req.contract_id),
+        value_area_pct=value_area_pct,
     )
 
     strategy_params = StrategyParams(
         strategy=req.strategy,
-        tp_ticks=req.tp_ticks,
-        sl_ticks=req.sl_ticks,
+        tp_ticks=tp_ticks,
+        sl_ticks=sl_ticks,
         trail_sl_ticks=trail_sl_ticks,
         trail_trigger_pct=trail_trigger_pct,
         trail_enabled=bool(req.trail_enabled) and trail_trigger_pct > 0,
@@ -1044,7 +1066,7 @@ async def run_backtest(req: BacktestRequest):
         ))
 
     zones_resp = []
-    vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=0.80)
+    vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=value_area_pct)
     for z in result.zones:
         # Calculate VP profile for frontend histogram
         profile_data = None
@@ -1110,6 +1132,8 @@ async def run_backtest(req: BacktestRequest):
         profit_factor=m.profit_factor,
         max_consecutive_losses=m.max_consecutive_losses,
         total_pnl=m.total_pnl,
+        total_gain=getattr(m, "total_gain", 0.0),
+        total_loss=getattr(m, "total_loss", 0.0),
         daily_pnl=m.daily_pnl or {},
         post_breakout_sample_size=getattr(m, "post_breakout_sample_size", 0),
         post_breakout_avg_max_fav_ticks=getattr(m, "post_breakout_avg_max_fav_ticks", 0.0),
@@ -1184,6 +1208,41 @@ def _json_safe(value):
     return value
 
 
+def _full_backtest_total_loss(r: dict) -> float:
+    if r.get("total_loss") is not None:
+        try:
+            return float(r.get("total_loss") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    try:
+        return float(r.get("avg_loss") or 0) * float(r.get("losses") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _full_backtest_lwr(r: dict) -> float:
+    try:
+        pnl = float(r.get("total_pnl") or 0)
+    except (TypeError, ValueError):
+        pnl = 0.0
+    loss = abs(_full_backtest_total_loss(r))
+    if loss > 0:
+        return pnl / loss
+    return 999.0 if pnl > 0 else 0.0
+
+
+def _full_backtest_valid_trade_range(r: dict) -> bool:
+    try:
+        return int(r.get("sl") or 0) >= 50 and int(r.get("tp") or 0) >= 50
+    except (TypeError, ValueError):
+        return False
+
+
+def _enrich_full_backtest_result(r: dict) -> dict:
+    r["lwr"] = round(_full_backtest_lwr(r), 3)
+    return r
+
+
 def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_combinations: int) -> dict:
     """Persist the latest Full backtest run in AI-readable JSON + compact Markdown."""
     data_dir = Path(__file__).resolve().parents[2] / "data"
@@ -1211,19 +1270,20 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
         f"- Total combinations: {total_combinations}",
         f"- Saved JSON: `{json_path}`",
         "",
-        "| Rank | Strategy | Contract | Size | SL | TP | Trail | Trigger | Lock | Trades | Win% | PnL | Max DD | PF | Calmar |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Strategy | Contract | Size | Area | SL | TP | Trigger | Trail | Lock | Trades | Win% | Final PnL | Max DD | PF | LWR | Calmar |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for r in ranked[:25]:
+    for r in [_enrich_full_backtest_result(r) for r in ranked if _full_backtest_valid_trade_range(r)][:25]:
         win_pct = round(float(r.get("win_rate", 0) or 0) * 100, 1)
         trig_pct = round(float(r.get("trail_trigger_pct", 0) or 0) * 100, 1)
         lines.append(
-            "| {rank} | {strategy} | {contract_id} | {contract_size} | {sl} | {tp} | {trail} | "
-            "{trigger}% | {lock} | {trades} | {win}% | ${pnl} | ${dd} | {pf} | {calmar} |".format(
+            "| {rank} | {strategy} | {contract_id} | {contract_size} | {area} | {sl} | {tp} | {trigger}% | "
+            "{trail} | {lock} | {trades} | {win}% | ${pnl} | ${dd} | {pf} | {lwr} | {calmar} |".format(
                 rank=r.get("rank", ""),
                 strategy=r.get("strategy", ""),
                 contract_id=r.get("contract_id", ""),
                 contract_size=r.get("contract_size", ""),
+                area=round(float(r.get("value_area_pct", 0.80) or 0.80) * 100),
                 sl=r.get("sl", ""),
                 tp=r.get("tp", ""),
                 trail=r.get("trail", ""),
@@ -1234,6 +1294,7 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
                 pnl=r.get("total_pnl", ""),
                 dd=r.get("max_drawdown", ""),
                 pf=r.get("profit_factor", ""),
+                lwr=r.get("lwr", ""),
                 calmar=r.get("calmar_ratio", ""),
             )
         )
@@ -1256,6 +1317,8 @@ def _full_backtest_sort_value(r: dict, col: str):
         return _extract_symbol(str(r.get("contract_id") or "")).lower()
     if col == "size":
         return r.get("contract_size") or 0
+    if col == "area":
+        return r.get("value_area_pct") or 0
     if col == "sl":
         return r.get("sl") or 0
     if col == "tp":
@@ -1274,6 +1337,8 @@ def _full_backtest_sort_value(r: dict, col: str):
         return r.get("total_pnl") or 0
     if col == "max_dd":
         return r.get("max_drawdown") or 0
+    if col == "lwr":
+        return r.get("lwr") if r.get("lwr") is not None else _full_backtest_lwr(r)
     if col == "best_day":
         vals = list((r.get("daily_pnl") or {}).values())
         return max(vals) if vals else 0
@@ -1294,8 +1359,15 @@ def _sorted_full_backtest_results(
     except (TypeError, ValueError):
         limit = FULL_BACKTEST_DISPLAY_LIMIT
     reverse = (sort_dir or "desc").lower() != "asc"
-    valid = [r for r in (results or []) if isinstance(r, dict) and not r.get("error")]
-    errors = [r for r in (results or []) if isinstance(r, dict) and r.get("error")]
+    valid = [
+        _enrich_full_backtest_result(r)
+        for r in (results or [])
+        if isinstance(r, dict) and not r.get("error") and _full_backtest_valid_trade_range(r)
+    ]
+    errors = [
+        r for r in (results or [])
+        if isinstance(r, dict) and r.get("error") and _full_backtest_valid_trade_range(r)
+    ]
     sorted_valid = sorted(
         valid,
         key=lambda r: (_full_backtest_sort_value(r, sort_col), -(r.get("rank") or 0)),
@@ -1348,6 +1420,7 @@ def _precompute_zone_timeline(
     import copy
     from backend.strategy.consolidation import SessionZoneDetector
 
+    value_area_pct = _normalize_value_area_pct(value_area_pct)
     detector = SessionZoneDetector(
         value_area_pct=value_area_pct,
         skip_stability_wait=skip_zone_stability,
@@ -1375,12 +1448,13 @@ def _precompute_zone_timeline(
 
 class MLRunRequest(BaseModel):
     strategy: str = "trend"
-    tp_ticks: int = 150
-    sl_ticks: int = 50
-    trail_sl_ticks: int = 5
+    tp_ticks: int = 200
+    sl_ticks: int = 80
+    trail_sl_ticks: int = 10
     trail_sl_pct: Optional[float] = None
     trail_trigger_pct: float = 0.30
     candle_seconds: int = 30
+    value_area_pct: float = 0.80
     initial_capital: float = 50000.0
     start_date: str = ""
     end_date: str = ""
@@ -1433,6 +1507,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "trail_trigger_pct": trigger_pct,
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
+            "value_area_pct": getattr(config, "value_area_pct", 0.80),
             "max_profit_lock": max_profit_lock,
             "skip_zone_stability": bool(skip_zone_stability),
             "total_trades": m.total_trades,
@@ -1440,6 +1515,12 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "losses": m.losses,
             "win_rate": round(m.win_rate, 4),
             "total_pnl": round(m.total_pnl, 2),
+            "total_gain": round(getattr(m, "total_gain", 0.0), 2),
+            "total_loss": round(getattr(m, "total_loss", 0.0), 2),
+            "lwr": round(_full_backtest_lwr({
+                "total_pnl": m.total_pnl,
+                "total_loss": getattr(m, "total_loss", 0.0),
+            }), 3),
             "max_drawdown": round(m.max_drawdown, 2),
             "calmar_ratio": round(m.calmar_ratio, 3),
             "profit_factor": round(m.profit_factor, 3),
@@ -1457,6 +1538,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "trail_trigger_pct": trigger_pct,
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
+            "value_area_pct": getattr(config, "value_area_pct", 0.80),
             "max_profit_lock": max_profit_lock,
             "skip_zone_stability": bool(skip_zone_stability),
             "error": str(e),
@@ -1485,6 +1567,7 @@ async def ml_run(req: MLRunRequest):
     from concurrent.futures import ThreadPoolExecutor
     from backend.db.models import BacktestConfig
 
+    value_area_pct = _normalize_value_area_pct(req.value_area_pct)
     bt_symbol = _extract_symbol(req.contract_id)
     config_base = BacktestConfig(
         initial_capital=req.initial_capital,
@@ -1493,6 +1576,7 @@ async def ml_run(req: MLRunRequest):
         symbol=bt_symbol,
         commission_rt=get_commission_rt(req.contract_id),
         fees_rt=get_fees_rt(req.contract_id),
+        value_area_pct=value_area_pct,
     )
     cand_secs = req.candle_seconds
 
@@ -1519,8 +1603,13 @@ async def ml_run(req: MLRunRequest):
         else ["CON.F.US.MNQ.M26", "CON.F.US.ENQ.M26"]
     )
 
-    sl_values = [int(req.sl_ticks)] if "sl" in fixed else [10, 20, 30, 40, 50, 60, 80, 100]
-    tp_values = [int(req.tp_ticks)] if "tp" in fixed else [20, 40, 60, 80, 100, 120, 150, 200]
+    sl_values = [_normalize_trade_ticks(req.sl_ticks, 80)] if "sl" in fixed else [50, 60, 80, 100, 120, 150, 200]
+    tp_values = [_normalize_trade_ticks(req.tp_ticks, 200)] if "tp" in fixed else [50, 60, 80, 100, 120, 150, 200]
+    area_values = (
+        [config_base.value_area_pct]
+        if "area" in fixed
+        else [0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00]
+    )
     trigger_values = (
         [_normalize_trail_trigger_pct(req.trail_trigger_pct)]
         if "trail_trigger" in fixed
@@ -1535,19 +1624,20 @@ async def ml_run(req: MLRunRequest):
     skip_zone_stability_values = [False]
 
     zone_timelines = {}
-    for skip_stability in skip_zone_stability_values:
-        key = bool(skip_stability)
-        logger.info(
-            f"[Full Backtest] Pre-computing zone timeline for {len(candles)} candles "
-            f"(skip_stability={key})..."
-        )
-        zone_timelines[key] = await loop.run_in_executor(
-            None,
-            _precompute_zone_timeline,
-            candles,
-            config_base.value_area_pct,
-            key,
-        )
+    for area in area_values:
+        for skip_stability in skip_zone_stability_values:
+            key = (area, bool(skip_stability))
+            logger.info(
+                f"[Full Backtest] Pre-computing zone timeline for {len(candles)} candles "
+                f"(area={area:.0%}, skip_stability={bool(skip_stability)})..."
+            )
+            zone_timelines[key] = await loop.run_in_executor(
+                None,
+                _precompute_zone_timeline,
+                candles,
+                area,
+                bool(skip_stability),
+            )
     logger.info(f"[Full Backtest] Zone timelines ready ({len(zone_timelines)} variants)")
 
     combos = []
@@ -1576,13 +1666,14 @@ async def ml_run(req: MLRunRequest):
                             else:
                                 trail_values = _trail_grid_for(sl, tp, trigger_pct)
                             for trail, trail_pct in trail_values:
-                                for mpl in profit_lock_values:
-                                    for skip_stability in skip_zone_stability_values:
-                                        combos.append((
-                                            strategy, contract_id, contract_size, sl, tp,
-                                            trail, trail_pct, trigger_pct, combo_trail_enabled, mpl,
-                                            bool(skip_stability),
-                                        ))
+                                for area in area_values:
+                                    for mpl in profit_lock_values:
+                                        for skip_stability in skip_zone_stability_values:
+                                            combos.append((
+                                                strategy, contract_id, contract_size, area, sl, tp,
+                                                trail, trail_pct, trigger_pct, combo_trail_enabled, mpl,
+                                                bool(skip_stability),
+                                            ))
 
     logger.info(
         f"[Full Backtest] Running {len(combos)} combos | fixed={sorted(fixed)} | "
@@ -1610,14 +1701,15 @@ async def ml_run(req: MLRunRequest):
                     symbol=_extract_symbol(contract_id),
                     commission_rt=get_commission_rt(contract_id),
                     fees_rt=get_fees_rt(contract_id),
+                    value_area_pct=area,
                 ),
                 strategy, sl, tp, trail, trail_pct, trigger_pct, cand_secs,
-                zone_timelines[bool(skip_stability)],
+                zone_timelines[(area, bool(skip_stability))],
                 contract_id, contract_size, combo_trail_enabled, mpl,
                 skip_stability,
             )
             for (
-                strategy, contract_id, contract_size, sl, tp,
+                strategy, contract_id, contract_size, area, sl, tp,
                 trail, trail_pct, trigger_pct, combo_trail_enabled, mpl,
                 skip_stability,
             ) in combos
@@ -1710,9 +1802,9 @@ class LiveStartRequest(BaseModel):
     value_area_pct: float = 0.80
     # Strategy params
     strategy: str = "trend"
-    tp_ticks: int = 150
-    sl_ticks: int = 50
-    trail_sl_ticks: int = 5
+    tp_ticks: int = 200
+    sl_ticks: int = 80
+    trail_sl_ticks: int = 10
     trail_sl_pct: Optional[float] = None
     trail_trigger_pct: float = 0.30
     trail_enabled: bool = True            # v0.11+: master trail switch
@@ -1793,15 +1885,18 @@ async def live_start(req: LiveStartRequest):
         logger.error(f"[LIVE START] Failed to fetch fresh candles: {e} — using existing data")
 
     contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
+    sl_ticks = _normalize_trade_ticks(req.sl_ticks, 80)
+    tp_ticks = _normalize_trade_ticks(req.tp_ticks, 200)
+    value_area_pct = _normalize_value_area_pct(req.value_area_pct)
     trail_trigger_pct = _normalize_trail_trigger_pct(req.trail_trigger_pct)
     trail_sl_ticks = _resolve_trail_ticks(
-        req.trail_sl_ticks, req.trail_sl_pct, req.sl_ticks, req.tp_ticks, trail_trigger_pct
+        req.trail_sl_ticks, req.trail_sl_pct, sl_ticks, tp_ticks, trail_trigger_pct
     )
 
     live_strategy_params = StrategyParams(
         strategy=req.strategy,
-        tp_ticks=req.tp_ticks,
-        sl_ticks=req.sl_ticks,
+        tp_ticks=tp_ticks,
+        sl_ticks=sl_ticks,
         trail_sl_ticks=trail_sl_ticks,
         trail_trigger_pct=trail_trigger_pct,
         trail_enabled=bool(req.trail_enabled) and trail_trigger_pct > 0,
@@ -1817,7 +1912,7 @@ async def live_start(req: LiveStartRequest):
         account_id=req.account_id,
         contract_id=req.contract_id,
         contract_size=live_strategy_params.contract_size,
-        value_area_pct=req.value_area_pct,
+        value_area_pct=value_area_pct,
         strategy_params=live_strategy_params,
     )
 
@@ -2283,12 +2378,12 @@ _PRESETS_FILE = os.path.join(
     "data", "presets.json"
 )
 
-_DEFAULT_PRESET_NAME = "TR 50SL 150TP +5% TRAIL SL"
+_DEFAULT_PRESET_NAME = "TR MNQx3 80/200 TRIG30 TRAIL+5% TP/10t LOCKOFF"
 _DEFAULT_PRESET_PARAMS = {
     "strategy": "trend",
-    "tp_ticks": 150,
-    "sl_ticks": 50,
-    "trail_sl_ticks": 5,
+    "tp_ticks": 200,
+    "sl_ticks": 80,
+    "trail_sl_ticks": 10,
     "trail_sl_pct": 0.05,
     "trail_trigger_pct": 0.30,
     "trail_enabled": True,
@@ -2296,6 +2391,7 @@ _DEFAULT_PRESET_PARAMS = {
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
     "max_profit_lock": 0,
+    "value_area_pct": 0.80,
     "skip_zone_stability": False,
 }
 

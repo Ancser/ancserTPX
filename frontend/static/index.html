@@ -1012,7 +1012,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.16.0
+        0.16.1
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1097,13 +1097,27 @@
                     <button class="btn btn-outline" onclick="deletePreset('bt')" style="padding:7px 6px;font-size:10px;" title="Delete selected preset">DEL</button>
                 </div>
             </div>
-            <div class="form-group">
-                <label>STRATEGY</label>
-                <select id="strategy-bt">
-                    <option value="trend" selected>TREND</option>
-                    <option value="macd">MACD</option>
-                    <option value="reversion" disabled>REVERSION</option>
-                </select>
+            <div class="form-row">
+                <div class="form-group" style="flex:2;">
+                    <label>STRATEGY</label>
+                    <select id="strategy-bt">
+                        <option value="trend" selected>TREND</option>
+                        <option value="macd">MACD</option>
+                        <option value="reversion" disabled>REVERSION</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>AREA</label>
+                    <select id="value-area-pct-bt">
+                        <option value="40">40</option>
+                        <option value="50">50</option>
+                        <option value="60">60</option>
+                        <option value="70">70</option>
+                        <option value="80" selected>80</option>
+                        <option value="90">90</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
             </div>
             <div class="form-row">
                 <div class="form-group" style="flex:2;">
@@ -1119,13 +1133,13 @@
                 </div>
             </div>
             <div class="form-group">
-                <label>SL <span id="sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
-                <input type="range" id="sl-ticks-bt" min="5" max="200" step="5" value="50"
+                <label>SL <span id="sl-ticks-bt-val" style="color:var(--accent)">80</span> ticks</label>
+                <input type="range" id="sl-ticks-bt" min="50" max="200" step="5" value="80"
                     oninput="document.getElementById('sl-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
             </div>
             <div class="form-group">
-                <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">150</span> ticks</label>
-                <input type="range" id="tp-ticks-bt" min="5" max="200" step="5" value="150"
+                <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">200</span> ticks</label>
+                <input type="range" id="tp-ticks-bt" min="50" max="200" step="5" value="200"
                     oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
             </div>
             <!-- Trail trigger controls whether Trail SL is active. -->
@@ -1142,10 +1156,10 @@
             <div class="form-group">
                 <label>
                     TRAIL SL <span id="trail-sl-pct-bt-val" style="color:var(--accent)">+5% TP</span>
-                    <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">5t / $7.50</span>
+                    <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">10t / $15.00</span>
                 </label>
                 <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
-                <input type="hidden" id="trail-sl-ticks-bt" value="5">
+                <input type="hidden" id="trail-sl-ticks-bt" value="10">
             </div>
             <div class="form-group">
                 <label>MAX PROFIT LOCK</label>
@@ -1163,6 +1177,7 @@
                     <button class="btn btn-ml ml-filter-btn" id="btn-ml-filter" onclick="toggleMLFixedDropdown(event)" disabled title="Fixed Full backtest params">v</button>
                     <div class="ml-filter-panel" id="ml-fixed-panel">
                         <label class="ml-fix-row"><input type="checkbox" id="ml-fix-strategy" checked> STRATEGY</label>
+                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-area" checked> AREA</label>
                         <label class="ml-fix-row"><input type="checkbox" id="ml-fix-contract" checked> CONTRACT</label>
                         <label class="ml-fix-row"><input type="checkbox" id="ml-fix-size" checked> SIZE</label>
                         <label class="ml-fix-row"><input type="checkbox" id="ml-fix-tp"> TP</label>
@@ -1208,13 +1223,27 @@
                         <button class="btn btn-outline" onclick="deletePreset('live')" style="padding:7px 6px;font-size:10px;" title="Delete selected preset">DEL</button>
                     </div>
                 </div>
-                <div class="form-group">
-                    <label>STRATEGY</label>
-                    <select id="strategy-live">
-                        <option value="trend" selected>TREND</option>
-                        <option value="macd">MACD</option>
-                        <option value="reversion" disabled>REVERSION</option>
-                    </select>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;">
+                        <label>STRATEGY</label>
+                        <select id="strategy-live">
+                            <option value="trend" selected>TREND</option>
+                            <option value="macd">MACD</option>
+                            <option value="reversion" disabled>REVERSION</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>AREA</label>
+                        <select id="value-area-pct-live">
+                            <option value="40">40</option>
+                            <option value="50">50</option>
+                            <option value="60">60</option>
+                            <option value="70">70</option>
+                            <option value="80" selected>80</option>
+                            <option value="90">90</option>
+                            <option value="100">100</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:2;">
@@ -1230,13 +1259,13 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label>SL <span id="sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
-                    <input type="range" id="sl-ticks-live" min="5" max="200" step="5" value="50"
+                    <label>SL <span id="sl-ticks-live-val" style="color:var(--accent)">80</span> ticks</label>
+                    <input type="range" id="sl-ticks-live" min="50" max="200" step="5" value="80"
                         oninput="document.getElementById('sl-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
                 </div>
                 <div class="form-group">
-                    <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">150</span> ticks</label>
-                    <input type="range" id="tp-ticks-live" min="5" max="200" step="5" value="150"
+                    <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">200</span> ticks</label>
+                    <input type="range" id="tp-ticks-live" min="50" max="200" step="5" value="200"
                         oninput="document.getElementById('tp-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
                 </div>
                 <!-- Trail trigger controls whether Trail SL is active. -->
@@ -1253,10 +1282,10 @@
                 <div class="form-group">
                     <label>
                         TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+5% TP</span>
-                        <span id="trail-sl-ticks-live-val" style="color:var(--text2)">5t / $7.50</span>
+                        <span id="trail-sl-ticks-live-val" style="color:var(--text2)">10t / $15.00</span>
                     </label>
                     <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
-                    <input type="hidden" id="trail-sl-ticks-live" value="5">
+                    <input type="hidden" id="trail-sl-ticks-live" value="10">
                 </div>
                 <div class="form-group">
                     <label>MAX PROFIT LOCK</label>
@@ -1347,17 +1376,19 @@
                                     <th class="ml-sort-th" data-col="strategy" style="width:52px;" onclick="mlSortBy('strategy')">STRAT <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="contract" style="width:48px;" onclick="mlSortBy('contract')">CON <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="size"     style="width:34px;" onclick="mlSortBy('size')">SZ <span class="sa">↕</span></th>
+                                    <th class="ml-sort-th" data-col="area"     style="width:42px;" onclick="mlSortBy('area')">AREA <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="sl"       style="width:40px;" onclick="mlSortBy('sl')">SL <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="tp"       style="width:40px;" onclick="mlSortBy('tp')">TP <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="trail"    style="width:44px;" onclick="mlSortBy('trail')">TRAIL <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="trigger"  style="width:48px;" onclick="mlSortBy('trigger')">TRIG <span class="sa">↕</span></th>
+                                    <th class="ml-sort-th" data-col="trail"    style="width:44px;" onclick="mlSortBy('trail')">TRAIL <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="lock"     style="width:44px;" onclick="mlSortBy('lock')">LOCK <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="trades"   style="width:44px;" onclick="mlSortBy('trades')">TRADES <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="win_rate" style="width:52px;" onclick="mlSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="pnl"      style="width:68px;" onclick="mlSortBy('pnl')">TOTAL PNL <span class="sa">↕</span></th>
+                                    <th class="ml-sort-th" data-col="pnl"      style="width:68px;" onclick="mlSortBy('pnl')">FINAL PNL <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="max_dd"   style="width:60px;" onclick="mlSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="best_day" style="width:60px;" onclick="mlSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="worst_day"style="width:60px;" onclick="mlSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
+                                    <th class="ml-sort-th" data-col="lwr"      style="width:48px;" onclick="mlSortBy('lwr')">LWR <span class="sa">↕</span></th>
                                     <th class="ml-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="mlSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
                                     <th style="width:32px;"></th>
                                 </tr>
@@ -1512,15 +1543,16 @@ function _computeMACDStrip(candles) {
 
 const DEFAULT_STRATEGY_PARAMS = {
     strategy: 'trend',
-    tp_ticks: 150,
-    sl_ticks: 50,
-    trail_sl_ticks: 5,
+    tp_ticks: 200,
+    sl_ticks: 80,
+    trail_sl_ticks: 10,
     trail_sl_pct: 0.05,
     trail_trigger_pct: 0.30,
     trail_enabled: true,
     candle_seconds: 60,
     contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
     contract_size: 3,
+    value_area_pct: 0.80,
     max_profit_lock: 0,
     // Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: false,
@@ -1528,7 +1560,7 @@ const DEFAULT_STRATEGY_PARAMS = {
 
 const MNQ_SIZE_CHOICES = [1, 3, 5, 10];
 const TRAIL_TICK_STEP = 5;
-const TRAIL_SL_PCT_CHOICES = [-0.50, -0.25, -0.10, 0, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50];
+const TRAIL_SL_PCT_CHOICES = [0.05, 0.10, 0.20, 0.30, 0.40, 0.50];
 const TRAIL_TRIGGER_PCT_CHOICES = [0, 0.10, 0.30, 0.50, 0.70];
 
 function contractSymbolFromId(contractId) {
@@ -1546,6 +1578,34 @@ function displaySymbolFromTrade(t) {
     const liveContract = document.getElementById('contract-live')?.value;
     const btContract = document.getElementById('contract-bt')?.value;
     return '/' + contractLabelFromId(liveContract || btContract || DEFAULT_STRATEGY_PARAMS.contract_id);
+}
+
+function positionSideMeta(pos) {
+    const raw = pos?.side ?? pos?.positionSide ?? pos?.position_side ?? pos?.Side;
+    const text = String(raw ?? '').toLowerCase();
+    const num = Number(raw);
+    const isLong = num === 0 || text === 'long' || text === 'buy';
+    const isShort = num === 1 || num === 2 || text === 'short' || text === 'sell';
+    return {
+        label: isLong ? 'LONG' : (isShort ? 'SHORT' : String(raw ?? '?')),
+        isLong: isLong,
+    };
+}
+
+function positionQty(pos) {
+    const n = Number(pos?.size ?? pos?.quantity ?? pos?.qty ?? 1);
+    return Number.isFinite(n) ? Math.abs(n) : '?';
+}
+
+function positionAvgText(pos) {
+    const raw = pos?.averagePrice ?? pos?.avgPrice ?? pos?.avg_price ?? pos?.price ?? pos?.fillPrice;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n.toFixed(2) : '?';
+}
+
+function positionContractLabel(pos, fallbackContractId) {
+    const cid = pos?.contractId || pos?.contract_id || pos?.ContractId || fallbackContractId;
+    return contractLabelFromId(cid);
 }
 
 function pointValueForContract(contractId) {
@@ -1577,6 +1637,14 @@ function fmtMoney(n) {
     return '$0';
 }
 
+function normalizeAreaPctValue(value) {
+    let pct = parseFloat(value);
+    if (!Number.isFinite(pct)) pct = DEFAULT_STRATEGY_PARAMS.value_area_pct * 100;
+    if (pct <= 1) pct *= 100;
+    pct = Math.round(pct / 10) * 10;
+    return Math.max(40, Math.min(100, pct));
+}
+
 function floorTicksToStep(ticks) {
     const n = Math.abs(Number(ticks) || 0);
     return Math.floor(n / TRAIL_TICK_STEP) * TRAIL_TICK_STEP;
@@ -1585,20 +1653,20 @@ function floorTicksToStep(ticks) {
 function trailTicksFromPct(pct, slTicks, tpTicks, triggerPct) {
     const sl = Math.abs(parseInt(slTicks, 10) || 0);
     const tp = Math.abs(parseInt(tpTicks, 10) || 0);
-    const p = Math.max(-0.50, Math.min(0.50, parseFloat(pct) || 0));
+    const p = Math.max(0.05, Math.min(0.50, parseFloat(pct) || 0.05));
     const trigger = parseFloat(triggerPct) || 0;
     if (trigger <= 0) return 0;
-    let ticks = p < 0 ? -floorTicksToStep(sl * Math.abs(p)) : floorTicksToStep(tp * p);
+    let ticks = floorTicksToStep(tp * p);
     const maxPositive = Math.max(0, floorTicksToStep(tp * trigger) - TRAIL_TICK_STEP);
     if (ticks > maxPositive) ticks = maxPositive;
-    return Math.max(-sl, Math.min(tp, ticks));
+    return Math.max(0, Math.min(tp, ticks));
 }
 
 function trailPctFromTicks(ticks, slTicks, tpTicks) {
     const t = parseInt(ticks, 10) || 0;
     const sl = Math.abs(parseInt(slTicks, 10) || 0);
     const tp = Math.abs(parseInt(tpTicks, 10) || 0);
-    const raw = t < 0 ? (sl ? t / sl : -0.10) : (tp ? t / tp : 0.05);
+    const raw = tp ? Math.max(0.05, t / tp) : 0.05;
     return TRAIL_SL_PCT_CHOICES.reduce((best, pct) =>
         Math.abs(pct - raw) < Math.abs(best - raw) ? pct : best, TRAIL_SL_PCT_CHOICES[0]);
 }
@@ -1668,7 +1736,7 @@ function updateTrailBounds(mode, preferredTrailPct) {
 
     const oldPct = preferredTrailPct != null ? preferredTrailPct : parseFloat(trailPctEl.value);
     const choices = trailEnabled
-        ? TRAIL_SL_PCT_CHOICES.filter(pct => pct <= 0 || (pct <= 0.50 && pct < triggerPct - 1e-9))
+        ? TRAIL_SL_PCT_CHOICES.filter(pct => pct <= 0.50 && pct < triggerPct - 1e-9)
         : [0];
     const wantedPct = Number.isFinite(oldPct) ? oldPct : DEFAULT_STRATEGY_PARAMS.trail_sl_pct;
     const selectedPct = choices.includes(wantedPct)
@@ -1720,10 +1788,15 @@ function collectStrategyParams(mode) {
     const cidEl = document.getElementById('contract-' + mode);
     const sizeEl = document.getElementById('size-' + mode);
     const contractId = (cidEl && cidEl.value) || DEFAULT_STRATEGY_PARAMS.contract_id;
-    const slTicks = _int('sl-ticks-' + mode);
-    const tpTicks = _int('tp-ticks-' + mode);
+    const clampTicks = (v, fallback) => Math.max(50, Math.min(200, v || fallback));
+    const slTicks = clampTicks(_int('sl-ticks-' + mode), DEFAULT_STRATEGY_PARAMS.sl_ticks);
+    const tpTicks = clampTicks(_int('tp-ticks-' + mode), DEFAULT_STRATEGY_PARAMS.tp_ticks);
     const triggerPct = _float('trail-trigger-pct-' + mode, DEFAULT_STRATEGY_PARAMS.trail_trigger_pct);
     const trailPct = _float('trail-sl-pct-' + mode, DEFAULT_STRATEGY_PARAMS.trail_sl_pct);
+    const areaPctInt = normalizeAreaPctValue(_float('value-area-pct-' + mode, DEFAULT_STRATEGY_PARAMS.value_area_pct * 100));
+    const areaPct = areaPctInt / 100;
+    const areaEl = document.getElementById('value-area-pct-' + mode);
+    if (areaEl) areaEl.value = String(areaPctInt);
     const trailTicks = trailTicksFromPct(trailPct, slTicks, tpTicks, triggerPct);
     const trailTicksEl = document.getElementById('trail-sl-ticks-' + mode);
     if (trailTicksEl) trailTicksEl.value = String(trailTicks);
@@ -1738,6 +1811,7 @@ function collectStrategyParams(mode) {
         candle_seconds: 60,   // 1m bars platform-wide
         contract_id: contractId,
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
+        value_area_pct: areaPct,
         max_profit_lock: _int('max-profit-lock-' + mode),
         skip_zone_stability: false,
     };
@@ -1747,7 +1821,9 @@ function applyStrategyParams(mode, params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params);
     const _set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
     const _setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    const _ticks = (val, fallback) => Math.max(50, Math.min(200, parseInt(val != null ? val : fallback, 10) || fallback));
     _set('strategy-' + mode, p.strategy);
+    _set('value-area-pct-' + mode, normalizeAreaPctValue(p.value_area_pct || DEFAULT_STRATEGY_PARAMS.value_area_pct));
     const cidEl = document.getElementById('contract-' + mode);
     if (cidEl) {
         const wanted = p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id;
@@ -1760,10 +1836,12 @@ function applyStrategyParams(mode, params) {
     }
     syncSizeOptions(mode, p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size);
     // SL/TP sliders + display values
-    _set('tp-ticks-' + mode, p.tp_ticks);
-    _setVal('tp-ticks-' + mode + '-val', p.tp_ticks);
-    _set('sl-ticks-' + mode, p.sl_ticks);
-    _setVal('sl-ticks-' + mode + '-val', p.sl_ticks);
+    const tpTicks = _ticks(p.tp_ticks, DEFAULT_STRATEGY_PARAMS.tp_ticks);
+    const slTicks = _ticks(p.sl_ticks, DEFAULT_STRATEGY_PARAMS.sl_ticks);
+    _set('tp-ticks-' + mode, tpTicks);
+    _setVal('tp-ticks-' + mode + '-val', tpTicks);
+    _set('sl-ticks-' + mode, slTicks);
+    _setVal('sl-ticks-' + mode + '-val', slTicks);
     const triggerPct = p.trail_enabled === false
         ? 0
         : (p.trail_trigger_pct != null
@@ -1773,8 +1851,8 @@ function applyStrategyParams(mode, params) {
         ? parseFloat(p.trail_sl_pct)
         : trailPctFromTicks(
             p.trail_sl_ticks != null ? p.trail_sl_ticks : DEFAULT_STRATEGY_PARAMS.trail_sl_ticks,
-            p.sl_ticks,
-            p.tp_ticks
+            slTicks,
+            tpTicks
         );
     _set('trail-trigger-pct-' + mode, triggerPct === 0 ? '0' : triggerPct.toFixed(2));
     updateTrailBounds(mode, trailPct);
@@ -1839,6 +1917,8 @@ function decorateParamHelpDots() {
         'preset-live': 'Load or save the live settings.\n快速套用或保存live設定。',
         'strategy-bt': 'Choose the logic used for simulation.\n選擇回測使用的策略邏輯。',
         'strategy-live': 'Choose the logic used for live trading.\n選擇live使用的策略邏輯。',
+        'value-area-pct-bt': 'Volume profile value area width, from 40% to 100%.\nVP區間寬度，40%到100%。',
+        'value-area-pct-live': 'Live zone value area width, from 40% to 100%.\nlive區間VP寬度，40%到100%。',
         'contract-bt': 'Futures contract used for backtest data.\n回測資料使用的期貨合約。',
         'contract-live': 'Futures contract used for live orders.\nlive下單使用的期貨合約。',
         'size-bt': 'Number of contracts per trade.\n每筆交易的合約口數。',
@@ -1886,6 +1966,41 @@ function onTrailToggle(mode) {
 // ── Preset system (server-side JSON) ──
 let _presetsCache = { presets: {}, last_used_bt: 'default', last_used_live: 'default' };
 
+function buildPresetName(params) {
+    const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
+    const strat = (p.strategy || 'trend').toLowerCase();
+    const prefix = (
+        strat === 'macd'             ? 'MA'   :
+        strat === 'reversion'        ? 'RE'   :
+        strat === 'trend_reversion'  ? 'RETR' :
+        'TR'
+    );
+    const contractLabel = contractLabelFromId(p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id);
+    const contractSize = normalizeContractSize(
+        p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id,
+        p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
+    );
+    const sl = parseInt(p.sl_ticks != null ? p.sl_ticks : DEFAULT_STRATEGY_PARAMS.sl_ticks, 10) || DEFAULT_STRATEGY_PARAMS.sl_ticks;
+    const tp = parseInt(p.tp_ticks != null ? p.tp_ticks : DEFAULT_STRATEGY_PARAMS.tp_ticks, 10) || DEFAULT_STRATEGY_PARAMS.tp_ticks;
+    const triggerPct = p.trail_enabled === false ? 0 : (p.trail_trigger_pct != null ? parseFloat(p.trail_trigger_pct) : DEFAULT_STRATEGY_PARAMS.trail_trigger_pct);
+    const trailEnabled = triggerPct > 0;
+    const trailPct = p.trail_sl_pct != null
+        ? parseFloat(p.trail_sl_pct)
+        : trailPctFromTicks(p.trail_sl_ticks || 0, sl, tp);
+    const trailTicks = p.trail_sl_ticks != null
+        ? parseInt(p.trail_sl_ticks, 10) || 0
+        : trailTicksFromPct(trailPct, sl, tp, triggerPct);
+    const mpl = parseInt(p.max_profit_lock || 0, 10) || 0;
+    const areaPct = normalizeAreaPctValue(p.value_area_pct || DEFAULT_STRATEGY_PARAMS.value_area_pct);
+    const areaLabel = areaPct === 80 ? '' : ' A' + areaPct;
+    return prefix + ' ' + contractLabel + 'x' + contractSize + areaLabel + ' ' + sl + '/' + tp +
+        ' TRIG' + (trailEnabled ? Math.round(triggerPct * 100) : 'OFF') +
+        (trailEnabled
+            ? ' TRAIL' + fmtPct(trailPct) + '/' + trailTicks + 't'
+            : ' TRAIL OFF') +
+        (mpl > 0 ? ' LOCK' + mpl : ' LOCKOFF');
+}
+
 async function fetchPresets() {
     try {
         const resp = await fetch(API + '/presets');
@@ -1895,9 +2010,9 @@ async function fetchPresets() {
 }
 
 async function savePreset(mode) {
-    const name = prompt('Preset name:');
-    if (!name || !name.trim()) return;
     const params = collectStrategyParams(mode);
+    const name = prompt('Preset name:', buildPresetName(params));
+    if (!name || !name.trim()) return;
     try {
         await fetch(API + '/presets/save', {
             method: 'POST',
@@ -2276,6 +2391,7 @@ async function goLive() {
     statusEl.style.color = 'var(--amber)';
     statusEl.textContent = '啟動中...';
     log('GO LIVE: account=' + liveAccount.name + ' (' + (liveAccount.is_practice ? 'practice' : 'FUNDED') + ')', 'info');
+    const stratParams = collectStrategyParams('live');
 
     // Show live top bar (chart data stays as-is from connect)
     document.getElementById('live-top-bar').style.display = 'block';
@@ -2287,7 +2403,7 @@ async function goLive() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                value_area_pct: 0.80,
+                value_area_pct: stratParams.value_area_pct,
             }),
         });
         if (zoneResp.ok) {
@@ -2328,10 +2444,9 @@ async function goLive() {
     // ── Call /live/start to start the live trading engine ──
     // stratParams now carries contract_id + contract_size (v0.11), so the
     // /live/start request reflects whatever the user picked in LIVE PARAMS.
-    const stratParams = collectStrategyParams('live');
     const liveParams = {
         account_id: liveAccount.id,
-        value_area_pct: 0.80,
+        value_area_pct: stratParams.value_area_pct,
         ...stratParams,
     };
 
@@ -2452,11 +2567,11 @@ async function fetchRealState() {
             if (pos.length > 0 && !pos[0].error) {
                 html += '<div style="color:var(--amber);margin-top:4px;">POSITIONS (' + pos.length + '):</div>';
                 pos.forEach(p => {
-                    const side = p.side === 1 ? 'LONG' : (p.side === 2 ? 'SHORT' : p.side);
-                    const sideColor = p.side === 1 ? 'var(--green)' : 'var(--red)';
-                    const avgP = p.avgPrice || p.averagePrice || p.price || 0;
-                    html += '<div style="padding-left:8px;">  <span style="color:' + sideColor + ';">' + side + '</span> ' +
-                        (p.size || p.qty || '?') + ' @ ' + (typeof avgP === 'number' ? avgP.toFixed(2) : avgP) +
+                    const sideMeta = positionSideMeta(p);
+                    const sideColor = sideMeta.isLong ? 'var(--green)' : 'var(--red)';
+                    const symbol = positionContractLabel(p, document.getElementById('contract-live')?.value);
+                    html += '<div style="padding-left:8px;">  <span style="color:' + sideColor + ';">' + sideMeta.label + '</span> ' +
+                        positionQty(p) + ' ' + symbol + ' @ ' + positionAvgText(p) +
                         ' | PnL: ' + (p.pnl || p.unrealizedPnl || '--') + '</div>';
                 });
             } else {
@@ -2688,11 +2803,13 @@ async function pollLiveStatus() {
         // ── Top bar: Position ──
         const posEl = document.getElementById('lv-position');
         if (st.position) {
-            const side = st.position.side === 1 ? 'LONG' : 'SHORT';
-            const qty = st.position.size || 1;
-            const avg = st.position.avgPrice ? st.position.avgPrice.toFixed(2) : '?';
-            posEl.textContent = side + ' ' + qty + ' @ ' + avg;
-            posEl.style.color = st.position.side === 1 ? 'var(--green)' : 'var(--red)';
+            const sideMeta = positionSideMeta(st.position);
+            const symbol = positionContractLabel(st.position, st.contract_id || document.getElementById('contract-live')?.value);
+            const avgFromPosition = positionAvgText(st.position);
+            const fillAvg = Number(st.fill_price);
+            const avgText = avgFromPosition !== '?' ? avgFromPosition : (Number.isFinite(fillAvg) ? fillAvg.toFixed(2) : '?');
+            posEl.textContent = sideMeta.label + ' ' + positionQty(st.position) + ' ' + symbol + ' @ ' + avgText;
+            posEl.style.color = sideMeta.isLong ? 'var(--green)' : 'var(--red)';
         } else if (st.pending_order_id) {
             const age = st.pending_age || 0;
             const timeout = st.pending_timeout || 30;
@@ -2874,14 +2991,15 @@ async function pollLiveStatus() {
             }
             // Show filled position as marker
             if (st.position && st.fill_price) {
-                const posIsLong = st.position.side === 0 || st.position.side === 1;
+                const posMeta = positionSideMeta(st.position);
+                const posIsLong = posMeta.isLong;
                 const localOffset = new Date().getTimezoneOffset() * -60;
                 liveMarkers.push({
                     time: Math.floor(Date.now() / 1000) + localOffset,
                     position: posIsLong ? 'belowBar' : 'aboveBar',
                     color: posIsLong ? '#00e5a0' : '#ff4060',
                     shape: posIsLong ? 'arrowUp' : 'arrowDown',
-                    text: (posIsLong ? 'LONG' : 'SHORT') + ' @ ' + (st.fill_price || 0).toFixed(0),
+                    text: posMeta.label + ' @ ' + (st.fill_price || 0).toFixed(0),
                 });
             }
 
@@ -4254,6 +4372,7 @@ function _mlSortVal(r, col) {
         case 'strategy':  return (r.strategy || '').toLowerCase();
         case 'contract':  return contractLabelFromId(r.contract_id || '').toLowerCase();
         case 'size':      return r.contract_size || 0;
+        case 'area':      return normalizeAreaPctValue(r.value_area_pct || DEFAULT_STRATEGY_PARAMS.value_area_pct);
         case 'sl':        return r.sl || 0;
         case 'tp':        return r.tp || 0;
         case 'trail':     return r.trail_pct != null ? Number(r.trail_pct) : (r.trail || 0);
@@ -4263,11 +4382,34 @@ function _mlSortVal(r, col) {
         case 'win_rate':  return r.win_rate || 0;
         case 'pnl':       return r.total_pnl || 0;
         case 'max_dd':    return r.max_drawdown || 0;
+        case 'lwr':       return mlResultLwr(r);
         case 'calmar':    return r.calmar_ratio || 0;
         case 'best_day': { const v = Object.values(r.daily_pnl || {}); return v.length ? Math.max(...v) : 0; }
         case 'worst_day':{ const v = Object.values(r.daily_pnl || {}); return v.length ? Math.min(...v) : 0; }
         default:          return 0;
     }
+}
+
+function mlResultTotalLoss(r) {
+    if (r.total_loss != null) return Number(r.total_loss) || 0;
+    return (Number(r.avg_loss) || 0) * (Number(r.losses) || 0);
+}
+
+function mlResultLwr(r) {
+    if (r.lwr != null) return Number(r.lwr) || 0;
+    const pnl = Number(r.total_pnl) || 0;
+    const loss = Math.abs(mlResultTotalLoss(r));
+    return loss > 0 ? pnl / loss : (pnl > 0 ? Infinity : 0);
+}
+
+function isMLResultAllowed(r) {
+    return (Number(r?.sl) || 0) >= 50 && (Number(r?.tp) || 0) >= 50;
+}
+
+function normalizeMLResults(results) {
+    return (results || [])
+        .filter(isMLResultAllowed)
+        .map(r => Object.assign({}, r, { lwr: mlResultLwr(r) }));
 }
 
 async function mlSortBy(col) {
@@ -4302,7 +4444,7 @@ async function loadFullBacktestResults() {
         const resp = await fetch(API + '/backtest/ml-results?' + params.toString());
         if (!resp.ok) return;
         const data = await resp.json();
-        const results = (data.results || []).slice(0, ML_RESULTS_LIMIT);
+        const results = normalizeMLResults(data.results).slice(0, ML_RESULTS_LIMIT);
         if (!results.length) return;
         _mlResults = results;
         renderMLResults(_mlResults);
@@ -4372,6 +4514,7 @@ function toggleMLFixedDropdown(event) {
 function getMLFixedParams() {
     const pairs = [
         ['strategy', 'ml-fix-strategy'],
+        ['area', 'ml-fix-area'],
         ['contract', 'ml-fix-contract'],
         ['size', 'ml-fix-size'],
         ['tp', 'ml-fix-tp'],
@@ -4443,6 +4586,7 @@ async function runAllCombinations() {
                 trail_enabled: params.trail_enabled,
                 contract_id: params.contract_id,
                 contract_size: params.contract_size,
+                value_area_pct: params.value_area_pct,
                 max_profit_lock: params.max_profit_lock,
                 skip_zone_stability: false,
                 candle_seconds: params.candle_seconds,
@@ -4455,7 +4599,7 @@ async function runAllCombinations() {
 
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
-        _mlResults = (data.results || []).slice(0, ML_RESULTS_LIMIT);
+        _mlResults = normalizeMLResults(data.results).slice(0, ML_RESULTS_LIMIT);
         renderMLResults(_mlResults);
         // status row removed — result count logged below
         log('Full backtest complete: showing top ' + _mlResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
@@ -4479,13 +4623,13 @@ function renderMLResults(results) {
     tbody.innerHTML = '';
 
     if (!results || results.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="16" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="18" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
         return;
     }
 
     // Apply current sort
     const dir = _mlSortDir === 'desc' ? -1 : 1;
-    const sorted = [...results].sort((a, b) => {
+    const sorted = normalizeMLResults(results).sort((a, b) => {
         const va = _mlSortVal(a, _mlSortCol);
         const vb = _mlSortVal(b, _mlSortCol);
         if (typeof va === 'string') return dir * va.localeCompare(vb);
@@ -4501,10 +4645,14 @@ function renderMLResults(results) {
         const wr = ((r.win_rate || 0) * 100).toFixed(1);
         const calmar = r.calmar_ratio || 0;
         const calmarColor = calmar >= 1 ? 'var(--green)' : '';
+        const lwr = mlResultLwr(r);
+        const lwrColor = lwr >= 1 ? 'var(--green)' : 'var(--red)';
+        const lwrLabel = Number.isFinite(lwr) ? lwr.toFixed(2) : '∞';
         const pnl = r.total_pnl || 0;
         const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
         const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
         const contractSize = r.contract_size || 1;
+        const areaLabel = normalizeAreaPctValue(r.value_area_pct || DEFAULT_STRATEGY_PARAMS.value_area_pct);
         const triggerPct = r.trail_trigger_pct || 0;
         const triggerLabel = triggerPct > 0 ? Math.round(triggerPct * 100) + '%' : 'OFF';
         const trailLabel = triggerPct > 0 && r.trail_pct != null
@@ -4526,10 +4674,11 @@ function renderMLResults(results) {
             '<td>' + (r.strategy || '—').toUpperCase() + '</td>' +
             '<td style="text-align:center;">' + contractLabel + '</td>' +
             '<td style="text-align:center;">' + contractSize + '</td>' +
+            '<td style="text-align:center;">' + areaLabel + '</td>' +
             '<td style="text-align:center;">' + (r.sl || 0) + '</td>' +
             '<td style="text-align:center;">' + (r.tp || 0) + '</td>' +
-            '<td style="text-align:center;">' + trailLabel + '</td>' +
             '<td style="text-align:center;">' + triggerLabel + '</td>' +
+            '<td style="text-align:center;">' + trailLabel + '</td>' +
             '<td style="text-align:center;">' + lockLabel + '</td>' +
             '<td style="text-align:center;">' + (r.total_trades || 0) + '</td>' +
             '<td style="text-align:center;color:' + (parseFloat(wr) >= 50 ? 'var(--green)' : '') + ';">' + wr + '%</td>' +
@@ -4537,6 +4686,7 @@ function renderMLResults(results) {
             '<td style="text-align:right;color:var(--red);">$' + dd.toFixed(0) + '</td>' +
             '<td style="text-align:right;color:var(--green);">' + bestDay + '</td>' +
             '<td style="text-align:right;color:var(--red);">' + worstDay + '</td>' +
+            '<td style="text-align:center;color:' + lwrColor + ';">' + lwrLabel + '</td>' +
             '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
             '<td style="text-align:center;">' +
                 '<button class="btn btn-outline" onclick="saveMLPreset(' + origRank + ')" ' +
@@ -4556,15 +4706,7 @@ async function saveMLPreset(origRank) {
     const r = _mlResults.find(x => (x.rank || 0) === origRank);
     if (!r) return;
 
-    // Auto-name follows the ML table order: strategy, contract, size, SL, TP, trail, trigger.
     const strat = (r.strategy || 'trend').toLowerCase();
-    const prefix = (
-        strat === 'macd'             ? 'MA'   :
-        strat === 'reversion'        ? 'RE'   :
-        strat === 'trend_reversion'  ? 'RETR' :
-        'TR'
-    );
-    const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
     const contractSize = r.contract_size || 1;
     const triggerPct = r.trail_trigger_pct != null ? r.trail_trigger_pct : 0.30;
     const trailEnabled = triggerPct > 0;
@@ -4572,12 +4714,6 @@ async function saveMLPreset(origRank) {
         ? parseFloat(r.trail_pct)
         : trailPctFromTicks(r.trail || 0, r.sl || 0, r.tp || 0);
     const mpl = r.max_profit_lock || 0;
-    const presetName = prefix + ' ' + contractLabel + 'x' + contractSize +
-        ' SL' + (r.sl || 0) + ' TP' + (r.tp || 0) +
-        (trailEnabled
-            ? ' TRAIL' + fmtPct(trailPct) + '/' + (r.trail || 0) + 't TRIG' + Math.round(triggerPct * 100)
-            : ' TRAIL OFF') +
-        (mpl > 0 ? ' LOCK' + mpl : '');
 
     const params = {
         strategy: strat,
@@ -4591,8 +4727,10 @@ async function saveMLPreset(origRank) {
         contract_id: r.contract_id || 'CON.F.US.MNQ.M26',
         contract_size: contractSize,
         max_profit_lock: r.max_profit_lock || 0,
+        value_area_pct: r.value_area_pct || collectStrategyParams('bt').value_area_pct,
         skip_zone_stability: false,
     };
+    const presetName = buildPresetName(params);
 
     try {
         await fetch(API + '/presets/save', {
@@ -4817,7 +4955,7 @@ function summarizeTradeOutcomes(trades) {
         sessions: {},
     };
     SESSION_CODES.forEach(code => {
-        summary.sessions[code] = { total: 0, tp: 0 };
+        summary.sessions[code] = { total: 0, tp: 0, sl: 0, trail_sl: 0 };
     });
 
     (trades || []).forEach(trade => {
@@ -4835,94 +4973,11 @@ function summarizeTradeOutcomes(trades) {
         if (!sessionCode || !summary.sessions[sessionCode]) return;
         summary.sessions[sessionCode].total += 1;
         if (bucket === 'tp') summary.sessions[sessionCode].tp += 1;
+        else if (bucket === 'sl') summary.sessions[sessionCode].sl += 1;
+        else if (bucket === 'trail_sl') summary.sessions[sessionCode].trail_sl += 1;
     });
 
     return summary;
-}
-
-function getTradeStreakBucket(trade) {
-    const bucket = getTradeExitBucket(trade);
-    if (bucket === 'tp') return 'tp';
-    if (bucket === 'trail_sl') return 'trail';
-    return 'loss';
-}
-
-function computeExitStreakDistribution(trades) {
-    const sorted = [...(trades || [])].sort((a, b) => {
-        const ta = a.entry_time ? new Date(a.entry_time).getTime() : 0;
-        const tb = b.entry_time ? new Date(b.entry_time).getTime() : 0;
-        return ta - tb;
-    });
-    const counts = {
-        loss: { 1: 0, 2: 0, 3: 0 },
-        trail: { 1: 0, 2: 0, 3: 0 },
-        tp: { 1: 0, 2: 0, 3: 0 },
-    };
-    let last = null;
-    let streak = 0;
-    const flush = () => {
-        if (!last || streak <= 0) return;
-        counts[last][Math.min(streak, 3)] += 1;
-    };
-
-    for (const trade of sorted) {
-        const bucket = getTradeStreakBucket(trade);
-        if (bucket === last) {
-            streak += 1;
-        } else {
-            flush();
-            last = bucket;
-            streak = 1;
-        }
-    }
-    flush();
-
-    const order = [
-        ['loss', 1, '1 LOSS'], ['loss', 2, '2 LOSS'], ['loss', 3, '3+ LOSS'],
-        ['trail', 1, '1 TRAIL'], ['trail', 2, '2 TRAIL'], ['trail', 3, '3+ TRAIL'],
-        ['tp', 1, '1 FULL TP'], ['tp', 2, '2 FULL TP'], ['tp', 3, '3+ FULL TP'],
-    ];
-    const total = order.reduce((sum, [bucket, n]) => sum + counts[bucket][n], 0);
-    return {
-        total,
-        rows: order.map(([bucket, n, label]) => {
-            const count = counts[bucket][n];
-            return {
-                bucket,
-                label,
-                count,
-                pct: total ? (count / total) * 100 : 0,
-            };
-        }),
-    };
-}
-
-function renderExitStreakBars(trades) {
-    const dist = computeExitStreakDistribution(trades);
-    const colorFor = (bucket) => {
-        if (bucket === 'tp') return 'var(--green)';
-        if (bucket === 'trail') return 'var(--cyan)';
-        return 'var(--red)';
-    };
-    const rows = dist.rows.map(row => {
-        const width = Math.max(row.pct, row.count ? 2 : 0).toFixed(1);
-        return `
-            <div style="display:grid;grid-template-columns:92px minmax(120px,1fr) 86px;gap:8px;align-items:center;min-height:22px;">
-                <div class="label" style="font-size:10px;white-space:nowrap;">${row.label}</div>
-                <div style="height:8px;background:rgba(255,255,255,.07);border:1px solid var(--border);overflow:hidden;">
-                    <div style="height:100%;width:${width}%;background:${colorFor(row.bucket)};"></div>
-                </div>
-                <div class="value" style="font-size:11px;text-align:right;color:var(--text);">${row.pct.toFixed(1)}% (${row.count})</div>
-            </div>
-        `;
-    }).join('');
-
-    return `
-        <div style="grid-column:1/-1;border:1px solid var(--border);background:rgba(5,10,18,.45);padding:8px;margin-top:4px;">
-            <div class="label" style="margin-bottom:6px;">STREAK DISTRIBUTION</div>
-            ${dist.total ? rows : '<div class="value" style="font-size:12px;color:var(--text2);">NO STREAK DATA</div>'}
-        </div>
-    `;
 }
 
 // Compute summary metrics from a list of trades (used for backtest-day-span and live comparison)
@@ -4930,6 +4985,7 @@ function _computeTradeStats(trades) {
     if (!trades || trades.length === 0) {
         return {
             total_pnl: 0, trades: 0, wins: 0, losses: 0,
+            total_gain: 0, total_loss: 0,
             win_rate: 0, avg_win: 0, avg_loss: 0, profit_factor: 0,
             rr_ratio: 0, max_dd: 0, calmar: 0,
             days: 0, daily_pnl: {}, consec3Pass: false, maxStreak: 0,
@@ -4968,10 +5024,12 @@ function _computeTradeStats(trades) {
     const exitSummary = summarizeTradeOutcomes(sorted);
     const count = exitSummary.total;
     const winRate = count ? wins.length / count : 0;
+    const totalGain = wins.reduce((a,b)=>a+b, 0);
+    const totalLoss = losses.reduce((a,b)=>a+b, 0);
     const avgWin = wins.length ? wins.reduce((a,b)=>a+b,0) / wins.length : 0;
     const avgLoss = losses.length ? losses.reduce((a,b)=>a+b,0) / losses.length : 0;
-    const grossProfit = wins.reduce((a,b)=>a+b, 0);
-    const grossLoss = Math.abs(losses.reduce((a,b)=>a+b, 0));
+    const grossProfit = totalGain;
+    const grossLoss = Math.abs(totalLoss);
     const pf = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? Infinity : 0);
     const rr = Math.abs(avgLoss) > 0 ? Math.abs(avgWin / avgLoss) : 0;
 
@@ -4991,6 +5049,8 @@ function _computeTradeStats(trades) {
 
     return {
         total_pnl: total,
+        total_gain: totalGain,
+        total_loss: totalLoss,
         trades: count,
         wins: wins.length,
         losses: losses.length,
@@ -5064,7 +5124,8 @@ function renderMetrics(m, backtestTrades) {
 
     // Always use full-range backend metrics as primary
     const total_pnl    = m.total_pnl;
-    const win_rate     = m.win_rate;
+    const total_gain   = m.total_gain != null ? m.total_gain : backtestStats.total_gain;
+    const total_loss   = m.total_loss != null ? m.total_loss : backtestStats.total_loss;
     const total_trades = m.total_trades;
     const avg_win      = m.avg_win;
     const avg_loss     = m.avg_loss;
@@ -5090,18 +5151,23 @@ function renderMetrics(m, backtestTrades) {
 
     // Day span from full backtest range
     const daySpan = backtestStats.days;
-    const totalPnlLabel = daySpan > 0 ? ('TOTAL PNL (' + daySpan + 'd)') : 'TOTAL PNL';
+    const totalPnlLabel = daySpan > 0 ? ('FINAL PNL (' + daySpan + 'd)') : 'FINAL PNL';
 
     const paren = (v) => liveStats ? ' <span class="metric-real">(' + v + ')</span>' : '';
-    const fmtSessionRate = (stats, code) => {
+    const fmtSessionTriple = (stats, code) => {
         const s = stats && stats.session_tp ? stats.session_tp[code] : null;
         if (!s || !s.total) return '--';
-        return ((s.tp / s.total) * 100).toFixed(1) + '% (' + s.tp + '/' + s.total + ')';
+        return fmtTpSlTrail(
+            ((s.tp / s.total) * 100).toFixed(0) + '%',
+            ((s.sl / s.total) * 100).toFixed(0) + '%',
+            ((s.trail_sl / s.total) * 100).toFixed(0) + '%'
+        );
     };
 
-    // Win rate calc — use backtestStats (profit-based) since backend's m.win_rate is TP-only
-    const winRatePrimary = backtestStats.trades ? backtestStats.win_rate : win_rate;
-    const winRateLive    = liveStats ? liveStats.win_rate : null;
+    const lossWeightRatio = (pnl, loss) => Math.abs(loss || 0) > 0 ? pnl / Math.abs(loss) : (pnl > 0 ? Infinity : 0);
+    const lwrPrimary = lossWeightRatio(total_pnl, total_loss);
+    const lwrLive = liveStats ? lossWeightRatio(liveStats.total_pnl, liveStats.total_loss) : null;
+    const fmtLwr = (v) => Number.isFinite(v) ? v.toFixed(2) + 'x' : '∞';
 
     // Exit-path distribution — % of trades that exited via each reason (NOT win rate)
     const fmtTpSlTrail = (tp, sl, trail) => (
@@ -5137,9 +5203,15 @@ function renderMetrics(m, backtestTrades) {
         { label: 'MAX DD',
           value: '$' + max_dd.toFixed(0) + paren(liveStats ? '$' + liveStats.max_dd.toFixed(0) : ''),
           cls: max_dd > 0 ? 'neg' : '' },
-        { label: 'WIN RATE',
-          value: (winRatePrimary * 100).toFixed(1) + '%' + paren(winRateLive != null ? (winRateLive * 100).toFixed(1) + '%' : ''),
-          cls: winRatePrimary >= 0.5 ? 'pos' : 'neg' },
+        { label: 'TOTAL GAIN',
+          value: '$' + total_gain.toFixed(0) + paren(liveStats ? '$' + liveStats.total_gain.toFixed(0) : ''),
+          cls: total_gain > 0 ? 'pos' : '' },
+        { label: 'TOTAL LOSS',
+          value: '$' + total_loss.toFixed(0) + paren(liveStats ? '$' + liveStats.total_loss.toFixed(0) : ''),
+          cls: total_loss < 0 ? 'neg' : '' },
+        { label: 'LWR',
+          value: fmtLwr(lwrPrimary) + paren(lwrLive != null ? fmtLwr(lwrLive) : ''),
+          cls: lwrPrimary >= 1 ? 'pos' : 'neg' },
         { label: 'CALMAR',
           value: (m.calmar_ratio != null ? m.calmar_ratio : 0).toFixed(2) + paren(liveStats ? (liveStats.calmar != null ? liveStats.calmar : 0).toFixed(2) : ''),
           cls: (m.calmar_ratio || 0) >= 1 ? 'pos' : '' },
@@ -5161,10 +5233,10 @@ function renderMetrics(m, backtestTrades) {
         { label: 'CURRENT ZONE TP/SL/TRAIL',
           value: fmtZoneExitBuckets(currentZoneStats),
           cls: '' },
-        { label: 'ASIA TP', value: fmtSessionRate(backtestStats, 'ASIA'), cls: '' },
-        { label: 'EURO TP', value: fmtSessionRate(backtestStats, 'EURO'), cls: '' },
-        { label: 'PRE TP',  value: fmtSessionRate(backtestStats, 'PRE'), cls: '' },
-        { label: 'RTH TP',  value: fmtSessionRate(backtestStats, 'RTH'), cls: '' },
+        { label: 'ASIA TP/SL/TRAIL', value: fmtSessionTriple(backtestStats, 'ASIA'), cls: '' },
+        { label: 'EURO TP/SL/TRAIL', value: fmtSessionTriple(backtestStats, 'EURO'), cls: '' },
+        { label: 'PRE TP/SL/TRAIL',  value: fmtSessionTriple(backtestStats, 'PRE'), cls: '' },
+        { label: 'RTH TP/SL/TRAIL',  value: fmtSessionTriple(backtestStats, 'RTH'), cls: '' },
     ];
 
     grid.innerHTML = items.map(i => `
@@ -5172,7 +5244,7 @@ function renderMetrics(m, backtestTrades) {
             <div class="label">${i.label}</div>
             <div class="value ${i.cls}">${i.value}</div>
         </div>
-    `).join('') + renderExitStreakBars(backtestTrades || []);
+    `).join('');
 }
 
 function renderTrades(trades) {

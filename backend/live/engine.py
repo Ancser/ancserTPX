@@ -197,7 +197,7 @@ class LiveTradingEngine:
             return 0
 
         max_positive = max(0, self._floor_ticks_to_step(tp_ticks * trigger_pct) - self.TRAIL_TICK_STEP)
-        return max(-sl_ticks, min(min(tp_ticks, max_positive), trail_ticks))
+        return max(0, min(min(tp_ticks, max_positive), trail_ticks))
 
     @staticmethod
     def _order_id(order: Dict[str, Any]) -> Optional[int]:

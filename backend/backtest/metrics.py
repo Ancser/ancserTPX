@@ -54,6 +54,8 @@ class MetricsCalculator:
         dd, dd_pct = self.max_drawdown(completed, initial_capital)
 
         total_pnl = sum(t.pnl for t in completed)
+        total_gain = sum(t.pnl for t in completed if t.pnl and t.pnl > 0)
+        total_loss = sum(t.pnl for t in completed if t.pnl and t.pnl < 0)
         metrics = Metrics(
             total_trades=len(completed),
             wins=len(wins),
@@ -69,6 +71,8 @@ class MetricsCalculator:
             profit_factor=self.profit_factor(completed),
             max_consecutive_losses=self.max_consecutive_losses(completed),
             total_pnl=total_pnl,
+            total_gain=total_gain,
+            total_loss=total_loss,
             daily_pnl=self.daily_pnl_summary(completed),
         )
 

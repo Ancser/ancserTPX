@@ -307,9 +307,9 @@ class BreakoutAnalysis:
 class StrategyParams:
     """可配置的策略參數 (SessionTrendFollow / MACDOnlyStrategy)"""
     strategy: str = "trend"              # "trend" | "macd" | "reversion"
-    tp_ticks: int = 150                  # 5-200 tick
-    sl_ticks: int = 50                   # 5-200 tick
-    trail_sl_ticks: int = 5             # -SL..TP ticks from entry after trail triggers
+    tp_ticks: int = 200                  # 50-200 tick
+    sl_ticks: int = 80                   # 50-200 tick
+    trail_sl_ticks: int = 10            # 0..TP ticks from entry after trail triggers
     trail_trigger_pct: float = 0.30     # trigger trail when price reaches this fraction of TP
     trail_enabled: bool = True          # v0.11+: master switch for trailing-SL mechanism
     # MACD params (hardcoded 12/26/9 — not user-configurable)
@@ -380,6 +380,8 @@ class Metrics:
     profit_factor: float = 0.0
     max_consecutive_losses: int = 0
     total_pnl: float = 0.0
+    total_gain: float = 0.0
+    total_loss: float = 0.0
     daily_pnl: Dict[str, float] = field(default_factory=dict)
     # Post-breakout 1-hour path statistics (averaged across all confirmed-breakout trades)
     post_breakout_sample_size: int = 0          # how many trades produced these stats
