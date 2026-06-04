@@ -851,18 +851,18 @@ class LiveTradingEngine:
                 if balance is not None:
                     self._capital = as_float(balance, self._capital)
 
+                daily = first_present(account, "dailyPnl", "dailyPnL", "pnl", "PnL")
                 open_pnl = first_present(account, "openPnl", "openPnL", "unrealizedPnl", "unrealizedPnL")
                 closed_pnl = first_present(account, "closedPnl", "closedPnL", "realizedPnl", "realizedPnL")
                 source = "account"
-                if open_pnl is not None or closed_pnl is not None:
+                if daily is not None:
+                    self._daily_pnl = as_float(daily)
+                    source = "account dailyPnl"
+                elif open_pnl is not None or closed_pnl is not None:
                     self._daily_pnl = as_float(open_pnl) + as_float(closed_pnl)
                 else:
-                    daily = first_present(account, "dailyPnl", "dailyPnL", "pnl", "PnL")
-                    if daily is not None:
-                        self._daily_pnl = as_float(daily)
-                    else:
-                        self._daily_pnl = await self._calc_pnl_from_trades(emit_log=emit_log)
-                        source = "trade history"
+                    self._daily_pnl = await self._calc_pnl_from_trades(emit_log=emit_log)
+                    source = "trade history"
 
                 self._last_account_refresh = time_mod.time()
                 if emit_log:
@@ -1041,6 +1041,7 @@ class LiveTradingEngine:
                 self.trend_follow.warmup(c)
 
         self._candles_processed = len(historical_candles)
+        self._last_candle_time = historical_candles[-1].timestamp.isoformat() if historical_candles else None
 
         # Soft reset: clear state machine but keep indicator history (MACD EMA values)
         if hasattr(self.trend_follow, 'reset_state_only'):
@@ -1384,20 +1385,35 @@ class LiveTradingEngine:
         if self._disconnected:
             return
 
-        # Get latest 1m candle (30s bars have ~6h settle delay on TopstepX)
-        candle = await self._fetch_latest_candle()
-        if not candle:
+        # Get recent 1m candles and replay any bars missed during a disconnect.
+        candles = await self._fetch_latest_candles()
+        if not candles:
             return
 
-        # _fetch_latest_candle returns the newest available 1m bar, including the
-        # current forming bar when TopstepX provides it.
+        # The newest bar may still be forming; older missed bars are used only
+        # to repair detector/strategy state, never to submit stale orders.
+        last_dt = None
+        if self._last_candle_time:
+            try:
+                last_dt = datetime.fromisoformat(self._last_candle_time.replace("Z", "+00:00"))
+            except Exception:
+                last_dt = None
+
+        new_candles = [c for c in candles if last_dt is None or c.timestamp > last_dt]
+        if not new_candles:
+            return
+
+        if len(new_candles) > 1:
+            self._log_event(f"補回 {len(new_candles) - 1} 根斷線期間漏掉的 1m K 線")
+
+        for missed in new_candles[:-1]:
+            self._ingest_catchup_candle(missed)
+
+        candle = new_candles[-1]
         if self._last_market_price is None:
             self._last_market_price = candle.close
 
-        # Skip strategy evaluation if same candle as last tick
         candle_ts = candle.timestamp.isoformat()
-        if candle_ts == self._last_candle_time:
-            return
         self._last_candle_time = candle_ts
         self._candles_processed += 1
 
@@ -1496,14 +1512,10 @@ class LiveTradingEngine:
         active_zone = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
 
-        # Default: use current zone if mature, fall back to last LEFT
+        # Previous-zone fallback is temporarily disabled; trade only the
+        # current mature session zone.
         eval_zone = active_zone
         eval_mature = is_mature
-        if not is_mature:
-            prev = self.detector.get_last_left_zone()
-            if prev:
-                eval_zone = prev
-                eval_mature = True
 
         # Strategy evaluation
         strat = self.trend_follow
@@ -2067,7 +2079,18 @@ class LiveTradingEngine:
             self._log_event(f"[SYNC ERROR] {e}", "error")
             logger.error(f"[SYNC] position sync failed: {e}", exc_info=True)
 
-    async def _fetch_latest_candle(self, unit_number: int = 30) -> Optional[Candle]:
+    def _ingest_catchup_candle(self, candle: Candle):
+        """Replay a missed candle into local state without placing stale orders."""
+        self._last_market_price = candle.close
+        self._last_candle_time = candle.timestamp.isoformat()
+        self._candles_processed += 1
+        if self._candles_processed % 5 == 0:
+            self._save_zones()
+        self.detector.update(candle)
+        if hasattr(self.trend_follow, "warmup"):
+            self.trend_follow.warmup(candle)
+
+    async def _fetch_latest_candles(self, unit_number: int = 30) -> List[Candle]:
         """Fetch the newest available 1-minute candle from TopstepX API.
 
         NOTE: TopstepX 30s bar API has a ~6-hour settle delay — bars from
@@ -2086,7 +2109,7 @@ class LiveTradingEngine:
                 contract_id=self.contract_id,
                 unit=BarUnit.MINUTE,   # 1m bars — no settle delay
                 unit_number=1,
-                limit=5,
+                limit=60,
             )
             if candles:
                 # Sort chronologically — API returns newest-first
@@ -2097,7 +2120,7 @@ class LiveTradingEngine:
                     _upsert_historical_candles(candles)
                 except Exception:
                     pass
-                return candles[-1]
+                return candles
         except Exception as e:
             self._log_event(f"取得K線失敗: {e}", "error")
-        return None
+        return []

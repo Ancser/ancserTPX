@@ -327,10 +327,6 @@ class BacktestEngine:
                 eval_zone   = _active_zone
                 eval_mature = _is_mature
                 zone_source = "current"
-                if not eval_mature and _last_left:
-                    eval_zone   = _last_left
-                    eval_mature = True
-                    zone_source = "previous"
             else:
                 # Normal path
                 active_zone = self.detector.get_active_zone()
@@ -338,12 +334,6 @@ class BacktestEngine:
                 eval_zone   = active_zone
                 eval_mature = is_mature
                 zone_source = "current"
-                if not is_mature:
-                    prev = self.detector.get_last_left_zone()
-                    if prev:
-                        eval_zone   = prev
-                        eval_mature = True
-                        zone_source = "previous"
 
             signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
             if signal:

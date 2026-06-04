@@ -459,8 +459,15 @@ class SessionTrendFollow:
         self.reset()
 
     def warmup(self, candle: Candle):
-        """Feed candle during warm-up without generating signals (no-op for TrendFollow)."""
-        pass
+        """Feed candle into the rolling buffer without generating signals."""
+        if self._recent_candles:
+            last_ts = self._recent_candles[-1].timestamp
+            gap_minutes = (candle.timestamp - last_ts).total_seconds() / 60
+            if gap_minutes > 60:
+                self._recent_candles = []
+        self._recent_candles.append(candle)
+        if len(self._recent_candles) > 20:
+            self._recent_candles = self._recent_candles[-20:]
 
     def evaluate(
         self,
