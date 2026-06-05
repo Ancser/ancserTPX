@@ -79,7 +79,7 @@ def _normalize_trade_ticks(value, default: int) -> int:
     return max(50, min(200, ticks))
 
 
-def _normalize_value_area_pct(value, default: float = 0.80) -> float:
+def _normalize_value_area_pct(value, default: float = 0.50) -> float:
     try:
         pct = float(default if value is None else value)
     except (TypeError, ValueError):
@@ -234,17 +234,17 @@ class BacktestRequest(BaseModel):
     # Strategy params
     strategy: str = "trend"
     tp_ticks: int = 200
-    sl_ticks: int = 80
-    trail_sl_ticks: int = 10
-    trail_sl_pct: Optional[float] = None
+    sl_ticks: int = 50
+    trail_sl_ticks: int = 20
+    trail_sl_pct: Optional[float] = 0.10
     trail_trigger_pct: float = 0.30
     trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
-    value_area_pct: float = 0.80
+    value_area_pct: float = 0.50
     # Contract & sizing (defaults to 3× Micro NQ)
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
-    max_profit_lock: int = 0              # 0=OFF, 150/500/1000
+    max_profit_lock: int = 150            # 0=OFF, 150/500/1000
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
 
@@ -533,7 +533,7 @@ async def get_latest_candles(since: str = ""):
 class DetectZonesRequest(BaseModel):
     min_candles_for_zone: int = 6
     poc_drift_threshold: float = 3.0
-    value_area_pct: float = 0.80
+    value_area_pct: float = 0.50
 
 
 @router.post("/data/detect-zones")
@@ -1410,7 +1410,7 @@ def _load_full_backtest_artifact(
 
 def _precompute_zone_timeline(
     candles: list,
-    value_area_pct: float = 0.80,
+    value_area_pct: float = 0.50,
     skip_zone_stability: bool = False,
 ) -> list:
     """Run SessionZoneDetector ONCE on all candles.
@@ -1449,12 +1449,12 @@ def _precompute_zone_timeline(
 class MLRunRequest(BaseModel):
     strategy: str = "trend"
     tp_ticks: int = 200
-    sl_ticks: int = 80
-    trail_sl_ticks: int = 10
-    trail_sl_pct: Optional[float] = None
+    sl_ticks: int = 50
+    trail_sl_ticks: int = 20
+    trail_sl_pct: Optional[float] = 0.10
     trail_trigger_pct: float = 0.30
     candle_seconds: int = 30
-    value_area_pct: float = 0.80
+    value_area_pct: float = 0.50
     initial_capital: float = 50000.0
     start_date: str = ""
     end_date: str = ""
@@ -1462,7 +1462,7 @@ class MLRunRequest(BaseModel):
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
     trail_enabled: bool = True
-    max_profit_lock: int = 0              # 0=OFF, 150/500/1000
+    max_profit_lock: int = 150            # 0=OFF, 150/500/1000
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
     fixed_params: List[str] = Field(default_factory=list)
@@ -1472,7 +1472,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
                       contract_id: str = "CON.F.US.MNQ.M26",
                       contract_size: int = 3,
                       trail_enabled: bool = True,
-                      max_profit_lock: int = 0,
+                      max_profit_lock: int = 150,
                       skip_zone_stability: bool = False) -> dict:
     """Run one backtest combination synchronously (called from process pool).
     zone_timeline is pre-computed once and shared across all combos — avoids re-running
@@ -1799,17 +1799,17 @@ class LiveStartRequest(BaseModel):
     account_id: int
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
-    value_area_pct: float = 0.80
+    value_area_pct: float = 0.50
     # Strategy params
     strategy: str = "trend"
     tp_ticks: int = 200
-    sl_ticks: int = 80
-    trail_sl_ticks: int = 10
-    trail_sl_pct: Optional[float] = None
+    sl_ticks: int = 50
+    trail_sl_ticks: int = 20
+    trail_sl_pct: Optional[float] = 0.10
     trail_trigger_pct: float = 0.30
     trail_enabled: bool = True            # v0.11+: master trail switch
     candle_seconds: int = 30
-    max_profit_lock: int = 0              # 0=OFF, 150/500/1000
+    max_profit_lock: int = 150            # 0=OFF, 150/500/1000
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
 
@@ -2378,20 +2378,20 @@ _PRESETS_FILE = os.path.join(
     "data", "presets.json"
 )
 
-_DEFAULT_PRESET_NAME = "TR MNQx3 80/200 TRIG30 TRAIL+5% TP/10t LOCKOFF"
+_DEFAULT_PRESET_NAME = "TR50 MNQx3 50/200 TRIG30 TRAILTP10% LOCK150"
 _DEFAULT_PRESET_PARAMS = {
     "strategy": "trend",
     "tp_ticks": 200,
-    "sl_ticks": 80,
-    "trail_sl_ticks": 10,
-    "trail_sl_pct": 0.05,
+    "sl_ticks": 50,
+    "trail_sl_ticks": 20,
+    "trail_sl_pct": 0.10,
     "trail_trigger_pct": 0.30,
     "trail_enabled": True,
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
-    "max_profit_lock": 0,
-    "value_area_pct": 0.80,
+    "max_profit_lock": 150,
+    "value_area_pct": 0.50,
     "skip_zone_stability": False,
 }
 

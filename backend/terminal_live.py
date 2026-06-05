@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import logging
+import math
 import os
 import signal
 import sys
@@ -30,19 +31,20 @@ load_dotenv(ROOT / ".env")
 PRESETS_FILE = ROOT / "data" / "presets.json"
 MNQ_SIZE_CHOICES = (1, 3, 5, 10)
 TRAIL_TICK_STEP = 5
-DEFAULT_PRESET_NAME = "TR 50SL 150TP +5% TRAIL SL"
+DEFAULT_PRESET_NAME = "TR50 MNQx3 50/200 TRIG30 TRAILTP10% LOCK150"
 DEFAULT_PRESET_PARAMS = {
     "strategy": "trend",
-    "tp_ticks": 150,
+    "tp_ticks": 200,
     "sl_ticks": 50,
-    "trail_sl_ticks": 5,
-    "trail_sl_pct": 0.05,
+    "trail_sl_ticks": 20,
+    "trail_sl_pct": 0.10,
     "trail_trigger_pct": 0.30,
     "trail_enabled": True,
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
-    "max_profit_lock": 0,
+    "max_profit_lock": 150,
+    "value_area_pct": 0.50,
     "skip_zone_stability": False,
 }
 
@@ -128,6 +130,17 @@ def _normalize_trail_trigger_pct(value: Any) -> float:
         pct = pct / 100.0
     allowed = (0.0, 0.10, 0.30, 0.50, 0.70)
     return min(allowed, key=lambda x: abs(x - pct))
+
+
+def _normalize_value_area_pct(value: Any) -> float:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        pct = DEFAULT_PRESET_PARAMS["value_area_pct"]
+    if pct > 1:
+        pct = pct / 100.0
+    pct = math.floor(pct * 10 + 0.5) / 10.0
+    return max(0.40, min(1.0, pct))
 
 
 def _normalize_trail_pct(value: Any) -> Optional[float]:
@@ -352,6 +365,9 @@ async def run_terminal_live() -> int:
 
         account_name = account.get("name", "")
         account_id = int(account["id"])
+        value_area_pct = _normalize_value_area_pct(
+            preset.get("value_area_pct", DEFAULT_PRESET_PARAMS["value_area_pct"])
+        )
         logger.info(
             "Account: %s (%s) | contract=%s | size=%s",
             account_name,
@@ -360,7 +376,8 @@ async def run_terminal_live() -> int:
             params.contract_size,
         )
         logger.info(
-            "Params: SL=%s TP=%s trail=%s trigger=%s%% lock=%s",
+            "Params: AREA=%s SL=%s TP=%s trail=%s trigger=%s%% lock=%s",
+            int(value_area_pct * 100),
             params.sl_ticks,
             params.tp_ticks,
             params.trail_sl_ticks,
@@ -373,7 +390,7 @@ async def run_terminal_live() -> int:
             account_id=account_id,
             contract_id=contract_id,
             contract_size=params.contract_size,
-            value_area_pct=0.80,
+            value_area_pct=value_area_pct,
             strategy_params=params,
         )
         await engine.start(candles)

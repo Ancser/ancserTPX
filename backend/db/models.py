@@ -308,8 +308,8 @@ class StrategyParams:
     """可配置的策略參數 (SessionTrendFollow / MACDOnlyStrategy)"""
     strategy: str = "trend"              # "trend" | "macd" | "reversion"
     tp_ticks: int = 200                  # 50-200 tick
-    sl_ticks: int = 80                   # 50-200 tick
-    trail_sl_ticks: int = 10            # 0..TP ticks from entry after trail triggers
+    sl_ticks: int = 50                   # 50-200 tick
+    trail_sl_ticks: int = 20            # 0..TP ticks from entry after trail triggers
     trail_trigger_pct: float = 0.30     # trigger trail when price reaches this fraction of TP
     trail_enabled: bool = True          # v0.11+: master switch for trailing-SL mechanism
     # MACD params (hardcoded 12/26/9 — not user-configurable)
@@ -319,7 +319,7 @@ class StrategyParams:
     contract_id: str = "CON.F.US.MNQ.M26"  # full contractId (NQ=ENQ, MNQ=MNQ)
     contract_size: int = 3                 # number of contracts per order (1..N)
     # Max profit lock: 0=OFF, 150/500/1000 — block new trades when daily PnL ≥ threshold (resets PT 22:00)
-    max_profit_lock: int = 0
+    max_profit_lock: int = 150
     # Session-zone maturity controls
     # Zone stability is enabled by default; set True only for no-stability-wait experiments.
     skip_zone_stability: bool = False
@@ -350,7 +350,7 @@ class BacktestConfig:
     # 盤整偵測參數
     min_candles_for_zone: int = 6
     poc_drift_threshold: float = 3.0
-    value_area_pct: float = 0.80
+    value_area_pct: float = 0.50
 
 
 @dataclass

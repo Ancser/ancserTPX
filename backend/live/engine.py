@@ -74,7 +74,7 @@ class LiveTradingEngine:
         account_id: int,
         contract_id: str,
         # Strategy params (simplified — SessionTrendFollow only)
-        value_area_pct: float = 0.80,
+        value_area_pct: float = 0.50,
         slippage_ticks: int = 1,
         contract_size: int = 1,
         # Configurable strategy params
@@ -938,10 +938,18 @@ class LiveTradingEngine:
             age_min = active.duration_minutes
             hours = age_min // 60
             mins = age_min % 60
-            prev = self.detector.get_last_left_zone()
-            if prev:
-                return f"發展({hours}h{mins:02d}m)|用前區間"
             return f"發展({hours}h{mins:02d}m)"
+        return "無"
+
+    def _get_trade_zone_phase(self) -> str:
+        """Which zone the strategy can trade from while the active zone develops."""
+        active = self.detector.get_active_zone()
+        if active and self.detector.is_zone_mature:
+            return "當前區間"
+        if active and self.detector.get_last_left_zone():
+            return "用前區間"
+        if self.detector.get_last_left_zone():
+            return "前區間"
         return "無"
 
     def _get_order_phase(self) -> str:
@@ -973,7 +981,11 @@ class LiveTradingEngine:
 
     def _get_phase(self) -> str:
         """Combined phase for frontend display."""
-        return f"區間:{self._get_zone_phase()} | 訂單:{self._get_order_phase()}"
+        return (
+            f"區間:{self._get_zone_phase()} | "
+            f"交易區間:{self._get_trade_zone_phase()} | "
+            f"訂單:{self._get_order_phase()}"
+        )
 
     def _get_zone_summary(self) -> List[Dict]:
         zones = self.detector.get_all_zones()
@@ -996,9 +1008,7 @@ class LiveTradingEngine:
         return result
 
     def _log_event(self, msg: str, level: str = "info"):
-        ts = datetime.utcnow().strftime("%H:%M:%S")
-        entry = f"[{ts}] {msg}"
-        self._log.append(entry)
+        self._log.append(str(msg))
         if len(self._log) > 100:
             self._log = self._log[-50:]
         if level == "error":
@@ -1430,6 +1440,7 @@ class LiveTradingEngine:
             self._last_status_log_minute = current_minute
             self._log_event(
                 f"區間:{self._get_zone_phase()} | "
+                f"交易區間:{self._get_trade_zone_phase()} | "
                 f"訂單:{self._get_order_phase()} | "
                 f"市價={self._last_market_price or 0:.2f}"
             )
