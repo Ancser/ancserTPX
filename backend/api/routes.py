@@ -1220,7 +1220,7 @@ def _full_backtest_total_loss(r: dict) -> float:
         return 0.0
 
 
-def _full_backtest_lwr(r: dict) -> float:
+def _full_backtest_loss_to_final_ratio(r: dict) -> float:
     try:
         pnl = float(r.get("total_pnl") or 0)
     except (TypeError, ValueError):
@@ -1239,7 +1239,9 @@ def _full_backtest_valid_trade_range(r: dict) -> bool:
 
 
 def _enrich_full_backtest_result(r: dict) -> dict:
-    r["lwr"] = round(_full_backtest_lwr(r), 3)
+    ratio = round(_full_backtest_loss_to_final_ratio(r), 3)
+    r["loss_to_final_ratio"] = ratio
+    r["lwr"] = ratio
     return r
 
 
@@ -1270,7 +1272,7 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
         f"- Total combinations: {total_combinations}",
         f"- Saved JSON: `{json_path}`",
         "",
-        "| Rank | Strategy | Contract | Size | Area | SL | TP | Trigger | Trail | Lock | Trades | Win% | Final PnL | Max DD | PF | LWR | Calmar |",
+        "| Rank | Strategy | Contract | Size | Area | SL | TP | Trigger | Trail | Lock | Trades | Win% | Final PnL | Max DD | PF | LFR | Calmar |",
         "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for r in [_enrich_full_backtest_result(r) for r in ranked if _full_backtest_valid_trade_range(r)][:25]:
@@ -1278,7 +1280,7 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
         trig_pct = round(float(r.get("trail_trigger_pct", 0) or 0) * 100, 1)
         lines.append(
             "| {rank} | {strategy} | {contract_id} | {contract_size} | {area} | {sl} | {tp} | {trigger}% | "
-            "{trail} | {lock} | {trades} | {win}% | ${pnl} | ${dd} | {pf} | {lwr} | {calmar} |".format(
+            "{trail} | {lock} | {trades} | {win}% | ${pnl} | ${dd} | {pf} | {loss_to_final} | {calmar} |".format(
                 rank=r.get("rank", ""),
                 strategy=r.get("strategy", ""),
                 contract_id=r.get("contract_id", ""),
@@ -1294,7 +1296,7 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
                 pnl=r.get("total_pnl", ""),
                 dd=r.get("max_drawdown", ""),
                 pf=r.get("profit_factor", ""),
-                lwr=r.get("lwr", ""),
+                loss_to_final=r.get("loss_to_final_ratio", r.get("lwr", "")),
                 calmar=r.get("calmar_ratio", ""),
             )
         )
@@ -1337,8 +1339,9 @@ def _full_backtest_sort_value(r: dict, col: str):
         return r.get("total_pnl") or 0
     if col == "max_dd":
         return r.get("max_drawdown") or 0
-    if col == "lwr":
-        return r.get("lwr") if r.get("lwr") is not None else _full_backtest_lwr(r)
+    if col in ("lwr", "loss_to_final_ratio", "loss_final_ratio"):
+        value = r.get("loss_to_final_ratio", r.get("lwr"))
+        return value if value is not None else _full_backtest_loss_to_final_ratio(r)
     if col == "best_day":
         vals = list((r.get("daily_pnl") or {}).values())
         return max(vals) if vals else 0
@@ -1498,6 +1501,10 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
     try:
         result = engine.run(list(candles))
         m = result.metrics
+        loss_to_final_ratio = round(_full_backtest_loss_to_final_ratio({
+            "total_pnl": m.total_pnl,
+            "total_loss": getattr(m, "total_loss", 0.0),
+        }), 3)
         return {
             "strategy": strategy,
             "sl": sl,
@@ -1517,10 +1524,8 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "total_pnl": round(m.total_pnl, 2),
             "total_gain": round(getattr(m, "total_gain", 0.0), 2),
             "total_loss": round(getattr(m, "total_loss", 0.0), 2),
-            "lwr": round(_full_backtest_lwr({
-                "total_pnl": m.total_pnl,
-                "total_loss": getattr(m, "total_loss", 0.0),
-            }), 3),
+            "loss_to_final_ratio": loss_to_final_ratio,
+            "lwr": loss_to_final_ratio,
             "max_drawdown": round(m.max_drawdown, 2),
             "calmar_ratio": round(m.calmar_ratio, 3),
             "profit_factor": round(m.profit_factor, 3),

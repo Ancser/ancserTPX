@@ -1388,7 +1388,7 @@
                                     <th class="ml-sort-th" data-col="max_dd"   style="width:60px;" onclick="mlSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="best_day" style="width:60px;" onclick="mlSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
                                     <th class="ml-sort-th" data-col="worst_day"style="width:60px;" onclick="mlSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="lwr"      style="width:48px;" onclick="mlSortBy('lwr')">LWR <span class="sa">↕</span></th>
+                                    <th class="ml-sort-th" data-col="lwr"      style="width:48px;" onclick="mlSortBy('lwr')" title="Loss to Final Ratio">LFR <span class="sa">↕</span></th>
                                     <th class="ml-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="mlSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
                                     <th style="width:32px;"></th>
                                 </tr>
@@ -4380,7 +4380,7 @@ function _mlSortVal(r, col) {
         case 'win_rate':  return r.win_rate || 0;
         case 'pnl':       return r.total_pnl || 0;
         case 'max_dd':    return r.max_drawdown || 0;
-        case 'lwr':       return mlResultLwr(r);
+        case 'lwr':       return mlResultLossToFinalRatio(r);
         case 'calmar':    return r.calmar_ratio || 0;
         case 'best_day': { const v = Object.values(r.daily_pnl || {}); return v.length ? Math.max(...v) : 0; }
         case 'worst_day':{ const v = Object.values(r.daily_pnl || {}); return v.length ? Math.min(...v) : 0; }
@@ -4393,7 +4393,8 @@ function mlResultTotalLoss(r) {
     return (Number(r.avg_loss) || 0) * (Number(r.losses) || 0);
 }
 
-function mlResultLwr(r) {
+function mlResultLossToFinalRatio(r) {
+    if (r.loss_to_final_ratio != null) return Number(r.loss_to_final_ratio) || 0;
     if (r.lwr != null) return Number(r.lwr) || 0;
     const pnl = Number(r.total_pnl) || 0;
     const loss = Math.abs(mlResultTotalLoss(r));
@@ -4407,7 +4408,10 @@ function isMLResultAllowed(r) {
 function normalizeMLResults(results) {
     return (results || [])
         .filter(isMLResultAllowed)
-        .map(r => Object.assign({}, r, { lwr: mlResultLwr(r) }));
+        .map(r => {
+            const ratio = mlResultLossToFinalRatio(r);
+            return Object.assign({}, r, { loss_to_final_ratio: ratio, lwr: ratio });
+        });
 }
 
 async function mlSortBy(col) {
@@ -4643,9 +4647,9 @@ function renderMLResults(results) {
         const wr = ((r.win_rate || 0) * 100).toFixed(1);
         const calmar = r.calmar_ratio || 0;
         const calmarColor = calmar >= 1 ? 'var(--green)' : '';
-        const lwr = mlResultLwr(r);
-        const lwrColor = lwr >= 1 ? 'var(--green)' : 'var(--red)';
-        const lwrLabel = Number.isFinite(lwr) ? lwr.toFixed(2) : '∞';
+        const lossFinalRatio = mlResultLossToFinalRatio(r);
+        const lossFinalColor = lossFinalRatio >= 1 ? 'var(--green)' : 'var(--red)';
+        const lossFinalLabel = Number.isFinite(lossFinalRatio) ? lossFinalRatio.toFixed(2) : '∞';
         const pnl = r.total_pnl || 0;
         const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
         const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
@@ -4684,7 +4688,7 @@ function renderMLResults(results) {
             '<td style="text-align:right;color:var(--red);">$' + dd.toFixed(0) + '</td>' +
             '<td style="text-align:right;color:var(--green);">' + bestDay + '</td>' +
             '<td style="text-align:right;color:var(--red);">' + worstDay + '</td>' +
-            '<td style="text-align:center;color:' + lwrColor + ';">' + lwrLabel + '</td>' +
+            '<td style="text-align:center;color:' + lossFinalColor + ';">' + lossFinalLabel + '</td>' +
             '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
             '<td style="text-align:center;">' +
                 '<button class="btn btn-outline" onclick="saveMLPreset(' + origRank + ')" ' +
@@ -5162,10 +5166,10 @@ function renderMetrics(m, backtestTrades) {
         );
     };
 
-    const lossWeightRatio = (pnl, loss) => Math.abs(loss || 0) > 0 ? pnl / Math.abs(loss) : (pnl > 0 ? Infinity : 0);
-    const lwrPrimary = lossWeightRatio(total_pnl, total_loss);
-    const lwrLive = liveStats ? lossWeightRatio(liveStats.total_pnl, liveStats.total_loss) : null;
-    const fmtLwr = (v) => Number.isFinite(v) ? v.toFixed(2) + 'x' : '∞';
+    const lossToFinalRatio = (pnl, loss) => Math.abs(loss || 0) > 0 ? pnl / Math.abs(loss) : (pnl > 0 ? Infinity : 0);
+    const lossFinalPrimary = lossToFinalRatio(total_pnl, total_loss);
+    const lossFinalLive = liveStats ? lossToFinalRatio(liveStats.total_pnl, liveStats.total_loss) : null;
+    const fmtLossFinal = (v) => Number.isFinite(v) ? v.toFixed(2) + 'x' : '∞';
 
     // Exit-path distribution — % of trades that exited via each reason (NOT win rate)
     const fmtTpSlTrail = (tp, sl, trail) => (
@@ -5207,9 +5211,9 @@ function renderMetrics(m, backtestTrades) {
         { label: 'TOTAL LOSS',
           value: '$' + total_loss.toFixed(0) + paren(liveStats ? '$' + liveStats.total_loss.toFixed(0) : ''),
           cls: total_loss < 0 ? 'neg' : '' },
-        { label: 'LWR',
-          value: fmtLwr(lwrPrimary) + paren(lwrLive != null ? fmtLwr(lwrLive) : ''),
-          cls: lwrPrimary >= 1 ? 'pos' : 'neg' },
+        { label: 'LOSS TO FINAL RATIO',
+          value: fmtLossFinal(lossFinalPrimary) + paren(lossFinalLive != null ? fmtLossFinal(lossFinalLive) : ''),
+          cls: lossFinalPrimary >= 1 ? 'pos' : 'neg' },
         { label: 'CALMAR',
           value: (m.calmar_ratio != null ? m.calmar_ratio : 0).toFixed(2) + paren(liveStats ? (liveStats.calmar != null ? liveStats.calmar : 0).toFixed(2) : ''),
           cls: (m.calmar_ratio || 0) >= 1 ? 'pos' : '' },
