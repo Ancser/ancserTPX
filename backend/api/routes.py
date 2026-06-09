@@ -1,27 +1,14 @@
-# ============================================================
+﻿# ============================================================
+
 # 文件: backend/api/routes.py
-# 功能: FastAPI REST 路由 — 連接 (config/connect)、歷史資料、回測、即時引擎、
-#       模擬器、預設參數、交易紀錄合併。所有前端呼叫都從這裡進來。
-# 主要群組:
-#   - /health, /config                       : 健康檢查 + .env 預覽
-#   - /data/{candles,fetch-historical,aggregate,detect-zones,latest-candles}
-#   - /backtest/{run,results}                : 回測執行 + 列表
-#   - /ml/{run,progress,results}             : ML grid search
-#   - /live/{start,stop,status,trade-history,...}
-#   - /simulator/{start,stop,speed,status,...}
-#   - /presets/{list,save,use,delete}        : 參數 preset
-# 版本變更 (v0.11):
-#   1. BacktestRequest / LiveStartRequest 加入 contract_id + contract_size
-#   2. _pair_fills_to_trades 動態解析 NQ/MNQ 的 point_value
-#   3. 合併 data/live_exits.json 的 exit_reason，修正 live trade 的 trail_sl 分類
-# 關聯:
-#   <- backend/main.py
-#   -> backend/backtest/engine.py / live/engine.py / broker/topstepx.py
-#   -> backend/strategy/* / db/models.py
+# 狀態: v0.17.0
+# 功能 / Features:
+#   - FastAPI REST routes for config, historical candles, backtest, full backtest,
+#     live engine, simulator, presets, and trade history.
+#   - Full Backtest uses /backtest/full-run|full-results|full-progress.
+#   - Presets are migrated to breakthrough / consolidation / hybrid and full_tp_lock.
+#   - Value Area is locked to 80%; live/latest-candle routes use completed 1m bars.
 # ============================================================
-"""
-REST API 路由
-"""
 
 from __future__ import annotations
 import os
@@ -29,7 +16,7 @@ import json
 import logging
 import math
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
@@ -54,7 +41,7 @@ def _env(key: str, default: str = "") -> str:
 
 MNQ_SIZE_CHOICES = (1, 3, 5, 10)
 TRAIL_TICK_STEP = 5
-ML_TRAIL_PCT_CHOICES = (
+FULL_BACKTEST_TRAIL_PCT_CHOICES = (
     0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
 )
 
@@ -79,15 +66,9 @@ def _normalize_trade_ticks(value, default: int) -> int:
     return max(50, min(200, ticks))
 
 
-def _normalize_value_area_pct(value, default: float = 0.50) -> float:
-    try:
-        pct = float(default if value is None else value)
-    except (TypeError, ValueError):
-        pct = default
-    if pct > 1:
-        pct = pct / 100.0
-    pct = math.floor(pct * 10 + 0.5) / 10.0
-    return max(0.40, min(1.0, pct))
+def _normalize_value_area_pct(value=None, default: float = 0.80) -> float:
+    """v0.17.0 locks every route to 80% Value Area."""
+    return 0.80
 
 
 def _normalize_trail_trigger_pct(value) -> float:
@@ -180,7 +161,7 @@ def _trail_grid_for(sl_ticks: int, tp_ticks: int, trigger_pct: float) -> List[Tu
         return [(0, None)]
     ticks_to_pct: Dict[int, float] = {}
     pct_values = {
-        pct for pct in ML_TRAIL_PCT_CHOICES
+        pct for pct in FULL_BACKTEST_TRAIL_PCT_CHOICES
         if pct <= 0.50 and pct < trigger - 1e-9
     }
     for pct in sorted(pct_values):
@@ -232,19 +213,19 @@ async def _refresh_recent_historical_candles(contract_id: str, limit: int = 240)
 class BacktestRequest(BaseModel):
     initial_capital: float = 50000.0
     # Strategy params
-    strategy: str = "trend"
+    strategy: str = "breakthrough"
     tp_ticks: int = 200
     sl_ticks: int = 50
     trail_sl_ticks: int = 20
     trail_sl_pct: Optional[float] = 0.10
     trail_trigger_pct: float = 0.30
     trail_enabled: bool = True            # v0.11+: master trail switch
-    candle_seconds: int = 30
-    value_area_pct: float = 0.50
+    candle_seconds: int = 60
+    value_area_pct: float = 0.80
     # Contract & sizing (defaults to 3× Micro NQ)
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
-    max_profit_lock: int = 150            # 0=OFF, 150/500/1000
+    full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
 
@@ -340,11 +321,6 @@ class MetricsResponse(BaseModel):
     post_breakout_tp_clean: int = 0
     post_breakout_tp_after_trail: int = 0
     post_breakout_tp_after_sl: int = 0
-    previous_zone_trades: int = 0
-    previous_zone_wins: int = 0
-    previous_zone_win_rate: float = 0.0
-    previous_zone_avg_pnl: float = 0.0
-    previous_zone_total_pnl: float = 0.0
     current_zone_trades: int = 0
     current_zone_wins: int = 0
     current_zone_win_rate: float = 0.0
@@ -486,17 +462,21 @@ async def get_latest_candles(since: str = ""):
             return {"candles": [], "count": 0}
 
         candles = sorted(candles, key=lambda c: c.timestamp)
-        _upsert_historical_candles(candles)
+        # Live/chart polling uses only completed bars. Even with
+        # includePartialBar=False, keep a one-bar safety buffer so live
+        # decisions match backtest's closed-candle timing.
+        closed_candles = candles[:-1] if len(candles) > 1 else []
+        if not closed_candles:
+            return {"candles": [], "count": 0}
+        _upsert_historical_candles(closed_candles)
 
         # Filter by `since` if provided
-        result = candles
+        result = closed_candles
         if since:
             from datetime import datetime as dt
             try:
                 since_dt = dt.fromisoformat(since.replace("Z", "+00:00"))
-                # Include the same timestamp so a forming 1m bar can update
-                # its OHLC/volume on the chart and in the shared backtest store.
-                result = [c for c in candles if c.timestamp >= since_dt]
+                result = [c for c in closed_candles if c.timestamp > since_dt]
             except Exception:
                 pass
 
@@ -533,7 +513,7 @@ async def get_latest_candles(since: str = ""):
 class DetectZonesRequest(BaseModel):
     min_candles_for_zone: int = 6
     poc_drift_threshold: float = 3.0
-    value_area_pct: float = 0.50
+    value_area_pct: float = 0.80
 
 
 @router.post("/data/detect-zones")
@@ -1005,7 +985,7 @@ async def run_backtest(req: BacktestRequest):
 
     bt_symbol = _extract_symbol(req.contract_id)
     config = BacktestConfig(
-        strategies=["trend_follow"],
+        strategies=[req.strategy],
         initial_capital=req.initial_capital,
         symbol=bt_symbol,
         commission_rt=get_commission_rt(req.contract_id),
@@ -1020,10 +1000,10 @@ async def run_backtest(req: BacktestRequest):
         trail_sl_ticks=trail_sl_ticks,
         trail_trigger_pct=trail_trigger_pct,
         trail_enabled=bool(req.trail_enabled) and trail_trigger_pct > 0,
-        candle_seconds=req.candle_seconds,
+        candle_seconds=60,
         contract_id=req.contract_id,
         contract_size=contract_size,
-        max_profit_lock=req.max_profit_lock,
+        full_tp_lock=req.full_tp_lock,
         skip_zone_stability=False,
     )
 
@@ -1141,11 +1121,6 @@ async def run_backtest(req: BacktestRequest):
         post_breakout_tp_clean=getattr(m, "post_breakout_tp_clean", 0),
         post_breakout_tp_after_trail=getattr(m, "post_breakout_tp_after_trail", 0),
         post_breakout_tp_after_sl=getattr(m, "post_breakout_tp_after_sl", 0),
-        previous_zone_trades=getattr(m, "previous_zone_trades", 0),
-        previous_zone_wins=getattr(m, "previous_zone_wins", 0),
-        previous_zone_win_rate=getattr(m, "previous_zone_win_rate", 0.0),
-        previous_zone_avg_pnl=getattr(m, "previous_zone_avg_pnl", 0.0),
-        previous_zone_total_pnl=getattr(m, "previous_zone_total_pnl", 0.0),
         current_zone_trades=getattr(m, "current_zone_trades", 0),
         current_zone_wins=getattr(m, "current_zone_wins", 0),
         current_zone_win_rate=getattr(m, "current_zone_win_rate", 0.0),
@@ -1185,11 +1160,11 @@ async def list_backtests():
 
 # ── Full Backtest: Run all SL/TP/Trail combinations ────────────────
 
-_ml_results_cache: List[dict] = []
-_ml_progress: dict = {"current": 0, "total": 0}
+_full_backtest_results_cache: List[dict] = []
+_full_backtest_progress: dict = {"current": 0, "total": 0}
 
 import threading as _threading
-_ml_progress_lock = _threading.Lock()
+_full_backtest_progress_lock = _threading.Lock()
 
 
 def _request_payload(model: BaseModel) -> dict:
@@ -1272,25 +1247,24 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
         f"- Total combinations: {total_combinations}",
         f"- Saved JSON: `{json_path}`",
         "",
-        "| Rank | Strategy | Contract | Size | Area | SL | TP | Trigger | Trail | Lock | Trades | Win% | Final PnL | Max DD | PF | LFR | Calmar |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Strategy | Contract | Size | SL | TP | Trigger | Trail | TP Lock | Trades | Win% | Final PnL | Max DD | PF | LFR | Calmar |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for r in [_enrich_full_backtest_result(r) for r in ranked if _full_backtest_valid_trade_range(r)][:25]:
         win_pct = round(float(r.get("win_rate", 0) or 0) * 100, 1)
         trig_pct = round(float(r.get("trail_trigger_pct", 0) or 0) * 100, 1)
         lines.append(
-            "| {rank} | {strategy} | {contract_id} | {contract_size} | {area} | {sl} | {tp} | {trigger}% | "
+            "| {rank} | {strategy} | {contract_id} | {contract_size} | {sl} | {tp} | {trigger}% | "
             "{trail} | {lock} | {trades} | {win}% | ${pnl} | ${dd} | {pf} | {loss_to_final} | {calmar} |".format(
                 rank=r.get("rank", ""),
                 strategy=r.get("strategy", ""),
                 contract_id=r.get("contract_id", ""),
                 contract_size=r.get("contract_size", ""),
-                area=round(float(r.get("value_area_pct", 0.80) or 0.80) * 100),
                 sl=r.get("sl", ""),
                 tp=r.get("tp", ""),
                 trail=r.get("trail", ""),
                 trigger=trig_pct,
-                lock=r.get("max_profit_lock", ""),
+                lock=r.get("full_tp_lock", ""),
                 trades=r.get("total_trades", ""),
                 win=win_pct,
                 pnl=r.get("total_pnl", ""),
@@ -1330,7 +1304,7 @@ def _full_backtest_sort_value(r: dict, col: str):
     if col == "trigger":
         return r.get("trail_trigger_pct") or 0
     if col == "lock":
-        return r.get("max_profit_lock") or 0
+        return r.get("full_tp_lock") or 0
     if col == "trades":
         return r.get("total_trades") or 0
     if col == "win_rate":
@@ -1413,7 +1387,7 @@ def _load_full_backtest_artifact(
 
 def _precompute_zone_timeline(
     candles: list,
-    value_area_pct: float = 0.50,
+    value_area_pct: float = 0.80,
     skip_zone_stability: bool = False,
 ) -> list:
     """Run SessionZoneDetector ONCE on all candles.
@@ -1441,23 +1415,22 @@ def _precompute_zone_timeline(
             return c
 
         timeline.append({
-            'active':    _slim(detector.get_active_zone()),
-            'mature':    detector.is_zone_mature,
-            'last_left': _slim(detector.get_last_left_zone()),
+            'active': _slim(detector.get_active_zone()),
+            'mature': detector.is_zone_mature,
         })
 
     return timeline
 
 
-class MLRunRequest(BaseModel):
-    strategy: str = "trend"
+class FullBacktestRunRequest(BaseModel):
+    strategy: str = "breakthrough"
     tp_ticks: int = 200
     sl_ticks: int = 50
     trail_sl_ticks: int = 20
     trail_sl_pct: Optional[float] = 0.10
     trail_trigger_pct: float = 0.30
-    candle_seconds: int = 30
-    value_area_pct: float = 0.50
+    candle_seconds: int = 60
+    value_area_pct: float = 0.80
     initial_capital: float = 50000.0
     start_date: str = ""
     end_date: str = ""
@@ -1465,7 +1438,7 @@ class MLRunRequest(BaseModel):
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
     trail_enabled: bool = True
-    max_profit_lock: int = 150            # 0=OFF, 150/500/1000
+    full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
     fixed_params: List[str] = Field(default_factory=list)
@@ -1475,7 +1448,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
                       contract_id: str = "CON.F.US.MNQ.M26",
                       contract_size: int = 3,
                       trail_enabled: bool = True,
-                      max_profit_lock: int = 150,
+                      full_tp_lock: int = 0,
                       skip_zone_stability: bool = False) -> dict:
     """Run one backtest combination synchronously (called from process pool).
     zone_timeline is pre-computed once and shared across all combos — avoids re-running
@@ -1494,7 +1467,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
         candle_seconds=cand_secs,
         contract_id=contract_id,
         contract_size=_normalize_contract_size(contract_id, contract_size),
-        max_profit_lock=max_profit_lock,
+        full_tp_lock=full_tp_lock,
         skip_zone_stability=bool(skip_zone_stability),
     )
     engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline)
@@ -1515,7 +1488,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
             "value_area_pct": getattr(config, "value_area_pct", 0.80),
-            "max_profit_lock": max_profit_lock,
+            "full_tp_lock": full_tp_lock,
             "skip_zone_stability": bool(skip_zone_stability),
             "total_trades": m.total_trades,
             "wins": m.wins,
@@ -1544,23 +1517,23 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
             "value_area_pct": getattr(config, "value_area_pct", 0.80),
-            "max_profit_lock": max_profit_lock,
+            "full_tp_lock": full_tp_lock,
             "skip_zone_stability": bool(skip_zone_stability),
             "error": str(e),
         }
     finally:
-        with _ml_progress_lock:
-            _ml_progress["current"] += 1
+        with _full_backtest_progress_lock:
+            _full_backtest_progress["current"] += 1
 
 
-@router.post("/backtest/ml-run")
-async def ml_run(req: MLRunRequest):
+@router.post("/backtest/full-run")
+async def full_backtest_run(req: FullBacktestRunRequest):
     """Run all SL/TP/Trail combinations and rank results.
     Optimisations:
       1. Zone timeline pre-computed ONCE — all combos skip expensive zone detection
       2. ProcessPoolExecutor — true CPU parallelism, bypasses GIL
     """
-    global _ml_results_cache
+    global _full_backtest_results_cache
 
     if not _historical_candles:
         raise HTTPException(400, "No candles loaded — fetch historical data first")
@@ -1583,7 +1556,7 @@ async def ml_run(req: MLRunRequest):
         fees_rt=get_fees_rt(req.contract_id),
         value_area_pct=value_area_pct,
     )
-    cand_secs = req.candle_seconds
+    cand_secs = 60
 
     # Sort ONCE here — both the zone precompute and each combo engine.run()
     # must see candles in the same chronological order so that _zi indices align.
@@ -1592,7 +1565,7 @@ async def ml_run(req: MLRunRequest):
     # ── Phase 1: pre-compute zone timeline ONCE (replaces detector in every combo) ──
     loop = asyncio.get_running_loop()
     fixed = {str(x).lower() for x in (req.fixed_params or [])}
-    valid_strategies = ("trend", "macd", "reversion", "trend_reversion")
+    valid_strategies = ("breakthrough", "consolidation", "hybrid")
 
     req_strategy = (req.strategy or "all").lower()
     if "strategy" in fixed and req_strategy in valid_strategies:
@@ -1610,22 +1583,18 @@ async def ml_run(req: MLRunRequest):
 
     sl_values = [_normalize_trade_ticks(req.sl_ticks, 80)] if "sl" in fixed else [50, 60, 80, 100, 120, 150, 200]
     tp_values = [_normalize_trade_ticks(req.tp_ticks, 200)] if "tp" in fixed else [50, 60, 80, 100, 120, 150, 200]
-    area_values = (
-        [config_base.value_area_pct]
-        if "area" in fixed
-        else [0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00]
-    )
+    area_values = [0.80]
     trigger_values = (
         [_normalize_trail_trigger_pct(req.trail_trigger_pct)]
         if "trail_trigger" in fixed
         else [0.0, 0.10, 0.30, 0.50, 0.70]
     )
-    profit_lock_values = (
-        [int(req.max_profit_lock)]
-        if "profit_lock" in fixed
-        else [0, 150, 500, 1000]
+    full_tp_lock_values = (
+        [max(0, min(3, int(req.full_tp_lock or 0)))]
+        if "full_tp_lock" in fixed
+        else [0, 1, 2, 3]
     )
-    # Zone stability is fixed ON; ML no longer sweeps/locks this option.
+    # Zone stability is fixed ON.
     skip_zone_stability_values = [False]
 
     zone_timelines = {}
@@ -1672,11 +1641,11 @@ async def ml_run(req: MLRunRequest):
                                 trail_values = _trail_grid_for(sl, tp, trigger_pct)
                             for trail, trail_pct in trail_values:
                                 for area in area_values:
-                                    for mpl in profit_lock_values:
+                                    for full_tp_lock in full_tp_lock_values:
                                         for skip_stability in skip_zone_stability_values:
                                             combos.append((
                                                 strategy, contract_id, contract_size, area, sl, tp,
-                                                trail, trail_pct, trigger_pct, combo_trail_enabled, mpl,
+                                                trail, trail_pct, trigger_pct, combo_trail_enabled, full_tp_lock,
                                                 bool(skip_stability),
                                             ))
 
@@ -1686,12 +1655,12 @@ async def ml_run(req: MLRunRequest):
     )
 
     # Reset progress counter
-    _ml_progress["current"] = 0
-    _ml_progress["total"] = len(combos)
+    _full_backtest_progress["current"] = 0
+    _full_backtest_progress["total"] = len(combos)
 
     # ── Phase 2: thread pool (zone precompute already removed 80% of work;
     #    ThreadPoolExecutor avoids Windows process-spawn overhead and keeps
-    #    the progress counter working via shared _ml_progress dict) ──
+    #    the progress counter working via shared _full_backtest_progress dict) ──
     WORKERS = min(os.cpu_count() or 4, 32)
     with ThreadPoolExecutor(max_workers=WORKERS) as executor:
         tasks = [
@@ -1710,12 +1679,12 @@ async def ml_run(req: MLRunRequest):
                 ),
                 strategy, sl, tp, trail, trail_pct, trigger_pct, cand_secs,
                 zone_timelines[(area, bool(skip_stability))],
-                contract_id, contract_size, combo_trail_enabled, mpl,
+                contract_id, contract_size, combo_trail_enabled, full_tp_lock,
                 skip_stability,
             )
             for (
                 strategy, contract_id, contract_size, area, sl, tp,
-                trail, trail_pct, trigger_pct, combo_trail_enabled, mpl,
+                trail, trail_pct, trigger_pct, combo_trail_enabled, full_tp_lock,
                 skip_stability,
             ) in combos
         ]
@@ -1747,7 +1716,7 @@ async def ml_run(req: MLRunRequest):
             r["max_day_pct"] = 0
         ranked.append(r)
 
-    _ml_results_cache = ranked
+    _full_backtest_results_cache = ranked
     artifact = _save_full_backtest_artifacts(req, ranked, len(combos))
     logger.info(f"[Full Backtest] Done. Top result: {ranked[0] if ranked else 'none'}")
     logger.info(f"[Full Backtest] AI-readable results saved: {artifact}")
@@ -1763,20 +1732,20 @@ async def ml_run(req: MLRunRequest):
     }
 
 
-@router.get("/backtest/ml-results")
-async def get_ml_results(
+@router.get("/backtest/full-results")
+async def get_full_backtest_results(
     sort_col: str = "calmar",
     sort_dir: str = "desc",
     limit: int = FULL_BACKTEST_DISPLAY_LIMIT,
 ):
     """Return cached Full backtest results from last run."""
-    if _ml_results_cache:
+    if _full_backtest_results_cache:
         results = _sorted_full_backtest_results(
-            _ml_results_cache, sort_col, sort_dir, limit
+            _full_backtest_results_cache, sort_col, sort_dir, limit
         )
         return {
             "results": results,
-            "total_combinations": len(_ml_results_cache),
+            "total_combinations": len(_full_backtest_results_cache),
             "shown": len(results),
             "sort_col": sort_col,
             "sort_dir": sort_dir,
@@ -1787,13 +1756,14 @@ async def get_ml_results(
     return payload
 
 
-@router.get("/backtest/ml-progress")
-async def get_ml_progress():
+@router.get("/backtest/full-progress")
+async def get_full_backtest_progress():
     """Return current Full backtest progress (current / total combos done)."""
-    return dict(_ml_progress)
+    return dict(_full_backtest_progress)
 
 
 # ============================================================
+
 # 即時交易 (Live Trading)
 # ============================================================
 
@@ -1804,17 +1774,17 @@ class LiveStartRequest(BaseModel):
     account_id: int
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
-    value_area_pct: float = 0.50
+    value_area_pct: float = 0.80
     # Strategy params
-    strategy: str = "trend"
+    strategy: str = "breakthrough"
     tp_ticks: int = 200
     sl_ticks: int = 50
     trail_sl_ticks: int = 20
     trail_sl_pct: Optional[float] = 0.10
     trail_trigger_pct: float = 0.30
     trail_enabled: bool = True            # v0.11+: master trail switch
-    candle_seconds: int = 30
-    max_profit_lock: int = 150            # 0=OFF, 150/500/1000
+    candle_seconds: int = 60
+    full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
 
@@ -1889,6 +1859,10 @@ async def live_start(req: LiveStartRequest):
     except Exception as e:
         logger.error(f"[LIVE START] Failed to fetch fresh candles: {e} — using existing data")
 
+    live_warmup_candles = sorted(live_warmup_candles, key=lambda c: c.timestamp)
+    if len(live_warmup_candles) > 1:
+        live_warmup_candles = live_warmup_candles[:-1]
+
     contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
     sl_ticks = _normalize_trade_ticks(req.sl_ticks, 80)
     tp_ticks = _normalize_trade_ticks(req.tp_ticks, 200)
@@ -1905,10 +1879,10 @@ async def live_start(req: LiveStartRequest):
         trail_sl_ticks=trail_sl_ticks,
         trail_trigger_pct=trail_trigger_pct,
         trail_enabled=bool(req.trail_enabled) and trail_trigger_pct > 0,
-        candle_seconds=req.candle_seconds,
+        candle_seconds=60,
         contract_id=req.contract_id,
         contract_size=contract_size,
-        max_profit_lock=req.max_profit_lock,
+        full_tp_lock=req.full_tp_lock,
         skip_zone_stability=False,
     )
 
@@ -2383,9 +2357,9 @@ _PRESETS_FILE = os.path.join(
     "data", "presets.json"
 )
 
-_DEFAULT_PRESET_NAME = "TR50 MNQx3 50/200 TRIG30 TRAILTP10% LOCK150"
+_DEFAULT_PRESET_NAME = "BR MNQx3 50/200 TRIG30 TRAILTP10% TPLOCKOFF"
 _DEFAULT_PRESET_PARAMS = {
-    "strategy": "trend",
+    "strategy": "breakthrough",
     "tp_ticks": 200,
     "sl_ticks": 50,
     "trail_sl_ticks": 20,
@@ -2395,26 +2369,97 @@ _DEFAULT_PRESET_PARAMS = {
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
-    "max_profit_lock": 150,
-    "value_area_pct": 0.50,
+    "full_tp_lock": 0,
+    "value_area_pct": 0.80,
     "skip_zone_stability": False,
 }
 
+_BUILTIN_PRESETS = {
+    _DEFAULT_PRESET_NAME: _DEFAULT_PRESET_PARAMS,
+}
+_FIXED_PRESET_NAMES = tuple(_BUILTIN_PRESETS.keys())
+
+
+def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
+    changed = False
+    if not isinstance(data, dict):
+        data = {}
+        changed = True
+    presets = data.get("presets")
+    if not isinstance(presets, dict):
+        presets = {}
+        data["presets"] = presets
+        changed = True
+
+    for name, params in list(presets.items()):
+        if not isinstance(params, dict):
+            continue
+        strategy = str(params.get("strategy") or "").lower()
+        if strategy in ("", "trend", "trend_follow"):
+            params["strategy"] = "breakthrough"
+            changed = True
+        elif strategy == "reversion":
+            params["strategy"] = "consolidation"
+            changed = True
+        elif strategy == "trend_reversion":
+            params["strategy"] = "hybrid"
+            changed = True
+        strategy = str(params.get("strategy") or "").lower()
+        if strategy not in {"breakthrough", "consolidation", "hybrid"}:
+            del presets[name]
+            changed = True
+            continue
+        allowed_keys = {
+            "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
+            "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
+            "contract_size", "full_tp_lock", "value_area_pct", "skip_zone_stability",
+        }
+        for key in list(params.keys()):
+            if key not in allowed_keys:
+                params.pop(key, None)
+                changed = True
+        if params.get("value_area_pct") != 0.80:
+            params["value_area_pct"] = 0.80
+            changed = True
+
+    for name, params in _BUILTIN_PRESETS.items():
+        if presets.get(name) != params:
+            presets[name] = dict(params)
+            changed = True
+
+    for key in ("last_used_bt", "last_used_live"):
+        if key not in data or data.get(key) not in presets:
+            data[key] = _DEFAULT_PRESET_NAME
+            changed = True
+
+    data["fixed_presets"] = list(_FIXED_PRESET_NAMES)
+    return data, changed
+
 
 def _load_presets_file() -> dict:
+    data = None
     try:
         if os.path.exists(_PRESETS_FILE):
             with open(_PRESETS_FILE, "r", encoding="utf-8") as f:
-                return _json.load(f)
+                data = _json.load(f)
     except Exception:
         pass
-    return {
-        "presets": {
-            _DEFAULT_PRESET_NAME: dict(_DEFAULT_PRESET_PARAMS),
-        },
-        "last_used_bt": _DEFAULT_PRESET_NAME,
-        "last_used_live": _DEFAULT_PRESET_NAME,
-    }
+    if data is None:
+        data = {
+            "presets": {},
+            "last_used_bt": _DEFAULT_PRESET_NAME,
+            "last_used_live": _DEFAULT_PRESET_NAME,
+        }
+    data, changed = _ensure_builtin_presets(data)
+    if changed:
+        _save_presets_file(data)
+    return data
+
+
+def _presets_payload(data: dict) -> dict:
+    data = dict(data or {})
+    data["fixed_presets"] = list(_FIXED_PRESET_NAMES)
+    return data
 
 
 def _save_presets_file(data: dict):
@@ -2426,7 +2471,7 @@ def _save_presets_file(data: dict):
 @router.get("/presets")
 async def get_presets():
     """列出所有 presets + last used"""
-    return _load_presets_file()
+    return _presets_payload(_load_presets_file())
 
 
 class PresetSaveRequest(BaseModel):
@@ -2437,6 +2482,8 @@ class PresetSaveRequest(BaseModel):
 @router.post("/presets/save")
 async def save_preset(req: PresetSaveRequest):
     """儲存 preset"""
+    if req.name in _FIXED_PRESET_NAMES:
+        raise HTTPException(status_code=400, detail="Built-in presets cannot be overwritten")
     data = _load_presets_file()
     data["presets"][req.name] = req.params
     _save_presets_file(data)
@@ -2463,6 +2510,8 @@ class PresetDeleteRequest(BaseModel):
 
 
 def _delete_preset_by_name(name: str):
+    if name in _FIXED_PRESET_NAMES:
+        return {"success": False, "deleted": False, "name": name, "error": "built_in_preset"}
     data = _load_presets_file()
     deleted = False
     if name in data.get("presets", {}):
@@ -2486,3 +2535,6 @@ async def delete_preset_body(req: PresetDeleteRequest):
 async def delete_preset(name: str):
     """刪除 preset"""
     return _delete_preset_by_name(name)
+
+
+

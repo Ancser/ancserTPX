@@ -263,7 +263,7 @@ class TrendFollowStrategy:
                 self._state = "idle"
                 logger.info(f"[TrendFollow] RETRY at POC {poc:.2f} BUY")
                 return TradeSignal(
-                    strategy=StrategyType.TREND_FOLLOW,
+                    strategy=StrategyType.BREAKTHROUGH,
                     direction=Direction.BUY,
                     entry_price=entry,
                     sl_price=sl,
@@ -282,7 +282,7 @@ class TrendFollowStrategy:
                 self._state = "idle"
                 logger.info(f"[TrendFollow] RETRY at POC {poc:.2f} SELL")
                 return TradeSignal(
-                    strategy=StrategyType.TREND_FOLLOW,
+                    strategy=StrategyType.BREAKTHROUGH,
                     direction=Direction.SELL,
                     entry_price=entry,
                     sl_price=sl,
@@ -337,7 +337,7 @@ class TrendFollowStrategy:
         tp_dollars = self.tp_points * POINT_VALUE
 
         return TradeSignal(
-            strategy=StrategyType.TREND_FOLLOW,
+            strategy=StrategyType.BREAKTHROUGH,
             direction=direction,
             entry_price=entry,
             sl_price=sl,
@@ -455,7 +455,7 @@ class SessionTrendFollow:
         self._traded_breakouts.discard((str(zone_id), str(direction)))
 
     def reset_state_only(self):
-        """Alias for reset() — keeps interface compatible with MACDOnlyStrategy."""
+        """Alias for reset() — keeps the live warm-up interface consistent across strategies."""
         self.reset()
 
     def warmup(self, candle: Candle):
@@ -494,11 +494,6 @@ class SessionTrendFollow:
 
         # No mature zone — keep buffer but don't evaluate
         if not zone or not is_mature:
-            return None
-
-        # No operation on AH (After Hours 20:00 - 22:00 UTC)
-        h = candle.timestamp.hour
-        if 20 <= h < 22:
             return None
 
         # Already confirmed or in trade → engine manages
@@ -593,7 +588,7 @@ class SessionTrendFollow:
         )
 
         return TradeSignal(
-            strategy=StrategyType.TREND_FOLLOW,
+            strategy=StrategyType.BREAKTHROUGH,
             direction=trade_dir,
             entry_price=entry,
             sl_price=sl,

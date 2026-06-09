@@ -1,20 +1,18 @@
+﻿# ============================================================
+# 文件 / File: backend/strategy/macd_strategy.py
+# 狀態 / Status: legacy indicator strategy
+# 功能 / Features:
+#   - Historical MACD/VWAP crossover strategy kept for reference.
+#   - Not selectable in v0.17.0 presets or live/backtest routes.
+#   - Candidate for deletion after confirming no external scripts import it.
 # ============================================================
-# 文件: backend/strategy/macd_strategy.py
-# 狀態: v1.0 — Pure MACD crossover (no zone dependency)
-# 規則:
-#   1. 每根 K 線更新 MACD (fast/slow/signal EMA)
-#   2. Histogram 從 ≤0 穿越到 >0 → 金叉 → BUY limit @ VWAP
-#   3. Histogram 從 ≥0 穿越到 <0 → 死叉 → SELL limit @ VWAP
-#   4. SL = entry ± sl_ticks × 0.25
-#   5. TP = entry ± tp_ticks × 0.25
-#   6. 每次只有一個部位，出場後才接受下一個信號
-# ============================================================
-"""
-策略: MACD Only (純 MACD 金叉死叉)
 
-不依賴盤整區間。MACD histogram 穿越零軸觸發信號。
 """
+Legacy MACD-only strategy / 舊版 MACD-only 策略。
 
+The current app uses session-zone strategies only. This file remains outside the
+active preset list and is documented in the unused-code report.
+"""
 from __future__ import annotations
 import logging
 from typing import Optional
@@ -29,22 +27,6 @@ logger = logging.getLogger(__name__)
 
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
-SESSION_BUFFER_MINUTES = 30
-SESSION_STARTS_UTC_MINUTES = (
-    22 * 60,
-    7 * 60,
-    11 * 60,
-    13 * 60 + 30,
-    20 * 60,
-)
-
-
-def _in_session_buffer(candle: Candle) -> bool:
-    current_minutes = candle.timestamp.hour * 60 + candle.timestamp.minute
-    for session_start in SESSION_STARTS_UTC_MINUTES:
-        if 0 <= current_minutes - session_start < SESSION_BUFFER_MINUTES:
-            return True
-    return False
 
 
 class MACDOnlyStrategy:
@@ -118,15 +100,6 @@ class MACDOnlyStrategy:
 
         signal = None
         if hist is not None and self._prev_hist is not None and self._state == "idle":
-            # After-hours filter (20:00–22:00 UTC = 13:00–15:00 PT)
-            h = candle.timestamp.hour
-            if 20 <= h < 22:
-                self._prev_hist = hist
-                return None
-            if _in_session_buffer(candle):
-                self._prev_hist = hist
-                return None
-
             # ── 金叉 (Golden Cross): histogram crosses zero upward → BUY ──
             if self._prev_hist <= 0 < hist:
                 # VWAP filter (forced ON): only BUY if price > VWAP

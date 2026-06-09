@@ -1,29 +1,14 @@
-# ============================================================
-# 文件: backend/live/engine.py
-# 功能: 即時交易引擎 — Practice 帳戶上執行 SessionTrendFollow / MACD / Reversion
-# 主要職責:
-#   1. 30s 輪詢 1m K 線 → SessionZoneDetector → 策略 evaluate
-#   2. Limit / Market 入場；fill 後等待 Auto OCO 子單並修改到算法 SL/TP
-#   3. Trail SL: UPNL reaches configured TP% → modify Auto OCO SL to entry ± trail_sl_ticks
-#   4. 收盤前 (12:30 PT 取消 pending / 12:45 PT flatten) 強制平倉
-#   5. _sync_position 偵測 fill / close → 寫 trade 到 _trades + data/live_exits.json
-# 版本變更 (v0.11):
-#   - 接受 contract_size 參數 — 所有 OrderRequest 都用 self.contract_size
-#   - POINT_VALUE 動態解析 (NQ=$20, MNQ=$2)
-#   - 部位平倉時把 exit_reason (TP/SL/TRAIL_SL/FLATTEN) 寫入 live_exits.json
-#     讓 routes._pair_fills_to_trades 能正確分類 (修復 trail_sl 被歸入 TP/SL bug)
-#   - strategy_params.trail_enabled=False 時 _check_trailing_sl_live 立即返回
-# 關聯:
-#   ← backend/api/routes.py
-#   → backend/strategy/consolidation.py / trend_follow.py / reversion.py / macd_strategy.py
-#   → backend/broker/topstepx.py
-# ============================================================
-"""
-Live Trading Engine
+﻿# ============================================================
 
-每 30 秒輪詢 1m K 線 → 盤整偵測 → 策略評估 → 下真實 limit order
-支援：掛單 / 取消 / SL-TP / 收盤前平倉
-"""
+# 文件: backend/live/engine.py
+# 狀態: v0.17.0
+# 功能 / Features:
+#   - Live trading engine for breakthrough / consolidation / hybrid.
+#   - Polls TopstepX 1m bars and drops the newest bar so decisions use only the
+#     previous completed minute, matching backtest timing.
+#   - Uses current mature 80% session zone only; no previous-zone fallback.
+#   - Syncs Auto OCO SL/TP, supports trail SL, close-window flatten, and full TP lock.
+# ============================================================
 
 from __future__ import annotations
 import asyncio
@@ -47,7 +32,7 @@ from backend.broker.topstepx import TopstepXClient
 
 logger = logging.getLogger(__name__)
 
-ENGINE_VERSION = "v4.0-session-2026-03-29"  # Session-based overnight zone
+ENGINE_VERSION = "v0.17.0-session-strategies"
 # Default fallbacks for legacy paths — actual values come from contract on init.
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
@@ -74,7 +59,7 @@ class LiveTradingEngine:
         account_id: int,
         contract_id: str,
         # Strategy params (simplified — SessionTrendFollow only)
-        value_area_pct: float = 0.50,
+        value_area_pct: float = 0.80,
         slippage_ticks: int = 1,
         contract_size: int = 1,
         # Configurable strategy params
@@ -105,28 +90,28 @@ class LiveTradingEngine:
         self.point_value = get_point_value(contract_id)
         self.tick_size = get_tick_size(contract_id)
 
+        # Value Area is locked to 80% in v0.17.0.
+        value_area_pct = 0.80
+
         # Session-based zone detector (overnight zone with maturity)
         self.detector = SessionZoneDetector(
             value_area_pct=value_area_pct,
             skip_stability_wait=getattr(self.strategy_params, "skip_zone_stability", False),
         )
-        # Strategy selection
-        _strat = (self.strategy_params.strategy or "trend").lower()
-        if _strat == "macd":
-            from backend.strategy.macd_strategy import MACDOnlyStrategy
-            self.trend_follow = MACDOnlyStrategy(params=self.strategy_params)
-            self.strategies = ["macd"]
-        elif _strat == "reversion":
-            from backend.strategy.reversion import SessionReversion
-            self.trend_follow = SessionReversion(params=self.strategy_params)
-            self.strategies = ["reversion"]
-        elif _strat == "trend_reversion":
-            from backend.strategy.reversion import SessionTrendReversion
-            self.trend_follow = SessionTrendReversion(params=self.strategy_params)
-            self.strategies = ["trend_reversion"]
+        # Strategy selection: legacy names map to current v0.17.0 modes.
+        _strat = (self.strategy_params.strategy or "breakthrough").lower()
+        if _strat in ("consolidation", "reversion"):
+            from backend.strategy.reversion import SessionConsolidation
+            self.strategy_mode = "consolidation"
+            self.trend_follow = SessionConsolidation(params=self.strategy_params)
+        elif _strat in ("hybrid", "trend_reversion"):
+            from backend.strategy.reversion import SessionHybridStrategy
+            self.strategy_mode = "hybrid"
+            self.trend_follow = SessionHybridStrategy(params=self.strategy_params)
         else:
+            self.strategy_mode = "breakthrough"
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
-            self.strategies = ["trend_follow"]
+        self.strategies = [self.strategy_mode]
 
         # Live state
         self._running = False
@@ -149,8 +134,9 @@ class LiveTradingEngine:
         self._force_exit_reason: Optional[str] = None  # set by flatten_now / emergency close
         self._daily_pnl: float = 0.0
         self._today: str = ""
-        self._max_profit_lock: int = getattr(self.strategy_params, 'max_profit_lock', 0) or 0
-        self._profit_locked: bool = False
+        self._full_tp_lock: int = getattr(self.strategy_params, 'full_tp_lock', 0) or 0
+        self._full_tp_count: int = 0
+        self._tp_locked: bool = False
         self._capital: float = 0.0
         self._candles_processed: int = 0
         self._last_market_price: Optional[float] = None
@@ -614,8 +600,7 @@ class LiveTradingEngine:
     def _candidate_lock_zones(self) -> List[ConsolidationZone]:
         zones: List[ConsolidationZone] = []
         active = self.detector.get_active_zone()
-        prev = self.detector.get_last_left_zone()
-        for z in (active, prev):
+        for z in (active,):
             if z and all(existing.zone_id != z.zone_id for existing in zones):
                 zones.append(z)
         return zones
@@ -915,8 +900,11 @@ class LiveTradingEngine:
             "auto_oco_fail_safe_triggered": self._auto_oco_fail_safe_triggered,
             "auto_oco_settings_url": self.AUTO_OCO_SETTINGS_URL,
             "daily_pnl": self._daily_pnl,
-            "profit_locked": self._profit_locked,
-            "max_profit_lock": self._max_profit_lock,
+            "tp_locked": self._tp_locked,
+            "full_tp_lock": self._full_tp_lock,
+            "full_tp_count": self._full_tp_count,
+            "strategy_mode": self.strategy_mode,
+            "strategies": self.strategies,
             "disconnected": self._disconnected,
             "capital": self._capital,
             "candles_processed": self._candles_processed,
@@ -942,14 +930,12 @@ class LiveTradingEngine:
         return "無"
 
     def _get_trade_zone_phase(self) -> str:
-        """Which zone the strategy can trade from while the active zone develops."""
+        """Current-zone gate. v0.17.0 never falls back to a previous/left zone."""
         active = self.detector.get_active_zone()
         if active and self.detector.is_zone_mature:
-            return "當前區間"
-        if active and self.detector.get_last_left_zone():
-            return "用前區間"
-        if self.detector.get_last_left_zone():
-            return "前區間"
+            return "當前成熟區間"
+        if active:
+            return "等待成熟"
         return "無"
 
     def _get_order_phase(self) -> str:
@@ -1046,14 +1032,14 @@ class LiveTradingEngine:
         historical_candles = sorted(historical_candles, key=lambda c: c.timestamp)
         for c in historical_candles:
             self.detector.update(c)
-            # Feed to strategy for indicator warm-up (MACD EMA history)
+            # Feed to strategy for warm-up buffers without generating trade signals.
             if hasattr(self.trend_follow, 'warmup'):
                 self.trend_follow.warmup(c)
 
         self._candles_processed = len(historical_candles)
         self._last_candle_time = historical_candles[-1].timestamp.isoformat() if historical_candles else None
 
-        # Soft reset: clear state machine but keep indicator history (MACD EMA values)
+        # Soft reset: clear strategy state after warm-up while keeping any rolling buffers.
         if hasattr(self.trend_follow, 'reset_state_only'):
             self.trend_follow.reset_state_only()
         else:
@@ -1370,7 +1356,8 @@ class LiveTradingEngine:
             self._today = ts_date
             # API's closedPnl/openPnl reset automatically at CME day boundary
             self._daily_pnl = 0.0
-            self._profit_locked = False
+            self._full_tp_count = 0
+            self._tp_locked = False
             self._log_event(
                 f"新交易日 — PnL 重置 (CT 17:00)"
             )
@@ -1400,8 +1387,9 @@ class LiveTradingEngine:
         if not candles:
             return
 
-        # The newest bar may still be forming; older missed bars are used only
-        # to repair detector/strategy state, never to submit stale orders.
+        # _fetch_latest_candles returns closed bars only. Older missed bars are
+        # replayed to repair detector/strategy state; the newest closed bar is
+        # the only bar allowed to trigger a fresh order.
         last_dt = None
         if self._last_candle_time:
             try:
@@ -1507,13 +1495,13 @@ class LiveTradingEngine:
                 self._active_signal = None
                 self._protection_synced = False
 
-        # ── Max profit lock — block new trades when daily PnL ≥ threshold ──
-        if self._max_profit_lock > 0 and self._daily_pnl >= self._max_profit_lock:
-            if not self._profit_locked:
-                self._profit_locked = True
+        # ── Full TP lock — block new trades after N full TP exits this session ──
+        if self._full_tp_lock > 0 and self._full_tp_count >= self._full_tp_lock:
+            if not self._tp_locked:
+                self._tp_locked = True
                 self._log_event(
-                    f"每日獲利鎖定: ${self._daily_pnl:,.0f} ≥ ${self._max_profit_lock} — "
-                    f"暫停新單至 CT 17:00"
+                    f"Full TP lock: {self._full_tp_count}/{self._full_tp_lock} TP — "
+                    f"暫停新單至下一個 Topstep session"
                 )
             if self._pending_order_id:
                 await self._cancel_pending()
@@ -1521,12 +1509,8 @@ class LiveTradingEngine:
 
         # ── Strategy evaluation ──
         active_zone = self.detector.get_active_zone()
-        is_mature = self.detector.is_zone_mature
-
-        # Previous-zone fallback is temporarily disabled; trade only the
-        # current mature session zone.
         eval_zone = active_zone
-        eval_mature = is_mature
+        eval_mature = self.detector.is_zone_mature
 
         # Strategy evaluation
         strat = self.trend_follow
@@ -1902,7 +1886,7 @@ class LiveTradingEngine:
                     "type": "entry",
                     "direction": sig_dir,
                     "price": self._fill_price,
-                    "strategy": "trend_follow",
+                    "strategy": sig.strategy.value if sig else self.strategy_mode,
                 })
 
                 # Place SL/TP protection orders
@@ -1999,6 +1983,11 @@ class LiveTradingEngine:
                 self._log_event(
                     f"持倉已平 ({exit_reason.upper()} 觸發){pnl_info}"
                 )
+                if self._full_tp_lock > 0 and exit_reason == "tp":
+                    self._full_tp_count += 1
+                    self._log_event(
+                        f"Full TP count: {self._full_tp_count}/{self._full_tp_lock}"
+                    )
 
                 # Cancel residual orders — each in own try/except so one failure
                 # doesn't block the other
@@ -2102,15 +2091,13 @@ class LiveTradingEngine:
             self.trend_follow.warmup(candle)
 
     async def _fetch_latest_candles(self, unit_number: int = 30) -> List[Candle]:
-        """Fetch the newest available 1-minute candle from TopstepX API.
+        """Fetch recent completed 1-minute candles from TopstepX API.
 
         NOTE: TopstepX 30s bar API has a ~6-hour settle delay — bars from
         sub-minute endpoints are never current. 1m bars are real-time.
-        MACD/VWAP indicators run on 1m bars in live mode.
-
-        The newest 1m bar can still be forming; live trading intentionally uses
-        that timely bar. All fetched bars are still merged into the shared data
-        store by timestamp, so early forming snapshots get replaced by final bars.
+        Live trading intentionally drops the newest returned bar as a safety
+        buffer, so decisions use only the previous completed candle. This keeps
+        live entries aligned with normal backtest timing.
 
         TopstepX returns bars newest-first, so candles[-1] is the OLDEST.
         Must sort by timestamp to get the actual newest.
@@ -2125,13 +2112,18 @@ class LiveTradingEngine:
             if candles:
                 # Sort chronologically — API returns newest-first
                 candles.sort(key=lambda c: c.timestamp)
-                self._last_market_price = candles[-1].close
+                closed_candles = candles[:-1] if len(candles) > 1 else []
+                if not closed_candles:
+                    return []
+                self._last_market_price = closed_candles[-1].close
                 try:
                     from backend.api.routes import _upsert_historical_candles
-                    _upsert_historical_candles(candles)
+                    _upsert_historical_candles(closed_candles)
                 except Exception:
                     pass
-                return candles
+                return closed_candles
         except Exception as e:
             self._log_event(f"取得K線失敗: {e}", "error")
         return []
+
+

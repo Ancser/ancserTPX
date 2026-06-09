@@ -1,28 +1,14 @@
-# ============================================================
-# 文件: backend/backtest/engine.py
-# 功能: 回測引擎 — SessionZone + SessionTrendFollow / MACD / Reversion
-# 主要職責:
-#   1. 逐根 1m K 線餵入 → Zone 偵測 → 策略 evaluate
-#   2. 掛限價單 / 市價單 → fill / SL / TP / Trail / Flatten 模擬
-#   3. PnL 計算: gross = Δ * point_value * contracts；net = gross − commission − fees
-#   4. 突破後 60 分鐘的價格路徑追蹤 (MFE/MAE in ticks, trail/SL/TP 順序)
-# 版本變更 (v0.11):
-#   - POINT_VALUE 由 contract 動態決定 (NQ=$20, MNQ=$2)
-#   - contracts 從 strategy_params.contract_size 取得 (預設 3 × MNQ)
-#   - commission/fees 由 BacktestConfig.commission_rt / fees_rt 取得
-#     (routes 會根據 contract_id 帶入正確費率 — MNQ ≈ $1.20/口, NQ ≈ $3.80/口)
-#   - 新增 post-breakout 60m 追蹤器: 把 MFE/MAE/破線順序 寫到 trade 物件
-#   - trail_enabled=False 時 _check_trailing_sl 直接 short-circuit, 讓部位跑滿 SL/TP
-# 關聯:
-#   ← backend/api/routes.py (POST /backtest/run, /ml/run)
-#   → backend/strategy/consolidation.py / trend_follow.py / reversion.py / macd_strategy.py
-#   → backend/db/models.py (Trade, Metrics, get_point_value)
-# ============================================================
-"""
-回測引擎 v3 — SessionTrendFollow Only
+﻿# ============================================================
 
-將歷史 1m K 線逐根餵入 → Session Zone 偵測 → SessionTrendFollow 評估 → 模擬成交 → 績效計算
-"""
+# 文件: backend/backtest/engine.py
+# 狀態: v0.17.0
+# 功能 / Features:
+#   - Completed 1m candle backtest engine for breakthrough / consolidation / hybrid.
+#   - Simulates limit/market entry, SL, TP, trail SL, pending timeout, and close-window flatten.
+#   - Uses dynamic NQ/MNQ point value, contract size, commission, and fees.
+#   - Full TP lock blocks new entries after N full TP exits until the next Topstep session.
+#   - Value Area is locked to 80%, matching live mode.
+# ============================================================
 
 from __future__ import annotations
 import uuid
@@ -81,30 +67,33 @@ class BacktestEngine:
         _cid = getattr(self.strategy_params, "contract_id", "") or "CON.F.US.MNQ.M26"
         self.contract_id = _cid
         self.contract_size = max(1, int(getattr(self.strategy_params, "contract_size", 1) or 1))
-        # Per-instance values shadow class defaults so multi-contract ML scans work.
+        # Per-instance values shadow class defaults so full-backtest contract scans stay isolated.
         self.POINT_VALUE = get_point_value(_cid)
         self.TICK_SIZE = get_tick_size(_cid)
+
+        # Value Area is locked to 80% in v0.17.0.
+        self.config.value_area_pct = 0.80
 
         # Session-based zone detector (skipped when zone_timeline is provided)
         self.detector = SessionZoneDetector(
             value_area_pct=self.config.value_area_pct,
             skip_stability_wait=getattr(self.strategy_params, "skip_zone_stability", False),
         )
-        # Strategy selection
-        _strat = (self.strategy_params.strategy or "trend").lower()
-        if _strat == "macd":
-            from backend.strategy.macd_strategy import MACDOnlyStrategy
-            self.trend_follow = MACDOnlyStrategy(params=self.strategy_params)
-        elif _strat == "reversion":
-            from backend.strategy.reversion import SessionReversion
-            self.trend_follow = SessionReversion(params=self.strategy_params)
-        elif _strat == "trend_reversion":
-            from backend.strategy.reversion import SessionTrendReversion
-            self.trend_follow = SessionTrendReversion(params=self.strategy_params)
+        # Strategy selection: legacy names map to breakthrough so old presets do not break.
+        _raw_strat = (self.strategy_params.strategy or "breakthrough").lower()
+        if _raw_strat in ("consolidation", "reversion"):
+            from backend.strategy.reversion import SessionConsolidation
+            self.strategy_mode = "consolidation"
+            self.trend_follow = SessionConsolidation(params=self.strategy_params)
+        elif _raw_strat in ("hybrid", "trend_reversion"):
+            from backend.strategy.reversion import SessionHybridStrategy
+            self.strategy_mode = "hybrid"
+            self.trend_follow = SessionHybridStrategy(params=self.strategy_params)
         else:
+            self.strategy_mode = "breakthrough"
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
 
-        # Pre-computed zone timeline (set once for ML optimizer — avoids re-running detection)
+        # Pre-computed zone timeline (set once for full backtest grid runs)
         self._zone_timeline: Optional[List[dict]] = zone_timeline
         self._zi: int = 0  # current index into zone_timeline
 
@@ -120,10 +109,10 @@ class BacktestEngine:
         self._last_closed_trade: Optional[Trade] = None
         # Trailing SL state (forced ON — one-time trigger per position)
         self._trail_sl_triggered: bool = False
-        # Max profit lock (resets at PT 22:00)
-        self._max_profit_lock: int = getattr(self.strategy_params, 'max_profit_lock', 0) or 0
-        self._profit_lock_pnl: float = 0.0
-        self._profit_lock_ts_date: str = ""
+        # Full TP lock: stop new entries after N full TP exits in the same Topstep session.
+        self._full_tp_lock: int = getattr(self.strategy_params, 'full_tp_lock', 0) or 0
+        self._full_tp_count: int = 0
+        self._full_tp_ts_date: str = ""
         # Active post-breakout trackers (one per recently-entered trade).
         # We keep tracking even after the trade exits, since the user wants to
         # know whether price would have reached TP within 60m even if SL fired first.
@@ -159,7 +148,7 @@ class BacktestEngine:
         self._reset()
 
         # Ensure chronological order (API may return newest-first).
-        # Skip when using zone_timeline — ml_run pre-sorts once so _zi indices stay aligned.
+        # Skip when using zone_timeline; full-backtest grid runs pre-sort once so _zi indices stay aligned.
         if self._zone_timeline is None:
             candles = sorted(candles, key=lambda c: c.timestamp)
 
@@ -194,7 +183,7 @@ class BacktestEngine:
         calc = MetricsCalculator()
         metrics = calc.calculate_all(self._trades, self.config.initial_capital)
 
-        # ML fast runs don't need zone data for chart rendering
+        # Full-backtest grid runs reuse a precomputed zone timeline and do not render zones.
         all_zones = [] if self._zone_timeline is not None else self.detector.get_all_zones()
 
         result = BacktestResult(
@@ -221,8 +210,8 @@ class BacktestEngine:
         self._daily_pnl = {}
         self._last_closed_trade = None
         self._trail_sl_triggered = False
-        self._profit_lock_pnl = 0.0
-        self._profit_lock_ts_date = ""
+        self._full_tp_count = 0
+        self._full_tp_ts_date = ""
         self._breakout_trackers = []
         self._near_data_end = False   # live-edge guard flag
         self._zi = 0                  # zone timeline index
@@ -245,7 +234,6 @@ class BacktestEngine:
             self._zi += 1
             _active_zone = _zt.get('active')
             _is_mature   = _zt.get('mature', False)
-            _last_left   = _zt.get('last_left')
         else:
             # Normal path: run detector live
             self.detector.update(candle)
@@ -260,13 +248,13 @@ class BacktestEngine:
                 self._cancel_pending_order()
             return
 
-        # Max profit lock — block new trades when daily PnL ≥ threshold (resets PT 22:00)
-        if self._max_profit_lock > 0:
+        # Full TP lock — block new entries after N full TP exits; reset next Topstep session.
+        if self._full_tp_lock > 0:
             ts_date = _topstep_trade_date(candle.timestamp)
-            if ts_date != self._profit_lock_ts_date:
-                self._profit_lock_pnl = 0.0
-                self._profit_lock_ts_date = ts_date
-            if self._profit_lock_pnl >= self._max_profit_lock:
+            if ts_date != self._full_tp_ts_date:
+                self._full_tp_count = 0
+                self._full_tp_ts_date = ts_date
+            if self._full_tp_count >= self._full_tp_lock:
                 if self._pending_order:
                     self._cancel_pending_order()
                 if self._open_position:
@@ -713,12 +701,13 @@ class BacktestEngine:
         self._capital += pnl
         date_str = candle.timestamp.strftime("%Y-%m-%d")
         self._daily_pnl[date_str] = self._daily_pnl.get(date_str, 0) + pnl
-        if self._max_profit_lock > 0:
+        if self._full_tp_lock > 0:
             ts_date = _topstep_trade_date(candle.timestamp)
-            if ts_date != self._profit_lock_ts_date:
-                self._profit_lock_pnl = 0.0
-                self._profit_lock_ts_date = ts_date
-            self._profit_lock_pnl += pnl
+            if ts_date != self._full_tp_ts_date:
+                self._full_tp_count = 0
+                self._full_tp_ts_date = ts_date
+            if reason == ExitReason.TP:
+                self._full_tp_count += 1
 
         self._trades.append(pos)
         self._last_closed_trade = pos
@@ -773,3 +762,5 @@ class BacktestEngine:
                 interval="5m",
             ))
         return candles_5m
+
+

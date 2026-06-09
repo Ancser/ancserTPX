@@ -80,9 +80,16 @@ class MetricsCalculator:
         self._aggregate_zone_source(completed, metrics)
 
         # ── Per-strategy breakdown ──
-        # Reversion / Trend Follow
-        rev_trades = [t for t in completed if t.strategy == StrategyType.REVERSION]
-        tf_trades = [t for t in completed if t.strategy == StrategyType.TREND_FOLLOW]
+        # v0.17.0 names are breakthrough/consolidation; legacy enum values are
+        # also accepted so older cached trades can still produce a breakdown.
+        rev_trades = [
+            t for t in completed
+            if t.strategy in (StrategyType.CONSOLIDATION, StrategyType.REVERSION)
+        ]
+        tf_trades = [
+            t for t in completed
+            if t.strategy in (StrategyType.BREAKTHROUGH, StrategyType.TREND_FOLLOW)
+        ]
 
         if rev_trades:
             metrics.reversion_metrics = self._sub_metrics(rev_trades, initial_capital)
@@ -252,7 +259,7 @@ class MetricsCalculator:
 
     @staticmethod
     def _aggregate_zone_source(trades: List[Trade], metrics: Metrics) -> None:
-        """Aggregate performance by whether the setup used current or previous zone."""
+        """Aggregate current-zone performance. v0.17.0 does not trade previous zones."""
 
         def _apply(prefix: str, bucket: List[Trade]) -> None:
             total = len(bucket)
@@ -264,7 +271,5 @@ class MetricsCalculator:
             setattr(metrics, f"{prefix}_zone_avg_pnl", (pnl / total) if total else 0.0)
             setattr(metrics, f"{prefix}_zone_total_pnl", pnl)
 
-        previous = [t for t in trades if getattr(t, "zone_source", None) == "previous"]
         current = [t for t in trades if getattr(t, "zone_source", None) == "current"]
-        _apply("previous", previous)
         _apply("current", current)

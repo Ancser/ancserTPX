@@ -1,18 +1,18 @@
+﻿# ============================================================
+# 文件 / File: backend/strategy/live_strategy.py
+# 狀態 / Status: legacy standalone strategy engine
+# 功能 / Features:
+#   - Earlier real-time strategy wrapper combining consolidation detection with reversion/trend logic.
+#   - Current v0.17.0 live trading uses backend/live/engine.py instead.
+#   - Kept as reference while old modules are reviewed for deletion or consolidation.
 # ============================================================
-# 文件: backend/strategy/live_strategy.py
-# 狀態: 已更新 v2
-# 變更:
-#   - Reversion: 10 candle zone, top 90%/bottom 10%, SL $300 TP $900
-#   - TrendFollow: stateful, 4-candle confirm, vol comparison, POC retry
-#   - Zone data includes profile for VP drawing at zone start
-# ============================================================
-"""
-Real-time Strategy Engine v2
 
-Runs consolidation detection + reversion/trend strategy
-on 5m candles as they form.
 """
+Legacy real-time strategy wrapper / 舊版即時策略封裝。
 
+The production live engine now lives in backend/live/engine.py and uses the
+breakthrough, consolidation, or hybrid strategy adapters directly.
+"""
 from __future__ import annotations
 import logging
 from dataclasses import dataclass, field

@@ -1,49 +1,20 @@
+﻿# ============================================================
+# 文件 / File: backend/strategy/mtf_strategy.py
+# 狀態 / Status: legacy research module
+# 功能 / Features:
+#   - Multi-timeframe zone strategy kept for reference and future experiments.
+#   - Aggregates 1m candles into 5m zones, then evaluates micro-zone setups inside the larger zone.
+#   - Not selected by the v0.17.0 UI/API; active strategy modes are breakthrough, consolidation, and hybrid.
+#   - If reused later, wire it through the same previous-complete-minute and full TP lock rules.
 # ============================================================
-# 文件: backend/strategy/mtf_strategy.py
-# 狀態: ⚠️ 未完成 — 需要測試和修復
-# 問題:
-#   1. [BUG] 回測 MTF 模式產生 0 筆交易 — 信號傳遞邏輯修復後尚未驗證
-#      - evaluate_1m() signal_5m 傳遞可能在狀態切換時丟失
-#      - _track_5m_breakout 外界蠟燭計數包含 detector exit_confirm candles
-#      - 修復已套用但未重新測試 (synthetic data test)
-#   2. [BUG] 1min zone detection inside big zone = 0 zones found
-#      - _evaluate_1m_inside_big 正確 feed detector_1m 嗎?
-#      - 可能 1m detector 的 min_candles/poc_drift 參數太嚴
-#   3. [BUG] 5m zone formed_at 標記可能不正確 — 前端顯示 zone 起點
-#      不在最高/最低觸及範圍內 (zone start 早於實際橫盤期)
-#   4. [BUG] 新 5m zone 未標記 VAH/VAL — formed 後只有 POC line
-#      (可能是 frontend 只顯示 active zone 的 VAH/VAL, 而 formed
-#      事件延遲)
-#   5. [TODO] 即時交易 (live engine) MTF 模式需要端對端驗證
-#      - live engine _tick_mtf() 邏輯已寫但未實測下單
-#      - 需確認 TopstepX API limit order 和 SL/TP 可正常運作
-# 關聯文件:
-#   ← backend/live/engine.py        (即時交易調用 evaluate_1m)
-#   ← backend/backtest/engine.py    (回測調用 evaluate_1m)
-#   → backend/strategy/consolidation.py (zone 偵測)
-#   → backend/db/models.py          (TradeSignal, ConsolidationZone)
-# ============================================================
-# Multi-Timeframe Strategy
-#
-# 5min zone = daily consolidation (big zone)
-# 1min zone = micro consolidation inside the big zone
-#
-# Logic:
-#   INSIDE 5min zone  -> trade 1min breakouts, TP = nearest 5min level
-#   OUTSIDE 5min zone -> trade 5min breakout (4-candle confirm), TP = SL * multiplier
-#   One position at a time. Complete one before starting another.
-# ============================================================
-"""
-MTF 策略
 
-狀態機:
-  [WAITING_BIG]     -- 等待 5min 盤整區間
-  [INSIDE_BIG]      -- 在 5min zone 裡面，用 1min 做交易
-  [IN_1M_TRADE]     -- 1min 突破交易中
-  [BIG_BREAKOUT]    -- 5min zone 出界確認
-  [IN_5M_TRADE]     -- 5min 突破交易中
 """
+Multi-Timeframe Strategy / 多週期策略
 
+Receives 1-minute candles, builds a 5-minute zone context, and coordinates
+1-minute micro-zone signals inside that larger structure. The module remains as
+legacy research code; it is not part of the current live/backtest preset list.
+"""
 from __future__ import annotations
 import logging
 from datetime import datetime

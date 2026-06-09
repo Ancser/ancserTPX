@@ -179,7 +179,7 @@ class SessionReversion:
         self._tracked_zone_id = None
 
     def reset_state_only(self):
-        """Alias for reset() — keeps interface compatible with MACDOnlyStrategy."""
+        """Alias for reset() — keeps the live warm-up interface consistent across strategies."""
         self.reset()
 
     def warmup(self, candle: Candle):
@@ -202,11 +202,6 @@ class SessionReversion:
             self._recent_candles = self._recent_candles[-20:]
 
         if not zone or not is_mature:
-            return None
-
-        # No operation on AH (After Hours 20:00 - 22:00 UTC)
-        h = candle.timestamp.hour
-        if 20 <= h < 22:
             return None
 
         if self._state in ("confirmed", "in_trade"):
@@ -362,6 +357,241 @@ class SessionReversion:
 # ══════════════════════════════════════════════════════════
 # Combined Trend + Reversion (parallel sub-strategies)
 # ══════════════════════════════════════════════════════════
+
+class SessionConsolidation:
+    """
+    v0.17.0 consolidation retest strategy.
+
+    中文規則:
+      1. 只使用目前已成熟的 80% Value Area。
+      2. 邊界至少被穿越一次後才允許訊號。
+      3. close > VAH -> BUY LIMIT @ VAH，等待回測邊界成交。
+      4. close < VAL -> SELL LIMIT @ VAL，等待回測邊界成交。
+
+    English rule:
+      Mature current zone only. Once the boundary has been crossed, a close
+      outside that boundary arms a same-direction limit order on the boundary.
+    """
+
+    TICK_SIZE = 0.25
+
+    def __init__(self, params: Optional[StrategyParams] = None):
+        p = params or StrategyParams()
+        self.SL_TICKS = p.sl_ticks
+        self.TP_TICKS = p.tp_ticks
+        _candle_secs = getattr(p, "candle_seconds", 30)
+        _cpm = max(1, 60 // _candle_secs)
+        self.PENDING_TIMEOUT_CANDLES = 5 * _cpm
+
+        self._state = "idle"
+        self._tracked_zone_id: Optional[str] = None
+        self._upper_crossed = False
+        self._lower_crossed = False
+        self._recent_candles: List[Candle] = []
+
+    def reset(self):
+        self._state = "idle"
+        self._tracked_zone_id = None
+        self._upper_crossed = False
+        self._lower_crossed = False
+        self._recent_candles = []
+
+    def reset_state_only(self):
+        self.reset()
+
+    def warmup(self, candle: Candle):
+        self._append_candle(candle)
+
+    def _append_candle(self, candle: Candle):
+        if self._recent_candles:
+            gap_minutes = (candle.timestamp - self._recent_candles[-1].timestamp).total_seconds() / 60
+            if gap_minutes > 60:
+                self._recent_candles = []
+        self._recent_candles.append(candle)
+        if len(self._recent_candles) > 20:
+            self._recent_candles = self._recent_candles[-20:]
+
+    def evaluate(
+        self,
+        candle: Candle,
+        zone: Optional[ConsolidationZone],
+        is_mature: bool,
+    ) -> Optional[TradeSignal]:
+        self._append_candle(candle)
+
+        if not zone or not is_mature:
+            return None
+
+        if zone.zone_id != self._tracked_zone_id:
+            self._tracked_zone_id = zone.zone_id
+            self._upper_crossed = False
+            self._lower_crossed = False
+            self._state = "idle"
+
+        if self._state in ("confirmed", "in_trade"):
+            return None
+
+        vah = zone.vah_80
+        val = zone.val_80
+
+        if (candle.high >= vah and candle.low <= vah) or candle.close > vah:
+            self._upper_crossed = True
+        if (candle.high >= val and candle.low <= val) or candle.close < val:
+            self._lower_crossed = True
+
+        if self._upper_crossed and candle.close > vah:
+            return self._generate_signal(candle, zone, "up")
+        if self._lower_crossed and candle.close < val:
+            return self._generate_signal(candle, zone, "down")
+        return None
+
+    def _generate_signal(
+        self,
+        candle: Candle,
+        zone: ConsolidationZone,
+        direction: str,
+    ) -> TradeSignal:
+        sl_points = self.SL_TICKS * self.TICK_SIZE
+        tp_points = self.TP_TICKS * self.TICK_SIZE
+
+        if direction == "up":
+            entry = zone.vah_80
+            sl = entry - sl_points
+            tp = entry + tp_points
+            trade_dir = Direction.BUY
+            edge_label = "BUY@VAH"
+        else:
+            entry = zone.val_80
+            sl = entry + sl_points
+            tp = entry - tp_points
+            trade_dir = Direction.SELL
+            edge_label = "SELL@VAL"
+
+        sl_dollars = abs(entry - sl) * POINT_VALUE
+        tp_dollars = abs(tp - entry) * POINT_VALUE
+        self._state = "confirmed"
+        return TradeSignal(
+            strategy=StrategyType.CONSOLIDATION,
+            direction=trade_dir,
+            entry_price=entry,
+            sl_price=sl,
+            tp_price=tp,
+            zone_id=zone.zone_id,
+            reason=(
+                f"CONSOLIDATION {edge_label} | mature 80% VA retest | "
+                f"SL {self.SL_TICKS}t(${sl_dollars:.0f}) TP {self.TP_TICKS}t(${tp_dollars:.0f})"
+            ),
+            timestamp=candle.timestamp,
+        )
+
+    def notify_trade_closed(self, exit_reason: str):
+        self._state = "idle"
+
+    def notify_order_cancelled(self):
+        self._state = "idle"
+
+    def get_phase_label(self) -> str:
+        if self._state == "confirmed":
+            return "盤整掛單中"
+        return "等待盤整邊界"
+
+    @property
+    def raw_state(self) -> str:
+        return self._state
+
+
+class SessionHybridStrategy:
+    """
+    Hybrid mode: breakthrough first, consolidation retest second.
+
+    Both sub-strategies receive every candle so their rolling state stays
+    aligned with the backtest/live closed-candle stream.
+    """
+
+    BREAKOUT_CONFIRM_CANDLES = 5
+    TICK_SIZE = 0.25
+
+    def __init__(self, params: Optional[StrategyParams] = None):
+        from backend.strategy.trend_follow import SessionTrendFollow
+
+        self.breakthrough = SessionTrendFollow(params)
+        self.consolidation = SessionConsolidation(params)
+        self.PENDING_TIMEOUT_CANDLES = self.breakthrough.PENDING_TIMEOUT_CANDLES
+        self._active_sub: Optional[str] = None
+
+    def reset(self):
+        self.breakthrough.reset()
+        self.consolidation.reset()
+        self._active_sub = None
+
+    def reset_state_only(self):
+        self.breakthrough.reset_state_only()
+        self.consolidation.reset_state_only()
+        self._active_sub = None
+
+    def warmup(self, candle: Candle):
+        self.breakthrough.warmup(candle)
+        self.consolidation.warmup(candle)
+
+    def set_traded_breakouts(self, keys):
+        if hasattr(self.breakthrough, "set_traded_breakouts"):
+            self.breakthrough.set_traded_breakouts(keys)
+
+    def mark_breakout_used(self, zone_id: str, direction: str):
+        if hasattr(self.breakthrough, "mark_breakout_used"):
+            self.breakthrough.mark_breakout_used(zone_id, direction)
+
+    def unlock_breakout(self, zone_id: str, direction: str):
+        if hasattr(self.breakthrough, "unlock_breakout"):
+            self.breakthrough.unlock_breakout(zone_id, direction)
+
+    def evaluate(
+        self,
+        candle: Candle,
+        zone: Optional[ConsolidationZone],
+        is_mature: bool,
+    ) -> Optional[TradeSignal]:
+        signal = self.breakthrough.evaluate(candle, zone, is_mature)
+        if signal:
+            self._active_sub = "breakthrough"
+            return signal
+
+        signal = self.consolidation.evaluate(candle, zone, is_mature)
+        if signal:
+            self._active_sub = "consolidation"
+            return signal
+
+        return None
+
+    def notify_trade_closed(self, exit_reason: str):
+        if self._active_sub == "breakthrough":
+            self.breakthrough.notify_trade_closed(exit_reason)
+        elif self._active_sub == "consolidation":
+            self.consolidation.notify_trade_closed(exit_reason)
+        self._active_sub = None
+
+    def notify_order_cancelled(self):
+        if self._active_sub == "breakthrough":
+            self.breakthrough.notify_order_cancelled()
+        elif self._active_sub == "consolidation":
+            self.consolidation.notify_order_cancelled()
+        self._active_sub = None
+
+    def get_phase_label(self) -> str:
+        if self._active_sub == "breakthrough":
+            return f"B:{self.breakthrough.get_phase_label()}"
+        if self._active_sub == "consolidation":
+            return f"C:{self.consolidation.get_phase_label()}"
+        return f"B:{self.breakthrough.get_phase_label()} | C:{self.consolidation.get_phase_label()}"
+
+    @property
+    def raw_state(self) -> str:
+        if self._active_sub == "breakthrough":
+            return self.breakthrough.raw_state
+        if self._active_sub == "consolidation":
+            return self.consolidation.raw_state
+        return "idle"
+
 
 class SessionTrendReversion:
     """

@@ -1,15 +1,11 @@
-"""
-策略三：All Long Only
+﻿"""
+Legacy All Long support-level strategy / 舊版只做多支撐策略。
 
-邏輯:
-  1. 收集過去 2 天所有 session zone 的 POC/VAH/VAL 作為支撐位
-  2. 找到當前價格下方最近的支撐位
-  3. 在該支撐位下 Limit Buy
-  4. 一次只掛一張單
-  5. 超時取消後重新掃描，用最新支撐位再掛單
-  6. SL/TP 邏輯與 trend follow 相同
+This module was an earlier experiment that placed buy-limit orders near recent
+session-zone support levels. v0.17.0 does not expose it in UI/API presets; the
+active modes are breakthrough, consolidation, and hybrid. Keep only as reference
+until the unused-code report is acted on.
 """
-
 from __future__ import annotations
 import logging
 from datetime import timedelta

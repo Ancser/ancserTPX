@@ -31,9 +31,9 @@ load_dotenv(ROOT / ".env")
 PRESETS_FILE = ROOT / "data" / "presets.json"
 MNQ_SIZE_CHOICES = (1, 3, 5, 10)
 TRAIL_TICK_STEP = 5
-DEFAULT_PRESET_NAME = "TR50 MNQx3 50/200 TRIG30 TRAILTP10% LOCK150"
+DEFAULT_PRESET_NAME = "BR MNQx3 50/200 TRIG30 TRAILTP10% TPLOCKOFF"
 DEFAULT_PRESET_PARAMS = {
-    "strategy": "trend",
+    "strategy": "breakthrough",
     "tp_ticks": 200,
     "sl_ticks": 50,
     "trail_sl_ticks": 20,
@@ -43,9 +43,12 @@ DEFAULT_PRESET_PARAMS = {
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
-    "max_profit_lock": 150,
-    "value_area_pct": 0.50,
+    "full_tp_lock": 0,
+    "value_area_pct": 0.80,
     "skip_zone_stability": False,
+}
+BUILTIN_PRESETS = {
+    DEFAULT_PRESET_NAME: DEFAULT_PRESET_PARAMS,
 }
 
 logging.basicConfig(
@@ -95,19 +98,52 @@ def _env_int(name: str, default: int = 0) -> int:
 
 
 def _load_presets_file() -> dict:
+    data = None
     try:
         if PRESETS_FILE.exists():
             import json
 
             with PRESETS_FILE.open("r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
     except Exception:
         pass
-    return {
-        "presets": {DEFAULT_PRESET_NAME: dict(DEFAULT_PRESET_PARAMS)},
-        "last_used_bt": DEFAULT_PRESET_NAME,
-        "last_used_live": DEFAULT_PRESET_NAME,
-    }
+    if not isinstance(data, dict):
+        data = {}
+    presets = data.get("presets")
+    if not isinstance(presets, dict):
+        presets = {}
+        data["presets"] = presets
+    for name, params in list(presets.items()):
+        if not isinstance(params, dict):
+            continue
+        strategy = str(params.get("strategy") or "").lower()
+        if strategy in ("", "trend", "trend_follow"):
+            params["strategy"] = "breakthrough"
+        elif strategy == "reversion":
+            params["strategy"] = "consolidation"
+        elif strategy == "trend_reversion":
+            params["strategy"] = "hybrid"
+        strategy = str(params.get("strategy") or "").lower()
+        if strategy not in {"breakthrough", "consolidation", "hybrid"}:
+            del presets[name]
+            continue
+        allowed_keys = {
+            "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
+            "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
+            "contract_size", "full_tp_lock", "value_area_pct", "skip_zone_stability",
+        }
+        for key in list(params.keys()):
+            if key not in allowed_keys:
+                params.pop(key, None)
+        params["value_area_pct"] = 0.80
+    for name, params in BUILTIN_PRESETS.items():
+        presets[name] = dict(params)
+    if data.get("last_used_bt") not in presets:
+        data["last_used_bt"] = DEFAULT_PRESET_NAME
+    if data.get("last_used_live") not in presets:
+        data["last_used_live"] = DEFAULT_PRESET_NAME
+    data["fixed_presets"] = list(BUILTIN_PRESETS.keys())
+    return data
 
 
 def _normalize_contract_size(contract_id: str, requested: Any) -> int:
@@ -133,14 +169,7 @@ def _normalize_trail_trigger_pct(value: Any) -> float:
 
 
 def _normalize_value_area_pct(value: Any) -> float:
-    try:
-        pct = float(value)
-    except (TypeError, ValueError):
-        pct = DEFAULT_PRESET_PARAMS["value_area_pct"]
-    if pct > 1:
-        pct = pct / 100.0
-    pct = math.floor(pct * 10 + 0.5) / 10.0
-    return max(0.40, min(1.0, pct))
+    return 0.80
 
 
 def _normalize_trail_pct(value: Any) -> Optional[float]:
@@ -275,7 +304,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         preset.get("contract_size", DEFAULT_PRESET_PARAMS["contract_size"]),
     )
     return StrategyParams(
-        strategy=str(preset.get("strategy") or "trend"),
+        strategy=str(preset.get("strategy") or "breakthrough"),
         tp_ticks=tp_ticks,
         sl_ticks=sl_ticks,
         trail_sl_ticks=trail_ticks,
@@ -284,7 +313,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         candle_seconds=int(preset.get("candle_seconds") or 60),
         contract_id=contract_id,
         contract_size=contract_size,
-        max_profit_lock=int(preset.get("max_profit_lock") or 0),
+        full_tp_lock=int(preset.get("full_tp_lock") or 0),
         skip_zone_stability=False,
     )
 
@@ -376,13 +405,14 @@ async def run_terminal_live() -> int:
             params.contract_size,
         )
         logger.info(
-            "Params: AREA=%s SL=%s TP=%s trail=%s trigger=%s%% lock=%s",
+            "Params: MODE=%s AREA=%s SL=%s TP=%s trail=%s trigger=%s%% tp_lock=%s",
+            params.strategy,
             int(value_area_pct * 100),
             params.sl_ticks,
             params.tp_ticks,
             params.trail_sl_ticks,
             int(params.trail_trigger_pct * 100),
-            params.max_profit_lock,
+            params.full_tp_lock,
         )
 
         engine = LiveTradingEngine(

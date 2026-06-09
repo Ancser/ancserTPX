@@ -1,19 +1,13 @@
-<!--
+﻿<!--
   ============================================================
   文件: frontend/static/index.html
-  狀態: ⚠️ 部分功能待驗證
-  問題:
-    1. [BUG] POC/zone 顯示可能停留在舊數據 (3/18-3/19)
-       - 原因: zone detection 基於 CONNECT 時拉取的歷史數據
-       - 如果拉取範圍是一周前, 自然只有舊 zone
-       - 需要: 每天重新偵測 zone 或 live engine 回傳新 zone
-    2. [BUG] 1m area 出現在舊時間 — 可能是 detector warm-up
-       用了全部歷史數據 (含舊的 1m candles)
-    3. [BUG] 5m zone formed 但未標記 VAH/VAL — 只有 active zone
-       顯示 VAH/VAL 標籤, formed zone 可能 status 不是 'active'
-    4. [TODO] 即時交易下單功能未驗證 — 需確認 "僅監控" 原因
-    5. [TODO] VP overlay 持續跟隨已用 rAF, 但某些 edge case
-       (如 price scale 拖拽) 可能仍有延遲
+  狀態: v0.17.0
+  功能 / Features:
+    1. Backtest, Full Backtest, Live Monitor 共用 completed 1m candle decision flow.
+    2. 策略固定為 breakthrough / consolidation / hybrid。
+    3. Value Area 固定 80%，preset 名稱不再包含 area sweep。
+    4. Full TP Lock 取代舊 profit lock，達到 1/2/3 次完整 TP 後下一 session 前停止新單。
+    5. Chart overlay 標示 session boundary、VP zone、禁止交易時段紅色斜線。
   ============================================================
 -->
 <!DOCTYPE html>
@@ -257,49 +251,6 @@
         .form-group input::placeholder { color: var(--text3); }
         .form-row { display: flex; gap: 8px; }
         .form-row .form-group { flex: 1; }
-        .help-dot {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 13px;
-            height: 13px;
-            margin-left: 4px;
-            border-radius: 50%;
-            background: rgba(200, 208, 224, 0.12);
-            color: var(--text2);
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 9px;
-            line-height: 1;
-            cursor: help;
-            position: relative;
-            vertical-align: 1px;
-            text-transform: none;
-            letter-spacing: 0;
-        }
-        .help-dot:hover {
-            color: var(--white);
-            background: rgba(200, 208, 224, 0.22);
-        }
-        .help-tooltip {
-            display: none;
-            position: fixed;
-            max-width: 260px;
-            padding: 7px 9px;
-            background: var(--bg4);
-            border: 1px solid var(--border-h);
-            box-shadow: 0 8px 24px rgba(0,0,0,0.45);
-            color: var(--text);
-            font-family: 'Noto Sans TC', 'IBM Plex Mono', monospace;
-            font-size: 11px;
-            line-height: 1.45;
-            letter-spacing: 0;
-            text-transform: none;
-            white-space: pre-line;
-            z-index: 20000;
-            pointer-events: none;
-        }
-        .help-tooltip.open { display: block; }
-
         /* ── Buttons ── */
         .btn {
             padding: 10px 16px;
@@ -361,8 +312,8 @@
         .btn-amber:disabled { opacity: 0.3; cursor: not-allowed; }
         .btn-amber:disabled:hover { background: var(--amber2); box-shadow: none; }
 
-        /* ── ML hazard-stripe button ── */
-        .btn-ml {
+        /* -- Full Backtest hazard-stripe button -- */
+        .btn-full {
             position: relative;
             overflow: hidden;
             border: 1px solid var(--amber);
@@ -379,7 +330,7 @@
                 rgba(255, 167, 38, 0.03) 12px
             );
         }
-        .btn-ml::before {
+        .btn-full::before {
             content: '';
             position: absolute;
             inset: 0;
@@ -392,7 +343,7 @@
             );
             pointer-events: none;
         }
-        .btn-ml:hover:not(:disabled) {
+        .btn-full:hover:not(:disabled) {
             background: repeating-linear-gradient(
                 -45deg,
                 rgba(255, 167, 38, 0.20) 0px,
@@ -402,29 +353,29 @@
             );
             box-shadow: 0 0 20px rgba(255, 167, 38, 0.2);
         }
-        .btn-ml:disabled {
+        .btn-full:disabled {
             opacity: 0.3;
             cursor: not-allowed;
         }
-        .btn-ml:disabled:hover {
+        .btn-full:disabled:hover {
             box-shadow: none;
         }
-        .ml-run-wrap {
+        .full-run-wrap {
             position: relative;
             display: flex;
             width: 100%;
         }
-        .ml-run-wrap #btn-run-all {
+        .full-run-wrap #btn-run-all {
             flex: 1;
         }
-        .ml-filter-btn {
+        .full-filter-btn {
             flex: 0 0 34px;
             width: 34px;
             padding: 0 !important;
             border-left: 0;
             font-size: 12px;
         }
-        .ml-filter-panel {
+        .full-filter-panel {
             display: none;
             position: fixed;
             z-index: 20000;
@@ -434,10 +385,10 @@
             border: 1px solid var(--border-h);
             box-shadow: 0 10px 24px rgba(0,0,0,0.45);
         }
-        .ml-filter-panel.open {
+        .full-filter-panel.open {
             display: block;
         }
-        .ml-fix-row {
+        .full-fix-row {
             display: flex;
             align-items: center;
             gap: 7px;
@@ -447,7 +398,7 @@
             color: var(--text2);
             letter-spacing: 0.8px;
         }
-        .ml-fix-row input {
+        .full-fix-row input {
             margin: 0;
             cursor: pointer;
         }
@@ -671,16 +622,16 @@
             text-transform: uppercase;
             border-bottom: 1px solid var(--border-h);
         }
-        /* ── ML sortable column headers ── */
-        .ml-sort-th {
+        /* -- Full Backtest sortable column headers -- */
+        .full-sort-th {
             cursor: pointer;
             user-select: none;
             white-space: nowrap;
         }
-        .ml-sort-th:hover { color: var(--cyan); }
-        .ml-sort-th.sort-active { color: var(--cyan); }
-        .ml-sort-th .sa { opacity: 0.25; font-size: 9px; margin-left: 2px; }
-        .ml-sort-th.sort-active .sa { opacity: 1; color: var(--cyan); }
+        .full-sort-th:hover { color: var(--cyan); }
+        .full-sort-th.sort-active { color: var(--cyan); }
+        .full-sort-th .sa { opacity: 0.25; font-size: 9px; margin-left: 2px; }
+        .full-sort-th.sort-active .sa { opacity: 1; color: var(--cyan); }
         td {
             padding: 5px 10px;
             border-bottom: 1px solid var(--border);
@@ -1012,7 +963,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.16.2
+        0.17.0
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1101,22 +1052,14 @@
                 <div class="form-group" style="flex:2;">
                     <label>STRATEGY</label>
                     <select id="strategy-bt">
-                        <option value="trend" selected>TREND</option>
-                        <option value="macd">MACD</option>
-                        <option value="reversion" disabled>REVERSION</option>
+                        <option value="breakthrough" selected>BREAKTHROUGH</option>
+                        <option value="consolidation">CONSOLIDATION</option>
+                        <option value="hybrid">HYBRID</option>
                     </select>
                 </div>
                 <div class="form-group" style="flex:1;">
                     <label>AREA</label>
-                    <select id="value-area-pct-bt">
-                        <option value="40">40</option>
-                        <option value="50" selected>50</option>
-                        <option value="60">60</option>
-                        <option value="70">70</option>
-                        <option value="80">80</option>
-                        <option value="90">90</option>
-                        <option value="100">100</option>
-                    </select>
+                    <input type="text" value="80" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
                 </div>
             </div>
             <div class="form-row">
@@ -1162,40 +1105,39 @@
                 <input type="hidden" id="trail-sl-ticks-bt" value="20">
             </div>
             <div class="form-group">
-                <label>MAX PROFIT LOCK</label>
-                <select id="max-profit-lock-bt">
+                <label>FULL TP LOCK</label>
+                <select id="full-tp-lock-bt">
                     <option value="0">OFF</option>
-                    <option value="150" selected>$150</option>
-                    <option value="500">$500</option>
-                    <option value="1000">$1,000</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
                 </select>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
-                <div class="ml-run-wrap">
-                    <button class="btn btn-ml" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run full backtest combinations and rank results">FULL BACKTEST</button>
-                    <button class="btn btn-ml ml-filter-btn" id="btn-ml-filter" onclick="toggleMLFixedDropdown(event)" disabled title="Fixed Full backtest params">v</button>
-                    <div class="ml-filter-panel" id="ml-fixed-panel">
-                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-strategy" checked> STRATEGY</label>
-                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-area" checked> AREA</label>
-                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-contract" checked> CONTRACT</label>
-                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-size" checked> SIZE</label>
-                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-tp"> TP</label>
-                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-sl"> SL</label>
-                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-trail-trigger"> TRAIL TRIGGER</label>
-                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-trail"> TRAIL SL</label>
-                        <label class="ml-fix-row"><input type="checkbox" id="ml-fix-profit-lock"> PROFIT LOCK</label>
+                <div class="full-run-wrap">
+                    <button class="btn btn-full" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run full backtest combinations and rank results">FULL BACKTEST</button>
+                    <button class="btn btn-full full-filter-btn" id="btn-full-filter" onclick="toggleFullFixedDropdown(event)" disabled title="Fixed Full backtest params">v</button>
+                    <div class="full-filter-panel" id="full-fixed-panel">
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-strategy" checked> STRATEGY</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-contract" checked> CONTRACT</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-size" checked> SIZE</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-tp"> TP</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-sl"> SL</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-trail-trigger"> TRAIL TRIGGER</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-trail"> TRAIL SL</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-full-tp-lock"> FULL TP LOCK</label>
                     </div>
                 </div>
             </div>
-            <!-- ML progress bar -->
-            <div id="ml-progress-wrap" style="display:none;margin-top:7px;">
+            <!-- Full Backtest progress bar -->
+            <div id="full-progress-wrap" style="display:none;margin-top:7px;">
                 <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
                     <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">COMBINATIONS</span>
-                    <span id="ml-progress-text" style="font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text2);">0 / 0</span>
+                    <span id="full-progress-text" style="font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text2);">0 / 0</span>
                 </div>
                 <div style="height:2px;background:rgba(255,255,255,0.07);border-radius:1px;overflow:hidden;">
-                    <div id="ml-progress-bar" style="height:100%;width:0%;background:#fff;border-radius:1px;transition:width 0.25s linear;box-shadow:0 0 6px rgba(255,255,255,0.5);"></div>
+                    <div id="full-progress-bar" style="height:100%;width:0%;background:#fff;border-radius:1px;transition:width 0.25s linear;box-shadow:0 0 6px rgba(255,255,255,0.5);"></div>
                 </div>
             </div>
         </div>
@@ -1227,22 +1169,14 @@
                     <div class="form-group" style="flex:2;">
                         <label>STRATEGY</label>
                         <select id="strategy-live">
-                            <option value="trend" selected>TREND</option>
-                            <option value="macd">MACD</option>
-                            <option value="reversion" disabled>REVERSION</option>
+                            <option value="breakthrough" selected>BREAKTHROUGH</option>
+                            <option value="consolidation">CONSOLIDATION</option>
+                            <option value="hybrid">HYBRID</option>
                         </select>
                     </div>
                     <div class="form-group" style="flex:1;">
                         <label>AREA</label>
-                        <select id="value-area-pct-live">
-                            <option value="40">40</option>
-                            <option value="50" selected>50</option>
-                            <option value="60">60</option>
-                            <option value="70">70</option>
-                            <option value="80">80</option>
-                            <option value="90">90</option>
-                            <option value="100">100</option>
-                        </select>
+                        <input type="text" value="80" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
                     </div>
                 </div>
                 <div class="form-row">
@@ -1288,12 +1222,12 @@
                     <input type="hidden" id="trail-sl-ticks-live" value="20">
                 </div>
                 <div class="form-group">
-                    <label>MAX PROFIT LOCK</label>
-                    <select id="max-profit-lock-live">
+                    <label>FULL TP LOCK</label>
+                    <select id="full-tp-lock-live">
                         <option value="0">OFF</option>
-                        <option value="150" selected>$150</option>
-                        <option value="500">$500</option>
-                        <option value="1000">$1,000</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
                     </select>
                 </div>
             </div>
@@ -1317,6 +1251,7 @@
                         STATUS: <span id="live-status-text" style="color:var(--text3);letter-spacing:1px;">OFFLINE</span>
                     </div>
                     <div style="padding-left:14px;">PHASE: <span id="live-position-text" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">MODE: <span id="live-mode-text" style="color:var(--text3);">--</span></div>
                     <div style="padding-left:14px;">MARKET: <span id="lv-market-session" style="color:var(--text3);">--</span></div>
                     <div style="padding-left:14px;">DAILY PNL: <span id="live-pnl-text" style="color:var(--text3);">--</span></div>
                 </div>
@@ -1332,6 +1267,7 @@
             <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'IBM Plex Mono',monospace;font-size:11px;">
                 <div style="display:flex;align-items:stretch;height:28px;">
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">TF: <span id="lv-timeframe" style="color:var(--cyan);margin-left:6px;">1min</span></div>
+                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MODE: <span id="lv-mode" style="color:var(--green);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">ZONE: <span id="lv-zone-status" style="color:var(--text3);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">PHASE: <span id="lv-phase-top" style="color:var(--text3);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MARKET: <span id="lv-session" style="color:var(--amber);margin-left:6px;">--</span></div>
@@ -1362,38 +1298,37 @@
         <div class="bottom-panel" id="bottom-panel">
             <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
             <div class="bottom-tabs">
-                <div class="bottom-tab" data-btab="ml">FULL BACKTEST</div>
+                <div class="bottom-tab" data-btab="full">FULL BACKTEST</div>
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
-                <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
+                <div class="bottom-tab" data-btab="log">SYSTEM LOG <span id="system-log-mode" style="color:var(--green);margin-left:6px;">--</span></div>
             </div>
             <div class="bottom-content">
-                <div id="btab-ml" class="hidden">
+                <div id="btab-full" class="hidden">
                     <div class="trade-table-wrap">
-                        <table id="ml-table">
-                            <thead id="ml-thead">
+                        <table id="full-table">
+                            <thead id="full-thead">
                                 <tr>
-                                    <th class="ml-sort-th" data-col="strategy" style="width:52px;" onclick="mlSortBy('strategy')">STRAT <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="contract" style="width:48px;" onclick="mlSortBy('contract')">CON <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="size"     style="width:34px;" onclick="mlSortBy('size')">SZ <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="area"     style="width:42px;" onclick="mlSortBy('area')">AREA <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="sl"       style="width:40px;" onclick="mlSortBy('sl')">SL <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="tp"       style="width:40px;" onclick="mlSortBy('tp')">TP <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="trigger"  style="width:48px;" onclick="mlSortBy('trigger')">TRIG <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="trail"    style="width:44px;" onclick="mlSortBy('trail')">TRAIL <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="lock"     style="width:44px;" onclick="mlSortBy('lock')">LOCK <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="trades"   style="width:44px;" onclick="mlSortBy('trades')">TRADES <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="win_rate" style="width:52px;" onclick="mlSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="pnl"      style="width:68px;" onclick="mlSortBy('pnl')">FINAL PNL <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="max_dd"   style="width:60px;" onclick="mlSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="best_day" style="width:60px;" onclick="mlSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="worst_day"style="width:60px;" onclick="mlSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th" data-col="lwr"      style="width:48px;" onclick="mlSortBy('lwr')" title="Loss to Final Ratio">LFR <span class="sa">↕</span></th>
-                                    <th class="ml-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="mlSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
+                                    <th class="full-sort-th" data-col="strategy" style="width:52px;" onclick="fullSortBy('strategy')">STRAT <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="contract" style="width:48px;" onclick="fullSortBy('contract')">CON <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="size"     style="width:34px;" onclick="fullSortBy('size')">SZ <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="sl"       style="width:40px;" onclick="fullSortBy('sl')">SL <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="tp"       style="width:40px;" onclick="fullSortBy('tp')">TP <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="trigger"  style="width:48px;" onclick="fullSortBy('trigger')">TRIG <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="trail"    style="width:44px;" onclick="fullSortBy('trail')">TRAIL <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="lock"     style="width:50px;" onclick="fullSortBy('lock')">TPLOCK <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="trades"   style="width:44px;" onclick="fullSortBy('trades')">TRADES <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="win_rate" style="width:52px;" onclick="fullSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="pnl"      style="width:68px;" onclick="fullSortBy('pnl')">FINAL PNL <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="max_dd"   style="width:60px;" onclick="fullSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="best_day" style="width:60px;" onclick="fullSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="worst_day"style="width:60px;" onclick="fullSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="lwr"      style="width:48px;" onclick="fullSortBy('lwr')" title="Loss to Final Ratio">LFR <span class="sa">↕</span></th>
+                                    <th class="full-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="fullSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
                                     <th style="width:32px;"></th>
                                 </tr>
                             </thead>
-                            <tbody id="ml-tbody"></tbody>
+                            <tbody id="full-tbody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -1542,7 +1477,7 @@ function _computeMACDStrip(candles) {
 // -- Strategy Params & Presets ----------------------
 
 const DEFAULT_STRATEGY_PARAMS = {
-    strategy: 'trend',
+    strategy: 'breakthrough',
     tp_ticks: 200,
     sl_ticks: 50,
     trail_sl_ticks: 20,
@@ -1552,8 +1487,8 @@ const DEFAULT_STRATEGY_PARAMS = {
     candle_seconds: 60,
     contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
     contract_size: 3,
-    value_area_pct: 0.50,
-    max_profit_lock: 150,
+    value_area_pct: 0.80,
+    full_tp_lock: 0,
     // Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: false,
 };
@@ -1638,11 +1573,7 @@ function fmtMoney(n) {
 }
 
 function normalizeAreaPctValue(value) {
-    let pct = parseFloat(value);
-    if (!Number.isFinite(pct)) pct = DEFAULT_STRATEGY_PARAMS.value_area_pct * 100;
-    if (pct <= 1) pct *= 100;
-    pct = Math.round(pct / 10) * 10;
-    return Math.max(40, Math.min(100, pct));
+    return 80;
 }
 
 function floorTicksToStep(ticks) {
@@ -1793,10 +1724,7 @@ function collectStrategyParams(mode) {
     const tpTicks = clampTicks(_int('tp-ticks-' + mode), DEFAULT_STRATEGY_PARAMS.tp_ticks);
     const triggerPct = _float('trail-trigger-pct-' + mode, DEFAULT_STRATEGY_PARAMS.trail_trigger_pct);
     const trailPct = _float('trail-sl-pct-' + mode, DEFAULT_STRATEGY_PARAMS.trail_sl_pct);
-    const areaPctInt = normalizeAreaPctValue(_float('value-area-pct-' + mode, DEFAULT_STRATEGY_PARAMS.value_area_pct * 100));
-    const areaPct = areaPctInt / 100;
-    const areaEl = document.getElementById('value-area-pct-' + mode);
-    if (areaEl) areaEl.value = String(areaPctInt);
+    const areaPct = 0.80;
     const trailTicks = trailTicksFromPct(trailPct, slTicks, tpTicks, triggerPct);
     const trailTicksEl = document.getElementById('trail-sl-ticks-' + mode);
     if (trailTicksEl) trailTicksEl.value = String(trailTicks);
@@ -1812,7 +1740,7 @@ function collectStrategyParams(mode) {
         contract_id: contractId,
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
         value_area_pct: areaPct,
-        max_profit_lock: _int('max-profit-lock-' + mode),
+        full_tp_lock: _int('full-tp-lock-' + mode),
         skip_zone_stability: false,
     };
 }
@@ -1822,8 +1750,12 @@ function applyStrategyParams(mode, params) {
     const _set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
     const _setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     const _ticks = (val, fallback) => Math.max(50, Math.min(200, parseInt(val != null ? val : fallback, 10) || fallback));
+    if (!['breakthrough', 'consolidation', 'hybrid', 'reversion', 'trend_reversion'].includes(p.strategy)) p.strategy = 'breakthrough';
+    if (p.strategy === 'trend' || p.strategy === 'trend_follow') p.strategy = 'breakthrough';
+    if (p.strategy === 'reversion') p.strategy = 'consolidation';
+    if (p.strategy === 'trend_reversion') p.strategy = 'hybrid';
+    p.value_area_pct = 0.80;
     _set('strategy-' + mode, p.strategy);
-    _set('value-area-pct-' + mode, normalizeAreaPctValue(p.value_area_pct || DEFAULT_STRATEGY_PARAMS.value_area_pct));
     const cidEl = document.getElementById('contract-' + mode);
     if (cidEl) {
         const wanted = p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id;
@@ -1856,96 +1788,7 @@ function applyStrategyParams(mode, params) {
         );
     _set('trail-trigger-pct-' + mode, triggerPct === 0 ? '0' : triggerPct.toFixed(2));
     updateTrailBounds(mode, trailPct);
-    _set('max-profit-lock-' + mode, String(p.max_profit_lock || 0));
-}
-
-function addHelpDot(label, tip) {
-    if (!label || label.querySelector('.help-dot')) return;
-    const dot = document.createElement('span');
-    dot.className = 'help-dot';
-    dot.textContent = '?';
-    dot.setAttribute('data-tip', tip);
-    dot.addEventListener('mouseenter', () => showHelpTooltip(dot));
-    dot.addEventListener('mouseleave', hideHelpTooltip);
-    label.appendChild(dot);
-}
-
-function getHelpTooltip() {
-    let tip = document.getElementById('global-help-tooltip');
-    if (!tip) {
-        tip = document.createElement('div');
-        tip.id = 'global-help-tooltip';
-        tip.className = 'help-tooltip';
-        document.body.appendChild(tip);
-    }
-    return tip;
-}
-
-function showHelpTooltip(dot) {
-    const text = dot ? dot.getAttribute('data-tip') : '';
-    if (!text) return;
-    const tip = getHelpTooltip();
-    tip.textContent = text;
-    tip.style.visibility = 'hidden';
-    tip.classList.add('open');
-
-    const rect = dot.getBoundingClientRect();
-    const pad = 10;
-    const tipW = tip.offsetWidth;
-    const tipH = tip.offsetHeight;
-    const top = Math.max(pad, Math.min(
-        rect.top + rect.height / 2 - tipH / 2,
-        window.innerHeight - tipH - pad
-    ));
-    const left = Math.max(pad, Math.min(
-        rect.right + pad,
-        window.innerWidth - tipW - pad
-    ));
-    tip.style.left = left + 'px';
-    tip.style.top = top + 'px';
-    tip.style.visibility = 'visible';
-}
-
-function hideHelpTooltip() {
-    const tip = document.getElementById('global-help-tooltip');
-    if (tip) tip.classList.remove('open');
-}
-
-function decorateParamHelpDots() {
-    const tips = {
-        'preset-bt': 'Load or save the current settings.\n快速套用或保存目前設定。',
-        'preset-live': 'Load or save the live settings.\n快速套用或保存live設定。',
-        'strategy-bt': 'Choose the logic used for simulation.\n選擇回測使用的策略邏輯。',
-        'strategy-live': 'Choose the logic used for live trading.\n選擇live使用的策略邏輯。',
-        'value-area-pct-bt': 'Volume profile value area width, from 40% to 100%.\nVP區間寬度，40%到100%。',
-        'value-area-pct-live': 'Live zone value area width, from 40% to 100%.\nlive區間VP寬度，40%到100%。',
-        'contract-bt': 'Futures contract used for backtest data.\n回測資料使用的期貨合約。',
-        'contract-live': 'Futures contract used for live orders.\nlive下單使用的期貨合約。',
-        'size-bt': 'Number of contracts per trade.\n每筆交易的合約口數。',
-        'size-live': 'Number of contracts sent to ProjectX.\n送到ProjectX的合約口數。',
-        'sl-ticks-bt': 'Full stop loss distance in ticks.\n完整停損目標的ticks距離。',
-        'sl-ticks-live': 'Stop loss used by live Auto OCO protection.\nlive Auto OCO保護單使用的停損距離。',
-        'tp-ticks-bt': 'Full profit target distance in ticks.\n完整止盈目標的ticks距離。',
-        'tp-ticks-live': 'Profit target used by live Auto OCO protection.\nlive Auto OCO保護單使用的止盈距離。',
-        'trail-trigger-pct-bt': 'Moves SL after price reaches this percent of TP.\n價格到達TP百分比後移動SL。',
-        'trail-trigger-pct-live': 'Moves the live Auto OCO SL after trigger.\n觸發後修改live Auto OCO的SL。',
-        'trail-sl-pct-bt': 'New SL location after trigger, relative to entry.\n觸發後SL相對入場的位置。',
-        'trail-sl-pct-live': 'New live SL location after trigger.\n觸發後live SL要移到的位置。',
-        'max-profit-lock-bt': 'Blocks new entries after the daily threshold.\n日內達標後停止新交易。',
-        'max-profit-lock-live': 'Blocks new live entries after the daily threshold.\nlive日內達標後不再開新倉。',
-        'username': 'Topstep email.\nTopstep郵箱。',
-        'apikey': 'ProjectX API key.\nProjectX API。',
-        'contract-preset': 'Shortcut that fills the contractId.\n快速填入contractId。',
-        'contract-id': 'Futures contract ID, e.g. CON.F.US.MNQ.M26.\n期貨合約ID，例如 CON.F.US.MNQ.M26。',
-        'start-date': 'Start date used for historical data.\n歷史資料開始日期。',
-        'end-date': 'End date used for historical data.\n歷史資料結束日期。',
-        'data-count': 'Loaded 1-minute candle count.\n目前載入的1分鐘K線數量。',
-    };
-    Object.entries(tips).forEach(([id, tip]) => {
-        const el = document.getElementById(id);
-        const group = el ? el.closest('.form-group') : null;
-        addHelpDot(group ? group.querySelector('label') : null, tip);
-    });
+    _set('full-tp-lock-' + mode, String(p.full_tp_lock || 0));
 }
 
 // CONTRACT preset dropdown in the connect panel — fills the contract-id text input.
@@ -1964,17 +1807,16 @@ function onTrailToggle(mode) {
 
 
 // ── Preset system (server-side JSON) ──
-let _presetsCache = { presets: {}, last_used_bt: 'default', last_used_live: 'default' };
+let _presetsCache = { presets: {}, last_used_bt: 'default', last_used_live: 'default', fixed_presets: [] };
+
+function isFixedPreset(name) {
+    return Array.isArray(_presetsCache.fixed_presets) && _presetsCache.fixed_presets.includes(name);
+}
 
 function buildPresetName(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
-    const strat = (p.strategy || 'trend').toLowerCase();
-    const prefix = (
-        strat === 'macd'             ? 'MA'   :
-        strat === 'reversion'        ? 'RE'   :
-        strat === 'trend_reversion'  ? 'RETR' :
-        'TR'
-    );
+    const strat = (p.strategy || 'breakthrough').toLowerCase();
+    const prefix = strat === 'consolidation' ? 'CON' : (strat === 'hybrid' ? 'HY' : 'BR');
     const contractLabel = contractLabelFromId(p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id);
     const contractSize = normalizeContractSize(
         p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id,
@@ -1987,16 +1829,15 @@ function buildPresetName(params) {
     const trailPct = p.trail_sl_pct != null
         ? parseFloat(p.trail_sl_pct)
         : trailPctFromTicks(p.trail_sl_ticks || 0, sl, tp);
-    const mpl = parseInt(p.max_profit_lock || 0, 10) || 0;
-    const areaPct = normalizeAreaPctValue(p.value_area_pct || DEFAULT_STRATEGY_PARAMS.value_area_pct);
-    const strategyLabel = prefix + areaPct;
+    const tpl = Math.max(0, Math.min(3, parseInt(p.full_tp_lock || 0, 10) || 0));
+    const strategyLabel = prefix;
     const trailLabel = 'TRAILTP' + Math.round(Math.abs(trailPct) * 100) + '%';
     return strategyLabel + ' ' + contractLabel + 'x' + contractSize + ' ' + sl + '/' + tp +
         ' TRIG' + (trailEnabled ? Math.round(triggerPct * 100) : 'OFF') +
         (trailEnabled
             ? ' ' + trailLabel
             : ' TRAIL OFF') +
-        (mpl > 0 ? ' LOCK' + mpl : ' LOCKOFF');
+        (tpl > 0 ? ' TPLOCK' + tpl : ' TPLOCKOFF');
 }
 
 async function fetchPresets() {
@@ -2012,11 +1853,12 @@ async function savePreset(mode) {
     const name = prompt('Preset name:', buildPresetName(params));
     if (!name || !name.trim()) return;
     try {
-        await fetch(API + '/presets/save', {
+        const saveResp = await fetch(API + '/presets/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: name.trim(), params: params }),
         });
+        if (!saveResp.ok) throw new Error('HTTP ' + saveResp.status);
         await fetch(API + '/presets/use', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -2060,7 +1902,7 @@ function refreshPresetDropdowns() {
         names.forEach(function(n) {
             const opt = document.createElement('option');
             opt.value = n;
-            opt.textContent = n;
+            opt.textContent = isFixedPreset(n) ? n + ' *' : n;
             sel.appendChild(opt);
         });
         if (current && (current === 'default' || _presetsCache.presets[current])) {
@@ -2072,7 +1914,10 @@ function refreshPresetDropdowns() {
 async function deletePreset(mode) {
     const sel = document.getElementById('preset-' + mode);
     const name = sel.value;
-    if (name === 'default') { log('Cannot delete the Default preset', 'warn'); return; }
+    if (name === 'default' || isFixedPreset(name)) {
+        log('Cannot delete fixed preset: ' + (name === 'default' ? 'Default' : name), 'warn');
+        return;
+    }
     try {
         const resp = await fetch(API + '/presets/delete', {
             method: 'POST',
@@ -2144,7 +1989,6 @@ document.addEventListener('DOMContentLoaded', () => {
     checkHealth();
     loadEnvConfig();
     loadFullBacktestResults();
-    decorateParamHelpDots();
     updateClock();
     setInterval(updateClock, 1000);
 
@@ -2203,7 +2047,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
             t.classList.add('active');
             const tab = t.dataset.btab;
-            ['ml','trades','execute','log'].forEach(id => {
+            ['full','trades','execute','log'].forEach(id => {
                 document.getElementById('btab-' + id).classList.toggle('hidden', id !== tab);
             });
             if (tab === 'log') scrollSystemLogToBottom();
@@ -2820,13 +2664,13 @@ async function pollLiveStatus() {
 
         // ── Capital & PnL ──
         // st.capital = real balance from API (already includes today's PnL)
-        // st.daily_pnl = today's realized PnL from trade history (for profit lock display)
+        // st.daily_pnl = today's realized PnL from trade history.
         if (st.capital) {
             const pnl = st.daily_pnl || 0;
             const pnlStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
             const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-            const lockBadge = st.profit_locked
-                ? ' <span style="color:var(--amber);font-size:9px;letter-spacing:1px;">🔒 LOCKED</span>'
+            const lockBadge = st.tp_locked
+                ? ' <span style="color:var(--amber);font-size:9px;letter-spacing:1px;">TP LOCK ' + (st.full_tp_count || 0) + '/' + (st.full_tp_lock || 0) + '</span>'
                 : '';
             const dcBadge = st.disconnected
                 ? ' <span style="color:var(--red);font-size:9px;letter-spacing:1px;animation:blink 1s infinite;">⚠ OFFLINE</span>'
@@ -2847,19 +2691,30 @@ async function pollLiveStatus() {
             }
         }
 
+        const modeText = (st.strategy_mode || (st.strategies && st.strategies[0]) || collectStrategyParams('live').strategy || '--').toUpperCase();
+        const modeTopEl = document.getElementById('lv-mode');
+        const modePanelEl = document.getElementById('live-mode-text');
+        const modeLogEl = document.getElementById('system-log-mode');
+        if (modeTopEl) modeTopEl.textContent = modeText;
+        if (modeLogEl) modeLogEl.textContent = modeText;
+        if (modePanelEl) {
+            modePanelEl.textContent = modeText;
+            modePanelEl.style.color = 'var(--green)';
+        }
+
         // ── Phase — both top bar and left panel ──
         let phaseText = st.phase || '--';
-        const phaseDisplayText = phaseText + (st.profit_locked ? ' \uD83D\uDD12' : '');
+        const phaseDisplayText = phaseText + (st.tp_locked ? ' TPLOCK' : '');
         const panelPhaseEl = document.getElementById('live-position-text');
         if (panelPhaseEl) {
             panelPhaseEl.textContent = phaseDisplayText;
-            panelPhaseEl.style.color = st.profit_locked ? 'var(--amber)' : 'var(--text3)';
+            panelPhaseEl.style.color = st.tp_locked ? 'var(--amber)' : 'var(--text3)';
         }
         const phaseTopEl = document.getElementById('lv-phase-top');
         if (phaseTopEl) {
             phaseTopEl.textContent = phaseDisplayText;
             // Color based on phase
-            if (st.profit_locked) phaseTopEl.style.color = 'var(--amber)';
+            if (st.tp_locked) phaseTopEl.style.color = 'var(--amber)';
             else if (/交易中|持倉|TRADE/i.test(phaseText)) phaseTopEl.style.color = 'var(--green)';
             else if (/出界|break/i.test(phaseText)) phaseTopEl.style.color = 'var(--amber)';
             else if (/盤整|區間內/i.test(phaseText)) phaseTopEl.style.color = 'var(--cyan)';
@@ -3243,6 +3098,9 @@ const SESSION_BOUNDARIES = [
     { h: 13, m: 30, label: 'RTH'  },
     { h: 20, m: 0,  label: 'AH'   },
 ];
+const NO_TRADE_WINDOWS_UTC = [
+    { startH: 19, startM: 30, endH: 22, endM: 0, label: 'NO TRADE' },
+];
 
 function utcMsToChartTime(ms) {
     const localOffset = new Date(ms).getTimezoneOffset() * -60;
@@ -3343,6 +3201,53 @@ function drawSessionDividers() {
             ctx.fillText(b.label, x + 3, 11);
         });
     }
+
+    drawNoTradeHatching(ctx, W, H, startDay.getTime(), endMs, fromMs, toMs);
+}
+
+function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
+    const dayMs = 86400000;
+    const slope = Math.tan(80 * Math.PI / 180);
+    const dx = H / slope;
+    ctx.save();
+    ctx.lineWidth = 0.8;
+    ctx.strokeStyle = 'rgba(255, 48, 72, 0.55)';
+    ctx.fillStyle = 'rgba(255, 48, 72, 0.035)';
+    ctx.setLineDash([]);
+    ctx.font = '9px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'left';
+
+    for (let d = startDayMs; d <= endMs; d += dayMs) {
+        const day = new Date(d);
+        NO_TRADE_WINDOWS_UTC.forEach(w => {
+            const startMs = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.startH, w.startM, 0);
+            const endWindowMs = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.endH, w.endM, 0);
+            if (endWindowMs < fromMs || startMs > toMs) return;
+            const x1 = chart.timeScale().timeToCoordinate(utcMsToChartTime(startMs));
+            const x2 = chart.timeScale().timeToCoordinate(utcMsToChartTime(endWindowMs));
+            if (x1 === null || x2 === null) return;
+            const left = Math.max(0, Math.min(x1, x2));
+            const right = Math.min(W, Math.max(x1, x2));
+            if (right <= 0 || left >= W || right - left < 2) return;
+
+            ctx.fillRect(left, 0, right - left, H);
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(left, 0, right - left, H);
+            ctx.clip();
+            for (let base = left - dx - 14; base <= right + 14; base += 10) {
+                ctx.beginPath();
+                ctx.moveTo(base, H);
+                ctx.lineTo(base + dx, 0);
+                ctx.stroke();
+            }
+            ctx.restore();
+            ctx.fillStyle = 'rgba(255, 48, 72, 0.65)';
+            ctx.fillText(w.label, left + 4, 25);
+            ctx.fillStyle = 'rgba(255, 48, 72, 0.035)';
+        });
+    }
+    ctx.restore();
 }
 
 function drawVolumeProfile(zones) {
@@ -4040,7 +3945,7 @@ async function connectAPI() {
 
     // CONNECT fetches last 14 days of 1m bars — fast, fresh, reliable.
     // 30s bars via TopstepX paginated API have a ~6h settle delay for large ranges.
-    // Backtest/ML use 30s separately (lazy-loaded on demand).
+    // Backtest and Full Backtest extend the range lazily when needed.
     const _now = new Date();
     const _quick14 = new Date(_now);
     _quick14.setDate(_quick14.getDate() - 14);
@@ -4080,7 +3985,7 @@ async function connectAPI() {
         document.getElementById('data-count').value = data.candles_count + ' bars';
         document.getElementById('btn-backtest').disabled = false;
         document.getElementById('btn-run-all').disabled = false;
-        document.getElementById('btn-ml-filter').disabled = false;
+        document.getElementById('btn-full-filter').disabled = false;
         _updateDataInfo(data.first, data.last, 'conn', data.candles_count);
 
         // Auto-save credentials to .env if user typed them
@@ -4243,18 +4148,18 @@ function _updateDataInfo(first, last, source, barCount) {
 
 // ── Backtest data lazy-loader ──────────────────────
 // Tracks which date range is currently loaded in the backend.
-// CONNECT only loads 14 days (fast); full range is fetched on first backtest/ML click.
+// CONNECT only loads 14 days (fast); full range is fetched on first backtest or Full Backtest click.
 let _btDataRange = null;  // { start, end, contract } once loaded for backtest
 
 function _profitLockBoundaryISO(dateStr) {
     const parts = String(dateStr || '').split('-').map(Number);
     if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return dateStr + 'T00:00:00Z';
-    // Follow profit-lock trading day boundary: California 3pm.
+    // Follow Topstep/CME trading-day boundary: California 3pm.
     return new Date(parts[0], parts[1] - 1, parts[2], 15, 0, 0, 0).toISOString();
 }
 
 async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
-    // overrideStart / overrideEnd let callers (e.g. ML) use a fixed window
+    // overrideStart / overrideEnd let callers use a fixed window.
     // instead of the date pickers. Falls back to date pickers when omitted.
     const startDate = overrideStart || document.getElementById('start-date').value;
     const endDate   = overrideEnd   || document.getElementById('end-date').value;
@@ -4280,7 +4185,7 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data...';
     log((appendFetch ? 'Syncing new backtest data' : 'Fetching backtest data') + ' (' + fetchLabel + ' -> ' + endDate + ')...', 'info');
 
-    const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / ML
+    const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / full backtest
         start_time: fetchStartTime,
         end_time:   endDate   + 'T23:59:59Z',
         append: appendFetch };
@@ -4356,31 +4261,30 @@ async function runBacktest() {
 
 // -- Full Backtest -----------------------------------
 
-let _mlResults = [];
-let _mlProgressInterval = null;
-const ML_RESULTS_LIMIT = 200;
+let _fullResults = [];
+let _fullProgressInterval = null;
+const FULL_RESULTS_LIMIT = 200;
 
-// ── ML column sort state ───────────────────────────
-let _mlSortCol = 'calmar';
-let _mlSortDir = 'desc';   // 'desc' | 'asc'
+// -- Full Backtest column sort state ----------------
+let _fullSortCol = 'calmar';
+let _fullSortDir = 'desc';   // 'desc' | 'asc'
 
-function _mlSortVal(r, col) {
+function _fullSortVal(r, col) {
     switch (col) {
         case 'rank':      return r.rank || 0;
         case 'strategy':  return (r.strategy || '').toLowerCase();
         case 'contract':  return contractLabelFromId(r.contract_id || '').toLowerCase();
         case 'size':      return r.contract_size || 0;
-        case 'area':      return normalizeAreaPctValue(r.value_area_pct || DEFAULT_STRATEGY_PARAMS.value_area_pct);
         case 'sl':        return r.sl || 0;
         case 'tp':        return r.tp || 0;
         case 'trail':     return r.trail_pct != null ? Number(r.trail_pct) : (r.trail || 0);
         case 'trigger':   return r.trail_trigger_pct || 0;
-        case 'lock':      return r.max_profit_lock || 0;
+        case 'lock':      return r.full_tp_lock || 0;
         case 'trades':    return r.total_trades || 0;
         case 'win_rate':  return r.win_rate || 0;
         case 'pnl':       return r.total_pnl || 0;
         case 'max_dd':    return r.max_drawdown || 0;
-        case 'lwr':       return mlResultLossToFinalRatio(r);
+        case 'lwr':       return fullResultLossToFinalRatio(r);
         case 'calmar':    return r.calmar_ratio || 0;
         case 'best_day': { const v = Object.values(r.daily_pnl || {}); return v.length ? Math.max(...v) : 0; }
         case 'worst_day':{ const v = Object.values(r.daily_pnl || {}); return v.length ? Math.min(...v) : 0; }
@@ -4388,47 +4292,47 @@ function _mlSortVal(r, col) {
     }
 }
 
-function mlResultTotalLoss(r) {
+function fullResultTotalLoss(r) {
     if (r.total_loss != null) return Number(r.total_loss) || 0;
     return (Number(r.avg_loss) || 0) * (Number(r.losses) || 0);
 }
 
-function mlResultLossToFinalRatio(r) {
+function fullResultLossToFinalRatio(r) {
     if (r.loss_to_final_ratio != null) return Number(r.loss_to_final_ratio) || 0;
     if (r.lwr != null) return Number(r.lwr) || 0;
     const pnl = Number(r.total_pnl) || 0;
-    const loss = Math.abs(mlResultTotalLoss(r));
+    const loss = Math.abs(fullResultTotalLoss(r));
     return loss > 0 ? pnl / loss : (pnl > 0 ? Infinity : 0);
 }
 
-function isMLResultAllowed(r) {
+function isFullResultAllowed(r) {
     return (Number(r?.sl) || 0) >= 50 && (Number(r?.tp) || 0) >= 50;
 }
 
-function normalizeMLResults(results) {
+function normalizeFullResults(results) {
     return (results || [])
-        .filter(isMLResultAllowed)
+        .filter(isFullResultAllowed)
         .map(r => {
-            const ratio = mlResultLossToFinalRatio(r);
+            const ratio = fullResultLossToFinalRatio(r);
             return Object.assign({}, r, { loss_to_final_ratio: ratio, lwr: ratio });
         });
 }
 
-async function mlSortBy(col) {
-    if (_mlSortCol === col) {
-        _mlSortDir = _mlSortDir === 'desc' ? 'asc' : 'desc';
+async function fullSortBy(col) {
+    if (_fullSortCol === col) {
+        _fullSortDir = _fullSortDir === 'desc' ? 'asc' : 'desc';
     } else {
-        _mlSortCol = col;
-        _mlSortDir = 'desc';
+        _fullSortCol = col;
+        _fullSortDir = 'desc';
     }
     // Update all header visual states
-    document.querySelectorAll('.ml-sort-th').forEach(th => {
+    document.querySelectorAll('.full-sort-th').forEach(th => {
         const isActive = th.dataset.col === col;
         th.classList.toggle('sort-active', isActive);
         const arrow = th.querySelector('.sa');
         if (!arrow) return;
         if (isActive) {
-            arrow.textContent = _mlSortDir === 'desc' ? '↓' : '↑';
+            arrow.textContent = _fullSortDir === 'desc' ? '↓' : '↑';
         } else {
             arrow.textContent = '↕';
         }
@@ -4439,34 +4343,34 @@ async function mlSortBy(col) {
 async function loadFullBacktestResults() {
     try {
         const params = new URLSearchParams({
-            sort_col: _mlSortCol,
-            sort_dir: _mlSortDir,
-            limit: String(ML_RESULTS_LIMIT),
+            sort_col: _fullSortCol,
+            sort_dir: _fullSortDir,
+            limit: String(FULL_RESULTS_LIMIT),
         });
-        const resp = await fetch(API + '/backtest/ml-results?' + params.toString());
+        const resp = await fetch(API + '/backtest/full-results?' + params.toString());
         if (!resp.ok) return;
         const data = await resp.json();
-        const results = normalizeMLResults(data.results).slice(0, ML_RESULTS_LIMIT);
+        const results = normalizeFullResults(data.results).slice(0, FULL_RESULTS_LIMIT);
         if (!results.length) return;
-        _mlResults = results;
-        renderMLResults(_mlResults);
-        log('Loaded Full backtest top ' + _mlResults.length + ' by ' + _mlSortCol + ' ' + _mlSortDir, 'info');
+        _fullResults = results;
+        renderFullResults(_fullResults);
+        log('Loaded Full backtest top ' + _fullResults.length + ' by ' + _fullSortCol + ' ' + _fullSortDir, 'info');
     } catch(e) {
         // Non-blocking: the table simply stays empty until the next run.
     }
 }
 
-function _startMLProgress() {
-    const wrap = document.getElementById('ml-progress-wrap');
-    const bar  = document.getElementById('ml-progress-bar');
-    const text = document.getElementById('ml-progress-text');
+function _startFullProgress() {
+    const wrap = document.getElementById('full-progress-wrap');
+    const bar  = document.getElementById('full-progress-bar');
+    const text = document.getElementById('full-progress-text');
     if (wrap) wrap.style.display = 'block';
     if (bar)  bar.style.width = '0%';
     if (text) text.textContent = '0 / 0';
 
-    _mlProgressInterval = setInterval(async () => {
+    _fullProgressInterval = setInterval(async () => {
         try {
-            const r = await fetch(API + '/backtest/ml-progress');
+            const r = await fetch(API + '/backtest/full-progress');
             const d = await r.json();
             const cur = d.current || 0;
             const tot = d.total  || 0;
@@ -4476,10 +4380,10 @@ function _startMLProgress() {
     }, 350);
 }
 
-function _stopMLProgress(success) {
-    if (_mlProgressInterval) { clearInterval(_mlProgressInterval); _mlProgressInterval = null; }
-    const bar  = document.getElementById('ml-progress-bar');
-    const wrap = document.getElementById('ml-progress-wrap');
+function _stopFullProgress(success) {
+    if (_fullProgressInterval) { clearInterval(_fullProgressInterval); _fullProgressInterval = null; }
+    const bar  = document.getElementById('full-progress-bar');
+    const wrap = document.getElementById('full-progress-wrap');
     if (success && bar) {
         bar.style.width = '100%';
         // fade out after 1.2 s
@@ -4489,10 +4393,10 @@ function _stopMLProgress(success) {
     }
 }
 
-function toggleMLFixedDropdown(event) {
+function toggleFullFixedDropdown(event) {
     if (event) event.stopPropagation();
-    const panel = document.getElementById('ml-fixed-panel');
-    const btn = document.getElementById('btn-ml-filter');
+    const panel = document.getElementById('full-fixed-panel');
+    const btn = document.getElementById('btn-full-filter');
     if (!panel || !btn) return;
     const open = !panel.classList.contains('open');
     panel.classList.toggle('open', open);
@@ -4513,17 +4417,16 @@ function toggleMLFixedDropdown(event) {
     panel.style.visibility = 'visible';
 }
 
-function getMLFixedParams() {
+function getFullFixedParams() {
     const pairs = [
-        ['strategy', 'ml-fix-strategy'],
-        ['area', 'ml-fix-area'],
-        ['contract', 'ml-fix-contract'],
-        ['size', 'ml-fix-size'],
-        ['tp', 'ml-fix-tp'],
-        ['sl', 'ml-fix-sl'],
-        ['trail_trigger', 'ml-fix-trail-trigger'],
-        ['trail', 'ml-fix-trail'],
-        ['profit_lock', 'ml-fix-profit-lock'],
+        ['strategy', 'full-fix-strategy'],
+        ['contract', 'full-fix-contract'],
+        ['size', 'full-fix-size'],
+        ['tp', 'full-fix-tp'],
+        ['sl', 'full-fix-sl'],
+        ['trail_trigger', 'full-fix-trail-trigger'],
+        ['trail', 'full-fix-trail'],
+        ['full_tp_lock', 'full-fix-full-tp-lock'],
     ];
     return pairs.filter(([, id]) => {
         const el = document.getElementById(id);
@@ -4532,19 +4435,19 @@ function getMLFixedParams() {
 }
 
 document.addEventListener('click', (e) => {
-    const panel = document.getElementById('ml-fixed-panel');
-    const wrap = document.querySelector('.ml-run-wrap');
+    const panel = document.getElementById('full-fixed-panel');
+    const wrap = document.querySelector('.full-run-wrap');
     if (panel && wrap && !wrap.contains(e.target)) panel.classList.remove('open');
 });
 
 async function runAllCombinations() {
     const btn = document.getElementById('btn-run-all');
-    const filterBtn = document.getElementById('btn-ml-filter');
+    const filterBtn = document.getElementById('btn-full-filter');
     btn.disabled = true;
     if (filterBtn) filterBtn.disabled = true;
-    const fixedParams = getMLFixedParams();
-    const mlPanel = document.getElementById('ml-fixed-panel');
-    if (mlPanel) mlPanel.classList.remove('open');
+    const fixedParams = getFullFixedParams();
+    const fullPanel = document.getElementById('full-fixed-panel');
+    if (fullPanel) fullPanel.classList.remove('open');
 
     // Full backtest uses the same date range as Execute Backtest (date pickers / slider).
     const dataOk = await _ensureBacktestData(btn);
@@ -4559,14 +4462,14 @@ async function runAllCombinations() {
 
     // Switch to Full backtest tab so user can watch
     document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
-    document.querySelector('[data-btab="ml"]').classList.add('active');
-    ['ml','trades','execute','log'].forEach(id => {
-        document.getElementById('btab-' + id).classList.toggle('hidden', id !== 'ml');
+    document.querySelector('[data-btab="full"]').classList.add('active');
+    ['full','trades','execute','log'].forEach(id => {
+        document.getElementById('btab-' + id).classList.toggle('hidden', id !== 'full');
     });
 
-    // (ml-status row removed)
+    // (full-status row removed)
 
-    _startMLProgress();
+    _startFullProgress();
 
     const params = collectStrategyParams('bt');
     let success = false;
@@ -4575,7 +4478,7 @@ async function runAllCombinations() {
         const endDate   = document.getElementById('end-date').value;
         const capital   = 50000;
 
-        const resp = await fetch(API + '/backtest/ml-run', {
+        const resp = await fetch(API + '/backtest/full-run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -4589,7 +4492,7 @@ async function runAllCombinations() {
                 contract_id: params.contract_id,
                 contract_size: params.contract_size,
                 value_area_pct: params.value_area_pct,
-                max_profit_lock: params.max_profit_lock,
+                full_tp_lock: params.full_tp_lock,
                 skip_zone_stability: false,
                 candle_seconds: params.candle_seconds,
                 initial_capital: capital,
@@ -4601,10 +4504,10 @@ async function runAllCombinations() {
 
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
-        _mlResults = normalizeMLResults(data.results).slice(0, ML_RESULTS_LIMIT);
-        renderMLResults(_mlResults);
+        _fullResults = normalizeFullResults(data.results).slice(0, FULL_RESULTS_LIMIT);
+        renderFullResults(_fullResults);
         // status row removed — result count logged below
-        log('Full backtest complete: showing top ' + _mlResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
+        log('Full backtest complete: showing top ' + _fullResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
         if (data.artifact && data.artifact.json) {
             log('Full backtest AI file: ' + data.artifact.json, 'info');
         }
@@ -4612,28 +4515,28 @@ async function runAllCombinations() {
     } catch(e) {
         log('Full backtest failed: ' + e.message, 'error');
     } finally {
-        _stopMLProgress(success);
+        _stopFullProgress(success);
         btn.disabled = false;
         if (filterBtn) filterBtn.disabled = false;
         btn.textContent = 'FULL BACKTEST';
     }
 }
 
-function renderMLResults(results) {
-    const tbody = document.getElementById('ml-tbody');
+function renderFullResults(results) {
+    const tbody = document.getElementById('full-tbody');
     if (!tbody) return;
     tbody.innerHTML = '';
 
     if (!results || results.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="18" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="17" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
         return;
     }
 
     // Apply current sort
-    const dir = _mlSortDir === 'desc' ? -1 : 1;
-    const sorted = normalizeMLResults(results).sort((a, b) => {
-        const va = _mlSortVal(a, _mlSortCol);
-        const vb = _mlSortVal(b, _mlSortCol);
+    const dir = _fullSortDir === 'desc' ? -1 : 1;
+    const sorted = normalizeFullResults(results).sort((a, b) => {
+        const va = _fullSortVal(a, _fullSortCol);
+        const vb = _fullSortVal(b, _fullSortCol);
         if (typeof va === 'string') return dir * va.localeCompare(vb);
         return dir * ((va || 0) - (vb || 0));
     });
@@ -4647,20 +4550,19 @@ function renderMLResults(results) {
         const wr = ((r.win_rate || 0) * 100).toFixed(1);
         const calmar = r.calmar_ratio || 0;
         const calmarColor = calmar >= 1 ? 'var(--green)' : '';
-        const lossFinalRatio = mlResultLossToFinalRatio(r);
+        const lossFinalRatio = fullResultLossToFinalRatio(r);
         const lossFinalColor = lossFinalRatio >= 1 ? 'var(--green)' : 'var(--red)';
         const lossFinalLabel = Number.isFinite(lossFinalRatio) ? lossFinalRatio.toFixed(2) : '∞';
         const pnl = r.total_pnl || 0;
         const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
         const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
         const contractSize = r.contract_size || 1;
-        const areaLabel = normalizeAreaPctValue(r.value_area_pct || DEFAULT_STRATEGY_PARAMS.value_area_pct);
         const triggerPct = r.trail_trigger_pct || 0;
         const triggerLabel = triggerPct > 0 ? Math.round(triggerPct * 100) + '%' : 'OFF';
         const trailLabel = triggerPct > 0 && r.trail_pct != null
             ? fmtPct(parseFloat(r.trail_pct)) + ' / ' + fmtSigned(r.trail || 0, 't')
             : 'OFF';
-        const lockLabel = r.max_profit_lock ? '$' + r.max_profit_lock : 'OFF';
+        const lockLabel = r.full_tp_lock ? String(r.full_tp_lock) : 'OFF';
 
         // Best/worst day from daily_pnl dict
         const daily = r.daily_pnl || {};
@@ -4669,14 +4571,13 @@ function renderMLResults(results) {
         const worstDay = dailyVals.length ? '$' + Math.min(...dailyVals).toFixed(0) : '—';
 
         // Preset badge keyed by original rank (stable across re-sorts)
-        const savedLabel = _mlSavedMap[origRank] ? _mlSavedMap[origRank] : '';
+        const savedLabel = _fullSavedMap[origRank] ? _fullSavedMap[origRank] : '';
 
         const tr = document.createElement('tr');
         tr.innerHTML =
             '<td>' + (r.strategy || '—').toUpperCase() + '</td>' +
             '<td style="text-align:center;">' + contractLabel + '</td>' +
             '<td style="text-align:center;">' + contractSize + '</td>' +
-            '<td style="text-align:center;">' + areaLabel + '</td>' +
             '<td style="text-align:center;">' + (r.sl || 0) + '</td>' +
             '<td style="text-align:center;">' + (r.tp || 0) + '</td>' +
             '<td style="text-align:center;">' + triggerLabel + '</td>' +
@@ -4691,7 +4592,7 @@ function renderMLResults(results) {
             '<td style="text-align:center;color:' + lossFinalColor + ';">' + lossFinalLabel + '</td>' +
             '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
             '<td style="text-align:center;">' +
-                '<button class="btn btn-outline" onclick="saveMLPreset(' + origRank + ')" ' +
+                '<button class="btn btn-outline" onclick="saveFullPreset(' + origRank + ')" ' +
                     'style="padding:2px 6px;font-size:10px;width:24px;height:24px;' +
                     (savedLabel ? 'background:var(--green2);border-color:var(--green);color:var(--green);' : '') + '" ' +
                     'title="' + (savedLabel ? 'Saved: ' + savedLabel : 'Save as preset') + '">+</button>' +
@@ -4700,22 +4601,21 @@ function renderMLResults(results) {
     });
 }
 
-// Track which ORIGINAL ranks have been saved as presets
-const _mlSavedMap = {};   // origRank → ML#N number
+// Track which ORIGINAL ranks have been saved as presets.
+const _fullSavedMap = {};
 
-async function saveMLPreset(origRank) {
+async function saveFullPreset(origRank) {
     // Find by original rank (stable across sort order changes)
-    const r = _mlResults.find(x => (x.rank || 0) === origRank);
+    const r = _fullResults.find(x => (x.rank || 0) === origRank);
     if (!r) return;
 
-    const strat = (r.strategy || 'trend').toLowerCase();
+    const strat = (r.strategy || 'breakthrough').toLowerCase();
     const contractSize = r.contract_size || 1;
     const triggerPct = r.trail_trigger_pct != null ? r.trail_trigger_pct : 0.30;
     const trailEnabled = triggerPct > 0;
     const trailPct = trailEnabled && r.trail_pct != null
         ? parseFloat(r.trail_pct)
         : trailPctFromTicks(r.trail || 0, r.sl || 0, r.tp || 0);
-    const mpl = r.max_profit_lock || 0;
 
     const params = {
         strategy: strat,
@@ -4728,8 +4628,8 @@ async function saveMLPreset(origRank) {
         candle_seconds: r.candle_seconds || 60,
         contract_id: r.contract_id || 'CON.F.US.MNQ.M26',
         contract_size: contractSize,
-        max_profit_lock: r.max_profit_lock || 0,
-        value_area_pct: r.value_area_pct || collectStrategyParams('bt').value_area_pct,
+        full_tp_lock: r.full_tp_lock || 0,
+        value_area_pct: 0.80,
         skip_zone_stability: false,
     };
     const presetName = buildPresetName(params);
@@ -4742,18 +4642,18 @@ async function saveMLPreset(origRank) {
         });
         await fetchPresets();
         refreshPresetDropdowns();
-        _mlSavedMap[origRank] = presetName;
-        renderMLResults(_mlResults);   // re-render to show badge
+        _fullSavedMap[origRank] = presetName;
+        renderFullResults(_fullResults);   // re-render to show badge
         log('Preset saved: ' + presetName, 'success');
     } catch(e) {
         log('Full backtest preset save error: ' + e.message, 'error');
     }
 }
 
-function clearMLResults() {
-    _mlResults = [];
-    Object.keys(_mlSavedMap).forEach(k => delete _mlSavedMap[k]);
-    const tbody = document.getElementById('ml-tbody');
+function clearFullResults() {
+    _fullResults = [];
+    Object.keys(_fullSavedMap).forEach(k => delete _fullSavedMap[k]);
+    const tbody = document.getElementById('full-tbody');
     if (tbody) tbody.innerHTML = '';
 }
 
@@ -5195,7 +5095,6 @@ function renderMetrics(m, backtestTrades) {
         if (!stats || !stats.trades) return '--';
         return fmtPctTriple(stats);
     };
-    const prevZoneStats = _computeTradeStats((backtestTrades || []).filter(t => t.zone_source === 'previous'));
     const currentZoneStats = _computeTradeStats((backtestTrades || []).filter(t => t.zone_source === 'current'));
 
     const items = [
@@ -5228,9 +5127,6 @@ function renderMetrics(m, backtestTrades) {
           cls: '' },
         { label: 'AVG $ TP/SL/TRAIL',
           value: fmtAvgTriple(backtestStats) + paren(liveStats ? fmtAvgTriple(liveStats) : ''),
-          cls: '' },
-        { label: 'PREV ZONE TP/SL/TRAIL',
-          value: fmtZoneExitBuckets(prevZoneStats),
           cls: '' },
         { label: 'CURRENT ZONE TP/SL/TRAIL',
           value: fmtZoneExitBuckets(currentZoneStats),
@@ -5495,3 +5391,6 @@ function updateClock() {
 </script>
 </body>
 </html>
+
+
+

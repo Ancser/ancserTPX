@@ -1,27 +1,13 @@
-# ============================================================
+﻿# ============================================================
 # 文件: backend/db/models.py
-# 功能: 共用的資料結構 (dataclasses) 定義 — 全後端共用的型別契約
-# 主要職責:
-#   1. 市場資料: Candle / VolumeProfileResult
-#   2. 策略狀態: ConsolidationZone / TradeSignal / Trade / BreakoutAnalysis
-#   3. 配置/結果: StrategyParams / BacktestConfig / BacktestResult / Metrics
-#   4. 風控: RiskStatus / RiskCheckResult
-#   5. Broker DTO: OrderRequest / OrderResponse / AccountInfo
-# 重要欄位:
-#   - StrategyParams.contract_id  : 預設合約代碼 (如 CON.F.US.MNQ.M26)
-#   - StrategyParams.contract_size: 下單口數 (1..N)
-#   - StrategyParams.trail_enabled: trail SL 主開關 (v0.11+)
-#   - Trade.contracts             : 此筆交易實際使用的口數
-#   - Trade.point_value           : 此合約每點美元值 (NQ=$20, MNQ=$2)
-#   - Metrics.post_breakout_*     : 突破確認後 60 分鐘的 MFE/MAE/路徑統計
-# 合約規格 (_CONTRACT_SPECS):
-#   - point_value, tick_size, commission_rt, fees_rt (per-contract round-turn)
-#   - 由 get_point_value / get_tick_size / get_commission_rt / get_fees_rt 取用
-# 關聯:
-#   ← backend/api/routes.py / backtest/engine.py / live/engine.py / strategy/* / broker/*
-# 狀態: 已完成 (v0.11 加入 contract_id / size / fees / trail_enabled / post-breakout stats)
+# 狀態: v0.17.0
+# 功能 / Features:
+#   - Shared dataclasses and enums for candles, zones, signals, trades, metrics,
+#     backtest/live strategy params, risk DTOs, broker orders, and account data.
+#   - StrategyParams exposes breakthrough / consolidation / hybrid, fixed 80% VA,
+#     contract sizing, trail controls, and full_tp_lock.
+#   - Contract helpers resolve NQ/MNQ point value, tick size, commission, and fees.
 # ============================================================
-
 from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -51,6 +37,10 @@ class ExitReason(str, Enum):
 
 
 class StrategyType(str, Enum):
+    BREAKTHROUGH = "breakthrough"
+    CONSOLIDATION = "consolidation"
+    HYBRID = "hybrid"
+    # Legacy values remain for older saved trades and reports.
     REVERSION    = "reversion"
     TREND_FOLLOW = "trend"       # was "trend_follow" — old JSON may still show "trend_follow"
     MACD         = "macd"
@@ -199,13 +189,13 @@ class TradeSignal:
     tp_price: float
     zone_id: str
     reason: str
-    zone_source: Optional[str] = None      # "current" | "previous" (which zone generated the setup)
+    zone_source: Optional[str] = None      # v0.17.0 uses current mature zone only
     timestamp: Optional[datetime] = None
     vol_ratio: Optional[float] = None  # 趨勢跟隨時的成交量比率
     is_big_trend: bool = False
     breakout_range: Optional[float] = None  # |H100-VAH| or |VAL-L100|, for TP recalc
     order_type: str = "limit"         # "limit" | "market"
-    macd_hist: Optional[float] = None # MACD histogram value at signal
+    macd_hist: Optional[float] = None # legacy indicator snapshot, not a selectable strategy
 
     @property
     def sl_points(self) -> float:
@@ -248,14 +238,14 @@ class Trade:
     fees: float = 0.0                  # round-turn fees deducted
     exit_reason: Optional[ExitReason] = None
     zone_id: str = ""
-    zone_source: Optional[str] = None      # "current" | "previous" (set by backtest engine)
+    zone_source: Optional[str] = None      # v0.17.0 uses current mature zone only
     contracts: int = 1
     point_value: float = 20.0          # NQ=$20, MNQ=$2 (per single contract)
     contract_id: str = ""              # which TopstepX contract was used
     vol_ratio: Optional[float] = None
     is_big_trend: bool = False
     breakout_range: Optional[float] = None  # for TP timeout recalc
-    macd_hist: Optional[float] = None       # MACD histogram value at entry
+    macd_hist: Optional[float] = None       # legacy indicator snapshot, not a selectable strategy
     # Post-breakout 60-minute path tracking (filled by backtest engine after exit)
     post_breakout_max_favorable_ticks: Optional[float] = None
     post_breakout_max_adverse_ticks: Optional[float] = None
@@ -305,21 +295,24 @@ class BreakoutAnalysis:
 
 @dataclass
 class StrategyParams:
-    """可配置的策略參數 (SessionTrendFollow / MACDOnlyStrategy)"""
-    strategy: str = "trend"              # "trend" | "macd" | "reversion"
+    """Strategy parameters / 策略參數.
+
+    v0.17.0 uses three fixed modes: breakthrough, consolidation, and hybrid.
+    Value Area is locked to 80% so live and backtest use the same zone width.
+    """
+    strategy: str = "breakthrough"       # breakthrough | consolidation | hybrid
     tp_ticks: int = 200                  # 50-200 tick
     sl_ticks: int = 50                   # 50-200 tick
     trail_sl_ticks: int = 20            # 0..TP ticks from entry after trail triggers
     trail_trigger_pct: float = 0.30     # trigger trail when price reaches this fraction of TP
     trail_enabled: bool = True          # v0.11+: master switch for trailing-SL mechanism
-    # MACD params (hardcoded 12/26/9 — not user-configurable)
     # Candle interval (seconds)
-    candle_seconds: int = 30             # 30 for live 30s bars; 60 for 1m backtest
+    candle_seconds: int = 60             # v0.17.0 uses completed 1m bars in live and backtest
     # Contract & sizing (v0.11+) — preferred default 3 × Micro NQ
     contract_id: str = "CON.F.US.MNQ.M26"  # full contractId (NQ=ENQ, MNQ=MNQ)
     contract_size: int = 3                 # number of contracts per order (1..N)
-    # Max profit lock: 0=OFF, 150/500/1000 — block new trades when daily PnL ≥ threshold (resets PT 22:00)
-    max_profit_lock: int = 150
+    # Full TP lock: 0=OFF, 1/2/3 = stop new entries after N full TP exits. Resets next Topstep session.
+    full_tp_lock: int = 0
     # Session-zone maturity controls
     # Zone stability is enabled by default; set True only for no-stability-wait experiments.
     skip_zone_stability: bool = False
@@ -328,7 +321,7 @@ class StrategyParams:
     # entry_timeout_minutes: hardcoded 10 min inside strategy
     # tp_timeout_minutes / tp_timeout_action: removed
     # use_trail_sl: always True (forced)
-    # use_vwap_filter: always True (MACD forced VWAP filter)
+    # use_vwap_filter: legacy field; not user-configurable in v0.17.0
 
 
 # ── 回測 ──────────────────────────────────────────────
@@ -336,7 +329,7 @@ class StrategyParams:
 @dataclass
 class BacktestConfig:
     """回測配置"""
-    strategies: List[str] = field(default_factory=lambda: ["trend_follow"])
+    strategies: List[str] = field(default_factory=lambda: ["breakthrough"])
     symbol: str = "NQ"
     interval: str = "5m"
     start_date: str = ""
@@ -350,7 +343,7 @@ class BacktestConfig:
     # 盤整偵測參數
     min_candles_for_zone: int = 6
     poc_drift_threshold: float = 3.0
-    value_area_pct: float = 0.50
+    value_area_pct: float = 0.80
 
 
 @dataclass
@@ -390,13 +383,7 @@ class Metrics:
     post_breakout_tp_clean: int = 0             # trades that hit TP without ever touching trail level
     post_breakout_tp_after_trail: int = 0       # hit TP but first crossed trail-trigger
     post_breakout_tp_after_sl: int = 0          # hit TP but first crossed SL price
-    # Zone-source performance: whether the setup used the current mature zone
-    # or the most recent previous/left zone.
-    previous_zone_trades: int = 0
-    previous_zone_wins: int = 0
-    previous_zone_win_rate: float = 0.0
-    previous_zone_avg_pnl: float = 0.0
-    previous_zone_total_pnl: float = 0.0
+    # Zone-source performance: v0.17.0 only trades the current mature zone.
     current_zone_trades: int = 0
     current_zone_wins: int = 0
     current_zone_win_rate: float = 0.0
@@ -525,3 +512,4 @@ def get_fees_rt(contract_id: str) -> float:
     sym = _extract_symbol(contract_id)
     spec = _CONTRACT_SPECS.get(sym)
     return float(spec["fees_rt"]) if spec else 2.80
+
