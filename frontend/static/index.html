@@ -1037,6 +1037,19 @@
             <div class="panel-title">BACKTEST PARAMS</div>
             <!-- Strategy Params -->
             <div class="form-row" style="margin-top:8px;">
+                <div class="form-group" style="flex:2;">
+                    <label>CONTRACT</label>
+                    <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt'); updateTrailBounds('bt','cd')">
+                        <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
+                        <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>SIZE</label>
+                    <select id="size-bt" onchange="updateTrailBounds('bt'); updateTrailBounds('bt','cd')"></select>
+                </div>
+            </div>
+            <div class="form-row">
                 <div class="form-group" style="flex:2">
                     <label>PRESET</label>
                     <select id="preset-bt" onchange="loadPreset('bt')">
@@ -1051,7 +1064,7 @@
             <div class="form-row">
                 <div class="form-group" style="flex:2;">
                     <label>STRATEGY</label>
-                    <select id="strategy-bt">
+                    <select id="strategy-bt" onchange="onStrategyChange('bt')">
                         <option value="breakthrough" selected>BREAKTHROUGH</option>
                         <option value="consolidation">CONSOLIDATION</option>
                         <option value="hybrid">HYBRID</option>
@@ -1061,57 +1074,88 @@
                     <label>AREA</label>
                     <input type="text" value="80" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
                 </div>
+                <div class="form-group" style="flex:1;">
+                    <label>CONFIRM</label>
+                    <input type="text" value="7" id="confirm-bars-bt" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
+                </div>
             </div>
-            <div class="form-row">
-                <div class="form-group" style="flex:2;">
-                    <label>CONTRACT</label>
-                    <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt')">
-                        <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
-                        <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+            <div id="tr-params-bt" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+                <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">BREAKTHROUGH</div>
+                <div class="form-group">
+                    <label>SL <span id="sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
+                    <input type="range" id="sl-ticks-bt" min="50" max="200" step="5" value="50"
+                        oninput="document.getElementById('sl-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
+                </div>
+                <div class="form-group">
+                    <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">200</span> ticks</label>
+                    <input type="range" id="tp-ticks-bt" min="50" max="200" step="5" value="200"
+                        oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
+                </div>
+                <div class="form-group">
+                    <label>TRAIL TP TRIGGER</label>
+                    <select id="trail-trigger-pct-bt" onchange="updateTrailBounds('bt')">
+                        <option value="0">OFF</option>
+                        <option value="0.30" selected>30%</option>
+                        <option value="0.50">50%</option>
+                        <option value="0.70">70%</option>
                     </select>
                 </div>
-                <div class="form-group" style="flex:1;">
-                    <label>SIZE</label>
-                    <select id="size-bt" onchange="updateTrailBounds('bt')"></select>
+                <div class="form-group">
+                    <label>
+                        TRAIL SL <span id="trail-sl-pct-bt-val" style="color:var(--accent)">+10% TP</span>
+                        <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">20t / $30.00</span>
+                    </label>
+                    <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
+                    <input type="hidden" id="trail-sl-ticks-bt" value="20">
+                </div>
+                <div class="form-group">
+                    <label>FULL TP LOCK</label>
+                    <select id="full-tp-lock-bt">
+                        <option value="0">OFF</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                    </select>
                 </div>
             </div>
-            <div class="form-group">
-                <label>SL <span id="sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
-                <input type="range" id="sl-ticks-bt" min="50" max="200" step="5" value="50"
-                    oninput="document.getElementById('sl-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
-            </div>
-            <div class="form-group">
-                <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">200</span> ticks</label>
-                <input type="range" id="tp-ticks-bt" min="50" max="200" step="5" value="200"
-                    oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
-            </div>
-            <!-- Trail trigger controls whether Trail SL is active. -->
-            <div class="form-group">
-                <label>TRAIL TP TRIGGER</label>
-                <select id="trail-trigger-pct-bt" onchange="updateTrailBounds('bt')">
-                    <option value="0">OFF</option>
-                    <option value="0.10">10%</option>
-                    <option value="0.30" selected>30%</option>
-                    <option value="0.50">50%</option>
-                    <option value="0.70">70%</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>
-                    TRAIL SL <span id="trail-sl-pct-bt-val" style="color:var(--accent)">+10% TP</span>
-                    <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">20t / $30.00</span>
-                </label>
-                <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
-                <input type="hidden" id="trail-sl-ticks-bt" value="20">
-            </div>
-            <div class="form-group">
-                <label>FULL TP LOCK</label>
-                <select id="full-tp-lock-bt">
-                    <option value="0">OFF</option>
-                    <option value="1">1</option>
-                    <option value="2">2</option>
-                    <option value="3">3</option>
-                </select>
+            <div id="cd-params-bt" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+                <div style="font-size:9px;letter-spacing:1px;color:var(--amber);margin-bottom:4px;">CONSOLIDATION</div>
+                <div class="form-group">
+                    <label>SL <span id="cd-sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
+                    <input type="range" id="cd-sl-ticks-bt" min="50" max="200" step="5" value="50"
+                        oninput="document.getElementById('cd-sl-ticks-bt-val').textContent=this.value; updateTrailBounds('bt','cd')">
+                </div>
+                <div class="form-group">
+                    <label>TP <span id="cd-tp-ticks-bt-val" style="color:var(--accent)">200</span> ticks</label>
+                    <input type="range" id="cd-tp-ticks-bt" min="50" max="200" step="5" value="200"
+                        oninput="document.getElementById('cd-tp-ticks-bt-val').textContent=this.value; updateTrailBounds('bt','cd')">
+                </div>
+                <div class="form-group">
+                    <label>TRAIL TP TRIGGER</label>
+                    <select id="cd-trail-trigger-pct-bt" onchange="updateTrailBounds('bt','cd')">
+                        <option value="0">OFF</option>
+                        <option value="0.30" selected>30%</option>
+                        <option value="0.50">50%</option>
+                        <option value="0.70">70%</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>
+                        TRAIL SL <span id="cd-trail-sl-pct-bt-val" style="color:var(--accent)">+5% TP</span>
+                        <span id="cd-trail-sl-ticks-bt-val" style="color:var(--text2)">10t</span>
+                    </label>
+                    <select id="cd-trail-sl-pct-bt" onchange="updateTrailBounds('bt','cd')"></select>
+                    <input type="hidden" id="cd-trail-sl-ticks-bt" value="10">
+                </div>
+                <div class="form-group">
+                    <label>FULL TP LOCK</label>
+                    <select id="cd-full-tp-lock-bt">
+                        <option value="0">OFF</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                    </select>
+                </div>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
@@ -1154,6 +1198,19 @@
                 <div class="panel-title">LIVE PARAMS</div>
                 <!-- Strategy Params -->
                 <div class="form-row" style="margin-top:8px;">
+                    <div class="form-group" style="flex:2;">
+                        <label>CONTRACT</label>
+                        <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live'); updateTrailBounds('live','cd')">
+                            <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
+                            <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>SIZE</label>
+                        <select id="size-live" onchange="updateTrailBounds('live'); updateTrailBounds('live','cd')"></select>
+                    </div>
+                </div>
+                <div class="form-row">
                     <div class="form-group" style="flex:2">
                         <label>PRESET</label>
                         <select id="preset-live" onchange="loadPreset('live')">
@@ -1168,7 +1225,7 @@
                 <div class="form-row">
                     <div class="form-group" style="flex:2;">
                         <label>STRATEGY</label>
-                        <select id="strategy-live">
+                        <select id="strategy-live" onchange="onStrategyChange('live')">
                             <option value="breakthrough" selected>BREAKTHROUGH</option>
                             <option value="consolidation">CONSOLIDATION</option>
                             <option value="hybrid">HYBRID</option>
@@ -1178,57 +1235,88 @@
                         <label>AREA</label>
                         <input type="text" value="80" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
                     </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>CONFIRM</label>
+                        <input type="text" value="7" id="confirm-bars-live" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
+                    </div>
                 </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:2;">
-                        <label>CONTRACT</label>
-                        <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live')">
-                            <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
-                            <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+                <div id="tr-params-live" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+                    <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">BREAKTHROUGH</div>
+                    <div class="form-group">
+                        <label>SL <span id="sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
+                        <input type="range" id="sl-ticks-live" min="50" max="200" step="5" value="50"
+                            oninput="document.getElementById('sl-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
+                    </div>
+                    <div class="form-group">
+                        <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">200</span> ticks</label>
+                        <input type="range" id="tp-ticks-live" min="50" max="200" step="5" value="200"
+                            oninput="document.getElementById('tp-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
+                    </div>
+                    <div class="form-group">
+                        <label>TRAIL TP TRIGGER</label>
+                        <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
+                            <option value="0">OFF</option>
+                            <option value="0.30" selected>30%</option>
+                            <option value="0.50">50%</option>
+                            <option value="0.70">70%</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
-                        <label>SIZE</label>
-                        <select id="size-live" onchange="updateTrailBounds('live')"></select>
+                    <div class="form-group">
+                        <label>
+                            TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+10% TP</span>
+                            <span id="trail-sl-ticks-live-val" style="color:var(--text2)">20t / $30.00</span>
+                        </label>
+                        <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
+                        <input type="hidden" id="trail-sl-ticks-live" value="20">
+                    </div>
+                    <div class="form-group">
+                        <label>FULL TP LOCK</label>
+                        <select id="full-tp-lock-live">
+                            <option value="0">OFF</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                        </select>
                     </div>
                 </div>
-                <div class="form-group">
-                    <label>SL <span id="sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
-                    <input type="range" id="sl-ticks-live" min="50" max="200" step="5" value="50"
-                        oninput="document.getElementById('sl-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
-                </div>
-                <div class="form-group">
-                    <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">200</span> ticks</label>
-                    <input type="range" id="tp-ticks-live" min="50" max="200" step="5" value="200"
-                        oninput="document.getElementById('tp-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
-                </div>
-                <!-- Trail trigger controls whether Trail SL is active. -->
-                <div class="form-group">
-                    <label>TRAIL TP TRIGGER</label>
-                    <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
-                        <option value="0">OFF</option>
-                        <option value="0.10">10%</option>
-                        <option value="0.30" selected>30%</option>
-                        <option value="0.50">50%</option>
-                        <option value="0.70">70%</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>
-                        TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+10% TP</span>
-                        <span id="trail-sl-ticks-live-val" style="color:var(--text2)">20t / $30.00</span>
-                    </label>
-                    <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
-                    <input type="hidden" id="trail-sl-ticks-live" value="20">
-                </div>
-                <div class="form-group">
-                    <label>FULL TP LOCK</label>
-                    <select id="full-tp-lock-live">
-                        <option value="0">OFF</option>
-                        <option value="1">1</option>
-                        <option value="2">2</option>
-                        <option value="3">3</option>
-                    </select>
+                <div id="cd-params-live" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+                    <div style="font-size:9px;letter-spacing:1px;color:var(--amber);margin-bottom:4px;">CONSOLIDATION</div>
+                    <div class="form-group">
+                        <label>SL <span id="cd-sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
+                        <input type="range" id="cd-sl-ticks-live" min="50" max="200" step="5" value="50"
+                            oninput="document.getElementById('cd-sl-ticks-live-val').textContent=this.value; updateTrailBounds('live','cd')">
+                    </div>
+                    <div class="form-group">
+                        <label>TP <span id="cd-tp-ticks-live-val" style="color:var(--accent)">200</span> ticks</label>
+                        <input type="range" id="cd-tp-ticks-live" min="50" max="200" step="5" value="200"
+                            oninput="document.getElementById('cd-tp-ticks-live-val').textContent=this.value; updateTrailBounds('live','cd')">
+                    </div>
+                    <div class="form-group">
+                        <label>TRAIL TP TRIGGER</label>
+                        <select id="cd-trail-trigger-pct-live" onchange="updateTrailBounds('live','cd')">
+                            <option value="0">OFF</option>
+                            <option value="0.30" selected>30%</option>
+                            <option value="0.50">50%</option>
+                            <option value="0.70">70%</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            TRAIL SL <span id="cd-trail-sl-pct-live-val" style="color:var(--accent)">+5% TP</span>
+                            <span id="cd-trail-sl-ticks-live-val" style="color:var(--text2)">10t</span>
+                        </label>
+                        <select id="cd-trail-sl-pct-live" onchange="updateTrailBounds('live','cd')"></select>
+                        <input type="hidden" id="cd-trail-sl-ticks-live" value="10">
+                    </div>
+                    <div class="form-group">
+                        <label>FULL TP LOCK</label>
+                        <select id="cd-full-tp-lock-live">
+                            <option value="0">OFF</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                        </select>
+                    </div>
                 </div>
             </div>
             <div class="panel">
@@ -1266,7 +1354,7 @@
             <!-- Live Monitor Top Bar -->
             <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'IBM Plex Mono',monospace;font-size:11px;">
                 <div style="display:flex;align-items:stretch;height:28px;">
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">TF: <span id="lv-timeframe" style="color:var(--cyan);margin-left:6px;">1min</span></div>
+                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">STRAT: <span id="lv-strategy" style="color:var(--cyan);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MODE: <span id="lv-mode" style="color:var(--green);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">ZONE: <span id="lv-zone-status" style="color:var(--text3);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">PHASE: <span id="lv-phase-top" style="color:var(--text3);margin-left:6px;">--</span></div>
@@ -1301,7 +1389,7 @@
                 <div class="bottom-tab" data-btab="full">FULL BACKTEST</div>
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
-                <div class="bottom-tab" data-btab="log">SYSTEM LOG <span id="system-log-mode" style="color:var(--green);margin-left:6px;">--</span></div>
+                <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
                 <div id="btab-full" class="hidden">
@@ -1396,8 +1484,6 @@ const API = window.location.origin + '/api';
 let chart = null;
 let candleSeries = null;
 let volumeSeries = null;   // kept for live-update guard; no longer rendered
-let vwapSeries = null;
-let macdStripSeries = null;
 let _rawCandleBuffer = []; // [{time(unix), open, high, low, close, volume}]
 let zoneRectangles = [];
 let tradeMarkers = [];
@@ -1408,87 +1494,37 @@ let pocLine = null;
 let vahLine = null;
 let valLine = null;
 
-// ── VWAP & MACD helpers ──────────────────────────────────────────────────────
-function _ema(arr, period) {
-    if (arr.length < period) return arr.map(() => null);
-    const k = 2 / (period + 1);
-    const res = arr.map(() => null);
-    let sum = 0;
-    for (let i = 0; i < period; i++) sum += arr[i];
-    let val = sum / period;
-    res[period - 1] = val;
-    for (let i = period; i < arr.length; i++) {
-        val = arr[i] * k + val * (1 - k);
-        res[i] = val;
-    }
-    return res;
-}
-
-function _computeVWAP(candles) {
-    // Cumulative VWAP, reset each CME Globex session (22:00 UTC = 18:00 ET open)
-    // Session key: if hour >= 22, belongs to today's session; else belongs to yesterday's session
-    const res = [];
-    let cumTPV = 0, cumVol = 0, lastSession = -1;
-    for (const c of candles) {
-        const h = Math.floor((c.time % 86400) / 3600); // UTC hour
-        const dayBase = Math.floor(c.time / 86400);
-        const sessionKey = h >= 22 ? dayBase : dayBase - 1; // pre-22:00 belongs to prior session
-        if (sessionKey !== lastSession) { cumTPV = 0; cumVol = 0; lastSession = sessionKey; }
-        const tp = (c.high + c.low + c.close) / 3;
-        const vol = c.volume || 1;
-        cumTPV += tp * vol;
-        cumVol += vol;
-        res.push({ time: c.time, value: cumTPV / cumVol });
-    }
-    return res;
-}
-
-function _computeMACDStrip(candles) {
-    // Returns [{time, value:1, color}] — colored strip, green = hist≥0, red = hist<0
-    if (candles.length < 34) return [];
-    const closes = candles.map(c => c.close);
-    const ema12 = _ema(closes, 12);
-    const ema26 = _ema(closes, 26);
-
-    // MACD values and their original indices
-    const macdVals = [], macdOrig = [];
-    for (let i = 0; i < closes.length; i++) {
-        if (ema12[i] != null && ema26[i] != null) {
-            macdVals.push(ema12[i] - ema26[i]);
-            macdOrig.push(i);
-        }
-    }
-    if (macdVals.length < 9) return [];
-    const signal = _ema(macdVals, 9);
-
-    const strip = [];
-    for (let j = 0; j < macdVals.length; j++) {
-        if (signal[j] == null) continue;
-        const hist = macdVals[j] - signal[j];
-        strip.push({
-            time: candles[macdOrig[j]].time,
-            value: 1,
-            color: hist >= 0 ? 'rgba(38,166,154,0.80)' : 'rgba(239,83,80,0.80)',
-        });
-    }
-    return strip;
-}
-
 // -- Strategy Params & Presets ----------------------
 
 const DEFAULT_STRATEGY_PARAMS = {
     strategy: 'breakthrough',
     tp_ticks: 200,
     sl_ticks: 50,
-    trail_sl_ticks: 20,
-    trail_sl_pct: 0.10,
+    trail_sl_ticks: 10,
+    trail_sl_pct: 0.05,
     trail_trigger_pct: 0.30,
     trail_enabled: true,
+    tr_tp_ticks: 200,
+    tr_sl_ticks: 50,
+    tr_trail_sl_ticks: 10,
+    tr_trail_sl_pct: 0.05,
+    tr_trail_trigger_pct: 0.30,
+    tr_trail_enabled: true,
+    tr_full_tp_lock: 0,
+    cd_tp_ticks: 200,
+    cd_sl_ticks: 50,
+    cd_trail_sl_ticks: 10,
+    cd_trail_sl_pct: 0.05,
+    cd_trail_trigger_pct: 0.30,
+    cd_trail_enabled: true,
+    cd_full_tp_lock: 0,
     candle_seconds: 60,
     contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
     contract_size: 3,
     value_area_pct: 0.80,
     full_tp_lock: 0,
+    breakout_confirm_bars: 7,
+    one_trade_per_session_direction: true,
     // Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: false,
 };
@@ -1496,7 +1532,7 @@ const DEFAULT_STRATEGY_PARAMS = {
 const MNQ_SIZE_CHOICES = [1, 3, 5, 10];
 const TRAIL_TICK_STEP = 5;
 const TRAIL_SL_PCT_CHOICES = [0.05, 0.10, 0.20, 0.30, 0.40, 0.50];
-const TRAIL_TRIGGER_PCT_CHOICES = [0, 0.10, 0.30, 0.50, 0.70];
+const TRAIL_TRIGGER_PCT_CHOICES = [0, 0.30, 0.50, 0.70];
 
 function contractSymbolFromId(contractId) {
     const cid = (contractId || '').toUpperCase();
@@ -1609,7 +1645,7 @@ function allowedSizesForContract(contractId) {
 function normalizeContractSize(contractId, size) {
     const allowed = allowedSizesForContract(contractId);
     const n = parseInt(size, 10);
-    return allowed.includes(n) ? n : (contractSymbolFromId(contractId) === 'MNQ' ? 3 : 1);
+    return allowed.includes(n) ? n : 3;
 }
 
 function syncSizeOptions(mode, wantedSize) {
@@ -1629,14 +1665,24 @@ function syncSizeOptions(mode, wantedSize) {
     sizeEl.value = String(normalized);
 }
 
-function updateTrailBounds(mode, preferredTrailPct) {
-    const slEl = document.getElementById('sl-ticks-' + mode);
-    const tpEl = document.getElementById('tp-ticks-' + mode);
-    const trailPctEl = document.getElementById('trail-sl-pct-' + mode);
-    const trailTicksEl = document.getElementById('trail-sl-ticks-' + mode);
-    const triggerEl = document.getElementById('trail-trigger-pct-' + mode);
-    const pctSpan = document.getElementById('trail-sl-pct-' + mode + '-val');
-    const valSpan = document.getElementById('trail-sl-ticks-' + mode + '-val');
+function updateTrailBounds(mode, prefixOrPct, preferredPctForPrefix) {
+    // prefixOrPct: string 'cd' -> operate on cd-* IDs; number -> preferred trail pct for TR IDs; omitted -> TR IDs
+    var prefix = '';
+    var preferredTrailPct = null;
+    if (typeof prefixOrPct === 'string') {
+        prefix = prefixOrPct + '-';
+        if (preferredPctForPrefix != null) preferredTrailPct = preferredPctForPrefix;
+    } else if (prefixOrPct != null) {
+        preferredTrailPct = prefixOrPct;
+    }
+
+    const slEl = document.getElementById(prefix + 'sl-ticks-' + mode);
+    const tpEl = document.getElementById(prefix + 'tp-ticks-' + mode);
+    const trailPctEl = document.getElementById(prefix + 'trail-sl-pct-' + mode);
+    const trailTicksEl = document.getElementById(prefix + 'trail-sl-ticks-' + mode);
+    const triggerEl = document.getElementById(prefix + 'trail-trigger-pct-' + mode);
+    const pctSpan = document.getElementById(prefix + 'trail-sl-pct-' + mode + '-val');
+    const valSpan = document.getElementById(prefix + 'trail-sl-ticks-' + mode + '-val');
     if (!slEl || !tpEl || !trailPctEl || !trailTicksEl || !triggerEl) return;
 
     const sl = Math.abs(parseInt(slEl.value, 10) || 0);
@@ -1702,12 +1748,38 @@ function updateTrailBounds(mode, preferredTrailPct) {
     }
 }
 
+function normalizeStrategyName(value) {
+    let s = String(value || 'breakthrough').toLowerCase();
+    if (s === 'trend' || s === 'trend_follow') s = 'breakthrough';
+    if (s === 'reversion') s = 'consolidation';
+    if (s === 'trend_reversion') s = 'hybrid';
+    return ['breakthrough', 'consolidation', 'hybrid'].includes(s) ? s : 'breakthrough';
+}
+
+function strategyIdPrefix(kind) {
+    return kind === 'cd' ? 'cd-' : '';
+}
+
+function updateStrategyParamVisibility(mode) {
+    const strategy = normalizeStrategyName(document.getElementById('strategy-' + mode)?.value);
+    const trBox = document.getElementById('tr-params-' + mode);
+    const cdBox = document.getElementById('cd-params-' + mode);
+    if (trBox) trBox.style.display = strategy === 'consolidation' ? 'none' : 'block';
+    if (cdBox) cdBox.style.display = strategy === 'breakthrough' ? 'none' : 'block';
+    updateTrailBounds(mode);
+    updateTrailBounds(mode, 'cd');
+}
+
+function onStrategyChange(mode) {
+    updateStrategyParamVisibility(mode);
+}
+
 function collectStrategyParams(mode) {
-    const _int = (id) => {
+    const _int = (id, fallback) => {
         const el = document.getElementById(id);
-        if (!el) return 0;
+        if (!el) return fallback || 0;
         const n = parseInt(el.value, 10);
-        return Number.isNaN(n) ? 0 : n;
+        return Number.isNaN(n) ? (fallback || 0) : n;
     };
     const _float = (id, fallback) => {
         const el = document.getElementById(id);
@@ -1719,29 +1791,63 @@ function collectStrategyParams(mode) {
     const cidEl = document.getElementById('contract-' + mode);
     const sizeEl = document.getElementById('size-' + mode);
     const contractId = (cidEl && cidEl.value) || DEFAULT_STRATEGY_PARAMS.contract_id;
+    const strategy = normalizeStrategyName(_val('strategy-' + mode));
     const clampTicks = (v, fallback) => Math.max(50, Math.min(200, v || fallback));
-    const slTicks = clampTicks(_int('sl-ticks-' + mode), DEFAULT_STRATEGY_PARAMS.sl_ticks);
-    const tpTicks = clampTicks(_int('tp-ticks-' + mode), DEFAULT_STRATEGY_PARAMS.tp_ticks);
-    const triggerPct = _float('trail-trigger-pct-' + mode, DEFAULT_STRATEGY_PARAMS.trail_trigger_pct);
-    const trailPct = _float('trail-sl-pct-' + mode, DEFAULT_STRATEGY_PARAMS.trail_sl_pct);
-    const areaPct = 0.80;
-    const trailTicks = trailTicksFromPct(trailPct, slTicks, tpTicks, triggerPct);
-    const trailTicksEl = document.getElementById('trail-sl-ticks-' + mode);
-    if (trailTicksEl) trailTicksEl.value = String(trailTicks);
+
+    const readLeg = (kind) => {
+        const prefix = strategyIdPrefix(kind);
+        const d = DEFAULT_STRATEGY_PARAMS;
+        const slTicks = clampTicks(_int(prefix + 'sl-ticks-' + mode, d[kind + '_sl_ticks'] || d.sl_ticks), d[kind + '_sl_ticks'] || d.sl_ticks);
+        const tpTicks = clampTicks(_int(prefix + 'tp-ticks-' + mode, d[kind + '_tp_ticks'] || d.tp_ticks), d[kind + '_tp_ticks'] || d.tp_ticks);
+        const triggerPct = _float(prefix + 'trail-trigger-pct-' + mode, d[kind + '_trail_trigger_pct'] || d.trail_trigger_pct);
+        const trailPct = _float(prefix + 'trail-sl-pct-' + mode, d[kind + '_trail_sl_pct'] || d.trail_sl_pct);
+        const trailTicks = trailTicksFromPct(trailPct, slTicks, tpTicks, triggerPct);
+        const trailTicksEl = document.getElementById(prefix + 'trail-sl-ticks-' + mode);
+        if (trailTicksEl) trailTicksEl.value = String(trailTicks);
+        return {
+            tp_ticks: tpTicks,
+            sl_ticks: slTicks,
+            trail_sl_ticks: trailTicks,
+            trail_sl_pct: trailPct,
+            trail_trigger_pct: triggerPct,
+            trail_enabled: triggerPct > 0,
+            full_tp_lock: _int(prefix + 'full-tp-lock-' + mode, 0),
+        };
+    };
+
+    const tr = readLeg('tr');
+    const cd = readLeg('cd');
+    const primary = strategy === 'consolidation' ? cd : tr;
     return {
-        strategy: _val('strategy-' + mode),
-        tp_ticks: tpTicks,
-        sl_ticks: slTicks,
-        trail_sl_ticks: trailTicks,
-        trail_sl_pct: trailPct,
-        trail_trigger_pct: triggerPct,
-        trail_enabled: triggerPct > 0,
+        strategy: strategy,
+        tp_ticks: primary.tp_ticks,
+        sl_ticks: primary.sl_ticks,
+        trail_sl_ticks: primary.trail_sl_ticks,
+        trail_sl_pct: primary.trail_sl_pct,
+        trail_trigger_pct: primary.trail_trigger_pct,
+        trail_enabled: primary.trail_enabled,
+        tr_tp_ticks: tr.tp_ticks,
+        tr_sl_ticks: tr.sl_ticks,
+        tr_trail_sl_ticks: tr.trail_sl_ticks,
+        tr_trail_sl_pct: tr.trail_sl_pct,
+        tr_trail_trigger_pct: tr.trail_trigger_pct,
+        tr_trail_enabled: tr.trail_enabled,
+        tr_full_tp_lock: tr.full_tp_lock,
+        cd_tp_ticks: cd.tp_ticks,
+        cd_sl_ticks: cd.sl_ticks,
+        cd_trail_sl_ticks: cd.trail_sl_ticks,
+        cd_trail_sl_pct: cd.trail_sl_pct,
+        cd_trail_trigger_pct: cd.trail_trigger_pct,
+        cd_trail_enabled: cd.trail_enabled,
+        cd_full_tp_lock: cd.full_tp_lock,
         candle_seconds: 60,   // 1m bars platform-wide
         contract_id: contractId,
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
-        value_area_pct: areaPct,
-        full_tp_lock: _int('full-tp-lock-' + mode),
+        value_area_pct: 0.80,
+        full_tp_lock: primary.full_tp_lock,
+        one_trade_per_session_direction: true,
         skip_zone_stability: false,
+        breakout_confirm_bars: 7,
     };
 }
 
@@ -1750,10 +1856,7 @@ function applyStrategyParams(mode, params) {
     const _set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
     const _setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     const _ticks = (val, fallback) => Math.max(50, Math.min(200, parseInt(val != null ? val : fallback, 10) || fallback));
-    if (!['breakthrough', 'consolidation', 'hybrid', 'reversion', 'trend_reversion'].includes(p.strategy)) p.strategy = 'breakthrough';
-    if (p.strategy === 'trend' || p.strategy === 'trend_follow') p.strategy = 'breakthrough';
-    if (p.strategy === 'reversion') p.strategy = 'consolidation';
-    if (p.strategy === 'trend_reversion') p.strategy = 'hybrid';
+    p.strategy = normalizeStrategyName(p.strategy);
     p.value_area_pct = 0.80;
     _set('strategy-' + mode, p.strategy);
     const cidEl = document.getElementById('contract-' + mode);
@@ -1767,28 +1870,44 @@ function applyStrategyParams(mode, params) {
         cidEl.value = wanted;
     }
     syncSizeOptions(mode, p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size);
-    // SL/TP sliders + display values
-    const tpTicks = _ticks(p.tp_ticks, DEFAULT_STRATEGY_PARAMS.tp_ticks);
-    const slTicks = _ticks(p.sl_ticks, DEFAULT_STRATEGY_PARAMS.sl_ticks);
-    _set('tp-ticks-' + mode, tpTicks);
-    _setVal('tp-ticks-' + mode + '-val', tpTicks);
-    _set('sl-ticks-' + mode, slTicks);
-    _setVal('sl-ticks-' + mode + '-val', slTicks);
-    const triggerPct = p.trail_enabled === false
-        ? 0
-        : (p.trail_trigger_pct != null
-            ? parseFloat(p.trail_trigger_pct)
-            : DEFAULT_STRATEGY_PARAMS.trail_trigger_pct);
-    const trailPct = p.trail_sl_pct != null
-        ? parseFloat(p.trail_sl_pct)
-        : trailPctFromTicks(
-            p.trail_sl_ticks != null ? p.trail_sl_ticks : DEFAULT_STRATEGY_PARAMS.trail_sl_ticks,
-            slTicks,
-            tpTicks
-        );
-    _set('trail-trigger-pct-' + mode, triggerPct === 0 ? '0' : triggerPct.toFixed(2));
-    updateTrailBounds(mode, trailPct);
-    _set('full-tp-lock-' + mode, String(p.full_tp_lock || 0));
+
+    const writeLeg = (kind) => {
+        const prefix = strategyIdPrefix(kind);
+        const d = DEFAULT_STRATEGY_PARAMS;
+        const tpTicks = _ticks(p[kind + '_tp_ticks'] != null ? p[kind + '_tp_ticks'] : p.tp_ticks, d[kind + '_tp_ticks'] || d.tp_ticks);
+        const slTicks = _ticks(p[kind + '_sl_ticks'] != null ? p[kind + '_sl_ticks'] : p.sl_ticks, d[kind + '_sl_ticks'] || d.sl_ticks);
+        _set(prefix + 'tp-ticks-' + mode, tpTicks);
+        _setVal(prefix + 'tp-ticks-' + mode + '-val', tpTicks);
+        _set(prefix + 'sl-ticks-' + mode, slTicks);
+        _setVal(prefix + 'sl-ticks-' + mode + '-val', slTicks);
+
+        const enabledKey = kind + '_trail_enabled';
+        const triggerKey = kind + '_trail_trigger_pct';
+        const triggerPct = p[enabledKey] === false
+            ? 0
+            : (p[triggerKey] != null
+                ? parseFloat(p[triggerKey])
+                : (p.trail_trigger_pct != null ? parseFloat(p.trail_trigger_pct) : (d[triggerKey] || d.trail_trigger_pct)));
+        const trailPctKey = kind + '_trail_sl_pct';
+        const trailTicksKey = kind + '_trail_sl_ticks';
+        const trailPct = p[trailPctKey] != null
+            ? parseFloat(p[trailPctKey])
+            : (p.trail_sl_pct != null
+                ? parseFloat(p.trail_sl_pct)
+                : trailPctFromTicks(
+                    p[trailTicksKey] != null ? p[trailTicksKey] : (p.trail_sl_ticks != null ? p.trail_sl_ticks : d[trailTicksKey]),
+                    slTicks,
+                    tpTicks
+                ));
+        _set(prefix + 'trail-trigger-pct-' + mode, triggerPct === 0 ? '0' : triggerPct.toFixed(2));
+        if (kind === 'cd') updateTrailBounds(mode, 'cd', trailPct);
+        else updateTrailBounds(mode, trailPct);
+        _set(prefix + 'full-tp-lock-' + mode, String(p[kind + '_full_tp_lock'] != null ? p[kind + '_full_tp_lock'] : (p.full_tp_lock || 0)));
+    };
+
+    writeLeg('tr');
+    writeLeg('cd');
+    updateStrategyParamVisibility(mode);
 }
 
 // CONTRACT preset dropdown in the connect panel — fills the contract-id text input.
@@ -1815,29 +1934,37 @@ function isFixedPreset(name) {
 
 function buildPresetName(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
-    const strat = (p.strategy || 'breakthrough').toLowerCase();
-    const prefix = strat === 'consolidation' ? 'CON' : (strat === 'hybrid' ? 'HY' : 'BR');
+    const strat = normalizeStrategyName(p.strategy);
+    const prefix = strat === 'consolidation' ? 'CD' : (strat === 'hybrid' ? 'HY' : 'TR');
     const contractLabel = contractLabelFromId(p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id);
     const contractSize = normalizeContractSize(
         p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id,
         p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
     );
-    const sl = parseInt(p.sl_ticks != null ? p.sl_ticks : DEFAULT_STRATEGY_PARAMS.sl_ticks, 10) || DEFAULT_STRATEGY_PARAMS.sl_ticks;
-    const tp = parseInt(p.tp_ticks != null ? p.tp_ticks : DEFAULT_STRATEGY_PARAMS.tp_ticks, 10) || DEFAULT_STRATEGY_PARAMS.tp_ticks;
-    const triggerPct = p.trail_enabled === false ? 0 : (p.trail_trigger_pct != null ? parseFloat(p.trail_trigger_pct) : DEFAULT_STRATEGY_PARAMS.trail_trigger_pct);
-    const trailEnabled = triggerPct > 0;
-    const trailPct = p.trail_sl_pct != null
-        ? parseFloat(p.trail_sl_pct)
-        : trailPctFromTicks(p.trail_sl_ticks || 0, sl, tp);
-    const tpl = Math.max(0, Math.min(3, parseInt(p.full_tp_lock || 0, 10) || 0));
-    const strategyLabel = prefix;
-    const trailLabel = 'TRAILTP' + Math.round(Math.abs(trailPct) * 100) + '%';
-    return strategyLabel + ' ' + contractLabel + 'x' + contractSize + ' ' + sl + '/' + tp +
-        ' TRIG' + (trailEnabled ? Math.round(triggerPct * 100) : 'OFF') +
-        (trailEnabled
-            ? ' ' + trailLabel
-            : ' TRAIL OFF') +
-        (tpl > 0 ? ' TPLOCK' + tpl : ' TPLOCKOFF');
+    const leg = (kind) => {
+        const sl = parseInt(p[kind + '_sl_ticks'] != null ? p[kind + '_sl_ticks'] : p.sl_ticks, 10) || DEFAULT_STRATEGY_PARAMS[kind + '_sl_ticks'] || DEFAULT_STRATEGY_PARAMS.sl_ticks;
+        const tp = parseInt(p[kind + '_tp_ticks'] != null ? p[kind + '_tp_ticks'] : p.tp_ticks, 10) || DEFAULT_STRATEGY_PARAMS[kind + '_tp_ticks'] || DEFAULT_STRATEGY_PARAMS.tp_ticks;
+        const enabled = p[kind + '_trail_enabled'] === false ? false : (p.trail_enabled !== false);
+        const triggerPct = enabled
+            ? (p[kind + '_trail_trigger_pct'] != null ? parseFloat(p[kind + '_trail_trigger_pct']) : (p.trail_trigger_pct != null ? parseFloat(p.trail_trigger_pct) : DEFAULT_STRATEGY_PARAMS.trail_trigger_pct))
+            : 0;
+        const trailEnabled = triggerPct > 0;
+        const trailPct = p[kind + '_trail_sl_pct'] != null
+            ? parseFloat(p[kind + '_trail_sl_pct'])
+            : (p.trail_sl_pct != null ? parseFloat(p.trail_sl_pct) : trailPctFromTicks(p[kind + '_trail_sl_ticks'] || p.trail_sl_ticks || 0, sl, tp));
+        const tpl = Math.max(0, Math.min(3, parseInt(p[kind + '_full_tp_lock'] != null ? p[kind + '_full_tp_lock'] : p.full_tp_lock || 0, 10) || 0));
+        return {
+            label: sl + '/' + tp +
+                ' TRIG' + (trailEnabled ? Math.round(triggerPct * 100) : 'OFF') +
+                (trailEnabled ? ' TRAILTP' + Math.round(Math.abs(trailPct) * 100) + '%' : ' TRAILOFF') +
+                (tpl > 0 ? ' TPLOCK' + tpl : ' TPLOCKOFF')
+        };
+    };
+    if (strat === 'hybrid') {
+        return prefix + ' ' + contractLabel + 'x' + contractSize + ' TR ' + leg('tr').label + ' CD ' + leg('cd').label;
+    }
+    const kind = strat === 'consolidation' ? 'cd' : 'tr';
+    return prefix + ' ' + contractLabel + 'x' + contractSize + ' ' + leg(kind).label;
 }
 
 async function fetchPresets() {
@@ -1914,8 +2041,8 @@ function refreshPresetDropdowns() {
 async function deletePreset(mode) {
     const sel = document.getElementById('preset-' + mode);
     const name = sel.value;
-    if (name === 'default' || isFixedPreset(name)) {
-        log('Cannot delete fixed preset: ' + (name === 'default' ? 'Default' : name), 'warn');
+    if (name === 'default') {
+        log('Cannot delete default preset', 'warn');
         return;
     }
     try {
@@ -2004,7 +2131,8 @@ document.addEventListener('DOMContentLoaded', () => {
     ['bt', 'live'].forEach(mode => {
         syncSizeOptions(mode);
         updateTrailBounds(mode);
-        onTrailToggle(mode);
+        updateTrailBounds(mode, 'cd');
+        updateStrategyParamVisibility(mode);
     });
 
     // Auto-connect after env config loads
@@ -2203,9 +2331,12 @@ function updateLiveTopBar() {
     const elM = document.getElementById('lv-market-session');
     if (elM) { elM.textContent = session.label; elM.style.color = session.color; }
 
-    // Timeframe
-    const tfEl = document.getElementById('lv-timeframe');
-    if (tfEl) { tfEl.textContent = '1min'; }
+    // Strategy label
+    const stratEl = document.getElementById('lv-strategy');
+    if (stratEl) {
+        const s = (window._liveStrategyName || '--').toUpperCase();
+        stratEl.textContent = s;
+    }
 
     // Zone status default
     const zsEl = document.getElementById('lv-zone-status');
@@ -2598,11 +2729,13 @@ async function pollLiveStatus() {
             window._loggedVersion = true;
         }
 
-        // ── Top bar: Timeframe ──
-        const tfEl = document.getElementById('lv-timeframe');
-        if (tfEl) {
-            tfEl.textContent = '1min';
-            tfEl.style.color = 'var(--cyan)';
+        // ── Top bar: Strategy ──
+        const stratTopEl = document.getElementById('lv-strategy');
+        if (stratTopEl) {
+            const sn = (st.strategy_mode || collectStrategyParams('live').strategy || '--').toUpperCase();
+            stratTopEl.textContent = sn;
+            stratTopEl.style.color = 'var(--cyan)';
+            window._liveStrategyName = sn;
         }
 
         // ── Top bar: Zone status ──
@@ -2669,8 +2802,17 @@ async function pollLiveStatus() {
             const pnl = st.daily_pnl || 0;
             const pnlStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
             const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+            const counts = st.full_tp_counts || {};
+            const locks = st.full_tp_locks || {};
+            const lockedParts = [];
+            if ((locks.breakthrough || 0) > 0 && (counts.tr || 0) >= locks.breakthrough) {
+                lockedParts.push('TR ' + (counts.tr || 0) + '/' + locks.breakthrough);
+            }
+            if ((locks.consolidation || 0) > 0 && (counts.cd || 0) >= locks.consolidation) {
+                lockedParts.push('CD ' + (counts.cd || 0) + '/' + locks.consolidation);
+            }
             const lockBadge = st.tp_locked
-                ? ' <span style="color:var(--amber);font-size:9px;letter-spacing:1px;">TP LOCK ' + (st.full_tp_count || 0) + '/' + (st.full_tp_lock || 0) + '</span>'
+                ? ' <span style="color:var(--amber);font-size:9px;letter-spacing:1px;">TP LOCK ' + (lockedParts.length ? lockedParts.join(' ') : ((st.full_tp_count || 0) + '/' + (st.full_tp_lock || 0))) + '</span>'
                 : '';
             const dcBadge = st.disconnected
                 ? ' <span style="color:var(--red);font-size:9px;letter-spacing:1px;animation:blink 1s infinite;">⚠ OFFLINE</span>'
@@ -2691,12 +2833,10 @@ async function pollLiveStatus() {
             }
         }
 
-        const modeText = (st.strategy_mode || (st.strategies && st.strategies[0]) || collectStrategyParams('live').strategy || '--').toUpperCase();
+        const modeText = (st.active_mode || st.strategy_mode || '--').toUpperCase();
         const modeTopEl = document.getElementById('lv-mode');
         const modePanelEl = document.getElementById('live-mode-text');
-        const modeLogEl = document.getElementById('system-log-mode');
         if (modeTopEl) modeTopEl.textContent = modeText;
-        if (modeLogEl) modeLogEl.textContent = modeText;
         if (modePanelEl) {
             modePanelEl.textContent = modeText;
             modePanelEl.style.color = 'var(--green)';
@@ -2931,14 +3071,6 @@ async function pollLiveCandle() {
             const cidx = window._lastChartData.findIndex(x => x.time === t);
             if (cidx >= 0) window._lastChartData[cidx] = bar; else window._lastChartData.push(bar);
 
-            // VWAP: update current day's last point
-            if (vwapSeries && _rawCandleBuffer.length > 0) {
-                const todayBars = _rawCandleBuffer.filter(x => Math.floor(x.time / 86400) === Math.floor(t / 86400));
-                let cv = 0, cv2 = 0;
-                for (const b of todayBars) { const tp = (b.high + b.low + b.close) / 3; cv += tp * (b.volume || 1); cv2 += (b.volume || 1); }
-                if (cv2 > 0) vwapSeries.update({ time: t, value: cv / cv2 });
-            }
-
             updated++;
         }
 
@@ -3007,16 +3139,6 @@ function initChart() {
         borderUpColor: '#888888',
         wickDownColor: '#555555',
         wickUpColor: '#888888',
-    });
-
-    // VWAP line on main price scale
-    vwapSeries = chart.addLineSeries({
-        color: 'rgba(255, 180, 0, 0.85)',
-        lineWidth: 1,
-        lineStyle: 0,
-        priceLineVisible: false,
-        lastValueVisible: true,
-        crosshairMarkerVisible: false,
     });
 
     new ResizeObserver(() => {
@@ -3282,10 +3404,9 @@ function drawVolumeProfile(zones) {
 
     // ── PASS 1: Draw zone bodies (histogram, background, VAH/VAL) ──
     zones.forEach(z => {
-        // Skip FORMING zones — they haven't matured, no need to draw
-        if (z.status === 'forming') return;
         const is1m = z.timeframe === '1m';
         const isLeft = z.status === 'left';
+        const isDeveloping = z.status === 'forming' || !z.mature;
         const poc = z.poc, vah = z.vah_80, val = z.val_80;
         const h100 = z.high_100, l100 = z.low_100;
 
@@ -3392,32 +3513,64 @@ function drawVolumeProfile(zones) {
             }
         }
 
-        // ── VAH / VAL dashed lines within zone extent ──
-        // Left zones: dimmer, no labels. Active zones: brighter with labels.
-        const vahAlpha = isLeft ? 0.15 : 0.4;
-        const vahvalColor = is1m ? `rgba(0, 229, 160, ${vahAlpha})` : `rgba(100, 220, 255, ${vahAlpha})`;
+        // ── 80% VAH / VAL boundary lines (dynamic curve or flat fallback) ──
+        const lineAlpha = isDeveloping ? 0.70 : (isLeft ? 0.72 : 0.96);
+        const boundaryColor = isDeveloping
+            ? `rgba(150, 154, 164, ${lineAlpha})`
+            : `rgba(255, 255, 255, ${lineAlpha})`;
+        const labelColor = isDeveloping
+            ? 'rgba(150, 154, 164, 0.75)'
+            : 'rgba(255, 255, 255, 0.85)';
         const tfLabel = is1m ? '1m ' : '';
 
-        ctx.strokeStyle = vahvalColor;
-        ctx.lineWidth = isLeft ? 0.4 : (is1m ? 0.7 : 1);
-        ctx.setLineDash(is1m ? [2, 4] : [3, 3]);
-        if (yVAH >= 0) {
-            ctx.beginPath(); ctx.moveTo(x0, yVAH); ctx.lineTo(x1, yVAH); ctx.stroke();
-            if (!isLeft) {
-                ctx.fillStyle = is1m ? 'rgba(0, 229, 160, 0.5)' : 'rgba(100, 220, 255, 0.5)';
-                ctx.font = (is1m ? '9' : '10') + 'px "IBM Plex Mono", monospace';
-                ctx.textAlign = 'left';
-                ctx.fillText(tfLabel + 'VAH', x0 + histW + 4, yVAH - 2);
+        ctx.strokeStyle = boundaryColor;
+        ctx.lineWidth = isLeft ? 0.8 : 1.15;
+        ctx.setLineDash([]);
+
+        if (z.va_curve && z.va_curve.length >= 2) {
+            // VAH step-line (raw VP values, no smoothing)
+            ctx.beginPath();
+            let vahStarted = false;
+            for (let i = 0; i < z.va_curve.length; i++) {
+                const pt = z.va_curve[i];
+                const px = timeToX(pt.ts);
+                const py = priceToY(pt.vah);
+                if (px === null || py < 0) continue;
+                const cx = Math.max(x0, Math.min(x1, px));
+                if (!vahStarted) { ctx.moveTo(cx, py); vahStarted = true; }
+                else { ctx.lineTo(cx, py); }
+            }
+            if (vahStarted && yVAH >= 0) ctx.lineTo(x1, yVAH);
+            if (vahStarted) ctx.stroke();
+            // VAL step-line
+            ctx.beginPath();
+            let valStarted = false;
+            for (let i = 0; i < z.va_curve.length; i++) {
+                const pt = z.va_curve[i];
+                const px = timeToX(pt.ts);
+                const py = priceToY(pt.val);
+                if (px === null || py < 0) continue;
+                const cx = Math.max(x0, Math.min(x1, px));
+                if (!valStarted) { ctx.moveTo(cx, py); valStarted = true; }
+                else { ctx.lineTo(cx, py); }
+            }
+            if (valStarted && yVAL >= 0) ctx.lineTo(x1, yVAL);
+            if (valStarted) ctx.stroke();
+        } else {
+            if (yVAH >= 0) {
+                ctx.beginPath(); ctx.moveTo(x0, yVAH); ctx.lineTo(x1, yVAH); ctx.stroke();
+            }
+            if (yVAL >= 0) {
+                ctx.beginPath(); ctx.moveTo(x0, yVAL); ctx.lineTo(x1, yVAL); ctx.stroke();
             }
         }
-        if (yVAL >= 0) {
-            ctx.beginPath(); ctx.moveTo(x0, yVAL); ctx.lineTo(x1, yVAL); ctx.stroke();
-            if (!isLeft) {
-                ctx.fillStyle = is1m ? 'rgba(0, 229, 160, 0.5)' : 'rgba(100, 220, 255, 0.5)';
-                ctx.font = (is1m ? '9' : '10') + 'px "IBM Plex Mono", monospace';
-                ctx.textAlign = 'left';
-                ctx.fillText(tfLabel + 'VAL', x0 + histW + 4, yVAL + 10);
-            }
+        // Labels at current VAH/VAL
+        if (!isLeft) {
+            ctx.fillStyle = labelColor;
+            ctx.font = (is1m ? '9' : '10') + 'px "IBM Plex Mono", monospace';
+            ctx.textAlign = 'left';
+            if (yVAH >= 0) ctx.fillText(tfLabel + 'VAH', x0 + histW + 4, yVAH - 2);
+            if (yVAL >= 0) ctx.fillText(tfLabel + 'VAL', x0 + histW + 4, yVAL + 10);
         }
         ctx.setLineDash([]);
 
@@ -3584,24 +3737,21 @@ function drawPositionTools(trades) {
         if (drawn >= maxDraw) return;
 
         const isBuy = t.direction === 'buy';
+        const origSL = t.original_sl_price != null ? t.original_sl_price : t.sl_price;
+        const origTP = t.original_tp_price != null ? t.original_tp_price : t.tp_price;
         const entryY = candleSeries.priceToCoordinate(t.entry_price);
-        const slY = candleSeries.priceToCoordinate(t.sl_price);
-        const tpY = candleSeries.priceToCoordinate(t.tp_price);
+        const slY = candleSeries.priceToCoordinate(origSL);
+        const tpY = candleSeries.priceToCoordinate(origTP);
 
-        // Skip if any coordinate is null (off price scale)
         if (entryY === null || slY === null || tpY === null) return;
-
-        // Skip if entry is off-screen vertically
         if (entryY < -50 || entryY > chartH + 50) return;
 
         const entryTime = isoToChartTime(t.entry_time);
         const entryX = chart.timeScale().timeToCoordinate(entryTime);
         if (entryX === null) return;
-
-        // Skip if entry X is off-screen
         if (entryX < -200 || entryX > chartW + 50) return;
 
-        let exitX = entryX + 100; // default width
+        let exitX = entryX + 100;
         if (t.exit_time) {
             const exitTime = isoToChartTime(t.exit_time);
             const ex = chart.timeScale().timeToCoordinate(exitTime);
@@ -3609,24 +3759,14 @@ function drawPositionTools(trades) {
         }
 
         const width = Math.min(Math.max(60, exitX - entryX), chartW - entryX);
-        const right = entryX + width;
 
-        const risk = Math.abs(t.sl_price - t.entry_price) * 20;
-        const reward = Math.abs(t.tp_price - t.entry_price) * 20;
-        const rr = risk > 0 ? (reward / risk).toFixed(1) : '0';
-        const pnlVal = t.pnl || 0;
-        const pnlStr = (pnlVal >= 0 ? '+' : '') + '$' + pnlVal.toFixed(0);
-        const stratLabel = 'TRD';
-        const dirLabel = isBuy ? 'LONG' : 'SHORT';
-        const isWin = pnlVal >= 0;
-
-        // ── TP zone (green background only, no lines) ──
+        // ── TP zone (green background, original TP) ──
         const tpTop = Math.min(entryY, tpY);
         const tpH = Math.abs(tpY - entryY);
         ctx.fillStyle = 'rgba(0, 229, 160, 0.06)';
         ctx.fillRect(entryX, tpTop, width, tpH);
 
-        // ── SL zone (red background only, no lines) ──
+        // ── SL zone (red background, original SL) ──
         const slTop = Math.min(entryY, slY);
         const slH = Math.abs(slY - entryY);
         ctx.fillStyle = 'rgba(255, 64, 96, 0.06)';
@@ -4064,9 +4204,6 @@ function showCandleData(candles) {
     candleSeries.setData(chartData);
     window._lastChartData = chartData;
 
-    // VWAP
-    if (vwapSeries) vwapSeries.setData(_computeVWAP(rawBuf));
-
     applyDefaultChartView(chartData);
     drawSessionDividers();
 }
@@ -4482,19 +4619,10 @@ async function runAllCombinations() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+                ...params,
                 strategy: fixedParams.includes('strategy') ? params.strategy : 'all',
-                tp_ticks: params.tp_ticks,
-                sl_ticks: params.sl_ticks,
-                trail_sl_ticks: params.trail_sl_ticks,
-                trail_sl_pct: params.trail_sl_pct,
-                trail_trigger_pct: params.trail_trigger_pct,
-                trail_enabled: params.trail_enabled,
-                contract_id: params.contract_id,
-                contract_size: params.contract_size,
-                value_area_pct: params.value_area_pct,
-                full_tp_lock: params.full_tp_lock,
+                one_trade_per_session_direction: true,
                 skip_zone_stability: false,
-                candle_seconds: params.candle_seconds,
                 initial_capital: capital,
                 start_date: startDate,
                 end_date: endDate,
@@ -4625,10 +4753,25 @@ async function saveFullPreset(origRank) {
         trail_sl_pct: trailPct,
         trail_trigger_pct: triggerPct,
         trail_enabled: trailEnabled,
+        tr_tp_ticks: r.tr_tp || r.tp,
+        tr_sl_ticks: r.tr_sl || r.sl,
+        tr_trail_sl_ticks: r.tr_trail || r.trail,
+        tr_trail_sl_pct: r.tr_trail_pct != null ? r.tr_trail_pct : trailPct,
+        tr_trail_trigger_pct: r.tr_trail_trigger_pct != null ? r.tr_trail_trigger_pct : triggerPct,
+        tr_trail_enabled: r.tr_trail_enabled != null ? r.tr_trail_enabled : trailEnabled,
+        tr_full_tp_lock: r.tr_full_tp_lock != null ? r.tr_full_tp_lock : (r.full_tp_lock || 0),
+        cd_tp_ticks: r.cd_tp || r.tp,
+        cd_sl_ticks: r.cd_sl || r.sl,
+        cd_trail_sl_ticks: r.cd_trail || r.trail,
+        cd_trail_sl_pct: r.cd_trail_pct != null ? r.cd_trail_pct : trailPct,
+        cd_trail_trigger_pct: r.cd_trail_trigger_pct != null ? r.cd_trail_trigger_pct : triggerPct,
+        cd_trail_enabled: r.cd_trail_enabled != null ? r.cd_trail_enabled : trailEnabled,
+        cd_full_tp_lock: r.cd_full_tp_lock != null ? r.cd_full_tp_lock : (r.full_tp_lock || 0),
         candle_seconds: r.candle_seconds || 60,
         contract_id: r.contract_id || 'CON.F.US.MNQ.M26',
         contract_size: contractSize,
         full_tp_lock: r.full_tp_lock || 0,
+        one_trade_per_session_direction: true,
         value_area_pct: 0.80,
         skip_zone_stability: false,
     };
@@ -4806,13 +4949,36 @@ function isoToChartTime(iso) {
 
 
 function drawTradeMarkers(trades) {
-    _backtestMarkers = (!trades || trades.length === 0) ? [] : trades.map(t => ({
-        time: isoToChartTime(t.entry_time),
-        position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
-        color: t.pnl > 0 ? '#00e5a0' : '#ff4060',
-        shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-        text: (t.pnl > 0 ? '+' : '') + '$' + (t.pnl||0).toFixed(0),
-    })).filter(m => m.time && !isNaN(m.time));
+    if (!trades || trades.length === 0) { _backtestMarkers = []; _refreshAllMarkers(); return; }
+    const markers = [];
+    trades.forEach(t => {
+        const entryTime = isoToChartTime(t.entry_time);
+        if (entryTime && !isNaN(entryTime)) {
+            markers.push({
+                time: entryTime,
+                position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
+                color: '#2196f3',
+                shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
+                text: (t.direction === 'buy' ? 'L' : 'S'),
+            });
+        }
+        if (t.exit_time) {
+            const exitTime = isoToChartTime(t.exit_time);
+            if (exitTime && !isNaN(exitTime)) {
+                const pnlVal = t.pnl || 0;
+                const isWin = pnlVal >= 0;
+                markers.push({
+                    time: exitTime,
+                    position: t.direction === 'buy' ? 'aboveBar' : 'belowBar',
+                    color: isWin ? '#00e5a0' : '#ff4060',
+                    shape: t.direction === 'buy' ? 'arrowDown' : 'arrowUp',
+                    text: (pnlVal >= 0 ? '+' : '') + '$' + pnlVal.toFixed(0),
+                });
+            }
+        }
+    });
+    markers.sort((a, b) => a.time - b.time);
+    _backtestMarkers = markers;
     _refreshAllMarkers();
 }
 
@@ -5095,6 +5261,14 @@ function renderMetrics(m, backtestTrades) {
         if (!stats || !stats.trades) return '--';
         return fmtPctTriple(stats);
     };
+    const breakthroughStats = _computeTradeStats((backtestTrades || []).filter(t => {
+        const s = String(t.strategy || '').toLowerCase();
+        return s === 'breakthrough' || s === 'trend' || s === 'trend_follow';
+    }));
+    const consolidationStats = _computeTradeStats((backtestTrades || []).filter(t => {
+        const s = String(t.strategy || '').toLowerCase();
+        return s === 'consolidation' || s === 'reversion';
+    }));
     const currentZoneStats = _computeTradeStats((backtestTrades || []).filter(t => t.zone_source === 'current'));
 
     const items = [
@@ -5122,6 +5296,12 @@ function renderMetrics(m, backtestTrades) {
         { label: 'RR RATIO',
           value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
           cls: rr_ratio > 1 ? 'pos' : 'neg' },
+        { label: 'BREAKTHROUGH TP/SL/TRAIL',
+          value: fmtPctTriple(breakthroughStats),
+          cls: '' },
+        { label: 'CONSOLIDATION TP/SL/TRAIL',
+          value: fmtPctTriple(consolidationStats),
+          cls: '' },
         { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },

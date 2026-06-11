@@ -96,7 +96,6 @@ class LiveTradingEngine:
         # Session-based zone detector (overnight zone with maturity)
         self.detector = SessionZoneDetector(
             value_area_pct=value_area_pct,
-            skip_stability_wait=getattr(self.strategy_params, "skip_zone_stability", False),
         )
         # Strategy selection: legacy names map to current v0.17.0 modes.
         _strat = (self.strategy_params.strategy or "breakthrough").lower()
@@ -134,9 +133,18 @@ class LiveTradingEngine:
         self._force_exit_reason: Optional[str] = None  # set by flatten_now / emergency close
         self._daily_pnl: float = 0.0
         self._today: str = ""
-        self._full_tp_lock: int = getattr(self.strategy_params, 'full_tp_lock', 0) or 0
+        self._full_tp_lock: int = max(
+            int(getattr(self.strategy_params, "full_tp_lock", 0) or 0),
+            int(getattr(self.strategy_params, "tr_full_tp_lock", 0) or 0),
+            int(getattr(self.strategy_params, "cd_full_tp_lock", 0) or 0),
+        )
         self._full_tp_count: int = 0
+        self._full_tp_counts: Dict[str, int] = {"tr": 0, "cd": 0}
         self._tp_locked: bool = False
+        self._one_trade_per_session_direction: bool = bool(
+            getattr(self.strategy_params, "one_trade_per_session_direction", True)
+        )
+        self._session_direction_locks: set[tuple[str, str]] = set()
         self._capital: float = 0.0
         self._candles_processed: int = 0
         self._last_market_price: Optional[float] = None
@@ -172,13 +180,61 @@ class LiveTradingEngine:
             return 0
         return int(n // cls.TRAIL_TICK_STEP) * cls.TRAIL_TICK_STEP
 
-    def _resolved_trail_ticks(self) -> int:
-        sl_ticks = abs(int(getattr(self.strategy_params, 'sl_ticks', 50) or 50))
-        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
-        trail_ticks = int(getattr(self.strategy_params, 'trail_sl_ticks', 5) or 0)
-        trigger_pct = getattr(self.strategy_params, 'trail_trigger_pct', 0.30)
+    @staticmethod
+    def _strategy_group(strategy) -> str:
+        value = getattr(strategy, "value", strategy)
+        text = str(value or "").lower()
+        return "cd" if text in ("consolidation", "reversion") else "tr"
+
+    def _strategy_param(self, strategy, suffix: str, fallback):
+        key = self._strategy_group(strategy)
+        prefixed = getattr(self.strategy_params, f"{key}_{suffix}", None)
+        if prefixed is not None:
+            return prefixed
+        return getattr(self.strategy_params, suffix, fallback)
+
+    def _strategy_trail_enabled(self, strategy) -> bool:
+        return bool(self._strategy_param(strategy, "trail_enabled", True))
+
+    def _strategy_trigger_pct(self, strategy) -> float:
+        trigger_pct = self._strategy_param(strategy, "trail_trigger_pct", 0.30)
+        if trigger_pct is None:
+            trigger_pct = 0.30
         if trigger_pct > 1:
             trigger_pct = trigger_pct / 100.0
+        return trigger_pct
+
+    def _full_tp_lock_for_strategy(self, strategy) -> int:
+        try:
+            lock = int(self._strategy_param(strategy, "full_tp_lock", 0) or 0)
+        except (TypeError, ValueError):
+            lock = 0
+        return max(0, min(3, lock))
+
+    def _reset_full_tp_counts(self) -> None:
+        self._full_tp_counts = {"tr": 0, "cd": 0}
+        self._full_tp_count = 0
+        self._tp_locked = False
+
+    def _signal_full_tp_locked(self, signal: TradeSignal) -> bool:
+        lock = self._full_tp_lock_for_strategy(signal.strategy)
+        if lock <= 0:
+            return False
+        key = self._strategy_group(signal.strategy)
+        return self._full_tp_counts.get(key, 0) >= lock
+
+    def _any_full_tp_locked(self) -> bool:
+        for key, strategy in (("tr", StrategyType.BREAKTHROUGH), ("cd", StrategyType.CONSOLIDATION)):
+            lock = self._full_tp_lock_for_strategy(strategy)
+            if lock > 0 and self._full_tp_counts.get(key, 0) >= lock:
+                return True
+        return False
+
+    def _resolved_trail_ticks(self, strategy=None) -> int:
+        sl_ticks = abs(int(self._strategy_param(strategy, 'sl_ticks', 50) or 50))
+        tp_ticks = abs(int(self._strategy_param(strategy, 'tp_ticks', 0) or 0))
+        trail_ticks = int(self._strategy_param(strategy, 'trail_sl_ticks', 5) or 0)
+        trigger_pct = self._strategy_trigger_pct(strategy)
         if trigger_pct <= 0:
             return 0
 
@@ -659,6 +715,7 @@ class LiveTradingEngine:
 
         if hasattr(self.trend_follow, "set_traded_breakouts"):
             self.trend_follow.set_traded_breakouts(keys)
+        self._session_direction_locks = set(keys)
         return keys
 
     def _persist_breakout_lock(self, signal: TradeSignal):
@@ -706,49 +763,23 @@ class LiveTradingEngine:
         except Exception as e:
             logger.warning(f"Failed to persist breakout lock: {e}")
 
+    def _session_direction_is_locked(self, signal: TradeSignal) -> bool:
+        if not self._one_trade_per_session_direction:
+            return False
+        direction = self._breakout_direction_from_trade_direction(signal.direction.value)
+        if not signal.zone_id or not direction:
+            return False
+        return (str(signal.zone_id), direction) in self._session_direction_locks
+
+    def _mark_session_direction_locked(self, signal: TradeSignal):
+        direction = self._breakout_direction_from_trade_direction(signal.direction.value)
+        if signal.zone_id and direction:
+            self._session_direction_locks.add((str(signal.zone_id), direction))
+
     def _unlock_signal_breakout(self, signal: TradeSignal):
         direction = self._breakout_direction_from_trade_direction(signal.direction.value)
         if hasattr(self.trend_follow, "unlock_breakout") and signal.zone_id and direction:
             self.trend_follow.unlock_breakout(signal.zone_id, direction)
-
-    def _remove_breakout_lock(self, signal: Optional[TradeSignal]):
-        if not signal:
-            return
-        direction = self._breakout_direction_from_trade_direction(signal.direction.value)
-        if not signal.zone_id or not direction:
-            return
-
-        self._unlock_signal_breakout(signal)
-
-        today = self._get_topstep_trade_date()
-        data = self._read_json_list_or_dict(self._breakout_locks_file)
-        if not isinstance(data, dict):
-            return
-        records = data.get("locks")
-        if not isinstance(records, list):
-            return
-
-        before = len(records)
-        data["locks"] = [
-            row for row in records
-            if not (
-                isinstance(row, dict)
-                and row.get("trade_date") == today
-                and row.get("account_id") == self.account_id
-                and row.get("contract_id") == self.contract_id
-                and str(row.get("zone_id")) == str(signal.zone_id)
-                and row.get("direction") == direction
-            )
-        ]
-        if len(data["locks"]) == before:
-            return
-        data["saved_at"] = datetime.utcnow().isoformat()
-        try:
-            os.makedirs(os.path.dirname(self._breakout_locks_file), exist_ok=True)
-            with open(self._breakout_locks_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.warning(f"Failed to remove breakout lock: {e}")
 
     async def _calc_pnl_from_trades(self, *, emit_log: bool = True) -> float:
         """Fallback: sum today's realized PnL from trade history.
@@ -900,10 +931,16 @@ class LiveTradingEngine:
             "auto_oco_fail_safe_triggered": self._auto_oco_fail_safe_triggered,
             "auto_oco_settings_url": self.AUTO_OCO_SETTINGS_URL,
             "daily_pnl": self._daily_pnl,
-            "tp_locked": self._tp_locked,
+            "tp_locked": self._any_full_tp_locked(),
             "full_tp_lock": self._full_tp_lock,
             "full_tp_count": self._full_tp_count,
+            "full_tp_locks": {
+                "breakthrough": self._full_tp_lock_for_strategy(StrategyType.BREAKTHROUGH),
+                "consolidation": self._full_tp_lock_for_strategy(StrategyType.CONSOLIDATION),
+            },
+            "full_tp_counts": dict(self._full_tp_counts),
             "strategy_mode": self.strategy_mode,
+            "active_mode": getattr(self.trend_follow, 'active_mode', self.strategy_mode),
             "strategies": self.strategies,
             "disconnected": self._disconnected,
             "capital": self._capital,
@@ -990,6 +1027,7 @@ class LiveTradingEngine:
                 "exit_direction": z.exit_direction,
                 "num_candles": z.num_candles,
                 "mature": self.detector.is_zone_mature if z == self.detector.get_active_zone() else False,
+                "va_curve": getattr(z, 'va_curve', None) or None,
             })
         return result
 
@@ -1012,6 +1050,7 @@ class LiveTradingEngine:
         self._daily_pnl = 0.0
         self._trades = []
         self._log = []
+        self._reset_full_tp_counts()
         self._auto_oco_fail_safe_triggered = False
         self._last_auto_oco_retry_ts = 0.0
         self._last_account_refresh = 0.0
@@ -1104,9 +1143,8 @@ class LiveTradingEngine:
                 success = await self.client.cancel_order(self.account_id, self._pending_order_id)
                 if success:
                     self._log_event(f"取消掛單 #{self._pending_order_id}")
-                    self._remove_breakout_lock(self._pending_signal)
                 else:
-                    self._log_event(f"取消掛單 #{self._pending_order_id} 失敗，保留 breakout 鎖", "error")
+                    self._log_event(f"取消掛單 #{self._pending_order_id} 失敗，保留 session-direction 鎖", "error")
             except Exception as e:
                 self._log_event(f"取消掛單失敗: {e}", "error")
             self._pending_order_id = None
@@ -1356,8 +1394,7 @@ class LiveTradingEngine:
             self._today = ts_date
             # API's closedPnl/openPnl reset automatically at CME day boundary
             self._daily_pnl = 0.0
-            self._full_tp_count = 0
-            self._tp_locked = False
+            self._reset_full_tp_counts()
             self._log_event(
                 f"新交易日 — PnL 重置 (CT 17:00)"
             )
@@ -1495,18 +1532,6 @@ class LiveTradingEngine:
                 self._active_signal = None
                 self._protection_synced = False
 
-        # ── Full TP lock — block new trades after N full TP exits this session ──
-        if self._full_tp_lock > 0 and self._full_tp_count >= self._full_tp_lock:
-            if not self._tp_locked:
-                self._tp_locked = True
-                self._log_event(
-                    f"Full TP lock: {self._full_tp_count}/{self._full_tp_lock} TP — "
-                    f"暫停新單至下一個 Topstep session"
-                )
-            if self._pending_order_id:
-                await self._cancel_pending()
-            return
-
         # ── Strategy evaluation ──
         active_zone = self.detector.get_active_zone()
         eval_zone = active_zone
@@ -1524,6 +1549,25 @@ class LiveTradingEngine:
         signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
 
         if signal and not self._pending_order_id:
+            if self._signal_full_tp_locked(signal):
+                lock = self._full_tp_lock_for_strategy(signal.strategy)
+                count = self._full_tp_counts.get(self._strategy_group(signal.strategy), 0)
+                self._tp_locked = True
+                self._log_event(
+                    f"Full TP lock: {signal.strategy.value} {count}/{lock} TP — "
+                    f"暫停該策略新單至下一個 Topstep session"
+                )
+                self._unlock_signal_breakout(signal)
+                strat.notify_order_cancelled()
+                return
+            if self._session_direction_is_locked(signal):
+                direction = self._breakout_direction_from_trade_direction(signal.direction.value)
+                self._log_event(
+                    f"Session-direction lock: zone={signal.zone_id} dir={direction} 已交易/已嘗試，跳過"
+                )
+                self._unlock_signal_breakout(signal)
+                strat.notify_order_cancelled()
+                return
             if getattr(signal, 'order_type', 'limit') == 'market':
                 placed = await self._place_market_entry(signal)
             else:
@@ -1624,6 +1668,7 @@ class LiveTradingEngine:
                 self._pending_signal = signal
                 self._pending_age = 0
                 self._persist_breakout_lock(signal)
+                self._mark_session_direction_locked(signal)
                 self._log_event(
                     f"掛單成功 #{resp.order_id} | {dir_label} LIMIT @ {signal.entry_price:.2f} | "
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
@@ -1671,6 +1716,7 @@ class LiveTradingEngine:
                 self._pending_signal = signal
                 self._pending_age = 0
                 self._persist_breakout_lock(signal)
+                self._mark_session_direction_locked(signal)
                 self._log_event(
                     f"市價單 #{resp.order_id} | {dir_label} MKT @ ~{signal.entry_price:.2f} | "
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
@@ -1689,21 +1735,19 @@ class LiveTradingEngine:
 
     async def _check_trailing_sl_live(self):
         """Live trailing SL: trigger at a configured fraction of TP, once."""
-        if not getattr(self.strategy_params, 'trail_enabled', True):
-            return
         if self._trail_sl_triggered or not self._active_signal or not self._fill_price:
             return
         sig = self._active_signal
+        if not self._strategy_trail_enabled(sig.strategy):
+            return
         mkt = self._last_market_price
         if sig.direction == Direction.BUY:
             ticks_moved = (mkt - self._fill_price) / self.tick_size
         else:
             ticks_moved = (self._fill_price - mkt) / self.tick_size
 
-        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
-        trigger_pct = getattr(self.strategy_params, 'trail_trigger_pct', 0.30)
-        if trigger_pct > 1:
-            trigger_pct = trigger_pct / 100.0
+        tp_ticks = abs(int(self._strategy_param(sig.strategy, 'tp_ticks', 0) or 0))
+        trigger_pct = self._strategy_trigger_pct(sig.strategy)
         if trigger_pct <= 0:
             return
         trigger_ticks = max(1.0, tp_ticks * trigger_pct)
@@ -1711,7 +1755,7 @@ class LiveTradingEngine:
             return
 
         self._trail_sl_triggered = True
-        trail_ticks = self._resolved_trail_ticks()
+        trail_ticks = self._resolved_trail_ticks(sig.strategy)
         trail_pts = trail_ticks * self.tick_size
         if sig.direction == Direction.BUY:
             new_sl = self._fill_price + trail_pts
@@ -1796,7 +1840,6 @@ class LiveTradingEngine:
             return  # DON'T clear state — retry next tick
 
         if self._pending_signal:
-            self._remove_breakout_lock(self._pending_signal)
             self.trend_follow.notify_order_cancelled()
 
         self._pending_order_id = None
@@ -1983,11 +2026,17 @@ class LiveTradingEngine:
                 self._log_event(
                     f"持倉已平 ({exit_reason.upper()} 觸發){pnl_info}"
                 )
-                if self._full_tp_lock > 0 and exit_reason == "tp":
-                    self._full_tp_count += 1
-                    self._log_event(
-                        f"Full TP count: {self._full_tp_count}/{self._full_tp_lock}"
-                    )
+                if exit_reason == "tp" and _sig_for_log:
+                    lock = self._full_tp_lock_for_strategy(_sig_for_log.strategy)
+                    if lock > 0:
+                        key = self._strategy_group(_sig_for_log.strategy)
+                        self._full_tp_counts[key] = self._full_tp_counts.get(key, 0) + 1
+                        self._full_tp_count = sum(self._full_tp_counts.values())
+                        self._tp_locked = self._any_full_tp_locked()
+                        self._log_event(
+                            f"Full TP count: {_sig_for_log.strategy.value} "
+                            f"{self._full_tp_counts[key]}/{lock}"
+                        )
 
                 # Cancel residual orders — each in own try/except so one failure
                 # doesn't block the other

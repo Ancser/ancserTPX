@@ -485,13 +485,8 @@ class SessionZoneDetector:
 
     算法:
       1. 每段 session 開始收集 K 線
-      2. 最少 MIN_DEV_HOURS 等待發展
-         - 亞盤: 2 小時
-         - 盤前: 1.5 小時
-         - 早盤: 1.5 小時
-         - 盤後: 0.5 小時
-      3. 滿足發展時間後, 若 VAH和VAL 各自漂移 < MAX_DRIFT_TICKS → 成熟區間
-      4. 成熟後由策略負責突破判斷
+      2. 等待 60 分鐘發展 → 成熟區間
+      3. 成熟後由策略負責突破判斷
 
     Zone 每 5 根 K 線重新計算 VP (POC / VAH / VAL)
     high_100 / low_100 會持續更新 (反映整個 session 範圍)
@@ -505,17 +500,7 @@ class SessionZoneDetector:
     RTH_START_MINUTE = 30
     AH_START_HOUR = 20              # 16:00 ET = 20:00 UTC — 盤後開始
 
-    # Minimum development hours per session (方案C: 統一 0.5h 快速交易)
-    MIN_DEV_HOURS_ASIA = 0.5
-    MIN_DEV_HOURS_EURO = 0.5
-    MIN_DEV_HOURS_PRE = 0.5
-    MIN_DEV_HOURS_RTH = 0.5
-    MIN_DEV_HOURS_AH = 0.5
-
-    # Maturity criteria
-    MATURITY_STABLE_CANDLES = 60    # VAH and VAL 穩定持續 60 根 (1 小時)
-    MATURITY_STABLE_CANDLES_AH = 20 # 盤後只有 ~1hr, 穩定 20 根即可
-    MATURITY_MAX_DRIFT_TICKS = 50   # 50 tick = 12.5 pts 各自波動不超過 50 tick
+    # Maturity: all sessions require 60 minutes development
     VP_RECALC_INTERVAL = 5         # 每 5 根重算 VP
 
 
@@ -523,11 +508,9 @@ class SessionZoneDetector:
         self,
         value_area_pct: float = 0.80,
         tick_size: float = 0.25,
-        skip_stability_wait: bool = False,
     ):
         self.vp_calc = VolumeProfileCalculator(tick_size, value_area_pct)
         self.tick_size = tick_size
-        self.skip_stability_wait = bool(skip_stability_wait)
 
         self._active_zone: Optional[ConsolidationZone] = None
         self._all_zones: List[ConsolidationZone] = []
@@ -742,57 +725,20 @@ class SessionZoneDetector:
             zone.vah_80 = vp.vah
             zone.val_80 = vp.val
             zone.total_volume = vp.total_volume
-            # high_100/low_100 already updated per-candle
+            last_candle = zone.candles[-1]
+            zone.va_curve.append({
+                "ts": last_candle.timestamp.isoformat(),
+                "vah": vp.vah,
+                "val": vp.val,
+            })
         except ValueError:
             pass
 
     def _check_maturity(self, candle: Candle):
-        """
-        成熟條件:
-          1. Zone 已發展 ≥ MIN_DEV_HOURS (晚盤 3h, 早盤 1.5h, 盤後 0.5h)
-          2. 最近 N 根 K 線, VAH 與 VAL 各自波動都不超過 MAX_DRIFT_TICKS (50 ticks)
-             (晚盤/早盤: 60 根, 盤後: 20 根)
-        """
+        """成熟條件: Zone 發展 ≥ 60 分鐘即可"""
         zone = self._active_zone
         if not zone:
             return
-
-        # Determine min dev hours and stable candles based on session type
-        if self._session_date and self._session_date.endswith("-AH"):
-            min_dev_hours = self.MIN_DEV_HOURS_AH
-            stable_candles = self.MATURITY_STABLE_CANDLES_AH
-        elif self._session_date and self._session_date.endswith("-RTH"):
-            min_dev_hours = self.MIN_DEV_HOURS_RTH
-            stable_candles = self.MATURITY_STABLE_CANDLES
-        elif self._session_date and self._session_date.endswith("-PRE"):
-            min_dev_hours = self.MIN_DEV_HOURS_PRE
-            stable_candles = self.MATURITY_STABLE_CANDLES
-        elif self._session_date and self._session_date.endswith("-EURO"):
-            min_dev_hours = self.MIN_DEV_HOURS_EURO
-            stable_candles = self.MATURITY_STABLE_CANDLES
-        else:
-            min_dev_hours = self.MIN_DEV_HOURS_ASIA
-            stable_candles = self.MATURITY_STABLE_CANDLES
-
-        # Condition 1: age ≥ min dev hours
         age_minutes = (candle.timestamp - zone.formed_at).total_seconds() / 60
-        if age_minutes < min_dev_hours * 60:
-            return
-
-        # Optional no-wait experiment path; default keeps zone stability enabled.
-        if self.skip_stability_wait:
-            self._zone_mature = True
-            return
-
-        # Condition 2: last N candles drift < threshold
-        if len(self._vah_history) < stable_candles:
-            return
-
-        recent_vah = self._vah_history[-stable_candles:]
-        recent_val = self._val_history[-stable_candles:]
-
-        vah_drift_ticks = (max(recent_vah) - min(recent_vah)) / self.tick_size
-        val_drift_ticks = (max(recent_val) - min(recent_val)) / self.tick_size
-
-        if vah_drift_ticks <= self.MATURITY_MAX_DRIFT_TICKS and val_drift_ticks <= self.MATURITY_MAX_DRIFT_TICKS:
+        if age_minutes >= 60:
             self._zone_mature = True

@@ -43,7 +43,6 @@ class StrategyType(str, Enum):
     # Legacy values remain for older saved trades and reports.
     REVERSION    = "reversion"
     TREND_FOLLOW = "trend"       # was "trend_follow" — old JSON may still show "trend_follow"
-    MACD         = "macd"
 
 
 class BarUnit(int, Enum):
@@ -141,6 +140,7 @@ class ConsolidationZone:
     candles: List[Candle] = field(default_factory=list)
     timeframe: str = "5m"                  # "5m" | "1m"
     parent_zone_id: Optional[str] = None   # 1m zone → parent 5m zone_id
+    va_curve: List[dict] = field(default_factory=list)  # [{ts, vah, val}] per VP recalc
 
     @property
     def range_80(self) -> float:
@@ -195,7 +195,6 @@ class TradeSignal:
     is_big_trend: bool = False
     breakout_range: Optional[float] = None  # |H100-VAH| or |VAL-L100|, for TP recalc
     order_type: str = "limit"         # "limit" | "market"
-    macd_hist: Optional[float] = None # legacy indicator snapshot, not a selectable strategy
 
     @property
     def sl_points(self) -> float:
@@ -233,6 +232,8 @@ class Trade:
     exit_time: Optional[datetime] = None
     sl_price: float = 0.0
     tp_price: float = 0.0
+    original_sl_price: Optional[float] = None
+    original_tp_price: Optional[float] = None
     pnl: Optional[float] = None        # NET PnL (after commission + fees)
     commission: float = 0.0            # round-turn commission deducted
     fees: float = 0.0                  # round-turn fees deducted
@@ -245,7 +246,6 @@ class Trade:
     vol_ratio: Optional[float] = None
     is_big_trend: bool = False
     breakout_range: Optional[float] = None  # for TP timeout recalc
-    macd_hist: Optional[float] = None       # legacy indicator snapshot, not a selectable strategy
     # Post-breakout 60-minute path tracking (filled by backtest engine after exit)
     post_breakout_max_favorable_ticks: Optional[float] = None
     post_breakout_max_adverse_ticks: Optional[float] = None
@@ -303,9 +303,21 @@ class StrategyParams:
     strategy: str = "breakthrough"       # breakthrough | consolidation | hybrid
     tp_ticks: int = 200                  # 50-200 tick
     sl_ticks: int = 50                   # 50-200 tick
-    trail_sl_ticks: int = 20            # 0..TP ticks from entry after trail triggers
+    trail_sl_ticks: int = 10            # 0..TP ticks from entry after trail triggers
     trail_trigger_pct: float = 0.30     # trigger trail when price reaches this fraction of TP
     trail_enabled: bool = True          # v0.11+: master switch for trailing-SL mechanism
+    tr_tp_ticks: int = 200              # breakthrough TP ticks
+    tr_sl_ticks: int = 50               # breakthrough SL ticks
+    tr_trail_sl_ticks: int = 10         # breakthrough trail-SL offset from entry
+    tr_trail_trigger_pct: float = 0.30  # breakthrough trail trigger as fraction of TP
+    tr_trail_enabled: bool = True       # breakthrough trail switch
+    tr_full_tp_lock: int = 0            # breakthrough full-TP lock count
+    cd_tp_ticks: int = 200              # consolidation TP ticks
+    cd_sl_ticks: int = 50               # consolidation SL ticks
+    cd_trail_sl_ticks: int = 10         # consolidation trail-SL offset from entry
+    cd_trail_trigger_pct: float = 0.30  # consolidation trail trigger as fraction of TP
+    cd_trail_enabled: bool = True       # consolidation trail switch
+    cd_full_tp_lock: int = 0            # consolidation full-TP lock count
     # Candle interval (seconds)
     candle_seconds: int = 60             # v0.17.0 uses completed 1m bars in live and backtest
     # Contract & sizing (v0.11+) — preferred default 3 × Micro NQ
@@ -313,15 +325,17 @@ class StrategyParams:
     contract_size: int = 3                 # number of contracts per order (1..N)
     # Full TP lock: 0=OFF, 1/2/3 = stop new entries after N full TP exits. Resets next Topstep session.
     full_tp_lock: int = 0
+    # One session, one direction, one order attempt. Keeps live behavior aligned with backtest.
+    one_trade_per_session_direction: bool = True
     # Session-zone maturity controls
     # Zone stability is enabled by default; set True only for no-stability-wait experiments.
     skip_zone_stability: bool = False
+    breakout_confirm_bars: int = 7         # consecutive candles fully outside VA required
     # --- Removed (hardcoded internally) ---
     # entry_mode: always "100RE" (VAH/VAL entry)
     # entry_timeout_minutes: hardcoded 10 min inside strategy
     # tp_timeout_minutes / tp_timeout_action: removed
     # use_trail_sl: always True (forced)
-    # use_vwap_filter: legacy field; not user-configurable in v0.17.0
 
 
 # ── 回測 ──────────────────────────────────────────────

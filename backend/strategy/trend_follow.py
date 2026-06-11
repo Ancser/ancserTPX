@@ -400,40 +400,31 @@ class SessionTrendFollow:
 
     規則:
       1. 等待 SessionZoneDetector 報告區間成熟
-      2. 突破上方: 連續 5 根 1m close > VAH → BUY LIMIT
-      3. 突破下方: 連續 5 根 1m close < VAL → SELL LIMIT
-      4. Entry: VAH/VAL + entry_ratio × breakout_range (50%RE=0.5, 100%RE=0.0)
-      5. SL: VAH/VAL ± sl_ticks × tick_size (buffer from VA edge)
-      6. TP: entry ± tp_factor × breakout_range
-      7. 掛單超時取消 (entry_timeout)
+      2. 突破: 單根 K 線 open AND close 都在 VAH 上方 (up) 或 VAL 下方 (down)
+      3. 掛 BUY LIMIT @ VAH (up) 或 SELL LIMIT @ VAL (down)
+      4. 每根 K 線刷新掛單 (引擎 silent cancel → 策略重新出信號)
+      5. open+close 都回到 VA 內 → 突破失敗，回 idle
     """
 
-    BREAKOUT_CONFIRM_CANDLES = 5   # 連續 5 根 close 在外 (fixed)
-    TICK_SIZE = 0.25               # NQ tick size (fixed)
+    TICK_SIZE = 0.25
 
     def __init__(self, params: Optional[StrategyParams] = None):
         p = params or StrategyParams()
-        self.ENTRY_RATIO = 0.0   # Always 100%RE (entry at VAH/VAL, hardcoded)
-        self.SL_TICKS = p.sl_ticks
-        self.TP_TICKS = p.tp_ticks
-        # Entry timeout: hardcoded 5 min (not user-configurable)
-        _candle_secs = getattr(p, 'candle_seconds', 30)
-        _cpm = max(1, 60 // _candle_secs)   # candles per minute (2 for 30s bars)
-        self.PENDING_TIMEOUT_CANDLES = 5 * _cpm   # 5 min hardcoded
-        # TP timeout removed
+        self.SL_TICKS = getattr(p, "tr_sl_ticks", p.sl_ticks)
+        self.TP_TICKS = getattr(p, "tr_tp_ticks", p.tp_ticks)
+        self.PENDING_TIMEOUT_CANDLES = 1
+        self.CONFIRM_BARS = max(1, int(getattr(p, 'breakout_confirm_bars', 1) or 1))
 
         self._state = "idle"  # idle | watching | confirmed | in_trade
-        self._consecutive_outside: int = 0
-        self._breakout_direction: Optional[str] = None  # "up" | "down"
-        self._ref_zone = None  # snapshot of zone at breakout
-        self._recent_candles: List[Candle] = []  # lookback buffer
+        self._breakout_direction: Optional[str] = None
+        self._confirm_count: int = 0
+        self._recent_candles: List[Candle] = []
         self._traded_breakouts: Set[Tuple[str, str]] = set()
 
     def reset(self):
         self._state = "idle"
-        self._consecutive_outside = 0
         self._breakout_direction = None
-        self._ref_zone = None
+        self._confirm_count = 0
         self._recent_candles = []
 
     def set_traded_breakouts(self, keys):
@@ -455,15 +446,12 @@ class SessionTrendFollow:
         self._traded_breakouts.discard((str(zone_id), str(direction)))
 
     def reset_state_only(self):
-        """Alias for reset() — keeps the live warm-up interface consistent across strategies."""
         self.reset()
 
     def warmup(self, candle: Candle):
-        """Feed candle into the rolling buffer without generating signals."""
         if self._recent_candles:
-            last_ts = self._recent_candles[-1].timestamp
-            gap_minutes = (candle.timestamp - last_ts).total_seconds() / 60
-            if gap_minutes > 60:
+            gap = (candle.timestamp - self._recent_candles[-1].timestamp).total_seconds() / 60
+            if gap > 60:
                 self._recent_candles = []
         self._recent_candles.append(candle)
         if len(self._recent_candles) > 20:
@@ -475,115 +463,84 @@ class SessionTrendFollow:
         zone: Optional[ConsolidationZone],
         is_mature: bool,
     ) -> Optional[TradeSignal]:
-        """
-        每根 1m K 線調用一次.
-        Lookback 模式: 不用累進 +1 計數器, 而是直接看最近 5 根 K 線
-        是否全部 close 在 VAH/VAL 之外. 這樣重啟腳本也能立即判定.
-        """
-        # Session gap detection: clear buffer if > 60 min gap (flatten → new session)
         if self._recent_candles:
-            last_ts = self._recent_candles[-1].timestamp
-            gap_minutes = (candle.timestamp - last_ts).total_seconds() / 60
-            if gap_minutes > 60:
+            gap = (candle.timestamp - self._recent_candles[-1].timestamp).total_seconds() / 60
+            if gap > 60:
                 self._recent_candles = []
-
-        # Keep sliding window of recent candles
         self._recent_candles.append(candle)
         if len(self._recent_candles) > 20:
             self._recent_candles = self._recent_candles[-20:]
 
-        # No mature zone — keep buffer but don't evaluate
         if not zone or not is_mature:
             return None
-
-        # Already confirmed or in trade → engine manages
-        if self._state in ("confirmed", "in_trade"):
+        if self._state == "in_trade":
             return None
 
         vah = zone.vah_80
         val = zone.val_80
 
-        # ── Lookback: check last N candles for consecutive breakout ──
-        n = self.BREAKOUT_CONFIRM_CANDLES
-        recent = self._recent_candles[-n:] if len(self._recent_candles) >= n else self._recent_candles
+        inside = val <= candle.open <= vah and val <= candle.close <= vah
+        up = candle.open > vah and candle.close > vah
+        down = candle.open < val and candle.close < val
 
-        # Count consecutive candles outside from the END (most recent)
-        up_count = 0
-        down_count = 0
-        for c in reversed(recent):
-            if c.close > vah:
-                if down_count > 0:
-                    break  # direction changed
-                up_count += 1
-            elif c.close < val:
-                if up_count > 0:
-                    break  # direction changed
-                down_count += 1
+        if inside:
+            self._state = "idle"
+            self._breakout_direction = None
+            self._confirm_count = 0
+            return None
+
+        if up:
+            if self._breakout_direction == "up":
+                self._confirm_count += 1
             else:
-                break  # inside VA
-
-        self._consecutive_outside = max(up_count, down_count)
-
-        if up_count > 0:
-            self._breakout_direction = "up"
-        elif down_count > 0:
-            self._breakout_direction = "down"
+                self._breakout_direction = "up"
+                self._confirm_count = 1
+                self._state = "watching"
+        elif down:
+            if self._breakout_direction == "down":
+                self._confirm_count += 1
+            else:
+                self._breakout_direction = "down"
+                self._confirm_count = 1
+                self._state = "watching"
         else:
+            if self._state == "confirmed" and self._breakout_direction:
+                return self._generate_signal(candle, zone, self._breakout_direction)
+            self._confirm_count = 0
             self._breakout_direction = None
             self._state = "idle"
             return None
 
-        self._state = "watching"
-
-        # ── 5 consecutive → confirmed breakout ──
-        if self._consecutive_outside >= n:
-            breakout_key = (str(zone.zone_id), self._breakout_direction or "")
-            if breakout_key in self._traded_breakouts:
-                self._state = "idle"
+        if self._confirm_count >= self.CONFIRM_BARS:
+            bk = (str(zone.zone_id), self._breakout_direction)
+            if bk in self._traded_breakouts:
                 return None
-            self._traded_breakouts.add(breakout_key)
             self._state = "confirmed"
-            self._ref_zone = zone
             return self._generate_signal(candle, zone, self._breakout_direction)
 
         return None
 
-    def _generate_signal(
-        self,
-        candle: Candle,
-        zone: ConsolidationZone,
-        direction: str,
-    ) -> TradeSignal:
-        """Generate entry signal with SL/TP.
-
-        Entry = VAH/VAL + entry_ratio × breakout_range
-        SL    = VAH/VAL ± sl_ticks × tick_size
-        TP    = entry ± tp_ticks × tick_size
-        """
+    def _generate_signal(self, candle: Candle, zone: ConsolidationZone, direction: str) -> TradeSignal:
         sl_points = self.SL_TICKS * self.TICK_SIZE
         tp_points = self.TP_TICKS * self.TICK_SIZE
 
         if direction == "up":
-            breakout_range = zone.high_100 - zone.vah_80
-            entry = zone.vah_80 + self.ENTRY_RATIO * breakout_range
+            entry = zone.vah_80
             sl = entry - sl_points
             tp = entry + tp_points
             trade_dir = Direction.BUY
         else:
-            breakout_range = zone.val_80 - zone.low_100
-            entry = zone.val_80 - self.ENTRY_RATIO * breakout_range
+            entry = zone.val_80
             sl = entry + sl_points
             tp = entry - tp_points
             trade_dir = Direction.SELL
 
         sl_dollars = abs(entry - sl) * POINT_VALUE
         tp_dollars = abs(tp - entry) * POINT_VALUE
-        entry_label = "100%RE"   # always VAH/VAL entry
 
         logger.info(
-            f"[SessionTrend] BREAKOUT {direction.upper()} confirmed | "
+            f"[SessionTrend] BREAKOUT {direction.upper()} | "
             f"entry={entry:.2f} SL={sl:.2f} TP={tp:.2f} | "
-            f"SL ${sl_dollars:.0f} TP ${tp_dollars:.0f} | "
             f"zone={zone.zone_id}"
         )
 
@@ -595,44 +552,29 @@ class SessionTrendFollow:
             tp_price=tp,
             zone_id=zone.zone_id,
             reason=(
-                f"SESSION TREND {direction.upper()} | "
-                f"5-bar breakout {'> VAH' if direction == 'up' else '< VAL'} | "
-                f"entry={entry_label} | "
+                f"BREAKTHROUGH {direction.upper()} | "
+                f"open+close {'> VAH' if direction == 'up' else '< VAL'} | "
                 f"SL {self.SL_TICKS}t(${sl_dollars:.0f}) TP {self.TP_TICKS}t(${tp_dollars:.0f})"
             ),
             timestamp=candle.timestamp,
-            breakout_range=breakout_range,
+            breakout_range=abs(zone.high_100 - zone.vah_80) if direction == "up" else abs(zone.val_80 - zone.low_100),
         )
 
     def notify_trade_closed(self, exit_reason: str):
-        """Called by engine when trade closes."""
         self._state = "idle"
-        self._consecutive_outside = 0
         self._breakout_direction = None
 
     def notify_order_cancelled(self):
-        """Called by engine when pending order is cancelled/timeout.
-        Keep breakout counter — just go back to watching so next candle
-        can re-confirm immediately with updated VAH/VAL.
-        """
         if self._state == "confirmed":
-            logger.info(
-                f"[SessionTrend] Order cancelled → watching "
-                f"(keep count={self._consecutive_outside}, dir={self._breakout_direction})"
-            )
-        self._state = "watching"
-        # Keep _consecutive_outside and _breakout_direction — don't reset
+            self._state = "idle"
 
     def get_phase_label(self) -> str:
-        if self._state == "idle":
-            return "等待突破"
-        elif self._state == "watching":
-            return f"出界({self._consecutive_outside}/{self.BREAKOUT_CONFIRM_CANDLES} bar)"
-        elif self._state == "confirmed":
-            return "入場準備"
-        elif self._state == "in_trade":
+        if self._state == "confirmed":
+            d = "VAH↑" if self._breakout_direction == "up" else "VAL↓"
+            return f"突破掛單中 {d}"
+        if self._state == "in_trade":
             return "持倉中"
-        return self._state
+        return "等待突破"
 
     @property
     def raw_state(self) -> str:

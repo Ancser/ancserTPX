@@ -31,25 +31,38 @@ load_dotenv(ROOT / ".env")
 PRESETS_FILE = ROOT / "data" / "presets.json"
 MNQ_SIZE_CHOICES = (1, 3, 5, 10)
 TRAIL_TICK_STEP = 5
-DEFAULT_PRESET_NAME = "BR MNQx3 50/200 TRIG30 TRAILTP10% TPLOCKOFF"
+DEFAULT_PRESET_NAME = "TR MNQx3 50/200 TRIG30 TRAILTP5% TPLOCKOFF"
 DEFAULT_PRESET_PARAMS = {
     "strategy": "breakthrough",
     "tp_ticks": 200,
     "sl_ticks": 50,
-    "trail_sl_ticks": 20,
-    "trail_sl_pct": 0.10,
+    "trail_sl_ticks": 10,
+    "trail_sl_pct": 0.05,
     "trail_trigger_pct": 0.30,
     "trail_enabled": True,
+    "tr_tp_ticks": 200,
+    "tr_sl_ticks": 50,
+    "tr_trail_sl_ticks": 10,
+    "tr_trail_sl_pct": 0.05,
+    "tr_trail_trigger_pct": 0.30,
+    "tr_trail_enabled": True,
+    "tr_full_tp_lock": 0,
+    "cd_tp_ticks": 200,
+    "cd_sl_ticks": 50,
+    "cd_trail_sl_ticks": 10,
+    "cd_trail_sl_pct": 0.05,
+    "cd_trail_trigger_pct": 0.30,
+    "cd_trail_enabled": True,
+    "cd_full_tp_lock": 0,
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
     "full_tp_lock": 0,
+    "one_trade_per_session_direction": True,
     "value_area_pct": 0.80,
     "skip_zone_stability": False,
 }
-BUILTIN_PRESETS = {
-    DEFAULT_PRESET_NAME: DEFAULT_PRESET_PARAMS,
-}
+BUILTIN_PRESETS = {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,19 +143,33 @@ def _load_presets_file() -> dict:
         allowed_keys = {
             "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
             "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
-            "contract_size", "full_tp_lock", "value_area_pct", "skip_zone_stability",
+            "contract_size", "full_tp_lock", "one_trade_per_session_direction",
+            "value_area_pct", "skip_zone_stability",
+            "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
+            "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
+            "cd_tp_ticks", "cd_sl_ticks", "cd_trail_sl_ticks", "cd_trail_sl_pct",
+            "cd_trail_trigger_pct", "cd_trail_enabled", "cd_full_tp_lock",
         }
         for key in list(params.keys()):
             if key not in allowed_keys:
                 params.pop(key, None)
         params["value_area_pct"] = 0.80
-    for name, params in BUILTIN_PRESETS.items():
-        presets[name] = dict(params)
+        new_name = None
+        if str(name).startswith("BR "):
+            new_name = "TR " + str(name)[3:]
+        elif str(name).startswith("CON "):
+            new_name = "CD " + str(name)[4:]
+        if new_name and new_name != name:
+            if new_name not in presets:
+                presets[new_name] = params
+            del presets[name]
+    if not presets:
+        presets[DEFAULT_PRESET_NAME] = dict(DEFAULT_PRESET_PARAMS)
     if data.get("last_used_bt") not in presets:
-        data["last_used_bt"] = DEFAULT_PRESET_NAME
+        data["last_used_bt"] = next(iter(presets))
     if data.get("last_used_live") not in presets:
-        data["last_used_live"] = DEFAULT_PRESET_NAME
-    data["fixed_presets"] = list(BUILTIN_PRESETS.keys())
+        data["last_used_live"] = next(iter(presets))
+    data["fixed_presets"] = []
     return data
 
 
@@ -164,7 +191,7 @@ def _normalize_trail_trigger_pct(value: Any) -> float:
         pct = 0.30
     if pct > 1:
         pct = pct / 100.0
-    allowed = (0.0, 0.10, 0.30, 0.50, 0.70)
+    allowed = (0.0, 0.30, 0.50, 0.70)
     return min(allowed, key=lambda x: abs(x - pct))
 
 
@@ -287,33 +314,62 @@ def _select_account(accounts: list[dict]) -> Optional[dict]:
 
 
 def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> StrategyParams:
-    tp_ticks = int(preset.get("tp_ticks") or DEFAULT_PRESET_PARAMS["tp_ticks"])
-    sl_ticks = int(preset.get("sl_ticks") or DEFAULT_PRESET_PARAMS["sl_ticks"])
-    trigger_pct = _normalize_trail_trigger_pct(
-        preset.get("trail_trigger_pct", DEFAULT_PRESET_PARAMS["trail_trigger_pct"])
-    )
-    trail_ticks = _resolve_trail_ticks(
-        preset.get("trail_sl_ticks"),
-        preset.get("trail_sl_pct"),
-        sl_ticks,
-        tp_ticks,
-        trigger_pct,
-    )
+    def leg(prefix: str) -> Dict[str, Any]:
+        tp = int(preset.get(f"{prefix}_tp_ticks") or preset.get("tp_ticks") or DEFAULT_PRESET_PARAMS["tp_ticks"])
+        sl = int(preset.get(f"{prefix}_sl_ticks") or preset.get("sl_ticks") or DEFAULT_PRESET_PARAMS["sl_ticks"])
+        trigger = _normalize_trail_trigger_pct(
+            preset.get(f"{prefix}_trail_trigger_pct", preset.get("trail_trigger_pct", DEFAULT_PRESET_PARAMS["trail_trigger_pct"]))
+        )
+        trail = _resolve_trail_ticks(
+            preset.get(f"{prefix}_trail_sl_ticks", preset.get("trail_sl_ticks")),
+            preset.get(f"{prefix}_trail_sl_pct", preset.get("trail_sl_pct")),
+            sl,
+            tp,
+            trigger,
+        )
+        enabled = bool(preset.get(f"{prefix}_trail_enabled", preset.get("trail_enabled", True))) and trigger > 0
+        lock = int(preset.get(f"{prefix}_full_tp_lock", preset.get("full_tp_lock", 0)) or 0)
+        return {
+            "tp": tp,
+            "sl": sl,
+            "trigger": trigger,
+            "trail": trail,
+            "enabled": enabled,
+            "lock": max(0, min(3, lock)),
+        }
+
+    tr = leg("tr")
+    cd = leg("cd")
+    strategy = str(preset.get("strategy") or "breakthrough")
+    primary = cd if strategy.lower() in {"consolidation", "reversion"} else tr
     contract_size = _normalize_contract_size(
         contract_id,
         preset.get("contract_size", DEFAULT_PRESET_PARAMS["contract_size"]),
     )
     return StrategyParams(
-        strategy=str(preset.get("strategy") or "breakthrough"),
-        tp_ticks=tp_ticks,
-        sl_ticks=sl_ticks,
-        trail_sl_ticks=trail_ticks,
-        trail_trigger_pct=trigger_pct,
-        trail_enabled=bool(preset.get("trail_enabled", True)) and trigger_pct > 0,
+        strategy=strategy,
+        tp_ticks=primary["tp"],
+        sl_ticks=primary["sl"],
+        trail_sl_ticks=primary["trail"],
+        trail_trigger_pct=primary["trigger"],
+        trail_enabled=primary["enabled"],
+        tr_tp_ticks=tr["tp"],
+        tr_sl_ticks=tr["sl"],
+        tr_trail_sl_ticks=tr["trail"],
+        tr_trail_trigger_pct=tr["trigger"],
+        tr_trail_enabled=tr["enabled"],
+        tr_full_tp_lock=tr["lock"],
+        cd_tp_ticks=cd["tp"],
+        cd_sl_ticks=cd["sl"],
+        cd_trail_sl_ticks=cd["trail"],
+        cd_trail_trigger_pct=cd["trigger"],
+        cd_trail_enabled=cd["enabled"],
+        cd_full_tp_lock=cd["lock"],
         candle_seconds=int(preset.get("candle_seconds") or 60),
         contract_id=contract_id,
         contract_size=contract_size,
-        full_tp_lock=int(preset.get("full_tp_lock") or 0),
+        full_tp_lock=primary["lock"],
+        one_trade_per_session_direction=bool(preset.get("one_trade_per_session_direction", True)),
         skip_zone_stability=False,
     )
 

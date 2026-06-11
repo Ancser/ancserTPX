@@ -77,7 +77,6 @@ class BacktestEngine:
         # Session-based zone detector (skipped when zone_timeline is provided)
         self.detector = SessionZoneDetector(
             value_area_pct=self.config.value_area_pct,
-            skip_stability_wait=getattr(self.strategy_params, "skip_zone_stability", False),
         )
         # Strategy selection: legacy names map to breakthrough so old presets do not break.
         _raw_strat = (self.strategy_params.strategy or "breakthrough").lower()
@@ -110,9 +109,18 @@ class BacktestEngine:
         # Trailing SL state (forced ON — one-time trigger per position)
         self._trail_sl_triggered: bool = False
         # Full TP lock: stop new entries after N full TP exits in the same Topstep session.
-        self._full_tp_lock: int = getattr(self.strategy_params, 'full_tp_lock', 0) or 0
+        self._full_tp_lock: int = max(
+            int(getattr(self.strategy_params, "full_tp_lock", 0) or 0),
+            int(getattr(self.strategy_params, "tr_full_tp_lock", 0) or 0),
+            int(getattr(self.strategy_params, "cd_full_tp_lock", 0) or 0),
+        )
         self._full_tp_count: int = 0
+        self._full_tp_counts: Dict[str, int] = {"tr": 0, "cd": 0}
         self._full_tp_ts_date: str = ""
+        self._one_trade_per_session_direction: bool = bool(
+            getattr(self.strategy_params, "one_trade_per_session_direction", True)
+        )
+        self._session_direction_used: set[tuple[str, str]] = set()
         # Active post-breakout trackers (one per recently-entered trade).
         # We keep tracking even after the trade exits, since the user wants to
         # know whether price would have reached TP within 60m even if SL fired first.
@@ -126,13 +134,58 @@ class BacktestEngine:
             return 0
         return int(n // cls.TRAIL_TICK_STEP) * cls.TRAIL_TICK_STEP
 
-    def _resolved_trail_ticks(self) -> int:
-        sl_ticks = abs(int(getattr(self.strategy_params, 'sl_ticks', 50) or 50))
-        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
-        trail_ticks = int(getattr(self.strategy_params, 'trail_sl_ticks', 5) or 0)
-        trigger_pct = getattr(self.strategy_params, 'trail_trigger_pct', 0.30)
+    @staticmethod
+    def _strategy_group(strategy) -> str:
+        value = getattr(strategy, "value", strategy)
+        text = str(value or "").lower()
+        return "cd" if text in ("consolidation", "reversion") else "tr"
+
+    def _strategy_param(self, strategy, suffix: str, fallback):
+        key = self._strategy_group(strategy)
+        prefixed = getattr(self.strategy_params, f"{key}_{suffix}", None)
+        if prefixed is not None:
+            return prefixed
+        return getattr(self.strategy_params, suffix, fallback)
+
+    def _strategy_trail_enabled(self, strategy) -> bool:
+        return bool(self._strategy_param(strategy, "trail_enabled", True))
+
+    def _strategy_trigger_pct(self, strategy) -> float:
+        trigger_pct = self._strategy_param(strategy, "trail_trigger_pct", 0.30)
+        if trigger_pct is None:
+            trigger_pct = 0.30
         if trigger_pct > 1:
             trigger_pct = trigger_pct / 100.0
+        return trigger_pct
+
+    def _full_tp_lock_for_strategy(self, strategy) -> int:
+        try:
+            lock = int(self._strategy_param(strategy, "full_tp_lock", 0) or 0)
+        except (TypeError, ValueError):
+            lock = 0
+        return max(0, min(3, lock))
+
+    def _reset_full_tp_counts_for_session(self, utc_dt: datetime) -> None:
+        ts_date = _topstep_trade_date(utc_dt)
+        if ts_date == self._full_tp_ts_date:
+            return
+        self._full_tp_ts_date = ts_date
+        self._full_tp_counts = {"tr": 0, "cd": 0}
+        self._full_tp_count = 0
+
+    def _signal_full_tp_locked(self, signal: TradeSignal, candle: Candle) -> bool:
+        self._reset_full_tp_counts_for_session(candle.timestamp)
+        lock = self._full_tp_lock_for_strategy(signal.strategy)
+        if lock <= 0:
+            return False
+        key = self._strategy_group(signal.strategy)
+        return self._full_tp_counts.get(key, 0) >= lock
+
+    def _resolved_trail_ticks(self, strategy=None) -> int:
+        sl_ticks = abs(int(self._strategy_param(strategy, 'sl_ticks', 50) or 50))
+        tp_ticks = abs(int(self._strategy_param(strategy, 'tp_ticks', 0) or 0))
+        trail_ticks = int(self._strategy_param(strategy, 'trail_sl_ticks', 5) or 0)
+        trigger_pct = self._strategy_trigger_pct(strategy)
         if trigger_pct <= 0:
             return 0
 
@@ -211,7 +264,9 @@ class BacktestEngine:
         self._last_closed_trade = None
         self._trail_sl_triggered = False
         self._full_tp_count = 0
+        self._full_tp_counts = {"tr": 0, "cd": 0}
         self._full_tp_ts_date = ""
+        self._session_direction_used = set()
         self._breakout_trackers = []
         self._near_data_end = False   # live-edge guard flag
         self._zi = 0                  # zone timeline index
@@ -248,20 +303,10 @@ class BacktestEngine:
                 self._cancel_pending_order()
             return
 
-        # Full TP lock — block new entries after N full TP exits; reset next Topstep session.
-        if self._full_tp_lock > 0:
-            ts_date = _topstep_trade_date(candle.timestamp)
-            if ts_date != self._full_tp_ts_date:
-                self._full_tp_count = 0
-                self._full_tp_ts_date = ts_date
-            if self._full_tp_count >= self._full_tp_lock:
-                if self._pending_order:
-                    self._cancel_pending_order()
-                if self._open_position:
-                    self._check_exit(candle)
-                    if self._open_position:
-                        self._check_trailing_sl(candle)
-                return
+        # Full TP lock counts reset on the Topstep session boundary. The actual
+        # entry block is checked after a signal exists so hybrid can apply TR/CD
+        # locks independently.
+        self._reset_full_tp_counts_for_session(candle.timestamp)
 
         # Flatten time (UTC 19:45 = PT 12:45)
         # Only flatten between 19:45-21:59 UTC (not after 22:00 = new session)
@@ -299,11 +344,9 @@ class BacktestEngine:
             filled = self._check_pending_fill(candle)
             if filled:
                 return
-            # Check expiry
-            self._pending_age += 1
-            if self._pending_age > self._pending_max_age:
-                logger.debug(f"掛單超時取消: {self._pending_order.reason}")
-                self._cancel_pending_order()
+            # Silent cancel — strategy re-evaluates with latest VAH/VAL next
+            self._pending_order = None
+            self._pending_age = 0
 
         # ── Strategy evaluation ──
         if not self._open_position and not self._pending_order:
@@ -326,6 +369,13 @@ class BacktestEngine:
             signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
             if signal:
                 signal.zone_source = zone_source
+                if self._signal_full_tp_locked(signal, candle):
+                    self.trend_follow.notify_order_cancelled()
+                    return
+                if self._session_direction_is_used(signal, candle):
+                    self.trend_follow.notify_order_cancelled()
+                    return
+                self._mark_session_direction_used(signal, candle)
                 if getattr(signal, 'order_type', 'limit') == 'market':
                     # Market order: execute immediately at candle close
                     self._execute_entry(signal, candle)
@@ -403,13 +453,32 @@ class BacktestEngine:
     def _cancel_pending_order(self):
         """Cancel a pending limit order and notify the strategy."""
         if self._pending_order:
-            signal = self._pending_order
-            if hasattr(self.trend_follow, "unlock_breakout") and signal.zone_id:
-                direction = "up" if signal.direction == Direction.BUY else "down"
-                self.trend_follow.unlock_breakout(signal.zone_id, direction)
             self.trend_follow.notify_order_cancelled()
         self._pending_order = None
         self._pending_age = 0
+
+    @staticmethod
+    def _signal_direction_key(signal: TradeSignal) -> str:
+        return "up" if signal.direction == Direction.BUY else "down"
+
+    def _signal_session_key(self, signal: TradeSignal, candle: Candle) -> str:
+        return str(signal.zone_id or _topstep_trade_date(candle.timestamp))
+
+    def _session_direction_key(self, signal: TradeSignal, candle: Candle) -> tuple[str, str]:
+        return (self._signal_session_key(signal, candle), self._signal_direction_key(signal))
+
+    def _session_direction_is_used(self, signal: TradeSignal, candle: Candle) -> bool:
+        if not self._one_trade_per_session_direction:
+            return False
+        return self._session_direction_key(signal, candle) in self._session_direction_used
+
+    def _mark_session_direction_used(self, signal: TradeSignal, candle: Candle) -> None:
+        if not self._one_trade_per_session_direction:
+            return
+        key = self._session_direction_key(signal, candle)
+        self._session_direction_used.add(key)
+        if hasattr(self.trend_follow, "mark_breakout_used"):
+            self.trend_follow.mark_breakout_used(key[0], key[1])
 
     def _place_pending_order(self, signal: TradeSignal, candle: Candle):
         """Place a limit order — will fill on a future candle when price touches."""
@@ -464,6 +533,8 @@ class BacktestEngine:
             entry_time=candle.timestamp,
             sl_price=signal.sl_price,
             tp_price=signal.tp_price,
+            original_sl_price=signal.sl_price,
+            original_tp_price=signal.tp_price,
             zone_id=signal.zone_id,
             zone_source=getattr(signal, 'zone_source', None),
             contracts=self.contract_size,
@@ -472,7 +543,6 @@ class BacktestEngine:
             vol_ratio=signal.vol_ratio,
             is_big_trend=signal.is_big_trend,
             breakout_range=signal.breakout_range,
-            macd_hist=getattr(signal, 'macd_hist', None),
         )
         self._open_position = trade
         self._trail_sl_triggered = False
@@ -481,7 +551,7 @@ class BacktestEngine:
         # POST_BREAKOUT_WINDOW_MIN minutes regardless of when (or whether)
         # the trade actually exits — the user wants to know how price
         # behaved within 1h after breakout, not just up to the exit.
-        trail_ticks = self._resolved_trail_ticks()
+        trail_ticks = self._resolved_trail_ticks(signal.strategy)
         trail_pts = trail_ticks * self.TICK_SIZE
         if signal.direction == Direction.BUY:
             trail_lvl = fill_price + trail_pts
@@ -628,12 +698,12 @@ class BacktestEngine:
         level before reaching TP (a high TP↶TRAIL count means trail is
         cutting off would-be winners).
         """
-        if not getattr(self.strategy_params, 'trail_enabled', True):
-            return
         if self._trail_sl_triggered:
             return
         pos = self._open_position
         if not pos:
+            return
+        if not self._strategy_trail_enabled(pos.strategy):
             return
         mkt = candle.close
         if pos.direction == Direction.BUY:
@@ -641,16 +711,14 @@ class BacktestEngine:
         else:
             ticks_moved = (pos.entry_price - mkt) / self.TICK_SIZE
 
-        tp_ticks = abs(int(getattr(self.strategy_params, 'tp_ticks', 0) or 0))
-        trigger_pct = getattr(self.strategy_params, 'trail_trigger_pct', 0.30)
-        if trigger_pct > 1:
-            trigger_pct = trigger_pct / 100.0
+        tp_ticks = abs(int(self._strategy_param(pos.strategy, 'tp_ticks', 0) or 0))
+        trigger_pct = self._strategy_trigger_pct(pos.strategy)
         if trigger_pct <= 0:
             return
         trigger_ticks = max(1.0, tp_ticks * trigger_pct)
         if ticks_moved >= trigger_ticks:
             self._trail_sl_triggered = True
-            trail_ticks = self._resolved_trail_ticks()
+            trail_ticks = self._resolved_trail_ticks(pos.strategy)
             trail_pts = trail_ticks * self.TICK_SIZE
             if pos.direction == Direction.BUY:
                 pos.sl_price = pos.entry_price + trail_pts
@@ -701,13 +769,13 @@ class BacktestEngine:
         self._capital += pnl
         date_str = candle.timestamp.strftime("%Y-%m-%d")
         self._daily_pnl[date_str] = self._daily_pnl.get(date_str, 0) + pnl
-        if self._full_tp_lock > 0:
-            ts_date = _topstep_trade_date(candle.timestamp)
-            if ts_date != self._full_tp_ts_date:
-                self._full_tp_count = 0
-                self._full_tp_ts_date = ts_date
-            if reason == ExitReason.TP:
-                self._full_tp_count += 1
+        if reason == ExitReason.TP:
+            self._reset_full_tp_counts_for_session(candle.timestamp)
+            lock = self._full_tp_lock_for_strategy(pos.strategy)
+            if lock > 0:
+                key = self._strategy_group(pos.strategy)
+                self._full_tp_counts[key] = self._full_tp_counts.get(key, 0) + 1
+                self._full_tp_count = sum(self._full_tp_counts.values())
 
         self._trades.append(pos)
         self._last_closed_trade = pos
