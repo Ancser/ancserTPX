@@ -3,7 +3,7 @@
 # 文件: backend/backtest/engine.py
 # 狀態: v0.17.0
 # 功能 / Features:
-#   - Completed 1m candle backtest engine for breakthrough / consolidation / hybrid.
+#   - Completed 1m candle backtest engine for the trend strategy.
 #   - Simulates limit/market entry, SL, TP, trail SL, pending timeout, and close-window flatten.
 #   - Uses dynamic NQ/MNQ point value, contract size, commission, and fees.
 #   - Full TP lock blocks new entries after N full TP exits until the next Topstep session.
@@ -13,6 +13,7 @@
 from __future__ import annotations
 import uuid
 import logging
+import math
 from datetime import datetime, time, timedelta
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -23,7 +24,7 @@ from backend.db.models import (
     Direction, ExitReason, StrategyType, ZoneStatus,
     get_point_value, get_tick_size,
 )
-from backend.strategy.consolidation import SessionZoneDetector
+from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.trend_follow import SessionTrendFollow
 
 logger = logging.getLogger(__name__)
@@ -67,32 +68,28 @@ class BacktestEngine:
         _cid = getattr(self.strategy_params, "contract_id", "") or "CON.F.US.MNQ.M26"
         self.contract_id = _cid
         self.contract_size = max(1, int(getattr(self.strategy_params, "contract_size", 1) or 1))
-        # Per-instance values shadow class defaults so full-backtest contract scans stay isolated.
+        # Per-instance values shadow class defaults so machine-learning contract scans stay isolated.
         self.POINT_VALUE = get_point_value(_cid)
         self.TICK_SIZE = get_tick_size(_cid)
 
-        # Value Area is locked to 80% in v0.17.0.
-        self.config.value_area_pct = 0.80
+        # v0.18: value-area width + area timeframe are selectable per run.
+        _va_pct = float(getattr(self.strategy_params, "value_area_pct", 0.80) or 0.80)
+        self.config.value_area_pct = _va_pct
+        _area_tf = getattr(self.strategy_params, "area_timeframe", "5m") or "5m"
 
-        # Session-based zone detector (skipped when zone_timeline is provided)
-        self.detector = SessionZoneDetector(
-            value_area_pct=self.config.value_area_pct,
+        # Clock-bucket zone detector — keeps the recent 10 reference zones.
+        # (skipped when a pre-computed zone_timeline is provided)
+        self.detector = build_zone_detector(
+            area_timeframe=_area_tf,
+            value_area_pct=_va_pct,
+            tick_size=self.TICK_SIZE,
+            max_recent=10,
         )
-        # Strategy selection: legacy names map to breakthrough so old presets do not break.
-        _raw_strat = (self.strategy_params.strategy or "breakthrough").lower()
-        if _raw_strat in ("consolidation", "reversion"):
-            from backend.strategy.reversion import SessionConsolidation
-            self.strategy_mode = "consolidation"
-            self.trend_follow = SessionConsolidation(params=self.strategy_params)
-        elif _raw_strat in ("hybrid", "trend_reversion"):
-            from backend.strategy.reversion import SessionHybridStrategy
-            self.strategy_mode = "hybrid"
-            self.trend_follow = SessionHybridStrategy(params=self.strategy_params)
-        else:
-            self.strategy_mode = "breakthrough"
-            self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+        # Only the trend strategy remains.
+        self.strategy_mode = "trend"
+        self.trend_follow = SessionTrendFollow(params=self.strategy_params)
 
-        # Pre-computed zone timeline (set once for full backtest grid runs)
+        # Pre-computed zone timeline (set once for machine learning grid runs)
         self._zone_timeline: Optional[List[dict]] = zone_timeline
         self._zi: int = 0  # current index into zone_timeline
 
@@ -115,10 +112,13 @@ class BacktestEngine:
             int(getattr(self.strategy_params, "cd_full_tp_lock", 0) or 0),
         )
         self._full_tp_count: int = 0
-        self._full_tp_counts: Dict[str, int] = {"tr": 0, "cd": 0}
+        self._full_tp_counts: Dict[str, int] = {"tr": 0}
         self._full_tp_ts_date: str = ""
         self._one_trade_per_session_direction: bool = bool(
             getattr(self.strategy_params, "one_trade_per_session_direction", True)
+        )
+        self._tr_one_trade_per_session: bool = bool(
+            getattr(self.strategy_params, "tr_one_trade_per_session", True)
         )
         self._session_direction_used: set[tuple[str, str]] = set()
         # Active post-breakout trackers (one per recently-entered trade).
@@ -136,9 +136,7 @@ class BacktestEngine:
 
     @staticmethod
     def _strategy_group(strategy) -> str:
-        value = getattr(strategy, "value", strategy)
-        text = str(value or "").lower()
-        return "cd" if text in ("consolidation", "reversion") else "tr"
+        return "tr"
 
     def _strategy_param(self, strategy, suffix: str, fallback):
         key = self._strategy_group(strategy)
@@ -170,7 +168,7 @@ class BacktestEngine:
         if ts_date == self._full_tp_ts_date:
             return
         self._full_tp_ts_date = ts_date
-        self._full_tp_counts = {"tr": 0, "cd": 0}
+        self._full_tp_counts = {"tr": 0}
         self._full_tp_count = 0
 
     def _signal_full_tp_locked(self, signal: TradeSignal, candle: Candle) -> bool:
@@ -201,7 +199,7 @@ class BacktestEngine:
         self._reset()
 
         # Ensure chronological order (API may return newest-first).
-        # Skip when using zone_timeline; full-backtest grid runs pre-sort once so _zi indices stay aligned.
+        # Skip when using zone_timeline; machine-learning grid runs pre-sort once so _zi indices stay aligned.
         if self._zone_timeline is None:
             candles = sorted(candles, key=lambda c: c.timestamp)
 
@@ -236,7 +234,7 @@ class BacktestEngine:
         calc = MetricsCalculator()
         metrics = calc.calculate_all(self._trades, self.config.initial_capital)
 
-        # Full-backtest grid runs reuse a precomputed zone timeline and do not render zones.
+        # Machine-learning grid runs reuse a precomputed zone timeline and do not render zones.
         all_zones = [] if self._zone_timeline is not None else self.detector.get_all_zones()
 
         result = BacktestResult(
@@ -264,7 +262,7 @@ class BacktestEngine:
         self._last_closed_trade = None
         self._trail_sl_triggered = False
         self._full_tp_count = 0
-        self._full_tp_counts = {"tr": 0, "cd": 0}
+        self._full_tp_counts = {"tr": 0}
         self._full_tp_ts_date = ""
         self._session_direction_used = set()
         self._breakout_trackers = []
@@ -283,12 +281,14 @@ class BacktestEngine:
             self._update_breakout_trackers(candle)
 
         # ── Zone state: either live detector or pre-computed timeline ──
+        _recent_zones = []
         if self._zone_timeline is not None:
             # Fast path: look up pre-computed state, skip expensive detector
             _zt = self._zone_timeline[self._zi] if self._zi < len(self._zone_timeline) else {}
             self._zi += 1
             _active_zone = _zt.get('active')
             _is_mature   = _zt.get('mature', False)
+            _recent_zones = _zt.get('recent') or ([_active_zone] if _active_zone else [])
         else:
             # Normal path: run detector live
             self.detector.update(candle)
@@ -303,9 +303,7 @@ class BacktestEngine:
                 self._cancel_pending_order()
             return
 
-        # Full TP lock counts reset on the Topstep session boundary. The actual
-        # entry block is checked after a signal exists so hybrid can apply TR/CD
-        # locks independently.
+        # Full TP lock counts reset on the Topstep session boundary.
         self._reset_full_tp_counts_for_session(candle.timestamp)
 
         # Flatten time (UTC 19:45 = PT 12:45)
@@ -355,18 +353,16 @@ class BacktestEngine:
 
             if self._zone_timeline is not None:
                 # Fast path: zones already looked up above
-                eval_zone   = _active_zone
+                eval_zones  = _recent_zones
                 eval_mature = _is_mature
                 zone_source = "current"
             else:
-                # Normal path
-                active_zone = self.detector.get_active_zone()
-                is_mature   = self.detector.is_zone_mature
-                eval_zone   = active_zone
-                eval_mature = is_mature
+                # Normal path — evaluate breakout vs the recent 10 reference zones
+                eval_zones  = self.detector.get_recent_zones()
+                eval_mature = self.detector.is_zone_mature
                 zone_source = "current"
 
-            signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
+            signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
             if signal:
                 signal.zone_source = zone_source
                 if self._signal_full_tp_locked(signal, candle):
@@ -467,13 +463,16 @@ class BacktestEngine:
     def _session_direction_key(self, signal: TradeSignal, candle: Candle) -> tuple[str, str]:
         return (self._signal_session_key(signal, candle), self._signal_direction_key(signal))
 
+    def _session_limit_flag(self, signal: TradeSignal) -> bool:
+        return self._tr_one_trade_per_session
+
     def _session_direction_is_used(self, signal: TradeSignal, candle: Candle) -> bool:
-        if not self._one_trade_per_session_direction:
+        if not self._session_limit_flag(signal):
             return False
         return self._session_direction_key(signal, candle) in self._session_direction_used
 
     def _mark_session_direction_used(self, signal: TradeSignal, candle: Candle) -> None:
-        if not self._one_trade_per_session_direction:
+        if not self._session_limit_flag(signal):
             return
         key = self._session_direction_key(signal, candle)
         self._session_direction_used.add(key)
@@ -519,11 +518,7 @@ class BacktestEngine:
         return False
 
     def _execute_entry(self, signal: TradeSignal, candle: Candle):
-        slippage = self.config.slippage_ticks * self.TICK_SIZE
-        if signal.direction == Direction.BUY:
-            fill_price = signal.entry_price + slippage
-        else:
-            fill_price = signal.entry_price - slippage
+        fill_price = signal.entry_price
 
         trade = Trade(
             trade_id=f"T{uuid.uuid4().hex[:8]}",
@@ -711,7 +706,9 @@ class BacktestEngine:
         else:
             ticks_moved = (pos.entry_price - mkt) / self.TICK_SIZE
 
-        tp_ticks = abs(int(self._strategy_param(pos.strategy, 'tp_ticks', 0) or 0))
+        # v0.18: TP is RR-based, so derive the trail trigger from the position's
+        # actual TP distance instead of the removed fixed tp_ticks param.
+        tp_ticks = abs(pos.tp_price - pos.entry_price) / self.TICK_SIZE
         trigger_pct = self._strategy_trigger_pct(pos.strategy)
         if trigger_pct <= 0:
             return
@@ -733,18 +730,6 @@ class BacktestEngine:
         pos = self._open_position
         if not pos:
             return
-
-        slippage = self.config.slippage_ticks * self.TICK_SIZE
-        if reason in (ExitReason.SL, ExitReason.TRAIL_SL):
-            if pos.direction == Direction.BUY:
-                exit_price -= slippage
-            else:
-                exit_price += slippage
-        else:
-            if pos.direction == Direction.BUY:
-                exit_price -= slippage
-            else:
-                exit_price += slippage
 
         # Use the per-trade point_value (set on entry) so multi-contract
         # backtests with different specs (e.g. NQ vs MNQ) PnL correctly.

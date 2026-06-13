@@ -263,7 +263,7 @@ class TrendFollowStrategy:
                 self._state = "idle"
                 logger.info(f"[TrendFollow] RETRY at POC {poc:.2f} BUY")
                 return TradeSignal(
-                    strategy=StrategyType.BREAKTHROUGH,
+                    strategy=StrategyType.TREND_FOLLOW,
                     direction=Direction.BUY,
                     entry_price=entry,
                     sl_price=sl,
@@ -282,7 +282,7 @@ class TrendFollowStrategy:
                 self._state = "idle"
                 logger.info(f"[TrendFollow] RETRY at POC {poc:.2f} SELL")
                 return TradeSignal(
-                    strategy=StrategyType.BREAKTHROUGH,
+                    strategy=StrategyType.TREND_FOLLOW,
                     direction=Direction.SELL,
                     entry_price=entry,
                     sl_price=sl,
@@ -337,7 +337,7 @@ class TrendFollowStrategy:
         tp_dollars = self.tp_points * POINT_VALUE
 
         return TradeSignal(
-            strategy=StrategyType.BREAKTHROUGH,
+            strategy=StrategyType.TREND_FOLLOW,
             direction=direction,
             entry_price=entry,
             sl_price=sl,
@@ -410,14 +410,16 @@ class SessionTrendFollow:
 
     def __init__(self, params: Optional[StrategyParams] = None):
         p = params or StrategyParams()
+        self.RR_RATIO = max(1, int(getattr(p, "rr_ratio", 2) or 2))
+        # Fallback SL distance (ticks) when a zone has no VP histogram to locate a node.
         self.SL_TICKS = getattr(p, "tr_sl_ticks", p.sl_ticks)
-        self.TP_TICKS = getattr(p, "tr_tp_ticks", p.tp_ticks)
         self.PENDING_TIMEOUT_CANDLES = 1
         self.CONFIRM_BARS = max(1, int(getattr(p, 'breakout_confirm_bars', 1) or 1))
 
         self._state = "idle"  # idle | watching | confirmed | in_trade
         self._breakout_direction: Optional[str] = None
         self._confirm_count: int = 0
+        self._armed: bool = False  # True after N consecutive outside candles
         self._recent_candles: List[Candle] = []
         self._traded_breakouts: Set[Tuple[str, str]] = set()
 
@@ -425,6 +427,7 @@ class SessionTrendFollow:
         self._state = "idle"
         self._breakout_direction = None
         self._confirm_count = 0
+        self._armed = False
         self._recent_candles = []
 
     def set_traded_breakouts(self, keys):
@@ -460,9 +463,19 @@ class SessionTrendFollow:
     def evaluate(
         self,
         candle: Candle,
-        zone: Optional[ConsolidationZone],
+        zones,
         is_mature: bool,
     ) -> Optional[TradeSignal]:
+        """Breakout vs. up to N recent reference zones.
+
+        `zones` may be a single ConsolidationZone (legacy) or a list of the
+        recent reference zones (v0.18). A breakout up requires the candle to
+        close AND open above the VAH of at least one zone; a breakout down
+        below the VAL of at least one zone — sustained for CONFIRM_BARS
+        consecutive candles. The trade zone is the strongest level broken
+        (highest VAH for longs / lowest VAL for shorts), and its VP profile
+        drives the lowest-volume-node SL.
+        """
         if self._recent_candles:
             gap = (candle.timestamp - self._recent_candles[-1].timestamp).total_seconds() / 60
             if gap > 60:
@@ -471,24 +484,41 @@ class SessionTrendFollow:
         if len(self._recent_candles) > 20:
             self._recent_candles = self._recent_candles[-20:]
 
-        if not zone or not is_mature:
+        # Normalize to a list of reference zones.
+        if zones is None:
+            zone_list: List[ConsolidationZone] = []
+        elif isinstance(zones, ConsolidationZone):
+            zone_list = [zones]
+        else:
+            zone_list = [z for z in zones if z is not None]
+
+        if not zone_list or not is_mature:
             return None
         if self._state == "in_trade":
             return None
 
-        vah = zone.vah_80
-        val = zone.val_80
+        # Zones the candle fully broke above (up) / below (down).
+        up_zones = [z for z in zone_list
+                    if candle.open > z.vah_80 and candle.close > z.vah_80]
+        down_zones = [z for z in zone_list
+                      if candle.open < z.val_80 and candle.close < z.val_80]
+        inside_any = any(
+            z.val_80 <= candle.open <= z.vah_80 and z.val_80 <= candle.close <= z.vah_80
+            for z in zone_list
+        )
 
-        inside = val <= candle.open <= vah and val <= candle.close <= vah
-        up = candle.open > vah and candle.close > vah
-        down = candle.open < val and candle.close < val
+        up = bool(up_zones) and not down_zones
+        down = bool(down_zones) and not up_zones
 
-        if inside:
+        # Candle fully inside some zone's VA and not breaking out → disarm.
+        if inside_any and not up and not down:
             self._state = "idle"
             self._breakout_direction = None
             self._confirm_count = 0
+            self._armed = False
             return None
 
+        # Count consecutive candles breaking out in the same direction.
         if up:
             if self._breakout_direction == "up":
                 self._confirm_count += 1
@@ -504,35 +534,58 @@ class SessionTrendFollow:
                 self._confirm_count = 1
                 self._state = "watching"
         else:
-            if self._state == "confirmed" and self._breakout_direction:
-                return self._generate_signal(candle, zone, self._breakout_direction)
-            self._confirm_count = 0
-            self._breakout_direction = None
-            self._state = "idle"
-            return None
+            # Ambiguous candle — breaks the consecutive chain unless already armed.
+            if not self._armed:
+                self._confirm_count = 0
+                self._breakout_direction = None
+                self._state = "idle"
 
+        # Once N consecutive breakout candles → armed (stays armed).
         if self._confirm_count >= self.CONFIRM_BARS:
-            bk = (str(zone.zone_id), self._breakout_direction)
+            self._armed = True
+
+        # Armed → choose the strongest broken zone and place/refresh order.
+        if self._armed and self._breakout_direction:
+            if self._breakout_direction == "up":
+                trade_zone = max(up_zones, key=lambda z: z.vah_80) if up_zones else None
+            else:
+                trade_zone = min(down_zones, key=lambda z: z.val_80) if down_zones else None
+            if trade_zone is None:
+                return None
+            bk = (str(trade_zone.zone_id), self._breakout_direction)
             if bk in self._traded_breakouts:
                 return None
             self._state = "confirmed"
-            return self._generate_signal(candle, zone, self._breakout_direction)
+            return self._generate_signal(candle, trade_zone, self._breakout_direction)
 
         return None
 
     def _generate_signal(self, candle: Candle, zone: ConsolidationZone, direction: str) -> TradeSignal:
-        sl_points = self.SL_TICKS * self.TICK_SIZE
-        tp_points = self.TP_TICKS * self.TICK_SIZE
+        # v0.18 SL model: SL = lowest-volume price node between POC and VAH (long)
+        # or between POC and VAL (short). TP = entry ± rr_ratio × |entry − SL|.
+        fallback_pts = self.SL_TICKS * self.TICK_SIZE
 
         if direction == "up":
             entry = zone.vah_80
-            sl = entry - sl_points
-            tp = entry + tp_points
+            node = zone.lowest_volume_price_between(zone.poc, zone.vah_80)
+            # SL must sit below entry for a long; clamp to fallback if node is invalid.
+            if node is None or node >= entry:
+                sl = entry - fallback_pts
+            else:
+                sl = node
+            sl_dist = abs(entry - sl)
+            tp = entry + sl_dist * self.RR_RATIO
             trade_dir = Direction.BUY
         else:
             entry = zone.val_80
-            sl = entry + sl_points
-            tp = entry - tp_points
+            node = zone.lowest_volume_price_between(zone.poc, zone.val_80)
+            # SL must sit above entry for a short; clamp to fallback if node is invalid.
+            if node is None or node <= entry:
+                sl = entry + fallback_pts
+            else:
+                sl = node
+            sl_dist = abs(sl - entry)
+            tp = entry - sl_dist * self.RR_RATIO
             trade_dir = Direction.SELL
 
         sl_dollars = abs(entry - sl) * POINT_VALUE
@@ -540,21 +593,21 @@ class SessionTrendFollow:
 
         logger.info(
             f"[SessionTrend] BREAKOUT {direction.upper()} | "
-            f"entry={entry:.2f} SL={sl:.2f} TP={tp:.2f} | "
+            f"entry={entry:.2f} SL={sl:.2f} TP={tp:.2f} RR=1:{self.RR_RATIO} | "
             f"zone={zone.zone_id}"
         )
 
         return TradeSignal(
-            strategy=StrategyType.BREAKTHROUGH,
+            strategy=StrategyType.TREND_FOLLOW,
             direction=trade_dir,
             entry_price=entry,
             sl_price=sl,
             tp_price=tp,
             zone_id=zone.zone_id,
             reason=(
-                f"BREAKTHROUGH {direction.upper()} | "
+                f"TREND {direction.upper()} | "
                 f"open+close {'> VAH' if direction == 'up' else '< VAL'} | "
-                f"SL {self.SL_TICKS}t(${sl_dollars:.0f}) TP {self.TP_TICKS}t(${tp_dollars:.0f})"
+                f"SL@lowVol {sl:.2f}(${sl_dollars:.0f}) TP 1:{self.RR_RATIO}(${tp_dollars:.0f})"
             ),
             timestamp=candle.timestamp,
             breakout_range=abs(zone.high_100 - zone.vah_80) if direction == "up" else abs(zone.val_80 - zone.low_100),

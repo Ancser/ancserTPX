@@ -79,20 +79,8 @@ class MetricsCalculator:
         self._aggregate_post_breakout(completed, metrics)
         self._aggregate_zone_source(completed, metrics)
 
-        # ── Per-strategy breakdown ──
-        # v0.17.0 names are breakthrough/consolidation; legacy enum values are
-        # also accepted so older cached trades can still produce a breakdown.
-        rev_trades = [
-            t for t in completed
-            if t.strategy in (StrategyType.CONSOLIDATION, StrategyType.REVERSION)
-        ]
-        tf_trades = [
-            t for t in completed
-            if t.strategy in (StrategyType.BREAKTHROUGH, StrategyType.TREND_FOLLOW)
-        ]
-
-        if rev_trades:
-            metrics.reversion_metrics = self._sub_metrics(rev_trades, initial_capital)
+        # ── Per-strategy breakdown (trend only) ──
+        tf_trades = [t for t in completed if t.strategy == StrategyType.TREND_FOLLOW]
         if tf_trades:
             metrics.trend_follow_metrics = self._sub_metrics(tf_trades, initial_capital)
 

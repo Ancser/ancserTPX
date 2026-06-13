@@ -33,7 +33,7 @@ MNQ_SIZE_CHOICES = (1, 3, 5, 10)
 TRAIL_TICK_STEP = 5
 DEFAULT_PRESET_NAME = "TR MNQx3 50/200 TRIG30 TRAILTP5% TPLOCKOFF"
 DEFAULT_PRESET_PARAMS = {
-    "strategy": "breakthrough",
+    "strategy": "trend",
     "tp_ticks": 200,
     "sl_ticks": 50,
     "trail_sl_ticks": 10,
@@ -47,18 +47,12 @@ DEFAULT_PRESET_PARAMS = {
     "tr_trail_trigger_pct": 0.30,
     "tr_trail_enabled": True,
     "tr_full_tp_lock": 0,
-    "cd_tp_ticks": 200,
-    "cd_sl_ticks": 50,
-    "cd_trail_sl_ticks": 10,
-    "cd_trail_sl_pct": 0.05,
-    "cd_trail_trigger_pct": 0.30,
-    "cd_trail_enabled": True,
-    "cd_full_tp_lock": 0,
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
     "full_tp_lock": 0,
     "one_trade_per_session_direction": True,
+    "tr_one_trade_per_session": True,
     "value_area_pct": 0.80,
     "skip_zone_stability": False,
 }
@@ -130,16 +124,8 @@ def _load_presets_file() -> dict:
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        if strategy in ("", "trend", "trend_follow"):
-            params["strategy"] = "breakthrough"
-        elif strategy == "reversion":
-            params["strategy"] = "consolidation"
-        elif strategy == "trend_reversion":
-            params["strategy"] = "hybrid"
-        strategy = str(params.get("strategy") or "").lower()
-        if strategy not in {"breakthrough", "consolidation", "hybrid"}:
-            del presets[name]
-            continue
+        if strategy != "trend":
+            params["strategy"] = "trend"
         allowed_keys = {
             "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
             "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
@@ -147,8 +133,7 @@ def _load_presets_file() -> dict:
             "value_area_pct", "skip_zone_stability",
             "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
             "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
-            "cd_tp_ticks", "cd_sl_ticks", "cd_trail_sl_ticks", "cd_trail_sl_pct",
-            "cd_trail_trigger_pct", "cd_trail_enabled", "cd_full_tp_lock",
+            "tr_one_trade_per_session",
         }
         for key in list(params.keys()):
             if key not in allowed_keys:
@@ -157,8 +142,6 @@ def _load_presets_file() -> dict:
         new_name = None
         if str(name).startswith("BR "):
             new_name = "TR " + str(name)[3:]
-        elif str(name).startswith("CON "):
-            new_name = "CD " + str(name)[4:]
         if new_name and new_name != name:
             if new_name not in presets:
                 presets[new_name] = params
@@ -339,15 +322,13 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         }
 
     tr = leg("tr")
-    cd = leg("cd")
-    strategy = str(preset.get("strategy") or "breakthrough")
-    primary = cd if strategy.lower() in {"consolidation", "reversion"} else tr
+    primary = tr
     contract_size = _normalize_contract_size(
         contract_id,
         preset.get("contract_size", DEFAULT_PRESET_PARAMS["contract_size"]),
     )
     return StrategyParams(
-        strategy=strategy,
+        strategy="trend",
         tp_ticks=primary["tp"],
         sl_ticks=primary["sl"],
         trail_sl_ticks=primary["trail"],
@@ -359,12 +340,6 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         tr_trail_trigger_pct=tr["trigger"],
         tr_trail_enabled=tr["enabled"],
         tr_full_tp_lock=tr["lock"],
-        cd_tp_ticks=cd["tp"],
-        cd_sl_ticks=cd["sl"],
-        cd_trail_sl_ticks=cd["trail"],
-        cd_trail_trigger_pct=cd["trigger"],
-        cd_trail_enabled=cd["enabled"],
-        cd_full_tp_lock=cd["lock"],
         candle_seconds=int(preset.get("candle_seconds") or 60),
         contract_id=contract_id,
         contract_size=contract_size,

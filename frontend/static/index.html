@@ -3,8 +3,8 @@
   文件: frontend/static/index.html
   狀態: v0.17.0
   功能 / Features:
-    1. Backtest, Full Backtest, Live Monitor 共用 completed 1m candle decision flow.
-    2. 策略固定為 breakthrough / consolidation / hybrid。
+    1. Backtest, Machine Learning, Live Monitor 共用 completed 1m candle decision flow.
+    2. 策略固定為 trend。
     3. Value Area 固定 80%，preset 名稱不再包含 area sweep。
     4. Full TP Lock 取代舊 profit lock，達到 1/2/3 次完整 TP 後下一 session 前停止新單。
     5. Chart overlay 標示 session boundary、VP zone、禁止交易時段紅色斜線。
@@ -312,7 +312,7 @@
         .btn-amber:disabled { opacity: 0.3; cursor: not-allowed; }
         .btn-amber:disabled:hover { background: var(--amber2); box-shadow: none; }
 
-        /* -- Full Backtest hazard-stripe button -- */
+        /* -- Machine Learning hazard-stripe button -- */
         .btn-full {
             position: relative;
             overflow: hidden;
@@ -622,7 +622,7 @@
             text-transform: uppercase;
             border-bottom: 1px solid var(--border-h);
         }
-        /* -- Full Backtest sortable column headers -- */
+        /* -- Machine Learning sortable column headers -- */
         .full-sort-th {
             cursor: pointer;
             user-select: none;
@@ -963,7 +963,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        0.17.0
+        1.0.0
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -999,6 +999,16 @@
                 <div class="form-group">
                     <label>CONTRACT ID</label>
                     <input type="text" id="contract-id" placeholder="auto-detect" value="CON.F.US.MNQ.M26">
+                </div>
+                <div class="form-group">
+                    <label>MERGE HISTORY <span style="color:var(--text2)">(chain older contracts, back-adjusted)</span></label>
+                    <select id="merge-contracts" onchange="_btDataRange=null">
+                        <option value="0" selected>OFF (this contract only)</option>
+                        <option value="1">+1 prev quarter</option>
+                        <option value="2">+2 prev quarters</option>
+                        <option value="3">+3 prev quarters</option>
+                        <option value="4">+4 prev quarters (~1yr)</option>
+                    </select>
                 </div>
                 <div class="form-row">
                     <div class="form-group">
@@ -1039,14 +1049,14 @@
             <div class="form-row" style="margin-top:8px;">
                 <div class="form-group" style="flex:2;">
                     <label>CONTRACT</label>
-                    <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt'); updateTrailBounds('bt','cd')">
+                    <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt')">
                         <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
                         <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                     </select>
                 </div>
                 <div class="form-group" style="flex:1;">
                     <label>SIZE</label>
-                    <select id="size-bt" onchange="updateTrailBounds('bt'); updateTrailBounds('bt','cd')"></select>
+                    <select id="size-bt" onchange="updateTrailBounds('bt')"></select>
                 </div>
             </div>
             <div class="form-row">
@@ -1062,34 +1072,72 @@
                 </div>
             </div>
             <div class="form-row">
-                <div class="form-group" style="flex:2;">
+                <div class="form-group" style="flex:1;">
                     <label>STRATEGY</label>
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
-                        <option value="breakthrough" selected>BREAKTHROUGH</option>
-                        <option value="consolidation">CONSOLIDATION</option>
-                        <option value="hybrid">HYBRID</option>
+                        <option value="trend" selected>TREND</option>
                     </select>
                 </div>
                 <div class="form-group" style="flex:1;">
-                    <label>AREA</label>
-                    <input type="text" value="80" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
+                    <label>METHOD</label>
+                    <select id="method-bt" onchange="onMethodChange('bt')">
+                        <option value="single" selected>SINGLE</option>
+                        <option value="overlap">OVERLAP</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;" id="area-tf-group-bt">
+                    <label>AREA TF</label>
+                    <select id="area-tf-bt" onchange="onAreaConfigChange('bt')">
+                        <option value="5m" selected>5m</option><option value="15m">15m</option>
+                        <option value="30m">30m</option><option value="1h">1h</option><option value="4h">4h</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>AREA %</label>
+                    <select id="area-pct-bt" onchange="onAreaConfigChange('bt')">
+                        <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
+                        <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
+                    </select>
                 </div>
                 <div class="form-group" style="flex:1;">
                     <label>CONFIRM</label>
-                    <input type="text" value="7" id="confirm-bars-bt" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
+                    <select id="confirm-bars-bt">
+                        <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                        <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+                        <option value="7" selected>7</option><option value="8">8</option><option value="9">9</option>
+                        <option value="10">10</option>
+                    </select>
+                </div>
+            </div>
+            <div class="form-row" id="overlap-tf-row-bt" style="display:none;">
+                <div class="form-group" style="flex:1;">
+                    <label>OVERLAP TIMEFRAMES <span style="color:var(--text2)">(need 2+; enters at avg when value areas overlap)</span></label>
+                    <div id="overlap-tf-bt" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="5m" checked> 5m</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="15m" checked> 15m</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="30m"> 30m</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="1h"> 1h</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="4h"> 4h</label>
+                    </div>
                 </div>
             </div>
             <div id="tr-params-bt" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
-                <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">BREAKTHROUGH</div>
+                <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">TREND</div>
                 <div class="form-group">
-                    <label>SL <span id="sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
-                    <input type="range" id="sl-ticks-bt" min="50" max="200" step="5" value="50"
-                        oninput="document.getElementById('sl-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
+                    <label>SL <span style="color:var(--text2)">= lowest-volume node (POC↔VAH/VAL, auto)</span></label>
+                    <input type="hidden" id="sl-ticks-bt" value="50">
+                    <span id="sl-ticks-bt-val" style="display:none">50</span>
                 </div>
                 <div class="form-group">
-                    <label>TP <span id="tp-ticks-bt-val" style="color:var(--accent)">200</span> ticks</label>
-                    <input type="range" id="tp-ticks-bt" min="50" max="200" step="5" value="200"
-                        oninput="document.getElementById('tp-ticks-bt-val').textContent=this.value; updateTrailBounds('bt')">
+                    <label>RR RATIO <span id="rr-ratio-bt-val" style="color:var(--accent)">1:2</span></label>
+                    <select id="rr-ratio-bt" onchange="onRrChange('bt')">
+                        <option value="1">1:1</option><option value="2" selected>1:2</option>
+                        <option value="3">1:3</option><option value="4">1:4</option>
+                        <option value="5">1:5</option><option value="6">1:6</option>
+                        <option value="7">1:7</option><option value="8">1:8</option>
+                        <option value="9">1:9</option><option value="10">1:10</option>
+                    </select>
+                    <input type="hidden" id="tp-ticks-bt" value="100">
                 </div>
                 <div class="form-group">
                     <label>TRAIL TP TRIGGER</label>
@@ -1117,51 +1165,19 @@
                         <option value="3">3</option>
                     </select>
                 </div>
-            </div>
-            <div id="cd-params-bt" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
-                <div style="font-size:9px;letter-spacing:1px;color:var(--amber);margin-bottom:4px;">CONSOLIDATION</div>
                 <div class="form-group">
-                    <label>SL <span id="cd-sl-ticks-bt-val" style="color:var(--accent)">50</span> ticks</label>
-                    <input type="range" id="cd-sl-ticks-bt" min="50" max="200" step="5" value="50"
-                        oninput="document.getElementById('cd-sl-ticks-bt-val').textContent=this.value; updateTrailBounds('bt','cd')">
-                </div>
-                <div class="form-group">
-                    <label>TP <span id="cd-tp-ticks-bt-val" style="color:var(--accent)">200</span> ticks</label>
-                    <input type="range" id="cd-tp-ticks-bt" min="50" max="200" step="5" value="200"
-                        oninput="document.getElementById('cd-tp-ticks-bt-val').textContent=this.value; updateTrailBounds('bt','cd')">
-                </div>
-                <div class="form-group">
-                    <label>TRAIL TP TRIGGER</label>
-                    <select id="cd-trail-trigger-pct-bt" onchange="updateTrailBounds('bt','cd')">
+                    <label>SESSION LIMIT</label>
+                    <select id="tr-session-limit-bt">
+                        <option value="1" selected>ON</option>
                         <option value="0">OFF</option>
-                        <option value="0.30" selected>30%</option>
-                        <option value="0.50">50%</option>
-                        <option value="0.70">70%</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>
-                        TRAIL SL <span id="cd-trail-sl-pct-bt-val" style="color:var(--accent)">+5% TP</span>
-                        <span id="cd-trail-sl-ticks-bt-val" style="color:var(--text2)">10t</span>
-                    </label>
-                    <select id="cd-trail-sl-pct-bt" onchange="updateTrailBounds('bt','cd')"></select>
-                    <input type="hidden" id="cd-trail-sl-ticks-bt" value="10">
-                </div>
-                <div class="form-group">
-                    <label>FULL TP LOCK</label>
-                    <select id="cd-full-tp-lock-bt">
-                        <option value="0">OFF</option>
-                        <option value="1">1</option>
-                        <option value="2">2</option>
-                        <option value="3">3</option>
                     </select>
                 </div>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
                 <div class="full-run-wrap">
-                    <button class="btn btn-full" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run full backtest combinations and rank results">FULL BACKTEST</button>
-                    <button class="btn btn-full full-filter-btn" id="btn-full-filter" onclick="toggleFullFixedDropdown(event)" disabled title="Fixed Full backtest params">v</button>
+                    <button class="btn btn-full" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run machine learning combinations and rank results">MACHINE LEARNING</button>
+                    <button class="btn btn-full full-filter-btn" id="btn-full-filter" onclick="toggleFullFixedDropdown(event)" disabled title="Fixed Machine learning params">v</button>
                     <div class="full-filter-panel" id="full-fixed-panel">
                         <label class="full-fix-row"><input type="checkbox" id="full-fix-strategy" checked> STRATEGY</label>
                         <label class="full-fix-row"><input type="checkbox" id="full-fix-contract" checked> CONTRACT</label>
@@ -1173,8 +1189,10 @@
                         <label class="full-fix-row"><input type="checkbox" id="full-fix-full-tp-lock"> FULL TP LOCK</label>
                     </div>
                 </div>
+                <button class="btn btn-outline" id="btn-draw-all-tf" onclick="toggleAllTimeframeZones()"
+                        style="margin-top:6px;" title="Overlay VAH/VAL/POC for every timeframe (5m-4h)">SHOW ALL TF ZONES</button>
             </div>
-            <!-- Full Backtest progress bar -->
+            <!-- Machine Learning progress bar -->
             <div id="full-progress-wrap" style="display:none;margin-top:7px;">
                 <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
                     <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">COMBINATIONS</span>
@@ -1200,14 +1218,14 @@
                 <div class="form-row" style="margin-top:8px;">
                     <div class="form-group" style="flex:2;">
                         <label>CONTRACT</label>
-                        <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live'); updateTrailBounds('live','cd')">
+                        <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live')">
                             <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
                             <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                         </select>
                     </div>
                     <div class="form-group" style="flex:1;">
                         <label>SIZE</label>
-                        <select id="size-live" onchange="updateTrailBounds('live'); updateTrailBounds('live','cd')"></select>
+                        <select id="size-live" onchange="updateTrailBounds('live')"></select>
                     </div>
                 </div>
                 <div class="form-row">
@@ -1226,31 +1244,50 @@
                     <div class="form-group" style="flex:2;">
                         <label>STRATEGY</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
-                            <option value="breakthrough" selected>BREAKTHROUGH</option>
-                            <option value="consolidation">CONSOLIDATION</option>
-                            <option value="hybrid">HYBRID</option>
+                            <option value="trend" selected>TREND</option>
                         </select>
                     </div>
                     <div class="form-group" style="flex:1;">
-                        <label>AREA</label>
-                        <input type="text" value="80" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
+                        <label>AREA TF</label>
+                        <select id="area-tf-live" onchange="onAreaConfigChange('live')">
+                            <option value="5m" selected>5m</option><option value="15m">15m</option>
+                            <option value="30m">30m</option><option value="1h">1h</option><option value="4h">4h</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>AREA %</label>
+                        <select id="area-pct-live" onchange="onAreaConfigChange('live')">
+                            <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
+                            <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
+                        </select>
                     </div>
                     <div class="form-group" style="flex:1;">
                         <label>CONFIRM</label>
-                        <input type="text" value="7" id="confirm-bars-live" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
+                        <select id="confirm-bars-live">
+                            <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                            <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+                            <option value="7" selected>7</option><option value="8">8</option><option value="9">9</option>
+                            <option value="10">10</option>
+                        </select>
                     </div>
                 </div>
                 <div id="tr-params-live" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
-                    <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">BREAKTHROUGH</div>
+                    <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">TREND</div>
                     <div class="form-group">
-                        <label>SL <span id="sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
-                        <input type="range" id="sl-ticks-live" min="50" max="200" step="5" value="50"
-                            oninput="document.getElementById('sl-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
+                        <label>SL <span style="color:var(--text2)">= lowest-volume node (POC↔VAH/VAL, auto)</span></label>
+                        <input type="hidden" id="sl-ticks-live" value="50">
+                        <span id="sl-ticks-live-val" style="display:none">50</span>
                     </div>
                     <div class="form-group">
-                        <label>TP <span id="tp-ticks-live-val" style="color:var(--accent)">200</span> ticks</label>
-                        <input type="range" id="tp-ticks-live" min="50" max="200" step="5" value="200"
-                            oninput="document.getElementById('tp-ticks-live-val').textContent=this.value; updateTrailBounds('live')">
+                        <label>RR RATIO <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
+                        <select id="rr-ratio-live" onchange="onRrChange('live')">
+                            <option value="1">1:1</option><option value="2" selected>1:2</option>
+                            <option value="3">1:3</option><option value="4">1:4</option>
+                            <option value="5">1:5</option><option value="6">1:6</option>
+                            <option value="7">1:7</option><option value="8">1:8</option>
+                            <option value="9">1:9</option><option value="10">1:10</option>
+                        </select>
+                        <input type="hidden" id="tp-ticks-live" value="100">
                     </div>
                     <div class="form-group">
                         <label>TRAIL TP TRIGGER</label>
@@ -1278,43 +1315,11 @@
                             <option value="3">3</option>
                         </select>
                     </div>
-                </div>
-                <div id="cd-params-live" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
-                    <div style="font-size:9px;letter-spacing:1px;color:var(--amber);margin-bottom:4px;">CONSOLIDATION</div>
                     <div class="form-group">
-                        <label>SL <span id="cd-sl-ticks-live-val" style="color:var(--accent)">50</span> ticks</label>
-                        <input type="range" id="cd-sl-ticks-live" min="50" max="200" step="5" value="50"
-                            oninput="document.getElementById('cd-sl-ticks-live-val').textContent=this.value; updateTrailBounds('live','cd')">
-                    </div>
-                    <div class="form-group">
-                        <label>TP <span id="cd-tp-ticks-live-val" style="color:var(--accent)">200</span> ticks</label>
-                        <input type="range" id="cd-tp-ticks-live" min="50" max="200" step="5" value="200"
-                            oninput="document.getElementById('cd-tp-ticks-live-val').textContent=this.value; updateTrailBounds('live','cd')">
-                    </div>
-                    <div class="form-group">
-                        <label>TRAIL TP TRIGGER</label>
-                        <select id="cd-trail-trigger-pct-live" onchange="updateTrailBounds('live','cd')">
+                        <label>SESSION LIMIT</label>
+                        <select id="tr-session-limit-live">
+                            <option value="1" selected>ON</option>
                             <option value="0">OFF</option>
-                            <option value="0.30" selected>30%</option>
-                            <option value="0.50">50%</option>
-                            <option value="0.70">70%</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>
-                            TRAIL SL <span id="cd-trail-sl-pct-live-val" style="color:var(--accent)">+5% TP</span>
-                            <span id="cd-trail-sl-ticks-live-val" style="color:var(--text2)">10t</span>
-                        </label>
-                        <select id="cd-trail-sl-pct-live" onchange="updateTrailBounds('live','cd')"></select>
-                        <input type="hidden" id="cd-trail-sl-ticks-live" value="10">
-                    </div>
-                    <div class="form-group">
-                        <label>FULL TP LOCK</label>
-                        <select id="cd-full-tp-lock-live">
-                            <option value="0">OFF</option>
-                            <option value="1">1</option>
-                            <option value="2">2</option>
-                            <option value="3">3</option>
                         </select>
                     </div>
                 </div>
@@ -1386,31 +1391,31 @@
         <div class="bottom-panel" id="bottom-panel">
             <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
             <div class="bottom-tabs">
-                <div class="bottom-tab" data-btab="full">FULL BACKTEST</div>
+                <div class="bottom-tab" data-btab="full">MACHINE LEARNING</div>
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
                 <div id="btab-full" class="hidden">
+                    <div id="full-config-caption" style="display:none;padding:6px 8px;font-size:10px;color:var(--text2);border-bottom:1px solid var(--border);font-family:'IBM Plex Mono',monospace;"></div>
                     <div class="trade-table-wrap">
                         <table id="full-table">
                             <thead id="full-thead">
                                 <tr>
-                                    <th class="full-sort-th" data-col="strategy" style="width:52px;" onclick="fullSortBy('strategy')">STRAT <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="contract" style="width:48px;" onclick="fullSortBy('contract')">CON <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="size"     style="width:34px;" onclick="fullSortBy('size')">SZ <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="sl"       style="width:40px;" onclick="fullSortBy('sl')">SL <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="tp"       style="width:40px;" onclick="fullSortBy('tp')">TP <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="trigger"  style="width:48px;" onclick="fullSortBy('trigger')">TRIG <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="trail"    style="width:44px;" onclick="fullSortBy('trail')">TRAIL <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="lock"     style="width:50px;" onclick="fullSortBy('lock')">TPLOCK <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="method"   style="width:54px;" onclick="fullSortBy('method')">METHOD <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="tf"       style="width:96px;" onclick="fullSortBy('tf')" title="Timeframe combination">TFs <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="overlap"  style="width:40px;" onclick="fullSortBy('overlap')" title="Overlapping timeframes">OVL <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="rr"       style="width:42px;" onclick="fullSortBy('rr')" title="Reward:Risk">RR <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="contract" style="width:64px;" onclick="fullSortBy('contract')" title="Contract @ size">CON <span class="sa">↕</span></th>
                                     <th class="full-sort-th" data-col="trades"   style="width:44px;" onclick="fullSortBy('trades')">TRADES <span class="sa">↕</span></th>
                                     <th class="full-sort-th" data-col="win_rate" style="width:52px;" onclick="fullSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
                                     <th class="full-sort-th" data-col="pnl"      style="width:68px;" onclick="fullSortBy('pnl')">FINAL PNL <span class="sa">↕</span></th>
                                     <th class="full-sort-th" data-col="max_dd"   style="width:60px;" onclick="fullSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
                                     <th class="full-sort-th" data-col="best_day" style="width:60px;" onclick="fullSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
                                     <th class="full-sort-th" data-col="worst_day"style="width:60px;" onclick="fullSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="wk_std"   style="width:56px;" onclick="fullSortBy('wk_std')" title="Weekly PnL std-dev">WK STD <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="wk_cv"    style="width:52px;" onclick="fullSortBy('wk_cv')" title="Weekly PnL coefficient of variation">WK CV <span class="sa">↕</span></th>
                                     <th class="full-sort-th" data-col="lwr"      style="width:48px;" onclick="fullSortBy('lwr')" title="Loss to Final Ratio">LFR <span class="sa">↕</span></th>
                                     <th class="full-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="fullSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
                                     <th style="width:32px;"></th>
@@ -1497,7 +1502,7 @@ let valLine = null;
 // -- Strategy Params & Presets ----------------------
 
 const DEFAULT_STRATEGY_PARAMS = {
-    strategy: 'breakthrough',
+    strategy: 'trend',
     tp_ticks: 200,
     sl_ticks: 50,
     trail_sl_ticks: 10,
@@ -1511,20 +1516,16 @@ const DEFAULT_STRATEGY_PARAMS = {
     tr_trail_trigger_pct: 0.30,
     tr_trail_enabled: true,
     tr_full_tp_lock: 0,
-    cd_tp_ticks: 200,
-    cd_sl_ticks: 50,
-    cd_trail_sl_ticks: 10,
-    cd_trail_sl_pct: 0.05,
-    cd_trail_trigger_pct: 0.30,
-    cd_trail_enabled: true,
-    cd_full_tp_lock: 0,
     candle_seconds: 60,
     contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
     contract_size: 3,
     value_area_pct: 0.80,
+    area_timeframe: '5m',
+    rr_ratio: 2,
     full_tp_lock: 0,
     breakout_confirm_bars: 7,
     one_trade_per_session_direction: true,
+    tr_one_trade_per_session: true,
     // Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: false,
 };
@@ -1665,24 +1666,17 @@ function syncSizeOptions(mode, wantedSize) {
     sizeEl.value = String(normalized);
 }
 
-function updateTrailBounds(mode, prefixOrPct, preferredPctForPrefix) {
-    // prefixOrPct: string 'cd' -> operate on cd-* IDs; number -> preferred trail pct for TR IDs; omitted -> TR IDs
-    var prefix = '';
-    var preferredTrailPct = null;
-    if (typeof prefixOrPct === 'string') {
-        prefix = prefixOrPct + '-';
-        if (preferredPctForPrefix != null) preferredTrailPct = preferredPctForPrefix;
-    } else if (prefixOrPct != null) {
-        preferredTrailPct = prefixOrPct;
-    }
+function updateTrailBounds(mode, preferredPct) {
+    // preferredPct: number -> preferred trail pct; omitted -> read current select value
+    var preferredTrailPct = (preferredPct != null) ? preferredPct : null;
 
-    const slEl = document.getElementById(prefix + 'sl-ticks-' + mode);
-    const tpEl = document.getElementById(prefix + 'tp-ticks-' + mode);
-    const trailPctEl = document.getElementById(prefix + 'trail-sl-pct-' + mode);
-    const trailTicksEl = document.getElementById(prefix + 'trail-sl-ticks-' + mode);
-    const triggerEl = document.getElementById(prefix + 'trail-trigger-pct-' + mode);
-    const pctSpan = document.getElementById(prefix + 'trail-sl-pct-' + mode + '-val');
-    const valSpan = document.getElementById(prefix + 'trail-sl-ticks-' + mode + '-val');
+    const slEl = document.getElementById('sl-ticks-' + mode);
+    const tpEl = document.getElementById('tp-ticks-' + mode);
+    const trailPctEl = document.getElementById('trail-sl-pct-' + mode);
+    const trailTicksEl = document.getElementById('trail-sl-ticks-' + mode);
+    const triggerEl = document.getElementById('trail-trigger-pct-' + mode);
+    const pctSpan = document.getElementById('trail-sl-pct-' + mode + '-val');
+    const valSpan = document.getElementById('trail-sl-ticks-' + mode + '-val');
     if (!slEl || !tpEl || !trailPctEl || !trailTicksEl || !triggerEl) return;
 
     const sl = Math.abs(parseInt(slEl.value, 10) || 0);
@@ -1748,30 +1742,138 @@ function updateTrailBounds(mode, prefixOrPct, preferredPctForPrefix) {
     }
 }
 
+// RR ratio selector: SL is auto (lowest-volume node); TP = RR x SL distance.
+// We keep a nominal hidden tp-ticks (= RR x fallback SL ticks) so the trailing-SL
+// display math (which is expressed as a fraction of TP) keeps working.
+function onRrChange(mode) {
+    const rrEl = document.getElementById('rr-ratio-' + mode);
+    const slEl = document.getElementById('sl-ticks-' + mode);
+    const tpEl = document.getElementById('tp-ticks-' + mode);
+    const lbl = document.getElementById('rr-ratio-' + mode + '-val');
+    const rr = rrEl ? (parseInt(rrEl.value, 10) || 2) : 2;
+    const slTicks = slEl ? (Math.abs(parseInt(slEl.value, 10)) || 50) : 50;
+    if (tpEl) tpEl.value = String(rr * slTicks);
+    if (lbl) lbl.textContent = '1:' + rr;
+    updateTrailBounds(mode);
+}
+
+// SINGLE vs OVERLAP method. Overlap reveals the timeframe multi-select and uses
+// the merged synthetic zone (avg VAH/VAL/POC) only when all selected TFs' value
+// areas overlap. Single uses one AREA TF zone.
+function onMethodChange(mode) {
+    const sel = document.getElementById('method-' + mode);
+    const method = sel ? sel.value : 'single';
+    const ovRow = document.getElementById('overlap-tf-row-' + mode);
+    const areaGrp = document.getElementById('area-tf-group-' + mode);
+    const isOverlap = method === 'overlap';
+    if (ovRow) ovRow.style.display = isOverlap ? 'flex' : 'none';
+    if (areaGrp) areaGrp.style.opacity = isOverlap ? '0.4' : '1';
+}
+
+function readOverlapTfCombo(mode) {
+    const order = ['5m', '15m', '30m', '1h', '4h'];
+    const checked = Array.from(document.querySelectorAll('.overlap-tf-chk-' + mode))
+        .filter(c => c.checked).map(c => c.value);
+    return order.filter(tf => checked.includes(tf));
+}
+
+function setOverlapTfCombo(mode, combo) {
+    const set = new Set(Array.isArray(combo) ? combo : []);
+    document.querySelectorAll('.overlap-tf-chk-' + mode).forEach(c => {
+        c.checked = set.has(c.value);
+    });
+}
+
 function normalizeStrategyName(value) {
-    let s = String(value || 'breakthrough').toLowerCase();
-    if (s === 'trend' || s === 'trend_follow') s = 'breakthrough';
-    if (s === 'reversion') s = 'consolidation';
-    if (s === 'trend_reversion') s = 'hybrid';
-    return ['breakthrough', 'consolidation', 'hybrid'].includes(s) ? s : 'breakthrough';
+    return 'trend';
 }
 
 function strategyIdPrefix(kind) {
-    return kind === 'cd' ? 'cd-' : '';
+    return '';
 }
 
 function updateStrategyParamVisibility(mode) {
-    const strategy = normalizeStrategyName(document.getElementById('strategy-' + mode)?.value);
     const trBox = document.getElementById('tr-params-' + mode);
-    const cdBox = document.getElementById('cd-params-' + mode);
-    if (trBox) trBox.style.display = strategy === 'consolidation' ? 'none' : 'block';
-    if (cdBox) cdBox.style.display = strategy === 'breakthrough' ? 'none' : 'block';
+    if (trBox) trBox.style.display = 'block';
     updateTrailBounds(mode);
-    updateTrailBounds(mode, 'cd');
 }
 
 function onStrategyChange(mode) {
     updateStrategyParamVisibility(mode);
+}
+
+// Re-detect zones at the selected area timeframe + value-area % and redraw VAH/VAL/POC.
+async function onAreaConfigChange(mode) {
+    const sp = collectStrategyParams(mode);
+    try {
+        const resp = await fetch(API + '/data/detect-zones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                value_area_pct: sp.value_area_pct,
+                area_timeframe: sp.area_timeframe,
+            }),
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.zones && data.zones.length > 0) {
+            _cachedVPZones = data.zones;
+            drawVolumeProfile(data.zones);
+            drawBacktestZones(data.zones);
+            log('Area ' + sp.area_timeframe + ' / ' + Math.round(sp.value_area_pct * 100) + '%: ' + data.zones.length + ' zones', 'info');
+        }
+    } catch (e) {
+        log('Area re-detect failed: ' + e.message, 'warn');
+    }
+}
+
+// ML: overlay every timeframe's VAH/VAL/POC on the chart at once.
+let _allTfZonesActive = false;
+
+async function toggleAllTimeframeZones() {
+    const btn = document.getElementById('btn-draw-all-tf');
+    // Toggle OFF: revert to the single-timeframe view for the bt panel.
+    if (_allTfZonesActive) {
+        _allTfZonesActive = false;
+        if (btn) {
+            btn.classList.remove('btn-green');
+            btn.textContent = 'SHOW ALL TF ZONES';
+        }
+        await onAreaConfigChange('bt');
+        return;
+    }
+    const sp = collectStrategyParams('bt');
+    try {
+        if (btn) btn.textContent = 'LOADING...';
+        const resp = await fetch(API + '/data/detect-zones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                value_area_pct: sp.value_area_pct,
+                all_timeframes: true,
+            }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        if (data.zones && data.zones.length > 0) {
+            _cachedVPZones = data.zones;
+            drawVolumeProfile(data.zones);
+            drawBacktestZones(data.zones);
+            _allTfZonesActive = true;
+            if (btn) {
+                btn.classList.add('btn-green');
+                btn.textContent = 'HIDE ALL TF ZONES';
+            }
+            const tfs = (data.timeframes || []).join('/');
+            log('All-timeframe zones (' + tfs + '): ' + data.zones.length + ' zones', 'info');
+        } else {
+            log('No zones detected across timeframes', 'warn');
+            if (btn) btn.textContent = 'SHOW ALL TF ZONES';
+        }
+    } catch (e) {
+        log('All-TF zone draw failed: ' + e.message, 'error');
+        if (btn) btn.textContent = 'SHOW ALL TF ZONES';
+    }
 }
 
 function collectStrategyParams(mode) {
@@ -1816,10 +1918,14 @@ function collectStrategyParams(mode) {
     };
 
     const tr = readLeg('tr');
-    const cd = readLeg('cd');
-    const primary = strategy === 'consolidation' ? cd : tr;
+    const primary = tr;
+    const methodEl = document.getElementById('method-' + mode);
+    const method = (methodEl && methodEl.value === 'overlap') ? 'overlap' : 'single';
+    const tfCombo = method === 'overlap' ? readOverlapTfCombo(mode) : [];
     return {
-        strategy: strategy,
+        strategy: 'trend',
+        method: method,
+        tf_combo: tfCombo,
         tp_ticks: primary.tp_ticks,
         sl_ticks: primary.sl_ticks,
         trail_sl_ticks: primary.trail_sl_ticks,
@@ -1833,21 +1939,17 @@ function collectStrategyParams(mode) {
         tr_trail_trigger_pct: tr.trail_trigger_pct,
         tr_trail_enabled: tr.trail_enabled,
         tr_full_tp_lock: tr.full_tp_lock,
-        cd_tp_ticks: cd.tp_ticks,
-        cd_sl_ticks: cd.sl_ticks,
-        cd_trail_sl_ticks: cd.trail_sl_ticks,
-        cd_trail_sl_pct: cd.trail_sl_pct,
-        cd_trail_trigger_pct: cd.trail_trigger_pct,
-        cd_trail_enabled: cd.trail_enabled,
-        cd_full_tp_lock: cd.full_tp_lock,
         candle_seconds: 60,   // 1m bars platform-wide
         contract_id: contractId,
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
-        value_area_pct: 0.80,
+        value_area_pct: _float('area-pct-' + mode, 0.80),
+        area_timeframe: _val('area-tf-' + mode) || '5m',
+        rr_ratio: Math.max(1, Math.min(10, _int('rr-ratio-' + mode, 2))),
         full_tp_lock: primary.full_tp_lock,
         one_trade_per_session_direction: true,
+        tr_one_trade_per_session: _int('tr-session-limit-' + mode, 1) === 1,
         skip_zone_stability: false,
-        breakout_confirm_bars: 7,
+        breakout_confirm_bars: Math.max(1, Math.min(10, _int('confirm-bars-' + mode, 7))),
     };
 }
 
@@ -1857,8 +1959,9 @@ function applyStrategyParams(mode, params) {
     const _setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     const _ticks = (val, fallback) => Math.max(50, Math.min(200, parseInt(val != null ? val : fallback, 10) || fallback));
     p.strategy = normalizeStrategyName(p.strategy);
-    p.value_area_pct = 0.80;
     _set('strategy-' + mode, p.strategy);
+    _set('area-tf-' + mode, String(p.area_timeframe || '5m'));
+    _set('area-pct-' + mode, (p.value_area_pct != null ? Number(p.value_area_pct) : 0.80).toFixed(2));
     const cidEl = document.getElementById('contract-' + mode);
     if (cidEl) {
         const wanted = p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id;
@@ -1900,13 +2003,26 @@ function applyStrategyParams(mode, params) {
                     tpTicks
                 ));
         _set(prefix + 'trail-trigger-pct-' + mode, triggerPct === 0 ? '0' : triggerPct.toFixed(2));
-        if (kind === 'cd') updateTrailBounds(mode, 'cd', trailPct);
-        else updateTrailBounds(mode, trailPct);
+        updateTrailBounds(mode, trailPct);
         _set(prefix + 'full-tp-lock-' + mode, String(p[kind + '_full_tp_lock'] != null ? p[kind + '_full_tp_lock'] : (p.full_tp_lock || 0)));
+        const sessionKey = kind + '_one_trade_per_session';
+        _set(kind + '-session-limit-' + mode, (p[sessionKey] != null ? p[sessionKey] : true) ? '1' : '0');
     };
 
     writeLeg('tr');
-    writeLeg('cd');
+
+    const rrVal = Math.max(1, Math.min(10, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
+    _set('rr-ratio-' + mode, String(rrVal));
+    onRrChange(mode);
+
+    _set('confirm-bars-' + mode, String(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7));
+
+    const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
+    const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
+    _set('method-' + mode, method === 'overlap' ? 'overlap' : 'single');
+    if (tfCombo.length) setOverlapTfCombo(mode, tfCombo);
+    onMethodChange(mode);
+
     updateStrategyParamVisibility(mode);
 }
 
@@ -1934,37 +2050,26 @@ function isFixedPreset(name) {
 
 function buildPresetName(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
-    const strat = normalizeStrategyName(p.strategy);
-    const prefix = strat === 'consolidation' ? 'CD' : (strat === 'hybrid' ? 'HY' : 'TR');
+    const prefix = 'TR';
     const contractLabel = contractLabelFromId(p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id);
     const contractSize = normalizeContractSize(
         p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id,
         p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
     );
-    const leg = (kind) => {
-        const sl = parseInt(p[kind + '_sl_ticks'] != null ? p[kind + '_sl_ticks'] : p.sl_ticks, 10) || DEFAULT_STRATEGY_PARAMS[kind + '_sl_ticks'] || DEFAULT_STRATEGY_PARAMS.sl_ticks;
-        const tp = parseInt(p[kind + '_tp_ticks'] != null ? p[kind + '_tp_ticks'] : p.tp_ticks, 10) || DEFAULT_STRATEGY_PARAMS[kind + '_tp_ticks'] || DEFAULT_STRATEGY_PARAMS.tp_ticks;
-        const enabled = p[kind + '_trail_enabled'] === false ? false : (p.trail_enabled !== false);
-        const triggerPct = enabled
-            ? (p[kind + '_trail_trigger_pct'] != null ? parseFloat(p[kind + '_trail_trigger_pct']) : (p.trail_trigger_pct != null ? parseFloat(p.trail_trigger_pct) : DEFAULT_STRATEGY_PARAMS.trail_trigger_pct))
-            : 0;
-        const trailEnabled = triggerPct > 0;
-        const trailPct = p[kind + '_trail_sl_pct'] != null
-            ? parseFloat(p[kind + '_trail_sl_pct'])
-            : (p.trail_sl_pct != null ? parseFloat(p.trail_sl_pct) : trailPctFromTicks(p[kind + '_trail_sl_ticks'] || p.trail_sl_ticks || 0, sl, tp));
-        const tpl = Math.max(0, Math.min(3, parseInt(p[kind + '_full_tp_lock'] != null ? p[kind + '_full_tp_lock'] : p.full_tp_lock || 0, 10) || 0));
-        return {
-            label: sl + '/' + tp +
-                ' TRIG' + (trailEnabled ? Math.round(triggerPct * 100) : 'OFF') +
-                (trailEnabled ? ' TRAILTP' + Math.round(Math.abs(trailPct) * 100) + '%' : ' TRAILOFF') +
-                (tpl > 0 ? ' TPLOCK' + tpl : ' TPLOCKOFF')
-        };
-    };
-    if (strat === 'hybrid') {
-        return prefix + ' ' + contractLabel + 'x' + contractSize + ' TR ' + leg('tr').label + ' CD ' + leg('cd').label;
-    }
-    const kind = strat === 'consolidation' ? 'cd' : 'tr';
-    return prefix + ' ' + contractLabel + 'x' + contractSize + ' ' + leg(kind).label;
+    const rr = Math.max(1, Math.min(10, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
+    const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
+    const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
+    const isOverlap = method === 'overlap' && tfCombo.length >= 2;
+    const tfLabel = isOverlap
+        ? tfCombo.join('+')
+        : (tfCombo.length ? tfCombo[0] : (p.area_timeframe || '5m'));
+    const confirm = Math.max(1, Math.min(10, parseInt(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7, 10) || 7));
+    // New model naming: contract@size · RR · timeframe(s) · SINGLE/OVERLAP · confirm bars
+    return prefix + ' ' + contractLabel + '@' + contractSize +
+        ' RR1:' + rr +
+        ' ' + tfLabel +
+        ' ' + (isOverlap ? 'OVERLAP' : 'SINGLE') +
+        ' C' + confirm;
 }
 
 async function fetchPresets() {
@@ -2131,7 +2236,6 @@ document.addEventListener('DOMContentLoaded', () => {
     ['bt', 'live'].forEach(mode => {
         syncSizeOptions(mode);
         updateTrailBounds(mode);
-        updateTrailBounds(mode, 'cd');
         updateStrategyParamVisibility(mode);
     });
 
@@ -2377,6 +2481,7 @@ async function goLive() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 value_area_pct: stratParams.value_area_pct,
+                area_timeframe: stratParams.area_timeframe,
             }),
         });
         if (zoneResp.ok) {
@@ -2805,11 +2910,8 @@ async function pollLiveStatus() {
             const counts = st.full_tp_counts || {};
             const locks = st.full_tp_locks || {};
             const lockedParts = [];
-            if ((locks.breakthrough || 0) > 0 && (counts.tr || 0) >= locks.breakthrough) {
-                lockedParts.push('TR ' + (counts.tr || 0) + '/' + locks.breakthrough);
-            }
-            if ((locks.consolidation || 0) > 0 && (counts.cd || 0) >= locks.consolidation) {
-                lockedParts.push('CD ' + (counts.cd || 0) + '/' + locks.consolidation);
+            if ((locks.trend || 0) > 0 && (counts.tr || 0) >= locks.trend) {
+                lockedParts.push('TR ' + (counts.tr || 0) + '/' + locks.trend);
             }
             const lockBadge = st.tp_locked
                 ? ' <span style="color:var(--amber);font-size:9px;letter-spacing:1px;">TP LOCK ' + (lockedParts.length ? lockedParts.join(' ') : ((st.full_tp_count || 0) + '/' + (st.full_tp_lock || 0))) + '</span>'
@@ -3401,6 +3503,27 @@ function drawVolumeProfile(zones) {
         const ts = isoToChartTime(isoStr);
         return chart.timeScale().timeToCoordinate(ts);
     };
+
+    // ── All-timeframe overlay: thin lines only (white VAH/VAL, red POC), no IDs ──
+    if (_allTfZonesActive) {
+        const chartRightX = W - 60;
+        const lineX0 = 0;
+        zones.forEach(z => {
+            const yVAH = priceToY(z.vah_80);
+            const yVAL = priceToY(z.val_80);
+            const yPOC = priceToY(z.poc);
+            ctx.lineWidth = 1;
+            ctx.setLineDash([]);
+            // VAH / VAL — white
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+            if (yVAH >= 0 && yVAH <= H) { ctx.beginPath(); ctx.moveTo(lineX0, yVAH); ctx.lineTo(chartRightX, yVAH); ctx.stroke(); }
+            if (yVAL >= 0 && yVAL <= H) { ctx.beginPath(); ctx.moveTo(lineX0, yVAL); ctx.lineTo(chartRightX, yVAL); ctx.stroke(); }
+            // POC — red
+            ctx.strokeStyle = 'rgba(255, 48, 72, 0.6)';
+            if (yPOC >= 0 && yPOC <= H) { ctx.beginPath(); ctx.moveTo(lineX0, yPOC); ctx.lineTo(chartRightX, yPOC); ctx.stroke(); }
+        });
+        return;
+    }
 
     // ── PASS 1: Draw zone bodies (histogram, background, VAH/VAL) ──
     zones.forEach(z => {
@@ -4085,22 +4208,33 @@ async function connectAPI() {
 
     // CONNECT fetches last 14 days of 1m bars — fast, fresh, reliable.
     // 30s bars via TopstepX paginated API have a ~6h settle delay for large ranges.
-    // Backtest and Full Backtest extend the range lazily when needed.
+    // Backtest and Machine Learning extend the range lazily when needed.
+    // When MERGE HISTORY is on, widen the window back by ~1 quarter per chained
+    // contract so the older (back-adjusted) contracts actually have room to fill.
+    const mergeEl = document.getElementById('merge-contracts');
+    const mergeN  = mergeEl ? (parseInt(mergeEl.value, 10) || 0) : 0;
     const _now = new Date();
-    const _quick14 = new Date(_now);
-    _quick14.setDate(_quick14.getDate() - 14);
-    const startDate = _quick14.toISOString().slice(0, 10);
+    const _start = new Date(_now);
+    _start.setDate(_start.getDate() - 14 - mergeN * 95);
+    const startDate = _start.toISOString().slice(0, 10);
     const endDate   = _now.toISOString().slice(0, 10);
+
+    // If CONTRACT ID is blank (auto-detect), fall back to the CONTRACT dropdown so
+    // merge chains the right instrument (MNQ vs ENQ) instead of a generic guess.
+    const presetSel = document.getElementById('contract-preset');
+    let resolvedContract = contractId;
+    if (!resolvedContract && presetSel && presetSel.value) resolvedContract = presetSel.value;
 
     const body = {
         unit: 2,
         unit_number: 1,
         start_time: startDate + 'T00:00:00Z',
         end_time: endDate + 'T23:59:59Z',
+        merge_contracts: mergeN,
     };
     if (username) body.username = username;
     if (apikey) body.api_key = apikey;
-    if (contractId) body.contract_id = contractId;
+    if (resolvedContract) body.contract_id = resolvedContract;
 
     try {
         const resp = await fetch(API + '/data/fetch-historical', {
@@ -4285,7 +4419,7 @@ function _updateDataInfo(first, last, source, barCount) {
 
 // ── Backtest data lazy-loader ──────────────────────
 // Tracks which date range is currently loaded in the backend.
-// CONNECT only loads 14 days (fast); full range is fetched on first backtest or Full Backtest click.
+// CONNECT only loads 14 days (fast); full range is fetched on first backtest or Machine Learning click.
 let _btDataRange = null;  // { start, end, contract } once loaded for backtest
 
 function _profitLockBoundaryISO(dateStr) {
@@ -4302,7 +4436,11 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
     const endDate   = overrideEnd   || document.getElementById('end-date').value;
     const username   = document.getElementById('username').value.trim();
     const apikey     = document.getElementById('apikey').value.trim();
-    const contractId = document.getElementById('contract-id').value.trim();
+    // Fall back to the CONTRACT dropdown when the ID box is blank (auto-detect),
+    // so merge chains the right instrument (MNQ vs ENQ).
+    const _presetSel = document.getElementById('contract-preset');
+    const contractId = document.getElementById('contract-id').value.trim()
+        || (_presetSel && _presetSel.value) || '';
     const sameContract = _btDataRange && (_btDataRange.contract || '') === (contractId || '');
 
     // Already loaded for this exact range → skip fetch
@@ -4322,10 +4460,13 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data...';
     log((appendFetch ? 'Syncing new backtest data' : 'Fetching backtest data') + ' (' + fetchLabel + ' -> ' + endDate + ')...', 'info');
 
-    const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / full backtest
+    const mergeEl = document.getElementById('merge-contracts');
+    const mergeN  = mergeEl ? (parseInt(mergeEl.value, 10) || 0) : 0;
+    const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / machine learning
         start_time: fetchStartTime,
         end_time:   endDate   + 'T23:59:59Z',
-        append: appendFetch };
+        append: appendFetch,
+        merge_contracts: appendFetch ? 0 : mergeN };   // merge only on full fetch
     if (username)    body.username    = username;
     if (apikey)      body.api_key     = apikey;
     if (contractId)  body.contract_id = contractId;
@@ -4396,31 +4537,31 @@ async function runBacktest() {
     }
 }
 
-// -- Full Backtest -----------------------------------
+// -- Machine Learning -----------------------------------
 
 let _fullResults = [];
 let _fullProgressInterval = null;
 const FULL_RESULTS_LIMIT = 200;
 
-// -- Full Backtest column sort state ----------------
+// -- Machine Learning column sort state ----------------
 let _fullSortCol = 'calmar';
 let _fullSortDir = 'desc';   // 'desc' | 'asc'
 
 function _fullSortVal(r, col) {
     switch (col) {
         case 'rank':      return r.rank || 0;
-        case 'strategy':  return (r.strategy || '').toLowerCase();
+        case 'method':    return (r.method || '').toLowerCase();
+        case 'tf':        return (r.tf_label || (Array.isArray(r.tf_combo) ? r.tf_combo.join('+') : '')).toLowerCase();
+        case 'overlap':   return r.overlap_count || 0;
+        case 'rr':        return r.rr_ratio || 0;
         case 'contract':  return contractLabelFromId(r.contract_id || '').toLowerCase();
         case 'size':      return r.contract_size || 0;
-        case 'sl':        return r.sl || 0;
-        case 'tp':        return r.tp || 0;
-        case 'trail':     return r.trail_pct != null ? Number(r.trail_pct) : (r.trail || 0);
-        case 'trigger':   return r.trail_trigger_pct || 0;
-        case 'lock':      return r.full_tp_lock || 0;
         case 'trades':    return r.total_trades || 0;
         case 'win_rate':  return r.win_rate || 0;
         case 'pnl':       return r.total_pnl || 0;
         case 'max_dd':    return r.max_drawdown || 0;
+        case 'wk_std':    return r.weekly_std || 0;
+        case 'wk_cv':     return r.weekly_cv || 0;
         case 'lwr':       return fullResultLossToFinalRatio(r);
         case 'calmar':    return r.calmar_ratio || 0;
         case 'best_day': { const v = Object.values(r.daily_pnl || {}); return v.length ? Math.max(...v) : 0; }
@@ -4443,7 +4584,8 @@ function fullResultLossToFinalRatio(r) {
 }
 
 function isFullResultAllowed(r) {
-    return (Number(r?.sl) || 0) >= 50 && (Number(r?.tp) || 0) >= 50;
+    // New ML model has no fixed SL/TP ticks; keep every non-errored result.
+    return !!r && !r.error;
 }
 
 function normalizeFullResults(results) {
@@ -4484,14 +4626,14 @@ async function loadFullBacktestResults() {
             sort_dir: _fullSortDir,
             limit: String(FULL_RESULTS_LIMIT),
         });
-        const resp = await fetch(API + '/backtest/full-results?' + params.toString());
+        const resp = await fetch(API + '/backtest/ml-results?' + params.toString());
         if (!resp.ok) return;
         const data = await resp.json();
         const results = normalizeFullResults(data.results).slice(0, FULL_RESULTS_LIMIT);
         if (!results.length) return;
         _fullResults = results;
         renderFullResults(_fullResults);
-        log('Loaded Full backtest top ' + _fullResults.length + ' by ' + _fullSortCol + ' ' + _fullSortDir, 'info');
+        log('Loaded Machine learning top ' + _fullResults.length + ' by ' + _fullSortCol + ' ' + _fullSortDir, 'info');
     } catch(e) {
         // Non-blocking: the table simply stays empty until the next run.
     }
@@ -4507,7 +4649,7 @@ function _startFullProgress() {
 
     _fullProgressInterval = setInterval(async () => {
         try {
-            const r = await fetch(API + '/backtest/full-progress');
+            const r = await fetch(API + '/backtest/ml-progress');
             const d = await r.json();
             const cur = d.current || 0;
             const tot = d.total  || 0;
@@ -4586,18 +4728,18 @@ async function runAllCombinations() {
     const fullPanel = document.getElementById('full-fixed-panel');
     if (fullPanel) fullPanel.classList.remove('open');
 
-    // Full backtest uses the same date range as Execute Backtest (date pickers / slider).
+    // Machine learning uses the same date range as Execute Backtest (date pickers / slider).
     const dataOk = await _ensureBacktestData(btn);
     if (!dataOk) {
         btn.disabled = false;
         if (filterBtn) filterBtn.disabled = false;
-        btn.textContent = 'FULL BACKTEST';
+        btn.textContent = 'MACHINE LEARNING';
         return;
     }
 
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
 
-    // Switch to Full backtest tab so user can watch
+    // Switch to Machine learning tab so user can watch
     document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
     document.querySelector('[data-btab="full"]').classList.add('active');
     ['full','trades','execute','log'].forEach(id => {
@@ -4615,7 +4757,7 @@ async function runAllCombinations() {
         const endDate   = document.getElementById('end-date').value;
         const capital   = 50000;
 
-        const resp = await fetch(API + '/backtest/full-run', {
+        const resp = await fetch(API + '/backtest/ml-run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -4634,20 +4776,52 @@ async function runAllCombinations() {
         const data = await resp.json();
         _fullResults = normalizeFullResults(data.results).slice(0, FULL_RESULTS_LIMIT);
         renderFullResults(_fullResults);
+        _renderMlConfigCaption(params, fixedParams, startDate, endDate, data);
         // status row removed — result count logged below
-        log('Full backtest complete: showing top ' + _fullResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
+        log('Machine learning complete: showing top ' + _fullResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
         if (data.artifact && data.artifact.json) {
-            log('Full backtest AI file: ' + data.artifact.json, 'info');
+            log('Machine learning AI file: ' + data.artifact.json, 'info');
         }
         success = true;
     } catch(e) {
-        log('Full backtest failed: ' + e.message, 'error');
+        log('Machine learning failed: ' + e.message, 'error');
     } finally {
         _stopFullProgress(success);
         btn.disabled = false;
         if (filterBtn) filterBtn.disabled = false;
-        btn.textContent = 'FULL BACKTEST';
+        btn.textContent = 'MACHINE LEARNING';
     }
+}
+
+// Caption above the ML table: shows every constant option the sweep used (the
+// sweep itself only varies TIMEFRAME COMBO + RR; everything else is fixed here).
+function _renderMlConfigCaption(params, fixedParams, startDate, endDate, data) {
+    const el = document.getElementById('full-config-caption');
+    if (!el) return;
+    const p = params || {};
+    const contractLabel = contractLabelFromId(p.contract_id || 'CON.F.US.MNQ.M26');
+    const size = normalizeContractSize(p.contract_id, p.contract_size != null ? p.contract_size : 3);
+    const areaPct = Math.round((p.value_area_pct != null ? p.value_area_pct : 0.80) * 100);
+    const confirm = p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7;
+    const sessionLock = p.tr_one_trade_per_session === false ? 'OFF' : 'ON';
+    const tpLock = p.full_tp_lock ? p.full_tp_lock : 'OFF';
+    const trig = (p.trail_trigger_pct && p.trail_enabled !== false) ? Math.round(p.trail_trigger_pct * 100) + '%' : 'OFF';
+    const total = data && data.total_combinations ? data.total_combinations : '';
+    const parts = [
+        'SWEEP: 31 TF combos × RR 1:1–1:10' + (total ? ' = ' + total + ' runs' : ''),
+        'CONTRACT ' + contractLabel + '@' + size,
+        'AREA% ' + areaPct,
+        'CONFIRM ' + confirm + ' bars',
+        'SESSION LOCK ' + sessionLock,
+        'FULL TP LOCK ' + tpLock,
+        'TRAIL TRIG ' + trig,
+        'SL = lowest-volume node · TP = RR × SL',
+        'RANGE ' + (startDate || '?') + ' → ' + (endDate || '?'),
+    ];
+    el.innerHTML = parts.map(s =>
+        '<span style="display:inline-block;margin-right:14px;">' + s + '</span>'
+    ).join('');
+    el.style.display = 'block';
 }
 
 function renderFullResults(results) {
@@ -4656,7 +4830,7 @@ function renderFullResults(results) {
     tbody.innerHTML = '';
 
     if (!results || results.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="17" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="16" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
         return;
     }
 
@@ -4672,9 +4846,7 @@ function renderFullResults(results) {
     sorted.forEach(function(r, idx) {
         const rank = idx + 1;          // display rank (changes with sort)
         const origRank = r.rank || rank; // original rank (stable, used for save)
-        // Backend uses flat fields: r.sl, r.tp, r.trail (not sl_ticks etc.)
         const dd = r.max_drawdown || 0;
-        const ddColor = 'var(--red)';  // MAX DD always red
         const wr = ((r.win_rate || 0) * 100).toFixed(1);
         const calmar = r.calmar_ratio || 0;
         const calmarColor = calmar >= 1 ? 'var(--green)' : '';
@@ -4685,12 +4857,19 @@ function renderFullResults(results) {
         const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
         const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
         const contractSize = r.contract_size || 1;
-        const triggerPct = r.trail_trigger_pct || 0;
-        const triggerLabel = triggerPct > 0 ? Math.round(triggerPct * 100) + '%' : 'OFF';
-        const trailLabel = triggerPct > 0 && r.trail_pct != null
-            ? fmtPct(parseFloat(r.trail_pct)) + ' / ' + fmtSigned(r.trail || 0, 't')
-            : 'OFF';
-        const lockLabel = r.full_tp_lock ? String(r.full_tp_lock) : 'OFF';
+
+        // New ML model fields.
+        const method = (r.method || 'single').toUpperCase();
+        const methodColor = (r.method === 'overlap') ? 'var(--cyan)' : '';
+        const tfLabel = r.tf_label || (Array.isArray(r.tf_combo) ? r.tf_combo.join('+') : '—');
+        const overlap = r.overlap_count || (Array.isArray(r.tf_combo) ? r.tf_combo.length : 1);
+        const rrLabel = '1:' + (r.rr_ratio || 0);
+        const wkStd = r.weekly_std != null ? Number(r.weekly_std) : null;
+        const wkCv = r.weekly_cv != null ? Number(r.weekly_cv) : null;
+        const wkStdLabel = wkStd != null ? '$' + wkStd.toFixed(0) : '—';
+        const wkCvLabel = wkCv != null ? wkCv.toFixed(2) : '—';
+        // Lower CV = steadier week-to-week; green when consistent.
+        const wkCvColor = wkCv != null ? (wkCv <= 1 ? 'var(--green)' : (wkCv >= 3 ? 'var(--red)' : '')) : '';
 
         // Best/worst day from daily_pnl dict
         const daily = r.daily_pnl || {};
@@ -4703,20 +4882,19 @@ function renderFullResults(results) {
 
         const tr = document.createElement('tr');
         tr.innerHTML =
-            '<td>' + (r.strategy || '—').toUpperCase() + '</td>' +
-            '<td style="text-align:center;">' + contractLabel + '</td>' +
-            '<td style="text-align:center;">' + contractSize + '</td>' +
-            '<td style="text-align:center;">' + (r.sl || 0) + '</td>' +
-            '<td style="text-align:center;">' + (r.tp || 0) + '</td>' +
-            '<td style="text-align:center;">' + triggerLabel + '</td>' +
-            '<td style="text-align:center;">' + trailLabel + '</td>' +
-            '<td style="text-align:center;">' + lockLabel + '</td>' +
+            '<td style="text-align:center;color:' + methodColor + ';">' + method + '</td>' +
+            '<td style="text-align:center;font-size:10px;" title="' + tfLabel + '">' + tfLabel + '</td>' +
+            '<td style="text-align:center;">' + overlap + '</td>' +
+            '<td style="text-align:center;">' + rrLabel + '</td>' +
+            '<td style="text-align:center;">' + contractLabel + '@' + contractSize + '</td>' +
             '<td style="text-align:center;">' + (r.total_trades || 0) + '</td>' +
             '<td style="text-align:center;color:' + (parseFloat(wr) >= 50 ? 'var(--green)' : '') + ';">' + wr + '%</td>' +
             '<td style="text-align:right;color:' + pnlColor + ';">$' + pnl.toFixed(0) + '</td>' +
             '<td style="text-align:right;color:var(--red);">$' + dd.toFixed(0) + '</td>' +
             '<td style="text-align:right;color:var(--green);">' + bestDay + '</td>' +
             '<td style="text-align:right;color:var(--red);">' + worstDay + '</td>' +
+            '<td style="text-align:right;">' + wkStdLabel + '</td>' +
+            '<td style="text-align:center;color:' + wkCvColor + ';">' + wkCvLabel + '</td>' +
             '<td style="text-align:center;color:' + lossFinalColor + ';">' + lossFinalLabel + '</td>' +
             '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
             '<td style="text-align:center;">' +
@@ -4737,42 +4915,48 @@ async function saveFullPreset(origRank) {
     const r = _fullResults.find(x => (x.rank || 0) === origRank);
     if (!r) return;
 
-    const strat = (r.strategy || 'breakthrough').toLowerCase();
+    const strat = 'trend';
     const contractSize = r.contract_size || 1;
     const triggerPct = r.trail_trigger_pct != null ? r.trail_trigger_pct : 0.30;
     const trailEnabled = triggerPct > 0;
-    const trailPct = trailEnabled && r.trail_pct != null
-        ? parseFloat(r.trail_pct)
-        : trailPctFromTicks(r.trail || 0, r.sl || 0, r.tp || 0);
+    const rrRatio = r.rr_ratio != null ? r.rr_ratio : 2;
+    // New ML model: SL = lowest-volume node, TP = RR x SL. Keep nominal ticks
+    // (50 SL fallback, RR*50 TP) so legacy preset fields stay valid.
+    const fallbackSl = 50;
+    const nominalTp = Math.max(1, fallbackSl * rrRatio);
+    // Pick the (lowest / fastest) timeframe in the combo as the live area timeframe.
+    const tfCombo = Array.isArray(r.tf_combo) ? r.tf_combo : (r.tf_label ? r.tf_label.split('+') : []);
+    const areaTf = tfCombo.length ? tfCombo[0] : (r.area_timeframe || '5m');
+    const method = (r.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
+    const confirmBars = Math.max(1, Math.min(10, parseInt(r.breakout_confirm_bars != null ? r.breakout_confirm_bars : 7, 10) || 7));
 
     const params = {
         strategy: strat,
-        tp_ticks: r.tp,
-        sl_ticks: r.sl,
-        trail_sl_ticks: r.trail,
-        trail_sl_pct: trailPct,
+        tp_ticks: nominalTp,
+        sl_ticks: fallbackSl,
+        trail_sl_ticks: 0,
+        trail_sl_pct: 0,
         trail_trigger_pct: triggerPct,
         trail_enabled: trailEnabled,
-        tr_tp_ticks: r.tr_tp || r.tp,
-        tr_sl_ticks: r.tr_sl || r.sl,
-        tr_trail_sl_ticks: r.tr_trail || r.trail,
-        tr_trail_sl_pct: r.tr_trail_pct != null ? r.tr_trail_pct : trailPct,
+        tr_tp_ticks: nominalTp,
+        tr_sl_ticks: fallbackSl,
+        tr_trail_sl_ticks: 0,
+        tr_trail_sl_pct: 0,
         tr_trail_trigger_pct: r.tr_trail_trigger_pct != null ? r.tr_trail_trigger_pct : triggerPct,
         tr_trail_enabled: r.tr_trail_enabled != null ? r.tr_trail_enabled : trailEnabled,
         tr_full_tp_lock: r.tr_full_tp_lock != null ? r.tr_full_tp_lock : (r.full_tp_lock || 0),
-        cd_tp_ticks: r.cd_tp || r.tp,
-        cd_sl_ticks: r.cd_sl || r.sl,
-        cd_trail_sl_ticks: r.cd_trail || r.trail,
-        cd_trail_sl_pct: r.cd_trail_pct != null ? r.cd_trail_pct : trailPct,
-        cd_trail_trigger_pct: r.cd_trail_trigger_pct != null ? r.cd_trail_trigger_pct : triggerPct,
-        cd_trail_enabled: r.cd_trail_enabled != null ? r.cd_trail_enabled : trailEnabled,
-        cd_full_tp_lock: r.cd_full_tp_lock != null ? r.cd_full_tp_lock : (r.full_tp_lock || 0),
         candle_seconds: r.candle_seconds || 60,
         contract_id: r.contract_id || 'CON.F.US.MNQ.M26',
         contract_size: contractSize,
         full_tp_lock: r.full_tp_lock || 0,
         one_trade_per_session_direction: true,
-        value_area_pct: 0.80,
+        tr_one_trade_per_session: r.tr_one_trade_per_session != null ? r.tr_one_trade_per_session : true,
+        value_area_pct: r.value_area_pct != null ? r.value_area_pct : 0.80,
+        area_timeframe: areaTf,
+        rr_ratio: rrRatio,
+        breakout_confirm_bars: confirmBars,
+        method: method,
+        tf_combo: tfCombo,
         skip_zone_stability: false,
     };
     const presetName = buildPresetName(params);
@@ -4789,7 +4973,7 @@ async function saveFullPreset(origRank) {
         renderFullResults(_fullResults);   // re-render to show badge
         log('Preset saved: ' + presetName, 'success');
     } catch(e) {
-        log('Full backtest preset save error: ' + e.message, 'error');
+        log('Machine learning preset save error: ' + e.message, 'error');
     }
 }
 
@@ -5186,7 +5370,7 @@ function renderMetrics(m, backtestTrades) {
     const backtestStats = _computeTradeStats(backtestTrades || []);
 
     // Live trade stats — shown in parentheses as reference only.
-    // Primary display always uses full backtest range from backend (m.*).
+    // Primary display always uses machine learning range from backend (m.*).
     const live = window._liveCompletedTrades;
     const liveStats = (live && live.length > 0) ? _computeTradeStats(live) : null;
 
@@ -5217,7 +5401,7 @@ function renderMetrics(m, backtestTrades) {
 
     const passCls = (ok) => ok ? 'pos' : 'neg';
 
-    // Day span from full backtest range
+    // Day span from machine learning range
     const daySpan = backtestStats.days;
     const totalPnlLabel = daySpan > 0 ? ('FINAL PNL (' + daySpan + 'd)') : 'FINAL PNL';
 
@@ -5261,14 +5445,6 @@ function renderMetrics(m, backtestTrades) {
         if (!stats || !stats.trades) return '--';
         return fmtPctTriple(stats);
     };
-    const breakthroughStats = _computeTradeStats((backtestTrades || []).filter(t => {
-        const s = String(t.strategy || '').toLowerCase();
-        return s === 'breakthrough' || s === 'trend' || s === 'trend_follow';
-    }));
-    const consolidationStats = _computeTradeStats((backtestTrades || []).filter(t => {
-        const s = String(t.strategy || '').toLowerCase();
-        return s === 'consolidation' || s === 'reversion';
-    }));
     const currentZoneStats = _computeTradeStats((backtestTrades || []).filter(t => t.zone_source === 'current'));
 
     const items = [
@@ -5296,12 +5472,6 @@ function renderMetrics(m, backtestTrades) {
         { label: 'RR RATIO',
           value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
           cls: rr_ratio > 1 ? 'pos' : 'neg' },
-        { label: 'BREAKTHROUGH TP/SL/TRAIL',
-          value: fmtPctTriple(breakthroughStats),
-          cls: '' },
-        { label: 'CONSOLIDATION TP/SL/TRAIL',
-          value: fmtPctTriple(consolidationStats),
-          cls: '' },
         { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },

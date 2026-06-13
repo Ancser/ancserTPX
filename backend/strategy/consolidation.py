@@ -725,6 +725,7 @@ class SessionZoneDetector:
             zone.vah_80 = vp.vah
             zone.val_80 = vp.val
             zone.total_volume = vp.total_volume
+            zone.profile = dict(vp.profile)  # v0.18: histogram for lowest-volume-node SL
             last_candle = zone.candles[-1]
             zone.va_curve.append({
                 "ts": last_candle.timestamp.isoformat(),
@@ -742,3 +743,199 @@ class SessionZoneDetector:
         age_minutes = (candle.timestamp - zone.formed_at).total_seconds() / 60
         if age_minutes >= 60:
             self._zone_mature = True
+
+
+# ══════════════════════════════════════════════════════════
+# Fixed clock-bucket Zone Detector (timeframe-selectable areas)
+# ══════════════════════════════════════════════════════════
+
+# area timeframe → bucket length in minutes
+AREA_TIMEFRAME_MINUTES = {
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 240,
+}
+
+
+class ClockBucketZoneDetector:
+    """Groups 1m candles into fixed clock buckets of the selected area timeframe
+    (5m/15m/30m/1h/4h). Each completed bucket becomes a finalized zone carrying
+    POC / VAH / VAL plus the full volume-profile histogram. The in-progress bucket
+    is the "active" zone. Strategies reference the most recent N completed zones.
+
+    Buckets are aligned to clock boundaries in the candle timezone:
+      - sub-hour (5/15/30m): aligned within the hour by minute
+      - 1h: top of the hour
+      - 4h: aligned to 0/4/8/12/16/20
+    """
+
+    def __init__(
+        self,
+        area_timeframe: str = "5m",
+        value_area_pct: float = 0.80,
+        tick_size: float = 0.25,
+        max_recent: int = 10,
+    ):
+        self.area_timeframe = area_timeframe if area_timeframe in AREA_TIMEFRAME_MINUTES else "5m"
+        self.bucket_minutes = AREA_TIMEFRAME_MINUTES[self.area_timeframe]
+        self.value_area_pct = value_area_pct
+        self.tick_size = tick_size
+        self.max_recent = max_recent
+        self.vp_calc = VolumeProfileCalculator(tick_size, value_area_pct)
+
+        self._active_zone: Optional[ConsolidationZone] = None
+        self._completed_zones: List[ConsolidationZone] = []
+        self._zone_counter: int = 0
+        self._bucket_key: Optional[str] = None
+
+    # ── bucket alignment ──
+
+    def _bucket_start(self, ts: datetime) -> datetime:
+        if self.bucket_minutes >= 240:
+            aligned_hour = (ts.hour // 4) * 4
+            return ts.replace(hour=aligned_hour, minute=0, second=0, microsecond=0)
+        if self.bucket_minutes >= 60:
+            return ts.replace(minute=0, second=0, microsecond=0)
+        aligned_min = (ts.minute // self.bucket_minutes) * self.bucket_minutes
+        return ts.replace(minute=aligned_min, second=0, microsecond=0)
+
+    def _bucket_id(self, ts: datetime) -> str:
+        return self._bucket_start(ts).strftime("%Y-%m-%dT%H:%M")
+
+    # ── public API ──
+
+    def update(self, candle: Candle) -> Optional[ZoneEvent]:
+        bucket = self._bucket_id(candle.timestamp)
+        event = None
+        if bucket != self._bucket_key:
+            # finalize previous bucket → becomes a completed reference zone
+            event = self._finalize_active()
+            self._bucket_key = bucket
+            self._create_zone(candle)
+            return event
+
+        if not self._active_zone:
+            self._bucket_key = bucket
+            self._create_zone(candle)
+            return None
+
+        zone = self._active_zone
+        zone.candles.append(candle)
+        zone.num_candles += 1
+        zone.duration_minutes = int((candle.timestamp - zone.formed_at).total_seconds() / 60)
+        if candle.high > zone.high_100:
+            zone.high_100 = candle.high
+        if candle.low < zone.low_100:
+            zone.low_100 = candle.low
+        self._recalculate_vp(zone)
+        return None
+
+    @property
+    def is_zone_mature(self) -> bool:
+        # A reference zone is available once at least one bucket has completed.
+        return len(self._completed_zones) > 0
+
+    def get_active_zone(self) -> Optional[ConsolidationZone]:
+        """Most recent COMPLETED bucket zone (the primary reference)."""
+        return self._completed_zones[-1] if self._completed_zones else None
+
+    def get_forming_zone(self) -> Optional[ConsolidationZone]:
+        """The in-progress bucket zone (not yet a reference)."""
+        return self._active_zone
+
+    def get_recent_zones(self, n: Optional[int] = None) -> List[ConsolidationZone]:
+        """Last n completed zones (most recent last)."""
+        n = n if n is not None else self.max_recent
+        return list(self._completed_zones[-n:])
+
+    def get_completed_zones(self) -> List[ConsolidationZone]:
+        return list(self._completed_zones)
+
+    def get_all_zones(self) -> List[ConsolidationZone]:
+        zones = list(self._completed_zones)
+        if self._active_zone:
+            zones.append(self._active_zone)
+        return zones
+
+    def get_last_left_zone(self) -> Optional[ConsolidationZone]:
+        return self._completed_zones[-1] if self._completed_zones else None
+
+    def close_final_zone(self, last_candle: Candle):
+        self._finalize_active()
+
+    def reset(self):
+        self._active_zone = None
+        self._completed_zones = []
+        self._zone_counter = 0
+        self._bucket_key = None
+
+    # ── internal ──
+
+    def _create_zone(self, candle: Candle):
+        self._zone_counter += 1
+        zone_id = f"B{self._zone_counter:04d}"
+        self._active_zone = ConsolidationZone(
+            zone_id=zone_id,
+            formed_at=candle.timestamp,
+            left_at=None,
+            poc=candle.close,
+            vah_80=candle.high,
+            val_80=candle.low,
+            high_100=candle.high,
+            low_100=candle.low,
+            total_volume=candle.volume,
+            duration_minutes=0,
+            num_candles=1,
+            status=ZoneStatus.FORMING,
+            exit_direction=None,
+            candles=[candle],
+            timeframe=self.area_timeframe,
+        )
+        self._recalculate_vp(self._active_zone)
+
+    def _finalize_active(self) -> Optional[ZoneEvent]:
+        zone = self._active_zone
+        if not zone:
+            return None
+        self._recalculate_vp(zone)
+        zone.status = ZoneStatus.LEFT
+        zone.left_at = zone.candles[-1].timestamp if zone.candles else zone.formed_at
+        zone.mature = True
+        self._completed_zones.append(zone)
+        # keep memory bounded — only need the most recent buckets as references
+        if len(self._completed_zones) > max(self.max_recent * 4, 50):
+            self._completed_zones = self._completed_zones[-(self.max_recent * 4):]
+        self._active_zone = None
+        return ZoneEvent("left", zone, message=f"Bucket {zone.zone_id} 完成 (TF={self.area_timeframe})")
+
+    def _recalculate_vp(self, zone: ConsolidationZone):
+        if not zone or len(zone.candles) < 1:
+            return
+        try:
+            vp = self.vp_calc.calculate(zone.candles)
+            zone.poc = vp.poc
+            zone.vah_80 = vp.vah
+            zone.val_80 = vp.val
+            zone.high_100 = vp.high_100
+            zone.low_100 = vp.low_100
+            zone.total_volume = vp.total_volume
+            zone.profile = dict(vp.profile)
+        except ValueError:
+            pass
+
+
+def build_zone_detector(
+    area_timeframe: str = "5m",
+    value_area_pct: float = 0.80,
+    tick_size: float = 0.25,
+    max_recent: int = 10,
+) -> ClockBucketZoneDetector:
+    """Factory: fixed clock-bucket zone detector keyed by the selected area timeframe."""
+    return ClockBucketZoneDetector(
+        area_timeframe=area_timeframe,
+        value_area_pct=value_area_pct,
+        tick_size=tick_size,
+        max_recent=max_recent,
+    )

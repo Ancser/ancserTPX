@@ -4,7 +4,7 @@
 # 功能 / Features:
 #   - Shared dataclasses and enums for candles, zones, signals, trades, metrics,
 #     backtest/live strategy params, risk DTOs, broker orders, and account data.
-#   - StrategyParams exposes breakthrough / consolidation / hybrid, fixed 80% VA,
+#   - StrategyParams exposes the trend strategy, fixed 80% VA,
 #     contract sizing, trail controls, and full_tp_lock.
 #   - Contract helpers resolve NQ/MNQ point value, tick size, commission, and fees.
 # ============================================================
@@ -37,11 +37,6 @@ class ExitReason(str, Enum):
 
 
 class StrategyType(str, Enum):
-    BREAKTHROUGH = "breakthrough"
-    CONSOLIDATION = "consolidation"
-    HYBRID = "hybrid"
-    # Legacy values remain for older saved trades and reports.
-    REVERSION    = "reversion"
     TREND_FOLLOW = "trend"       # was "trend_follow" — old JSON may still show "trend_follow"
 
 
@@ -138,9 +133,24 @@ class ConsolidationZone:
     exit_direction: Optional[str] = None   # "up" | "down"
     mature: bool = False                   # 是否曾達到成熟條件
     candles: List[Candle] = field(default_factory=list)
-    timeframe: str = "5m"                  # "5m" | "1m"
+    timeframe: str = "5m"                  # area timeframe bucket: 5m/15m/30m/1h/4h
     parent_zone_id: Optional[str] = None   # 1m zone → parent 5m zone_id
     va_curve: List[dict] = field(default_factory=list)  # [{ts, vah, val}] per VP recalc
+    profile: Dict[float, int] = field(default_factory=dict)  # VP bin histogram {price: volume}
+
+    def lowest_volume_price_between(self, a: float, b: float) -> Optional[float]:
+        """Return the price bin with the lowest volume in the inclusive [min(a,b), max(a,b)]
+        range. Used for the volume-node SL (lowest-volume node between POC and VAH/VAL)."""
+        if not self.profile:
+            return None
+        lo, hi = (a, b) if a <= b else (b, a)
+        candidates = [(p, v) for p, v in self.profile.items() if lo <= p <= hi]
+        if not candidates:
+            return None
+        # lowest volume; tie-break toward the price closest to the outer bound (b)
+        min_vol = min(v for _, v in candidates)
+        nodes = [p for p, v in candidates if v == min_vol]
+        return min(nodes, key=lambda p: abs(p - b))
 
     @property
     def range_80(self) -> float:
@@ -297,27 +307,21 @@ class BreakoutAnalysis:
 class StrategyParams:
     """Strategy parameters / 策略參數.
 
-    v0.17.0 uses three fixed modes: breakthrough, consolidation, and hybrid.
-    Value Area is locked to 80% so live and backtest use the same zone width.
+    Only the trend strategy remains. Value Area is locked to 80% so live and
+    backtest use the same zone width.
     """
-    strategy: str = "breakthrough"       # breakthrough | consolidation | hybrid
+    strategy: str = "trend"
     tp_ticks: int = 200                  # 50-200 tick
     sl_ticks: int = 50                   # 50-200 tick
     trail_sl_ticks: int = 10            # 0..TP ticks from entry after trail triggers
     trail_trigger_pct: float = 0.30     # trigger trail when price reaches this fraction of TP
     trail_enabled: bool = True          # v0.11+: master switch for trailing-SL mechanism
-    tr_tp_ticks: int = 200              # breakthrough TP ticks
-    tr_sl_ticks: int = 50               # breakthrough SL ticks
-    tr_trail_sl_ticks: int = 10         # breakthrough trail-SL offset from entry
-    tr_trail_trigger_pct: float = 0.30  # breakthrough trail trigger as fraction of TP
-    tr_trail_enabled: bool = True       # breakthrough trail switch
-    tr_full_tp_lock: int = 0            # breakthrough full-TP lock count
-    cd_tp_ticks: int = 200              # consolidation TP ticks
-    cd_sl_ticks: int = 50               # consolidation SL ticks
-    cd_trail_sl_ticks: int = 10         # consolidation trail-SL offset from entry
-    cd_trail_trigger_pct: float = 0.30  # consolidation trail trigger as fraction of TP
-    cd_trail_enabled: bool = True       # consolidation trail switch
-    cd_full_tp_lock: int = 0            # consolidation full-TP lock count
+    tr_tp_ticks: int = 200              # trend TP ticks
+    tr_sl_ticks: int = 50               # trend SL ticks
+    tr_trail_sl_ticks: int = 10         # trend trail-SL offset from entry
+    tr_trail_trigger_pct: float = 0.30  # trend trail trigger as fraction of TP
+    tr_trail_enabled: bool = True       # trend trail switch
+    tr_full_tp_lock: int = 0            # trend full-TP lock count
     # Candle interval (seconds)
     candle_seconds: int = 60             # v0.17.0 uses completed 1m bars in live and backtest
     # Contract & sizing (v0.11+) — preferred default 3 × Micro NQ
@@ -327,10 +331,17 @@ class StrategyParams:
     full_tp_lock: int = 0
     # One session, one direction, one order attempt. Keeps live behavior aligned with backtest.
     one_trade_per_session_direction: bool = True
+    tr_one_trade_per_session: bool = True   # trend session limit
     # Session-zone maturity controls
     # Zone stability is enabled by default; set True only for no-stability-wait experiments.
     skip_zone_stability: bool = False
     breakout_confirm_bars: int = 7         # consecutive candles fully outside VA required
+    # Area (zone) configuration — fixed clock-bucket timeframe + value-area width.
+    area_timeframe: str = "5m"             # "5m" | "15m" | "30m" | "1h" | "4h"
+    value_area_pct: float = 0.80           # value-area width fraction (0.50..0.95)
+    # SL/TP model (v0.18): SL = lowest-volume node between POC and VAH/VAL;
+    # TP = entry ± rr_ratio × SL-distance. rr_ratio selectable 1..10. No fixed ticks.
+    rr_ratio: int = 2                      # reward:risk multiple (1..10)
     # --- Removed (hardcoded internally) ---
     # entry_mode: always "100RE" (VAH/VAL entry)
     # entry_timeout_minutes: hardcoded 10 min inside strategy
@@ -343,13 +354,12 @@ class StrategyParams:
 @dataclass
 class BacktestConfig:
     """回測配置"""
-    strategies: List[str] = field(default_factory=lambda: ["breakthrough"])
+    strategies: List[str] = field(default_factory=lambda: ["trend"])
     symbol: str = "NQ"
     interval: str = "5m"
     start_date: str = ""
     end_date: str = ""
     initial_capital: float = 50000.0
-    slippage_ticks: int = 0         # 滑價 tick 數 (0 = clean fill @ signal price)
     commission_rt: float = 1.0      # 往返佣金 (Mini: $1.00, Micro: $0.50)
     fees_rt: float = 2.80           # 交易所/監管費 — TopstepX Mini NQ 每輪 $2.80
     max_daily_loss: float = 2000.0
@@ -404,7 +414,6 @@ class Metrics:
     current_zone_avg_pnl: float = 0.0
     current_zone_total_pnl: float = 0.0
     # 按策略分類
-    reversion_metrics: Optional[Metrics] = None
     trend_follow_metrics: Optional[Metrics] = None
 
 

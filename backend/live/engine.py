@@ -3,7 +3,7 @@
 # 文件: backend/live/engine.py
 # 狀態: v0.17.0
 # 功能 / Features:
-#   - Live trading engine for breakthrough / consolidation / hybrid.
+#   - Live trading engine for the trend strategy.
 #   - Polls TopstepX 1m bars and drops the newest bar so decisions use only the
 #     previous completed minute, matching backtest timing.
 #   - Uses current mature 80% session zone only; no previous-zone fallback.
@@ -26,7 +26,7 @@ from backend.db.models import (
     ConsolidationZone, Direction, StrategyType, ZoneStatus, BarUnit,
     StrategyParams, get_point_value, get_tick_size,
 )
-from backend.strategy.consolidation import SessionZoneDetector
+from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.trend_follow import SessionTrendFollow
 from backend.broker.topstepx import TopstepXClient
 
@@ -60,7 +60,6 @@ class LiveTradingEngine:
         contract_id: str,
         # Strategy params (simplified — SessionTrendFollow only)
         value_area_pct: float = 0.80,
-        slippage_ticks: int = 1,
         contract_size: int = 1,
         # Configurable strategy params
         strategy_params: Optional[StrategyParams] = None,
@@ -68,7 +67,6 @@ class LiveTradingEngine:
         strategies: List[str] = None,
         sl_dollars: float = 300.0,
         tp_dollars: float = 900.0,
-        reversion_tp_mode: str = "poc",
         trend_tp_mode: str = "multiplier",
         trend_tp_multiplier: float = 4.0,
         min_candles_for_zone: int = 6,
@@ -79,7 +77,6 @@ class LiveTradingEngine:
         self.contract_id = contract_id
         # Strategy label set after strategy object is created (below)
         self.strategies: List[str] = []
-        self.slippage_ticks = slippage_ticks
         self.strategy_params = strategy_params or StrategyParams()
         # Contract sizing — prefer the strategy_params value, fall back to ctor arg.
         self.contract_size = max(
@@ -90,26 +87,20 @@ class LiveTradingEngine:
         self.point_value = get_point_value(contract_id)
         self.tick_size = get_tick_size(contract_id)
 
-        # Value Area is locked to 80% in v0.17.0.
-        value_area_pct = 0.80
+        # v0.18: value-area width + area timeframe are selectable.
+        value_area_pct = float(getattr(self.strategy_params, "value_area_pct", value_area_pct) or value_area_pct)
+        area_timeframe = getattr(self.strategy_params, "area_timeframe", "5m") or "5m"
 
-        # Session-based zone detector (overnight zone with maturity)
-        self.detector = SessionZoneDetector(
+        # Clock-bucket zone detector — keeps the recent 10 reference zones.
+        self.detector = build_zone_detector(
+            area_timeframe=area_timeframe,
             value_area_pct=value_area_pct,
+            tick_size=self.tick_size,
+            max_recent=10,
         )
-        # Strategy selection: legacy names map to current v0.17.0 modes.
-        _strat = (self.strategy_params.strategy or "breakthrough").lower()
-        if _strat in ("consolidation", "reversion"):
-            from backend.strategy.reversion import SessionConsolidation
-            self.strategy_mode = "consolidation"
-            self.trend_follow = SessionConsolidation(params=self.strategy_params)
-        elif _strat in ("hybrid", "trend_reversion"):
-            from backend.strategy.reversion import SessionHybridStrategy
-            self.strategy_mode = "hybrid"
-            self.trend_follow = SessionHybridStrategy(params=self.strategy_params)
-        else:
-            self.strategy_mode = "breakthrough"
-            self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+        # Only the trend strategy remains.
+        self.strategy_mode = "trend"
+        self.trend_follow = SessionTrendFollow(params=self.strategy_params)
         self.strategies = [self.strategy_mode]
 
         # Live state
@@ -139,10 +130,13 @@ class LiveTradingEngine:
             int(getattr(self.strategy_params, "cd_full_tp_lock", 0) or 0),
         )
         self._full_tp_count: int = 0
-        self._full_tp_counts: Dict[str, int] = {"tr": 0, "cd": 0}
+        self._full_tp_counts: Dict[str, int] = {"tr": 0}
         self._tp_locked: bool = False
         self._one_trade_per_session_direction: bool = bool(
             getattr(self.strategy_params, "one_trade_per_session_direction", True)
+        )
+        self._tr_one_trade_per_session: bool = bool(
+            getattr(self.strategy_params, "tr_one_trade_per_session", True)
         )
         self._session_direction_locks: set[tuple[str, str]] = set()
         self._capital: float = 0.0
@@ -182,9 +176,7 @@ class LiveTradingEngine:
 
     @staticmethod
     def _strategy_group(strategy) -> str:
-        value = getattr(strategy, "value", strategy)
-        text = str(value or "").lower()
-        return "cd" if text in ("consolidation", "reversion") else "tr"
+        return "tr"
 
     def _strategy_param(self, strategy, suffix: str, fallback):
         key = self._strategy_group(strategy)
@@ -212,7 +204,7 @@ class LiveTradingEngine:
         return max(0, min(3, lock))
 
     def _reset_full_tp_counts(self) -> None:
-        self._full_tp_counts = {"tr": 0, "cd": 0}
+        self._full_tp_counts = {"tr": 0}
         self._full_tp_count = 0
         self._tp_locked = False
 
@@ -224,11 +216,8 @@ class LiveTradingEngine:
         return self._full_tp_counts.get(key, 0) >= lock
 
     def _any_full_tp_locked(self) -> bool:
-        for key, strategy in (("tr", StrategyType.BREAKTHROUGH), ("cd", StrategyType.CONSOLIDATION)):
-            lock = self._full_tp_lock_for_strategy(strategy)
-            if lock > 0 and self._full_tp_counts.get(key, 0) >= lock:
-                return True
-        return False
+        lock = self._full_tp_lock_for_strategy(StrategyType.TREND_FOLLOW)
+        return lock > 0 and self._full_tp_counts.get("tr", 0) >= lock
 
     def _resolved_trail_ticks(self, strategy=None) -> int:
         sl_ticks = abs(int(self._strategy_param(strategy, 'sl_ticks', 50) or 50))
@@ -501,6 +490,8 @@ class LiveTradingEngine:
                     "formed_at": z.formed_at.isoformat() if z.formed_at else None,
                     "left_at": z.left_at.isoformat() if z.left_at else None,
                     "exit_direction": z.exit_direction,
+                    "timeframe": getattr(z, "timeframe", "5m"),
+                    "profile": {str(k): v for k, v in (getattr(z, "profile", {}) or {}).items()},
                 })
             os.makedirs(os.path.dirname(self._zone_file), exist_ok=True)
             with open(self._zone_file, "w", encoding="utf-8") as f:
@@ -526,11 +517,17 @@ class LiveTradingEngine:
             active_id = data.get("active_zone_id")
             loaded = 0
             for zd in data.get("zones", []):
-                # Skip legacy ConsolidationDetector zones (Z prefix)
+                # Clock-bucket zones use a "B" prefix; skip anything older.
                 zid = zd.get("zone_id", "")
-                if not zid.startswith("S"):
+                if not zid.startswith("B"):
                     logger.info(f"跳過舊版 zone: {zid}")
                     continue
+                profile = {}
+                for k, v in (zd.get("profile") or {}).items():
+                    try:
+                        profile[float(k)] = int(v)
+                    except (TypeError, ValueError):
+                        continue
                 zone = ConsolidationZone(
                     zone_id=zd["zone_id"],
                     formed_at=datetime.fromisoformat(zd["formed_at"]) if zd.get("formed_at") else None,
@@ -546,14 +543,19 @@ class LiveTradingEngine:
                     status=ZoneStatus(zd["status"]),
                     exit_direction=zd.get("exit_direction"),
                     candles=[],  # candles not persisted (too large)
+                    timeframe=zd.get("timeframe", "5m"),
+                    profile=profile,
                 )
-                self.detector._all_zones.append(zone)
-                if zone.zone_id == active_id and zone.status == ZoneStatus.ACTIVE:
-                    self.detector._active_zone = zone
-                self.detector._zone_counter = max(
-                    self.detector._zone_counter,
-                    int(zone.zone_id.lstrip("S")) if zone.zone_id.startswith("S") else 0
-                )
+                # Restore as a completed reference zone (LEFT). The forming bucket
+                # rebuilds itself from incoming live candles.
+                self.detector._completed_zones.append(zone)
+                try:
+                    self.detector._zone_counter = max(
+                        self.detector._zone_counter,
+                        int(zid.lstrip("B")) if zid.startswith("B") else 0,
+                    )
+                except ValueError:
+                    pass
                 loaded += 1
 
             if loaded > 0:
@@ -764,7 +766,8 @@ class LiveTradingEngine:
             logger.warning(f"Failed to persist breakout lock: {e}")
 
     def _session_direction_is_locked(self, signal: TradeSignal) -> bool:
-        if not self._one_trade_per_session_direction:
+        limit = self._tr_one_trade_per_session
+        if not limit:
             return False
         direction = self._breakout_direction_from_trade_direction(signal.direction.value)
         if not signal.zone_id or not direction:
@@ -935,8 +938,7 @@ class LiveTradingEngine:
             "full_tp_lock": self._full_tp_lock,
             "full_tp_count": self._full_tp_count,
             "full_tp_locks": {
-                "breakthrough": self._full_tp_lock_for_strategy(StrategyType.BREAKTHROUGH),
-                "consolidation": self._full_tp_lock_for_strategy(StrategyType.CONSOLIDATION),
+                "trend": self._full_tp_lock_for_strategy(StrategyType.TREND_FOLLOW),
             },
             "full_tp_counts": dict(self._full_tp_counts),
             "strategy_mode": self.strategy_mode,
@@ -1533,8 +1535,8 @@ class LiveTradingEngine:
                 self._protection_synced = False
 
         # ── Strategy evaluation ──
-        active_zone = self.detector.get_active_zone()
-        eval_zone = active_zone
+        # Evaluate breakout vs the recent 10 reference zones (v0.18).
+        eval_zones = self.detector.get_recent_zones()
         eval_mature = self.detector.is_zone_mature
 
         # Strategy evaluation
@@ -1546,7 +1548,7 @@ class LiveTradingEngine:
             )
             strat.reset()
 
-        signal = self.trend_follow.evaluate(candle, eval_zone, eval_mature)
+        signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
 
         if signal and not self._pending_order_id:
             if self._signal_full_tp_locked(signal):
@@ -1905,18 +1907,27 @@ class LiveTradingEngine:
 
                 if self._fill_price and self._pending_signal:
                     entry = self._pending_signal.entry_price
-                    slippage = abs(self._fill_price - entry)
-                    slippage_dollars = slippage * self.point_value * self.contract_size
-                    if slippage > 5.0:
+                    diff = self._fill_price - entry
+                    adverse_slippage = diff if self._pending_signal.direction == Direction.BUY else -diff
+                    price_improvement = max(0.0, -adverse_slippage)
+                    adverse_slippage = max(0.0, adverse_slippage)
+                    adverse_dollars = adverse_slippage * self.point_value * self.contract_size
+                    improvement_dollars = price_improvement * self.point_value * self.contract_size
+                    if adverse_slippage > 5.0:
                         self._log_event(
                             f"[FILL MISMATCH] entry={entry:.2f} fill={self._fill_price:.2f} "
-                            f"差距={slippage:.2f} pts (${slippage_dollars:.0f})",
+                            f"不利滑價={adverse_slippage:.2f} pts (${adverse_dollars:.0f})",
                             "error"
+                        )
+                    elif price_improvement > 0:
+                        self._log_event(
+                            f"[FILL OK] entry={entry:.2f} fill={self._fill_price:.2f} "
+                            f"price improvement={price_improvement:.2f} pts (${improvement_dollars:.0f})"
                         )
                     else:
                         self._log_event(
                             f"[FILL OK] entry={entry:.2f} fill={self._fill_price:.2f} "
-                            f"滑價={slippage:.2f} pts (${slippage_dollars:.0f})"
+                            f"不利滑價={adverse_slippage:.2f} pts (${adverse_dollars:.0f})"
                         )
 
                 # Record entry trade for chart markers

@@ -3,15 +3,16 @@
 # 文件: backend/api/routes.py
 # 狀態: v0.17.0
 # 功能 / Features:
-#   - FastAPI REST routes for config, historical candles, backtest, full backtest,
+#   - FastAPI REST routes for config, historical candles, backtest, machine learning,
 #     live engine, presets, and trade history.
-#   - Full Backtest uses /backtest/full-run|full-results|full-progress.
-#   - Presets are migrated to breakthrough / consolidation / hybrid and full_tp_lock.
+#   - Machine Learning uses /backtest/ml-run|full-results|full-progress.
+#   - Presets use the trend strategy and full_tp_lock.
 #   - Value Area is locked to 80%; live/latest-candle routes use completed 1m bars.
 # ============================================================
 
 from __future__ import annotations
 import os
+import csv
 import json
 import logging
 import math
@@ -41,7 +42,7 @@ def _env(key: str, default: str = "") -> str:
 
 MNQ_SIZE_CHOICES = (1, 3, 5, 10)
 TRAIL_TICK_STEP = 5
-FULL_BACKTEST_TRAIL_PCT_CHOICES = (
+ML_TRAIL_PCT_CHOICES = (
     0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
 )
 
@@ -161,7 +162,7 @@ def _trail_grid_for(sl_ticks: int, tp_ticks: int, trigger_pct: float) -> List[Tu
         return [(0, None)]
     ticks_to_pct: Dict[int, float] = {}
     pct_values = {
-        pct for pct in FULL_BACKTEST_TRAIL_PCT_CHOICES
+        pct for pct in ML_TRAIL_PCT_CHOICES
         if pct <= 0.50 and pct < trigger - 1e-9
     }
     for pct in sorted(pct_values):
@@ -173,14 +174,34 @@ def _trail_grid_for(sl_ticks: int, tp_ticks: int, trigger_pct: float) -> List[Tu
 
 
 def _normalize_strategy_name(value: str) -> str:
-    strategy = (value or "breakthrough").lower()
-    if strategy in ("trend", "trend_follow"):
-        return "breakthrough"
-    if strategy == "reversion":
-        return "consolidation"
-    if strategy == "trend_reversion":
-        return "hybrid"
-    return strategy if strategy in {"breakthrough", "consolidation", "hybrid"} else "breakthrough"
+    return "trend"
+
+
+AREA_TIMEFRAME_CHOICES = ("5m", "15m", "30m", "1h", "4h")
+
+
+def _normalize_area_timeframe(value) -> str:
+    tf = str(value or "5m").strip().lower()
+    return tf if tf in AREA_TIMEFRAME_CHOICES else "5m"
+
+
+def _normalize_value_area_pct(value) -> float:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return 0.80
+    if pct > 1.0:           # accept percent form (e.g. 80 -> 0.80)
+        pct = pct / 100.0
+    return max(0.50, min(0.95, pct))
+
+
+def _normalize_rr_ratio(value, default: int = 2) -> int:
+    """Reward:risk multiple, selectable 1..10."""
+    try:
+        rr = int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(10, rr))
 
 
 def _strategy_leg_params(req, prefix: str) -> dict:
@@ -230,36 +251,32 @@ def _strategy_leg_params(req, prefix: str) -> dict:
 
 
 def _build_strategy_params_from_request(req, contract_size: int) -> StrategyParams:
-    strategy = _normalize_strategy_name(getattr(req, "strategy", "breakthrough"))
+    strategy = _normalize_strategy_name(getattr(req, "strategy", "trend"))
     tr = _strategy_leg_params(req, "tr")
-    cd = _strategy_leg_params(req, "cd")
-    primary = cd if strategy == "consolidation" else tr
     return StrategyParams(
         strategy=strategy,
-        tp_ticks=primary["tp_ticks"],
-        sl_ticks=primary["sl_ticks"],
-        trail_sl_ticks=primary["trail_sl_ticks"],
-        trail_trigger_pct=primary["trail_trigger_pct"],
-        trail_enabled=primary["trail_enabled"],
+        tp_ticks=tr["tp_ticks"],
+        sl_ticks=tr["sl_ticks"],
+        trail_sl_ticks=tr["trail_sl_ticks"],
+        trail_trigger_pct=tr["trail_trigger_pct"],
+        trail_enabled=tr["trail_enabled"],
         tr_tp_ticks=tr["tp_ticks"],
         tr_sl_ticks=tr["sl_ticks"],
         tr_trail_sl_ticks=tr["trail_sl_ticks"],
         tr_trail_trigger_pct=tr["trail_trigger_pct"],
         tr_trail_enabled=tr["trail_enabled"],
         tr_full_tp_lock=tr["full_tp_lock"],
-        cd_tp_ticks=cd["tp_ticks"],
-        cd_sl_ticks=cd["sl_ticks"],
-        cd_trail_sl_ticks=cd["trail_sl_ticks"],
-        cd_trail_trigger_pct=cd["trail_trigger_pct"],
-        cd_trail_enabled=cd["trail_enabled"],
-        cd_full_tp_lock=cd["full_tp_lock"],
         candle_seconds=60,
         contract_id=getattr(req, "contract_id", "CON.F.US.MNQ.M26"),
         contract_size=contract_size,
-        full_tp_lock=primary["full_tp_lock"],
+        full_tp_lock=tr["full_tp_lock"],
         one_trade_per_session_direction=bool(getattr(req, "one_trade_per_session_direction", True)),
+        tr_one_trade_per_session=bool(getattr(req, "tr_one_trade_per_session", True)),
         skip_zone_stability=False,
         breakout_confirm_bars=max(1, int(getattr(req, "breakout_confirm_bars", 7) or 7)),
+        area_timeframe=_normalize_area_timeframe(getattr(req, "area_timeframe", "5m")),
+        value_area_pct=_normalize_value_area_pct(getattr(req, "value_area_pct", 0.80)),
+        rr_ratio=_normalize_rr_ratio(getattr(req, "rr_ratio", 2)),
     )
 
 # ── 臨時存儲（後續改用 SQLite）──────────────────────────
@@ -268,7 +285,44 @@ _historical_candles: List[Candle] = []
 _topstepx_client = None  # TopstepXClient instance (set after connect)
 _live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
 _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
-FULL_BACKTEST_DISPLAY_LIMIT = 200
+ML_DISPLAY_LIMIT = 200
+
+# Quarterly futures month codes for NQ/MNQ/ES/MES: Mar, Jun, Sep, Dec.
+_QUARTERLY_CODES = ["H", "M", "U", "Z"]
+
+
+def _prev_quarterly_contract(contract_id: str) -> Optional[str]:
+    """Given a full contract id, return the previous quarterly expiry contract.
+    CON.F.US.MNQ.M26 -> CON.F.US.MNQ.H26 ; CON.F.US.MNQ.H26 -> CON.F.US.MNQ.Z25.
+    Returns None if the id can't be parsed.
+    """
+    parts = contract_id.split(".")
+    if len(parts) < 5:
+        return None
+    code = parts[-1]                      # e.g. "M26"
+    if len(code) < 3:
+        return None
+    month, year = code[0].upper(), code[1:]
+    if month not in _QUARTERLY_CODES or not year.isdigit():
+        return None
+    idx = _QUARTERLY_CODES.index(month)
+    if idx == 0:                          # H -> previous year's Z
+        new_month, new_year = "Z", str(int(year) - 1).zfill(len(year))
+    else:
+        new_month, new_year = _QUARTERLY_CODES[idx - 1], year
+    parts[-1] = new_month + new_year
+    return ".".join(parts)
+
+
+def _back_adjust(prev_bars: List[Candle], offset: float) -> None:
+    """Shift an older contract's OHLC by `offset` so it splices continuously onto
+    the newer contract (removes the roll price gap). Mutates in place."""
+    for b in prev_bars:
+        b.open += offset
+        b.high += offset
+        b.low += offset
+        b.close += offset
+
 
 def _upsert_historical_candles(candles: List[Candle]) -> None:
     """Merge candles by timestamp so forming-bar snapshots get replaced."""
@@ -304,7 +358,7 @@ async def _refresh_recent_historical_candles(contract_id: str, limit: int = 240)
 class BacktestRequest(BaseModel):
     initial_capital: float = 50000.0
     # Strategy params
-    strategy: str = "breakthrough"
+    strategy: str = "trend"
     tp_ticks: int = 200
     sl_ticks: int = 50
     trail_sl_ticks: int = 10
@@ -318,23 +372,23 @@ class BacktestRequest(BaseModel):
     tr_trail_trigger_pct: Optional[float] = None
     tr_trail_enabled: Optional[bool] = None
     tr_full_tp_lock: Optional[int] = None
-    cd_tp_ticks: Optional[int] = None
-    cd_sl_ticks: Optional[int] = None
-    cd_trail_sl_ticks: Optional[int] = None
-    cd_trail_sl_pct: Optional[float] = None
-    cd_trail_trigger_pct: Optional[float] = None
-    cd_trail_enabled: Optional[bool] = None
-    cd_full_tp_lock: Optional[int] = None
     candle_seconds: int = 60
     value_area_pct: float = 0.80
+    area_timeframe: str = "5m"
+    rr_ratio: int = 2                     # reward:risk multiple (1..10)
     # Contract & sizing (defaults to 3× Micro NQ)
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
     full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     one_trade_per_session_direction: bool = True
+    tr_one_trade_per_session: bool = True
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
     breakout_confirm_bars: int = 7
+    # v0.18: "single" = one area timeframe; "overlap" = enter at the AVERAGE
+    # overlapping VAH/VAL of the timeframes in tf_combo (reproduces an ML overlap row).
+    method: str = "single"
+    tf_combo: Optional[List[str]] = None
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -347,6 +401,7 @@ class FetchHistoricalRequest(BaseModel):
     end_time: str = ""
     use_demo: Optional[bool] = None  # None = 從 .env 讀取
     append: bool = False           # True = merge into existing historical candles
+    merge_contracts: int = 0       # >0 = also chain N previous quarterly contracts (back-adjusted)
 
 
 class TradeResponse(BaseModel):
@@ -436,7 +491,6 @@ class MetricsResponse(BaseModel):
     current_zone_avg_pnl: float = 0.0
     current_zone_total_pnl: float = 0.0
     # Per-strategy breakdown
-    reversion: Optional[SubMetricsResponse] = None
     trend_follow: Optional[SubMetricsResponse] = None
 
 
@@ -623,61 +677,82 @@ class DetectZonesRequest(BaseModel):
     min_candles_for_zone: int = 6
     poc_drift_threshold: float = 3.0
     value_area_pct: float = 0.80
+    area_timeframe: str = "5m"
+    all_timeframes: bool = False   # ML: draw every timeframe's VAH/VAL/POC at once
+
+
+def _zone_to_dict(z, fallback_tf: str) -> dict:
+    """Serialise one consolidation zone (with VP histogram) for the chart."""
+    zd = {
+        "zone_id": z.zone_id,
+        "poc": z.poc,
+        "vah_80": z.vah_80,
+        "val_80": z.val_80,
+        "high_100": z.high_100,
+        "low_100": z.low_100,
+        "status": z.status.value,
+        "formed_at": z.formed_at.isoformat() if z.formed_at else None,
+        "left_at": z.left_at.isoformat() if z.left_at else None,
+        "exit_direction": z.exit_direction,
+        "num_candles": z.num_candles,
+        "timeframe": getattr(z, 'timeframe', fallback_tf),
+        "parent_zone_id": getattr(z, 'parent_zone_id', None),
+        "va_curve": getattr(z, 'va_curve', None) or None,
+        "mature": getattr(z, 'mature', False),
+    }
+    profile = getattr(z, "profile", None) or {}
+    if profile:
+        max_vol = max(profile.values()) or 1
+        zd["profile"] = [
+            {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
+            for p, v in sorted(profile.items())
+        ]
+    else:
+        zd["profile"] = []
+    return zd
 
 
 @router.post("/data/detect-zones")
 async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
-    """Run zone detection on stored candles — returns zones with VP profiles."""
+    """Run zone detection on stored candles — returns zones with VP profiles.
+
+    When ``all_timeframes`` is set, detection runs for every ML timeframe
+    (5m/15m/30m/1h/4h) and the zones are returned together, each tagged with
+    its own ``timeframe`` so the chart can overlay all VAH/VAL/POC at once.
+    """
     if not _historical_candles:
         raise HTTPException(400, "No candles loaded")
 
-    from backend.strategy.consolidation import SessionZoneDetector
-    from backend.strategy.volume_profile import VolumeProfileCalculator
+    from backend.strategy.consolidation import build_zone_detector
 
     value_area_pct = _normalize_value_area_pct(req.value_area_pct)
-    detector = SessionZoneDetector(
+    sorted_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+
+    if getattr(req, "all_timeframes", False):
+        zone_list = []
+        for tf in ML_TIMEFRAMES:
+            detector = build_zone_detector(area_timeframe=tf, value_area_pct=value_area_pct)
+            for c in sorted_candles:
+                detector.update(c)
+            for z in detector.get_all_zones():
+                zone_list.append(_zone_to_dict(z, tf))
+        return {
+            "zones": zone_list,
+            "count": len(zone_list),
+            "area_timeframe": "all",
+            "timeframes": list(ML_TIMEFRAMES),
+        }
+
+    area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "5m"))
+    detector = build_zone_detector(
+        area_timeframe=area_timeframe,
         value_area_pct=value_area_pct,
     )
-    vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=value_area_pct)
-
-    for c in _historical_candles:
+    for c in sorted_candles:
         detector.update(c)
 
-    all_zones = detector.get_all_zones()
-    zone_list = []
-    for z in all_zones:
-        zd = {
-            "zone_id": z.zone_id,
-            "poc": z.poc,
-            "vah_80": z.vah_80,
-            "val_80": z.val_80,
-            "high_100": z.high_100,
-            "low_100": z.low_100,
-            "status": z.status.value,
-            "formed_at": z.formed_at.isoformat() if z.formed_at else None,
-            "left_at": z.left_at.isoformat() if z.left_at else None,
-            "exit_direction": z.exit_direction,
-            "num_candles": z.num_candles,
-            "timeframe": getattr(z, 'timeframe', '5m'),
-            "parent_zone_id": getattr(z, 'parent_zone_id', None),
-            "va_curve": getattr(z, 'va_curve', None) or None,
-            "mature": getattr(z, 'mature', False),
-        }
-        if z.candles and z.status.value == "active":
-            try:
-                vp = vp_calc.calculate(z.candles)
-                max_vol = max(vp.profile.values()) if vp.profile else 1
-                zd["profile"] = [
-                    {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
-                    for p, v in sorted(vp.profile.items())
-                ]
-            except Exception:
-                zd["profile"] = []
-        else:
-            zd["profile"] = []
-        zone_list.append(zd)
-
-    return {"zones": zone_list, "count": len(zone_list)}
+    zone_list = [_zone_to_dict(z, area_timeframe) for z in detector.get_all_zones()]
+    return {"zones": zone_list, "count": len(zone_list), "area_timeframe": area_timeframe}
 
 
 @router.post("/accounts")
@@ -785,6 +860,49 @@ async def fetch_historical(req: FetchHistoricalRequest):
             end_time=req.end_time,
         )
 
+        # Chain N previous quarterly contracts to extend history backward.
+        # Each older contract is back-adjusted (shifted by the roll gap) so the
+        # series is continuous — required so volume-profile zones stay aligned.
+        # Only on a full (non-append) fetch; appends are incremental top-ups.
+        merge_n = max(0, int(getattr(req, "merge_contracts", 0) or 0))
+        if merge_n > 0 and candles and not req.append:
+            merged = sorted(candles, key=lambda c: c.timestamp)
+            cur_id = contract_id
+            for _ in range(merge_n):
+                prev_id = _prev_quarterly_contract(cur_id)
+                if not prev_id:
+                    break
+                splice_ts = merged[0].timestamp
+                splice_end = splice_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+                try:
+                    prev_bars = await client.get_historical_bars_paginated(
+                        contract_id=prev_id,
+                        unit=BarUnit(req.unit),
+                        unit_number=req.unit_number,
+                        start_time=req.start_time,
+                        end_time=splice_end,
+                    )
+                except Exception as e:
+                    logger.warning(f"[merge] {prev_id} fetch failed: {e}")
+                    break
+                prev_bars = sorted(
+                    [b for b in prev_bars if b.timestamp < splice_ts],
+                    key=lambda c: c.timestamp,
+                )
+                if not prev_bars:
+                    logger.info(f"[merge] {prev_id}: no earlier data — stopping")
+                    cur_id = prev_id
+                    continue
+                offset = merged[0].open - prev_bars[-1].close
+                _back_adjust(prev_bars, offset)
+                logger.info(
+                    f"[merge] chained {prev_id}: +{len(prev_bars)} bars "
+                    f"(back-adjusted {offset:+.2f}), now from {prev_bars[0].timestamp.isoformat()}"
+                )
+                merged = prev_bars + merged
+                cur_id = prev_id
+            candles = merged
+
         if req.append:
             _upsert_historical_candles(candles)
         else:
@@ -863,13 +981,30 @@ async def run_backtest(req: BacktestRequest):
 
     strategy_params = _build_strategy_params_from_request(req, contract_size)
 
+    # v0.18: overlap mode reproduces an ML overlap row — enter at the AVERAGE
+    # overlapping VAH/VAL of the timeframes in tf_combo via a merged zone timeline.
+    method = str(getattr(req, "method", "single") or "single").lower()
+    tf_combo = tuple(t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES)
+    overlap_mode = method == "overlap" and len(tf_combo) >= 2
+
+    _overlap_zone_timeline = None
+    if overlap_mode:
+        ordered = [tf for tf in ML_TIMEFRAMES if tf in tf_combo]
+        _ov_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+        _ov_timelines = [
+            _precompute_zone_timeline(_ov_candles, value_area_pct, False, tf)
+            for tf in ordered
+        ]
+        _overlap_zone_timeline = _merge_zone_timelines(_ov_timelines, tuple(ordered))
+
     engine = BacktestEngine(
         config,
         strategy_params=strategy_params,
+        zone_timeline=_overlap_zone_timeline,
     )
 
     # Use 1m candles directly (SessionTrendFollow works on 1m)
-    candles = list(_historical_candles)
+    candles = sorted(_historical_candles, key=lambda c: c.timestamp) if overlap_mode else list(_historical_candles)
 
     result = engine.run(candles)
     _backtest_results.append(result)
@@ -902,9 +1037,23 @@ async def run_backtest(req: BacktestRequest):
             is_big_trend=t.is_big_trend,
         ))
 
+    # Overlap mode renders the merged synthetic zones from the timeline
+    # (timeline runs don't populate result.zones).
+    if overlap_mode and _overlap_zone_timeline:
+        seen_ids = set()
+        merged_zones = []
+        for entry in _overlap_zone_timeline:
+            mz = entry.get("active")
+            if mz is not None and mz.zone_id not in seen_ids:
+                seen_ids.add(mz.zone_id)
+                merged_zones.append(mz)
+        result_zones = merged_zones
+    else:
+        result_zones = result.zones
+
     zones_resp = []
     vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=value_area_pct)
-    for z in result.zones:
+    for z in result_zones:
         # Calculate VP profile for frontend histogram
         profile_data = None
         if z.candles:
@@ -918,6 +1067,14 @@ async def run_backtest(req: BacktestRequest):
                 ]
             except Exception:
                 profile_data = []
+        elif getattr(z, "profile", None):
+            # Merged/slim zones carry a precomputed histogram instead of candles.
+            prof = z.profile or {}
+            max_vol = max(prof.values()) if prof else 1
+            profile_data = [
+                {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
+                for p, v in sorted(prof.items())
+            ]
 
         # Zone is mature only if it actually reached maturity during its lifetime
         is_mature = getattr(z, 'mature', False)
@@ -984,7 +1141,6 @@ async def run_backtest(req: BacktestRequest):
         current_zone_win_rate=getattr(m, "current_zone_win_rate", 0.0),
         current_zone_avg_pnl=getattr(m, "current_zone_avg_pnl", 0.0),
         current_zone_total_pnl=getattr(m, "current_zone_total_pnl", 0.0),
-        reversion=_sub_resp(m.reversion_metrics),
         trend_follow=_sub_resp(m.trend_follow_metrics),
     )
 
@@ -1016,13 +1172,13 @@ async def list_backtests():
     ]
 
 
-# ── Full Backtest: Run all SL/TP/Trail combinations ────────────────
+# ── Machine Learning: Run all SL/TP/Trail combinations ────────────────
 
-_full_backtest_results_cache: List[dict] = []
-_full_backtest_progress: dict = {"current": 0, "total": 0}
+_ml_results_cache: List[dict] = []
+_ml_progress: dict = {"current": 0, "total": 0}
 
 import threading as _threading
-_full_backtest_progress_lock = _threading.Lock()
+_ml_progress_lock = _threading.Lock()
 
 
 def _request_payload(model: BaseModel) -> dict:
@@ -1041,7 +1197,7 @@ def _json_safe(value):
     return value
 
 
-def _full_backtest_total_loss(r: dict) -> float:
+def _ml_total_loss(r: dict) -> float:
     if r.get("total_loss") is not None:
         try:
             return float(r.get("total_loss") or 0)
@@ -1053,42 +1209,124 @@ def _full_backtest_total_loss(r: dict) -> float:
         return 0.0
 
 
-def _full_backtest_loss_to_final_ratio(r: dict) -> float:
+def _ml_loss_to_final_ratio(r: dict) -> float:
     try:
         pnl = float(r.get("total_pnl") or 0)
     except (TypeError, ValueError):
         pnl = 0.0
-    loss = abs(_full_backtest_total_loss(r))
+    loss = abs(_ml_total_loss(r))
     if loss > 0:
         return pnl / loss
     return 999.0 if pnl > 0 else 0.0
 
 
-def _full_backtest_valid_trade_range(r: dict) -> bool:
-    try:
-        return int(r.get("sl") or 0) >= 50 and int(r.get("tp") or 0) >= 50
-    except (TypeError, ValueError):
-        return False
+def _ml_valid_trade_range(r: dict) -> bool:
+    # New ML model (v0.18) has no fixed SL/TP ticks; every non-errored run is valid.
+    return isinstance(r, dict) and not r.get("error")
 
 
-def _enrich_full_backtest_result(r: dict) -> dict:
-    ratio = round(_full_backtest_loss_to_final_ratio(r), 3)
+def _enrich_ml_result(r: dict) -> dict:
+    ratio = round(_ml_loss_to_final_ratio(r), 3)
     r["loss_to_final_ratio"] = ratio
     r["lwr"] = ratio
     return r
 
 
-def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_combinations: int) -> dict:
-    """Persist the latest Full backtest run in AI-readable JSON + compact Markdown."""
-    data_dir = Path(__file__).resolve().parents[2] / "data"
+def _weekly_stats(daily_pnl: Dict[str, float]) -> dict:
+    """Group daily PnL by ISO week and measure week-to-week variation.
+
+    Returns: weekly_pnls (list, chronological), weekly_count, weekly_mean,
+    weekly_std (population std-dev of weekly PnL), weekly_cv (coefficient of
+    variation = std/|mean|), weekly_min, weekly_max, weekly_range,
+    positive_weeks, weekly_consistency (fraction of weeks with PnL > 0).
+    """
+    empty = {
+        "weekly_pnls": [], "weekly_count": 0, "weekly_mean": 0.0,
+        "weekly_std": 0.0, "weekly_cv": 0.0, "weekly_min": 0.0,
+        "weekly_max": 0.0, "weekly_range": 0.0, "positive_weeks": 0,
+        "weekly_consistency": 0.0,
+    }
+    if not daily_pnl:
+        return empty
+
+    buckets: Dict[str, float] = {}
+    for day, pnl in daily_pnl.items():
+        try:
+            dt = datetime.fromisoformat(str(day)[:10])
+        except (TypeError, ValueError):
+            continue
+        iso = dt.isocalendar()
+        key = f"{iso[0]}-W{iso[1]:02d}"
+        try:
+            buckets[key] = buckets.get(key, 0.0) + float(pnl or 0)
+        except (TypeError, ValueError):
+            continue
+
+    if not buckets:
+        return empty
+
+    weekly = [buckets[k] for k in sorted(buckets.keys())]
+    n = len(weekly)
+    mean = sum(weekly) / n
+    var = sum((w - mean) ** 2 for w in weekly) / n
+    std = math.sqrt(var)
+    cv = (std / abs(mean)) if mean else 0.0
+    positive = sum(1 for w in weekly if w > 0)
+    return {
+        "weekly_pnls": [round(w, 2) for w in weekly],
+        "weekly_count": n,
+        "weekly_mean": round(mean, 2),
+        "weekly_std": round(std, 2),
+        "weekly_cv": round(cv, 4),
+        "weekly_min": round(min(weekly), 2),
+        "weekly_max": round(max(weekly), 2),
+        "weekly_range": round(max(weekly) - min(weekly), 2),
+        "positive_weeks": positive,
+        "weekly_consistency": round(positive / n, 3),
+    }
+
+
+# Columns written to data/machinelearning/ml_results.csv (Phase 8: all metrics).
+_ML_CSV_COLUMNS = [
+    "rank", "method", "tf_label", "tf_combo", "overlap_count", "overlap_pct",
+    "rr_ratio", "area_timeframe", "value_area_pct", "contract_id",
+    "contract_size", "total_trades", "wins", "losses", "win_rate",
+    "total_pnl", "total_gain", "total_loss", "loss_to_final_ratio",
+    "max_drawdown", "calmar_ratio", "profit_factor", "avg_rr_ratio",
+    "avg_win", "avg_loss", "consistency_pct", "max_day_pct",
+    "weekly_count", "weekly_mean", "weekly_std", "weekly_cv",
+    "weekly_min", "weekly_max", "weekly_range", "positive_weeks",
+    "weekly_consistency", "weekly_pnls", "pass_max_dd", "error",
+]
+
+
+def _ml_csv_row(r: dict) -> dict:
+    """Flatten one ML result into the CSV column set (stringify list fields)."""
+    row = {}
+    for col in _ML_CSV_COLUMNS:
+        val = r.get(col, "")
+        if col == "tf_combo" and isinstance(val, (list, tuple)):
+            val = "+".join(str(x) for x in val)
+        elif col == "weekly_pnls" and isinstance(val, (list, tuple)):
+            val = ";".join(str(x) for x in val)
+        elif val is None:
+            val = ""
+        row[col] = val
+    return row
+
+
+def _save_ml_artifacts(req: BaseModel, ranked: List[dict], total_combinations: int) -> dict:
+    """Persist the latest Machine learning run in AI-readable JSON + compact Markdown."""
+    data_dir = Path(__file__).resolve().parents[2] / "data" / "machinelearning"
     data_dir.mkdir(parents=True, exist_ok=True)
 
     generated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    json_path = data_dir / "full_backtest_latest.json"
-    md_path = data_dir / "full_backtest_summary.md"
+    json_path = data_dir / "ml_latest.json"
+    md_path = data_dir / "ml_summary.md"
+    csv_path = data_dir / "ml_results.csv"
 
     payload = {
-        "kind": "full_backtest_results",
+        "kind": "ml_results",
         "generated_at": generated_at,
         "total_combinations": total_combinations,
         "request": _json_safe(_request_payload(req)),
@@ -1098,31 +1336,37 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
     with json_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, default=str, allow_nan=False)
 
+    # Phase 8: complete CSV with every metric + weekly variation, all combos.
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_ML_CSV_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        for r in ranked:
+            writer.writerow(_ml_csv_row(_enrich_ml_result(r)))
+
     lines = [
-        "# Full Backtest Summary",
+        "# Machine Learning Summary",
         "",
         f"- Generated: {generated_at}",
         f"- Total combinations: {total_combinations}",
         f"- Saved JSON: `{json_path}`",
+        f"- Saved CSV: `{csv_path}`",
         "",
-        "| Rank | Strategy | Contract | Size | SL | TP | Trigger | Trail | TP Lock | Trades | Win% | Final PnL | Max DD | PF | LFR | Calmar |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Method | Timeframes | Overlap | RR | Trades | Win% | Final PnL | Max DD | PF | LFR | Calmar | Wk Std | Wk CV |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for r in [_enrich_full_backtest_result(r) for r in ranked if _full_backtest_valid_trade_range(r)][:25]:
+    for r in [_enrich_ml_result(r) for r in ranked if not r.get("error")][:25]:
         win_pct = round(float(r.get("win_rate", 0) or 0) * 100, 1)
-        trig_pct = round(float(r.get("trail_trigger_pct", 0) or 0) * 100, 1)
+        tf_combo = r.get("tf_combo")
+        if isinstance(tf_combo, (list, tuple)):
+            tf_combo = "+".join(str(x) for x in tf_combo)
         lines.append(
-            "| {rank} | {strategy} | {contract_id} | {contract_size} | {sl} | {tp} | {trigger}% | "
-            "{trail} | {lock} | {trades} | {win}% | ${pnl} | ${dd} | {pf} | {loss_to_final} | {calmar} |".format(
+            "| {rank} | {method} | {tf} | {overlap} | 1:{rr} | {trades} | {win}% | ${pnl} | ${dd} | "
+            "{pf} | {loss_to_final} | {calmar} | {wstd} | {wcv} |".format(
                 rank=r.get("rank", ""),
-                strategy=r.get("strategy", ""),
-                contract_id=r.get("contract_id", ""),
-                contract_size=r.get("contract_size", ""),
-                sl=r.get("sl", ""),
-                tp=r.get("tp", ""),
-                trail=r.get("trail", ""),
-                trigger=trig_pct,
-                lock=r.get("full_tp_lock", ""),
+                method=r.get("method", ""),
+                tf=r.get("tf_label", tf_combo or ""),
+                overlap=r.get("overlap_count", ""),
+                rr=r.get("rr_ratio", ""),
                 trades=r.get("total_trades", ""),
                 win=win_pct,
                 pnl=r.get("total_pnl", ""),
@@ -1130,6 +1374,8 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
                 pf=r.get("profit_factor", ""),
                 loss_to_final=r.get("loss_to_final_ratio", r.get("lwr", "")),
                 calmar=r.get("calmar_ratio", ""),
+                wstd=r.get("weekly_std", ""),
+                wcv=r.get("weekly_cv", ""),
             )
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -1137,11 +1383,12 @@ def _save_full_backtest_artifacts(req: BaseModel, ranked: List[dict], total_comb
     return {
         "json": str(json_path),
         "summary": str(md_path),
+        "csv": str(csv_path),
         "generated_at": generated_at,
     }
 
 
-def _full_backtest_sort_value(r: dict, col: str):
+def _ml_sort_value(r: dict, col: str):
     col = (col or "calmar").lower()
     if col == "rank":
         return r.get("rank") or 0
@@ -1153,16 +1400,22 @@ def _full_backtest_sort_value(r: dict, col: str):
         return r.get("contract_size") or 0
     if col == "area":
         return r.get("value_area_pct") or 0
-    if col == "sl":
-        return r.get("sl") or 0
-    if col == "tp":
-        return r.get("tp") or 0
-    if col == "trail":
-        return r.get("trail_pct") if r.get("trail_pct") is not None else (r.get("trail") or 0)
-    if col == "trigger":
-        return r.get("trail_trigger_pct") or 0
-    if col == "lock":
-        return r.get("full_tp_lock") or 0
+    if col == "method":
+        return str(r.get("method") or "").lower()
+    if col == "tf":
+        tf = r.get("tf_label")
+        if not tf:
+            combo = r.get("tf_combo")
+            tf = "+".join(combo) if isinstance(combo, (list, tuple)) else ""
+        return str(tf).lower()
+    if col == "overlap":
+        return r.get("overlap_count") or 0
+    if col == "rr":
+        return r.get("rr_ratio") or 0
+    if col == "wk_std":
+        return r.get("weekly_std") or 0
+    if col == "wk_cv":
+        return r.get("weekly_cv") or 0
     if col == "trades":
         return r.get("total_trades") or 0
     if col == "win_rate":
@@ -1173,7 +1426,7 @@ def _full_backtest_sort_value(r: dict, col: str):
         return r.get("max_drawdown") or 0
     if col in ("lwr", "loss_to_final_ratio", "loss_final_ratio"):
         value = r.get("loss_to_final_ratio", r.get("lwr"))
-        return value if value is not None else _full_backtest_loss_to_final_ratio(r)
+        return value if value is not None else _ml_loss_to_final_ratio(r)
     if col == "best_day":
         vals = list((r.get("daily_pnl") or {}).values())
         return max(vals) if vals else 0
@@ -1183,48 +1436,48 @@ def _full_backtest_sort_value(r: dict, col: str):
     return r.get("calmar_ratio") or 0
 
 
-def _sorted_full_backtest_results(
+def _sorted_ml_results(
     results: list,
     sort_col: str = "calmar",
     sort_dir: str = "desc",
-    limit: int = FULL_BACKTEST_DISPLAY_LIMIT,
+    limit: int = ML_DISPLAY_LIMIT,
 ) -> list:
     try:
-        limit = max(1, min(int(limit or FULL_BACKTEST_DISPLAY_LIMIT), 1000))
+        limit = max(1, min(int(limit or ML_DISPLAY_LIMIT), 1000))
     except (TypeError, ValueError):
-        limit = FULL_BACKTEST_DISPLAY_LIMIT
+        limit = ML_DISPLAY_LIMIT
     reverse = (sort_dir or "desc").lower() != "asc"
     valid = [
-        _enrich_full_backtest_result(r)
+        _enrich_ml_result(r)
         for r in (results or [])
-        if isinstance(r, dict) and not r.get("error") and _full_backtest_valid_trade_range(r)
+        if isinstance(r, dict) and not r.get("error") and _ml_valid_trade_range(r)
     ]
     errors = [
         r for r in (results or [])
-        if isinstance(r, dict) and r.get("error") and _full_backtest_valid_trade_range(r)
+        if isinstance(r, dict) and r.get("error") and _ml_valid_trade_range(r)
     ]
     sorted_valid = sorted(
         valid,
-        key=lambda r: (_full_backtest_sort_value(r, sort_col), -(r.get("rank") or 0)),
+        key=lambda r: (_ml_sort_value(r, sort_col), -(r.get("rank") or 0)),
         reverse=reverse,
     )
     return (sorted_valid + errors)[:limit]
 
 
-def _load_full_backtest_artifact(
+def _load_ml_artifact(
     sort_col: str = "calmar",
     sort_dir: str = "desc",
-    limit: int = FULL_BACKTEST_DISPLAY_LIMIT,
+    limit: int = ML_DISPLAY_LIMIT,
 ) -> dict:
-    """Load the latest persisted Full backtest display payload."""
-    json_path = Path(__file__).resolve().parents[2] / "data" / "full_backtest_latest.json"
+    """Load the latest persisted Machine learning display payload."""
+    json_path = Path(__file__).resolve().parents[2] / "data" / "machinelearning" / "ml_latest.json"
     if not json_path.exists():
         return {"results": [], "artifact": None}
     try:
         with json_path.open("r", encoding="utf-8") as f:
             payload = json.load(f)
         all_results = payload.get("results") or payload.get("top_results") or []
-        results = _sorted_full_backtest_results(all_results, sort_col, sort_dir, limit)
+        results = _sorted_ml_results(all_results, sort_col, sort_dir, limit)
         return {
             "results": results,
             "total_combinations": payload.get("total_combinations", len(all_results)),
@@ -1234,12 +1487,12 @@ def _load_full_backtest_artifact(
             "generated_at": payload.get("generated_at", ""),
             "artifact": {
                 "json": str(json_path),
-                "summary": str(json_path.with_name("full_backtest_summary.md")),
+                "summary": str(json_path.with_name("ml_summary.md")),
                 "generated_at": payload.get("generated_at", ""),
             },
         }
     except Exception as e:
-        logger.warning(f"[Full Backtest] Could not load latest artifact: {e}")
+        logger.warning(f"[Machine Learning] Could not load latest artifact: {e}")
         return {"results": [], "artifact": None}
 
 
@@ -1247,40 +1500,49 @@ def _precompute_zone_timeline(
     candles: list,
     value_area_pct: float = 0.80,
     skip_zone_stability: bool = False,
+    area_timeframe: str = "5m",
 ) -> list:
-    """Run SessionZoneDetector ONCE on all candles.
-    Returns a list[dict] — one entry per candle — with pre-computed zone state.
-    Slim zones (candles list stripped) are safe for strategy evaluation.
+    """Run the clock-bucket zone detector ONCE on all candles.
+    Returns a list[dict] — one entry per candle — with pre-computed zone state:
+      - 'active': most recent completed reference zone
+      - 'recent': up to 10 recent reference zones (for multi-zone breakout)
+      - 'mature': whether at least one reference zone exists
+    Slim zones (candles list stripped) are safe for strategy evaluation; the VP
+    histogram (`profile`) is preserved for the lowest-volume-node SL.
     """
     import copy
-    from backend.strategy.consolidation import SessionZoneDetector
+    from backend.strategy.consolidation import build_zone_detector
 
     value_area_pct = _normalize_value_area_pct(value_area_pct)
-    detector = SessionZoneDetector(
+    area_timeframe = _normalize_area_timeframe(area_timeframe)
+    detector = build_zone_detector(
+        area_timeframe=area_timeframe,
         value_area_pct=value_area_pct,
+        max_recent=10,
     )
     timeline = []
 
+    def _slim(z):
+        if z is None:
+            return None
+        c = copy.copy(z)
+        c.candles = []   # strip raw candle list — strategy only reads price levels + profile
+        return c
+
     for candle in candles:
         detector.update(candle)
-
-        def _slim(z):
-            if z is None:
-                return None
-            c = copy.copy(z)
-            c.candles = []   # strip raw candle list — strategy only reads price levels
-            return c
-
+        recent = [_slim(z) for z in detector.get_recent_zones(10)]
         timeline.append({
             'active': _slim(detector.get_active_zone()),
+            'recent': recent,
             'mature': detector.is_zone_mature,
         })
 
     return timeline
 
 
-class FullBacktestRunRequest(BaseModel):
-    strategy: str = "breakthrough"
+class MLRunRequest(BaseModel):
+    strategy: str = "trend"
     tp_ticks: int = 200
     sl_ticks: int = 50
     trail_sl_ticks: int = 10
@@ -1293,15 +1555,10 @@ class FullBacktestRunRequest(BaseModel):
     tr_trail_trigger_pct: Optional[float] = None
     tr_trail_enabled: Optional[bool] = None
     tr_full_tp_lock: Optional[int] = None
-    cd_tp_ticks: Optional[int] = None
-    cd_sl_ticks: Optional[int] = None
-    cd_trail_sl_ticks: Optional[int] = None
-    cd_trail_sl_pct: Optional[float] = None
-    cd_trail_trigger_pct: Optional[float] = None
-    cd_trail_enabled: Optional[bool] = None
-    cd_full_tp_lock: Optional[int] = None
     candle_seconds: int = 60
     value_area_pct: float = 0.80
+    area_timeframe: str = "5m"
+    rr_ratio: int = 2                     # default RR; ML sweeps 1..10
     initial_capital: float = 50000.0
     start_date: str = ""
     end_date: str = ""
@@ -1311,6 +1568,7 @@ class FullBacktestRunRequest(BaseModel):
     trail_enabled: bool = True
     full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     one_trade_per_session_direction: bool = True
+    tr_one_trade_per_session: bool = True
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
     fixed_params: List[str] = Field(default_factory=list)
@@ -1325,8 +1583,10 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
                       one_trade_per_session_direction: bool = True,
                       skip_zone_stability: bool = False,
                       breakout_confirm_bars: int = 7,
-                      tr_leg: Optional[dict] = None,
-                      cd_leg: Optional[dict] = None) -> dict:
+                      tr_one_trade_per_session: bool = True,
+                      area_timeframe: str = "5m",
+                      rr_ratio: int = 2,
+                      tr_leg: Optional[dict] = None) -> dict:
     """Run one backtest combination synchronously (called from process pool).
     zone_timeline is pre-computed once and shared across all combos — avoids re-running
     the expensive SessionZoneDetector for every parameter combination.
@@ -1335,7 +1595,6 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
     from backend.db.models import BacktestConfig, StrategyParams
 
     tr_leg = tr_leg or {}
-    cd_leg = cd_leg or {}
     def _leg_value(leg: dict, key: str, fallback):
         return leg.get(key, fallback) if isinstance(leg, dict) else fallback
 
@@ -1352,25 +1611,23 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
         tr_trail_trigger_pct=_leg_value(tr_leg, "trail_trigger_pct", trigger_pct),
         tr_trail_enabled=bool(_leg_value(tr_leg, "trail_enabled", trail_enabled)),
         tr_full_tp_lock=_leg_value(tr_leg, "full_tp_lock", full_tp_lock),
-        cd_sl_ticks=_leg_value(cd_leg, "sl_ticks", sl),
-        cd_tp_ticks=_leg_value(cd_leg, "tp_ticks", tp),
-        cd_trail_sl_ticks=_leg_value(cd_leg, "trail_sl_ticks", trail),
-        cd_trail_trigger_pct=_leg_value(cd_leg, "trail_trigger_pct", trigger_pct),
-        cd_trail_enabled=bool(_leg_value(cd_leg, "trail_enabled", trail_enabled)),
-        cd_full_tp_lock=_leg_value(cd_leg, "full_tp_lock", full_tp_lock),
         candle_seconds=cand_secs,
         contract_id=contract_id,
         contract_size=_normalize_contract_size(contract_id, contract_size),
         full_tp_lock=full_tp_lock,
         one_trade_per_session_direction=bool(one_trade_per_session_direction),
+        tr_one_trade_per_session=bool(tr_one_trade_per_session),
         skip_zone_stability=bool(skip_zone_stability),
         breakout_confirm_bars=max(1, int(breakout_confirm_bars or 7)),
+        area_timeframe=_normalize_area_timeframe(area_timeframe),
+        value_area_pct=getattr(config, "value_area_pct", 0.80),
+        rr_ratio=_normalize_rr_ratio(rr_ratio),
     )
     engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline)
     try:
         result = engine.run(list(candles))
         m = result.metrics
-        loss_to_final_ratio = round(_full_backtest_loss_to_final_ratio({
+        loss_to_final_ratio = round(_ml_loss_to_final_ratio({
             "total_pnl": m.total_pnl,
             "total_loss": getattr(m, "total_loss", 0.0),
         }), 3)
@@ -1387,15 +1644,11 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "tr_trail_trigger_pct": getattr(sp, "tr_trail_trigger_pct", trigger_pct),
             "tr_trail_enabled": getattr(sp, "tr_trail_enabled", trail_enabled),
             "tr_full_tp_lock": getattr(sp, "tr_full_tp_lock", full_tp_lock),
-            "cd_sl": getattr(sp, "cd_sl_ticks", sl),
-            "cd_tp": getattr(sp, "cd_tp_ticks", tp),
-            "cd_trail": getattr(sp, "cd_trail_sl_ticks", trail),
-            "cd_trail_trigger_pct": getattr(sp, "cd_trail_trigger_pct", trigger_pct),
-            "cd_trail_enabled": getattr(sp, "cd_trail_enabled", trail_enabled),
-            "cd_full_tp_lock": getattr(sp, "cd_full_tp_lock", full_tp_lock),
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
             "value_area_pct": getattr(config, "value_area_pct", 0.80),
+            "area_timeframe": _normalize_area_timeframe(area_timeframe),
+            "rr_ratio": _normalize_rr_ratio(rr_ratio),
             "full_tp_lock": full_tp_lock,
             "skip_zone_stability": bool(skip_zone_stability),
             "total_trades": m.total_trades,
@@ -1428,32 +1681,180 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "tr_trail_trigger_pct": getattr(sp, "tr_trail_trigger_pct", trigger_pct),
             "tr_trail_enabled": getattr(sp, "tr_trail_enabled", trail_enabled),
             "tr_full_tp_lock": getattr(sp, "tr_full_tp_lock", full_tp_lock),
-            "cd_sl": getattr(sp, "cd_sl_ticks", sl),
-            "cd_tp": getattr(sp, "cd_tp_ticks", tp),
-            "cd_trail": getattr(sp, "cd_trail_sl_ticks", trail),
-            "cd_trail_trigger_pct": getattr(sp, "cd_trail_trigger_pct", trigger_pct),
-            "cd_trail_enabled": getattr(sp, "cd_trail_enabled", trail_enabled),
-            "cd_full_tp_lock": getattr(sp, "cd_full_tp_lock", full_tp_lock),
             "contract_id": contract_id,
             "contract_size": _normalize_contract_size(contract_id, contract_size),
             "value_area_pct": getattr(config, "value_area_pct", 0.80),
+            "area_timeframe": _normalize_area_timeframe(area_timeframe),
+            "rr_ratio": _normalize_rr_ratio(rr_ratio),
             "full_tp_lock": full_tp_lock,
             "skip_zone_stability": bool(skip_zone_stability),
             "error": str(e),
         }
     finally:
-        with _full_backtest_progress_lock:
-            _full_backtest_progress["current"] += 1
+        with _ml_progress_lock:
+            _ml_progress["current"] += 1
 
 
-@router.post("/backtest/full-run")
-async def full_backtest_run(req: FullBacktestRunRequest):
+# ── ML multi-timeframe overlap sweep helpers (v0.18) ──────────────────────
+
+ML_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h")
+ML_RR_VALUES = tuple(range(1, 11))   # 1:1 .. 1:10
+
+
+def _ml_timeframe_combos() -> list:
+    """All non-empty subsets of ML_TIMEFRAMES (singles + every overlap combo).
+    Ordered by combo size then timeframe order — singles first, then pairs, …
+    """
+    from itertools import combinations
+    order = {tf: i for i, tf in enumerate(ML_TIMEFRAMES)}
+    combos = []
+    for k in range(1, len(ML_TIMEFRAMES) + 1):
+        for c in combinations(ML_TIMEFRAMES, k):
+            combos.append(tuple(sorted(c, key=lambda t: order[t])))
+    return combos
+
+
+def _synthesize_merged_zone(actives, tfs):
+    """Average the overlapping reference zones into one synthetic zone.
+    Entry levels (VAH/VAL/POC) are the mean across timeframes; the VP
+    histogram is summed so the lowest-volume-node SL still works.
+    """
+    from backend.db.models import ConsolidationZone, ZoneStatus
+    n = len(actives)
+    vah = sum(z.vah_80 for z in actives) / n
+    val = sum(z.val_80 for z in actives) / n
+    poc = sum(z.poc for z in actives) / n
+    profile = {}
+    for z in actives:
+        for p, v in (z.profile or {}).items():
+            profile[p] = profile.get(p, 0) + v
+    zid = "M:" + "+".join(str(z.zone_id) for z in actives)
+    return ConsolidationZone(
+        zone_id=zid,
+        formed_at=actives[-1].formed_at,
+        left_at=actives[-1].left_at,
+        poc=poc, vah_80=vah, val_80=val,
+        high_100=max(z.high_100 for z in actives),
+        low_100=min(z.low_100 for z in actives),
+        total_volume=sum(z.total_volume for z in actives),
+        duration_minutes=0, num_candles=0,
+        status=ZoneStatus.LEFT, exit_direction=None, candles=[],
+        timeframe="+".join(tfs), profile=profile,
+    )
+
+
+def _merge_zone_timelines(timelines: list, tfs: tuple) -> list:
+    """Combine per-timeframe timelines into one merged timeline.
+    A merged reference zone exists at a candle only when ALL timeframes in the
+    combo have an active zone whose value areas overlap (intersection non-empty).
+    Entry happens at the AVERAGE overlapping VAH/VAL level.
+    """
+    if len(timelines) == 1:
+        return timelines[0]
+    n = min(len(t) for t in timelines)
+    merged = []
+    for i in range(n):
+        actives = [t[i].get("active") for t in timelines]
+        if any(a is None for a in actives):
+            merged.append({"active": None, "recent": [], "mature": False, "overlap": 0})
+            continue
+        lo = max(a.val_80 for a in actives)
+        hi = min(a.vah_80 for a in actives)
+        if lo <= hi:   # value areas of all timeframes overlap
+            mz = _synthesize_merged_zone(actives, tfs)
+            merged.append({"active": mz, "recent": [mz], "mature": True, "overlap": len(actives)})
+        else:
+            merged.append({"active": None, "recent": [], "mature": False, "overlap": 0})
+    return merged
+
+
+def _run_ml_combo(candles, config, zone_timeline, rr, tf_combo,
+                  contract_id, contract_size, breakout_confirm_bars,
+                  full_tp_lock, trail_trigger_pct, trail_enabled,
+                  one_trade_per_session_direction, tr_one_trade_per_session,
+                  fallback_sl_ticks: int = 50) -> dict:
+    """Run one (timeframe-combo × RR) machine-learning backtest on a pre-built
+    (merged) zone timeline. SL = lowest-volume node, TP = RR × SL (handled by
+    the strategy); the fixed ticks here are only the SL fallback / nominal TP.
+    """
+    from backend.backtest.engine import BacktestEngine
+    from backend.db.models import StrategyParams
+
+    method = "overlap" if len(tf_combo) > 1 else "single"
+    tf_label = "+".join(tf_combo)
+    nominal_tp = max(1, fallback_sl_ticks * rr)
+    sp = StrategyParams(
+        strategy="trend",
+        sl_ticks=fallback_sl_ticks, tp_ticks=nominal_tp,
+        tr_sl_ticks=fallback_sl_ticks, tr_tp_ticks=nominal_tp,
+        trail_trigger_pct=trail_trigger_pct, trail_enabled=bool(trail_enabled),
+        tr_trail_trigger_pct=trail_trigger_pct, tr_trail_enabled=bool(trail_enabled),
+        full_tp_lock=full_tp_lock, tr_full_tp_lock=full_tp_lock,
+        contract_id=contract_id,
+        contract_size=_normalize_contract_size(contract_id, contract_size),
+        one_trade_per_session_direction=bool(one_trade_per_session_direction),
+        tr_one_trade_per_session=bool(tr_one_trade_per_session),
+        breakout_confirm_bars=max(1, int(breakout_confirm_bars or 7)),
+        area_timeframe=tf_combo[0],
+        value_area_pct=getattr(config, "value_area_pct", 0.80),
+        rr_ratio=_normalize_rr_ratio(rr),
+    )
+    overlap_hits = sum(1 for e in zone_timeline if e.get("overlap"))
+    overlap_pct = round(overlap_hits / max(1, len(zone_timeline)), 3)
+    base = {
+        "method": method,
+        "tf_combo": list(tf_combo),
+        "tf_label": tf_label,
+        "overlap_count": len(tf_combo),
+        "overlap_pct": overlap_pct,
+        "rr_ratio": _normalize_rr_ratio(rr),
+        "contract_id": contract_id,
+        "contract_size": _normalize_contract_size(contract_id, contract_size),
+        "value_area_pct": getattr(config, "value_area_pct", 0.80),
+        "full_tp_lock": full_tp_lock,
+    }
+    try:
+        engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline)
+        result = engine.run(list(candles))
+        m = result.metrics
+        loss_to_final_ratio = round(_ml_loss_to_final_ratio({
+            "total_pnl": m.total_pnl,
+            "total_loss": getattr(m, "total_loss", 0.0),
+        }), 3)
+        base.update({
+            "total_trades": m.total_trades,
+            "wins": m.wins,
+            "losses": m.losses,
+            "win_rate": round(m.win_rate, 4),
+            "total_pnl": round(m.total_pnl, 2),
+            "total_gain": round(getattr(m, "total_gain", 0.0), 2),
+            "total_loss": round(getattr(m, "total_loss", 0.0), 2),
+            "loss_to_final_ratio": loss_to_final_ratio,
+            "lwr": loss_to_final_ratio,
+            "max_drawdown": round(m.max_drawdown, 2),
+            "calmar_ratio": round(m.calmar_ratio, 3),
+            "profit_factor": round(m.profit_factor, 3),
+            "avg_rr_ratio": round(getattr(m, "avg_rr_ratio", 0.0), 3),
+            "daily_pnl": m.daily_pnl,
+            "avg_win": round(m.avg_win, 2),
+            "avg_loss": round(m.avg_loss, 2),
+        })
+    except Exception as e:
+        base["error"] = str(e)
+    finally:
+        with _ml_progress_lock:
+            _ml_progress["current"] += 1
+    return base
+
+
+@router.post("/backtest/ml-run")
+async def ml_run(req: MLRunRequest):
     """Run all SL/TP/Trail combinations and rank results.
     Optimisations:
       1. Zone timeline pre-computed ONCE — all combos skip expensive zone detection
       2. ProcessPoolExecutor — true CPU parallelism, bypasses GIL
     """
-    global _full_backtest_results_cache
+    global _ml_results_cache
 
     if not _historical_candles:
         raise HTTPException(400, "No candles loaded — fetch historical data first")
@@ -1466,166 +1867,84 @@ async def full_backtest_run(req: FullBacktestRunRequest):
     from backend.db.models import BacktestConfig
 
     value_area_pct = _normalize_value_area_pct(req.value_area_pct)
-    bt_symbol = _extract_symbol(req.contract_id)
+    contract_id = req.contract_id or "CON.F.US.MNQ.M26"
+    contract_size = _normalize_contract_size(contract_id, req.contract_size)
+    bt_symbol = _extract_symbol(contract_id)
+    full_tp_lock = max(0, min(3, int(req.full_tp_lock or 0)))
+    trail_trigger_pct = _normalize_trail_trigger_pct(req.trail_trigger_pct)
+    trail_enabled = bool(req.trail_enabled) and trail_trigger_pct > 0
+    breakout_confirm_bars = max(1, int(req.breakout_confirm_bars or 7))
+
     config_base = BacktestConfig(
         initial_capital=req.initial_capital,
         start_date=req.start_date,
         end_date=req.end_date,
         symbol=bt_symbol,
-        commission_rt=get_commission_rt(req.contract_id),
-        fees_rt=get_fees_rt(req.contract_id),
+        commission_rt=get_commission_rt(contract_id),
+        fees_rt=get_fees_rt(contract_id),
         value_area_pct=value_area_pct,
     )
-    cand_secs = 60
 
     # Sort ONCE here — both the zone precompute and each combo engine.run()
     # must see candles in the same chronological order so that _zi indices align.
     candles = sorted(_historical_candles, key=lambda c: c.timestamp)
 
-    # ── Phase 1: pre-compute zone timeline ONCE (replaces detector in every combo) ──
     loop = asyncio.get_running_loop()
-    fixed = {str(x).lower() for x in (req.fixed_params or [])}
-    valid_strategies = ("breakthrough", "consolidation", "hybrid")
 
-    req_strategy = (req.strategy or "all").lower()
-    if "strategy" in fixed and req_strategy in valid_strategies:
-        strategy_values = [req_strategy]
-    elif req_strategy in valid_strategies and req_strategy != "all":
-        strategy_values = [req_strategy]
-    else:
-        strategy_values = list(valid_strategies)
-
-    contract_values = (
-        [req.contract_id or "CON.F.US.MNQ.M26"]
-        if "contract" in fixed
-        else ["CON.F.US.MNQ.M26", "CON.F.US.ENQ.M26"]
-    )
-
-    sl_values = [_normalize_trade_ticks(req.sl_ticks, 80)] if "sl" in fixed else [50, 60, 80, 100, 120, 150, 200]
-    tp_values = [_normalize_trade_ticks(req.tp_ticks, 200)] if "tp" in fixed else [50, 60, 80, 100, 120, 150, 200]
-    area_values = [0.80]
-    trigger_values = (
-        [_normalize_trail_trigger_pct(req.trail_trigger_pct)]
-        if "trail_trigger" in fixed
-        else [0.0, 0.30, 0.50, 0.70]
-    )
-    full_tp_lock_values = (
-        [max(0, min(3, int(req.full_tp_lock or 0)))]
-        if "full_tp_lock" in fixed
-        else [0, 1, 2, 3]
-    )
-    # Zone stability is fixed ON.
-    skip_zone_stability_values = [False]
-    req_tr_leg = _strategy_leg_params(req, "tr")
-    req_cd_leg = _strategy_leg_params(req, "cd")
-
-    def _combo_leg(req_leg: dict, sl: int, tp: int, trail: int, trigger_pct: float,
-                   trail_enabled: bool, full_tp_lock: int, fixed_keys: set[str]) -> dict:
-        return {
-            "sl_ticks": req_leg["sl_ticks"] if "sl" in fixed_keys else sl,
-            "tp_ticks": req_leg["tp_ticks"] if "tp" in fixed_keys else tp,
-            "trail_sl_ticks": req_leg["trail_sl_ticks"] if "trail" in fixed_keys else trail,
-            "trail_trigger_pct": req_leg["trail_trigger_pct"] if "trail_trigger" in fixed_keys else trigger_pct,
-            "trail_enabled": req_leg["trail_enabled"] if "trail_trigger" in fixed_keys else bool(trail_enabled),
-            "full_tp_lock": req_leg["full_tp_lock"] if "full_tp_lock" in fixed_keys else full_tp_lock,
-        }
-
-    zone_timelines = {}
-    for area in area_values:
-        for skip_stability in skip_zone_stability_values:
-            key = (area, bool(skip_stability))
-            logger.info(
-                f"[Full Backtest] Pre-computing zone timeline for {len(candles)} candles "
-                f"(area={area:.0%}, skip_stability={bool(skip_stability)})..."
-            )
-            zone_timelines[key] = await loop.run_in_executor(
-                None,
-                _precompute_zone_timeline,
-                candles,
-                area,
-                bool(skip_stability),
-            )
-    logger.info(f"[Full Backtest] Zone timelines ready ({len(zone_timelines)} variants)")
-
-    combos = []
-    for contract_id in contract_values:
-        if "size" in fixed:
-            size_values = [_normalize_contract_size(contract_id, req.contract_size)]
-        else:
-            sym = _extract_symbol(contract_id)
-            size_values = [1] if sym in ("NQ", "ENQ") else list(MNQ_SIZE_CHOICES)
-        for contract_size in size_values:
-            for strategy in strategy_values:
-                for sl in sl_values:
-                    for tp in tp_values:
-                        if tp <= 0 or sl <= 0 or tp <= sl:
-                            continue
-                        for trigger_pct in trigger_values:
-                            combo_trail_enabled = bool(req.trail_enabled) and trigger_pct > 0
-                            if not combo_trail_enabled:
-                                trail_values = [(0, None)]
-                            elif "trail" in fixed:
-                                fixed_trail = _resolve_trail_ticks(
-                                    req.trail_sl_ticks, req.trail_sl_pct, sl, tp, trigger_pct
-                                )
-                                fixed_pct = _normalize_trail_pct(req.trail_sl_pct)
-                                trail_values = [(fixed_trail, fixed_pct)]
-                            else:
-                                trail_values = _trail_grid_for(sl, tp, trigger_pct)
-                            for trail, trail_pct in trail_values:
-                                for area in area_values:
-                                    for full_tp_lock in full_tp_lock_values:
-                                        for skip_stability in skip_zone_stability_values:
-                                            combos.append((
-                                                strategy, contract_id, contract_size, area, sl, tp,
-                                                trail, trail_pct, trigger_pct, combo_trail_enabled, full_tp_lock,
-                                                bool(skip_stability),
-                                                _combo_leg(req_tr_leg, sl, tp, trail, trigger_pct, combo_trail_enabled, full_tp_lock, fixed),
-                                                _combo_leg(req_cd_leg, sl, tp, trail, trigger_pct, combo_trail_enabled, full_tp_lock, fixed),
-                                            ))
-
+    # ── Phase 1: pre-compute a zone timeline per timeframe (5 detectors) ──
     logger.info(
-        f"[Full Backtest] Running {len(combos)} combos | fixed={sorted(fixed)} | "
-        f"strategies={strategy_values} contracts={contract_values}"
+        f"[Machine Learning] Pre-computing {len(ML_TIMEFRAMES)} per-timeframe "
+        f"zone timelines over {len(candles)} candles…"
+    )
+    tf_timelines = {}
+    for tf in ML_TIMEFRAMES:
+        tf_timelines[tf] = await loop.run_in_executor(
+            None, _precompute_zone_timeline, candles, value_area_pct, False, tf,
+        )
+
+    # ── Phase 2: build merged timelines for every timeframe combination ──
+    #   Method 1 = single timeframe; Method 2 = overlap of 2..5 timeframes.
+    tf_combos = _ml_timeframe_combos()
+    merged_timelines = {}
+    for combo in tf_combos:
+        merged_timelines[combo] = _merge_zone_timelines(
+            [tf_timelines[tf] for tf in combo], combo
+        )
+    logger.info(
+        f"[Machine Learning] {len(tf_combos)} timeframe combos × {len(ML_RR_VALUES)} RR "
+        f"= {len(tf_combos) * len(ML_RR_VALUES)} runs"
     )
 
-    # Reset progress counter
-    _full_backtest_progress["current"] = 0
-    _full_backtest_progress["total"] = len(combos)
+    # ── Phase 3: sweep (timeframe-combo × RR) ──
+    combos = [(combo, rr) for combo in tf_combos for rr in ML_RR_VALUES]
+    _ml_progress["current"] = 0
+    _ml_progress["total"] = len(combos)
 
-    # ── Phase 2: thread pool (zone precompute already removed 80% of work;
-    #    ThreadPoolExecutor avoids Windows process-spawn overhead and keeps
-    #    the progress counter working via shared _full_backtest_progress dict) ──
     WORKERS = min(os.cpu_count() or 4, 32)
     with ThreadPoolExecutor(max_workers=WORKERS) as executor:
         tasks = [
             loop.run_in_executor(
-                executor, _run_single_combo,
+                executor, _run_ml_combo,
                 candles,
                 BacktestConfig(
-                    strategies=[strategy],
+                    strategies=["trend"],
                     initial_capital=config_base.initial_capital,
                     start_date=config_base.start_date,
                     end_date=config_base.end_date,
-                    symbol=_extract_symbol(contract_id),
+                    symbol=bt_symbol,
                     commission_rt=get_commission_rt(contract_id),
                     fees_rt=get_fees_rt(contract_id),
-                    value_area_pct=area,
+                    value_area_pct=value_area_pct,
                 ),
-                strategy, sl, tp, trail, trail_pct, trigger_pct, cand_secs,
-                zone_timelines[(area, bool(skip_stability))],
-                contract_id, contract_size, combo_trail_enabled, full_tp_lock,
+                merged_timelines[combo],
+                rr,
+                combo,
+                contract_id, contract_size, breakout_confirm_bars,
+                full_tp_lock, trail_trigger_pct, trail_enabled,
                 bool(req.one_trade_per_session_direction),
-                skip_stability,
-                req.breakout_confirm_bars,
-                tr_leg,
-                cd_leg,
+                bool(getattr(req, "tr_one_trade_per_session", True)),
             )
-            for (
-                strategy, contract_id, contract_size, area, sl, tp,
-                trail, trail_pct, trigger_pct, combo_trail_enabled, full_tp_lock,
-                skip_stability, tr_leg, cd_leg,
-            ) in combos
+            for (combo, rr) in combos
         ]
         results = await asyncio.gather(*tasks)
 
@@ -1653,52 +1972,54 @@ async def full_backtest_run(req: FullBacktestRunRequest):
         else:
             r["consistency_pct"] = 0
             r["max_day_pct"] = 0
+        # Phase 8: week-to-week variation metrics.
+        r.update(_weekly_stats(r.get("daily_pnl") or {}))
         ranked.append(r)
 
-    _full_backtest_results_cache = ranked
-    artifact = _save_full_backtest_artifacts(req, ranked, len(combos))
-    logger.info(f"[Full Backtest] Done. Top result: {ranked[0] if ranked else 'none'}")
-    logger.info(f"[Full Backtest] AI-readable results saved: {artifact}")
-    display_results = _sorted_full_backtest_results(
-        ranked, "calmar", "desc", FULL_BACKTEST_DISPLAY_LIMIT
+    _ml_results_cache = ranked
+    artifact = _save_ml_artifacts(req, ranked, len(combos))
+    logger.info(f"[Machine Learning] Done. Top result: {ranked[0] if ranked else 'none'}")
+    logger.info(f"[Machine Learning] AI-readable results saved: {artifact}")
+    display_results = _sorted_ml_results(
+        ranked, "calmar", "desc", ML_DISPLAY_LIMIT
     )
 
-    return {
+    return _json_safe({
         "total_combinations": len(combos),
         "results": display_results,
         "shown": len(display_results),
         "artifact": artifact,
-    }
+    })
 
 
-@router.get("/backtest/full-results")
-async def get_full_backtest_results(
+@router.get("/backtest/ml-results")
+async def get_ml_results(
     sort_col: str = "calmar",
     sort_dir: str = "desc",
-    limit: int = FULL_BACKTEST_DISPLAY_LIMIT,
+    limit: int = ML_DISPLAY_LIMIT,
 ):
-    """Return cached Full backtest results from last run."""
-    if _full_backtest_results_cache:
-        results = _sorted_full_backtest_results(
-            _full_backtest_results_cache, sort_col, sort_dir, limit
+    """Return cached Machine learning results from last run."""
+    if _ml_results_cache:
+        results = _sorted_ml_results(
+            _ml_results_cache, sort_col, sort_dir, limit
         )
-        return {
+        return _json_safe({
             "results": results,
-            "total_combinations": len(_full_backtest_results_cache),
+            "total_combinations": len(_ml_results_cache),
             "shown": len(results),
             "sort_col": sort_col,
             "sort_dir": sort_dir,
             "source": "cache",
-        }
-    payload = _load_full_backtest_artifact(sort_col, sort_dir, limit)
+        })
+    payload = _load_ml_artifact(sort_col, sort_dir, limit)
     payload["source"] = "artifact"
-    return payload
+    return _json_safe(payload)
 
 
-@router.get("/backtest/full-progress")
-async def get_full_backtest_progress():
-    """Return current Full backtest progress (current / total combos done)."""
-    return dict(_full_backtest_progress)
+@router.get("/backtest/ml-progress")
+async def get_ml_progress():
+    """Return current Machine learning progress (current / total combos done)."""
+    return dict(_ml_progress)
 
 
 # ============================================================
@@ -1714,8 +2035,10 @@ class LiveStartRequest(BaseModel):
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
     value_area_pct: float = 0.80
+    area_timeframe: str = "5m"
+    rr_ratio: int = 2                     # reward:risk multiple (1..10)
     # Strategy params
-    strategy: str = "breakthrough"
+    strategy: str = "trend"
     tp_ticks: int = 200
     sl_ticks: int = 50
     trail_sl_ticks: int = 10
@@ -1729,16 +2052,10 @@ class LiveStartRequest(BaseModel):
     tr_trail_trigger_pct: Optional[float] = None
     tr_trail_enabled: Optional[bool] = None
     tr_full_tp_lock: Optional[int] = None
-    cd_tp_ticks: Optional[int] = None
-    cd_sl_ticks: Optional[int] = None
-    cd_trail_sl_ticks: Optional[int] = None
-    cd_trail_sl_pct: Optional[float] = None
-    cd_trail_trigger_pct: Optional[float] = None
-    cd_trail_enabled: Optional[bool] = None
-    cd_full_tp_lock: Optional[int] = None
     candle_seconds: int = 60
     full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     one_trade_per_session_direction: bool = True
+    tr_one_trade_per_session: bool = True
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
     breakout_confirm_bars: int = 7
@@ -2295,7 +2612,7 @@ _PRESETS_FILE = os.path.join(
 
 _DEFAULT_PRESET_NAME = "TR MNQx3 50/200 TRIG30 TRAILTP5% TPLOCKOFF"
 _DEFAULT_PRESET_PARAMS = {
-    "strategy": "breakthrough",
+    "strategy": "trend",
     "tp_ticks": 200,
     "sl_ticks": 50,
     "trail_sl_ticks": 10,
@@ -2309,19 +2626,14 @@ _DEFAULT_PRESET_PARAMS = {
     "tr_trail_trigger_pct": 0.30,
     "tr_trail_enabled": True,
     "tr_full_tp_lock": 0,
-    "cd_tp_ticks": 200,
-    "cd_sl_ticks": 50,
-    "cd_trail_sl_ticks": 10,
-    "cd_trail_sl_pct": 0.05,
-    "cd_trail_trigger_pct": 0.30,
-    "cd_trail_enabled": True,
-    "cd_full_tp_lock": 0,
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.M26",
     "contract_size": 3,
     "full_tp_lock": 0,
     "one_trade_per_session_direction": True,
+    "tr_one_trade_per_session": True,
     "value_area_pct": 0.80,
+    "area_timeframe": "5m",
     "skip_zone_stability": False,
 }
 
@@ -2344,20 +2656,9 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        if strategy in ("", "trend", "trend_follow"):
-            params["strategy"] = "breakthrough"
+        if strategy != "trend":
+            params["strategy"] = "trend"
             changed = True
-        elif strategy == "reversion":
-            params["strategy"] = "consolidation"
-            changed = True
-        elif strategy == "trend_reversion":
-            params["strategy"] = "hybrid"
-            changed = True
-        strategy = str(params.get("strategy") or "").lower()
-        if strategy not in {"breakthrough", "consolidation", "hybrid"}:
-            del presets[name]
-            changed = True
-            continue
         if params.get("value_area_pct") != 0.80:
             params["value_area_pct"] = 0.80
             changed = True
