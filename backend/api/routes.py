@@ -18,7 +18,7 @@ import logging
 import math
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -287,43 +287,6 @@ _live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
 _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
 ML_DISPLAY_LIMIT = 200
 
-# Quarterly futures month codes for NQ/MNQ/ES/MES: Mar, Jun, Sep, Dec.
-_QUARTERLY_CODES = ["H", "M", "U", "Z"]
-
-
-def _prev_quarterly_contract(contract_id: str) -> Optional[str]:
-    """Given a full contract id, return the previous quarterly expiry contract.
-    CON.F.US.MNQ.M26 -> CON.F.US.MNQ.H26 ; CON.F.US.MNQ.H26 -> CON.F.US.MNQ.Z25.
-    Returns None if the id can't be parsed.
-    """
-    parts = contract_id.split(".")
-    if len(parts) < 5:
-        return None
-    code = parts[-1]                      # e.g. "M26"
-    if len(code) < 3:
-        return None
-    month, year = code[0].upper(), code[1:]
-    if month not in _QUARTERLY_CODES or not year.isdigit():
-        return None
-    idx = _QUARTERLY_CODES.index(month)
-    if idx == 0:                          # H -> previous year's Z
-        new_month, new_year = "Z", str(int(year) - 1).zfill(len(year))
-    else:
-        new_month, new_year = _QUARTERLY_CODES[idx - 1], year
-    parts[-1] = new_month + new_year
-    return ".".join(parts)
-
-
-def _back_adjust(prev_bars: List[Candle], offset: float) -> None:
-    """Shift an older contract's OHLC by `offset` so it splices continuously onto
-    the newer contract (removes the roll price gap). Mutates in place."""
-    for b in prev_bars:
-        b.open += offset
-        b.high += offset
-        b.low += offset
-        b.close += offset
-
-
 def _upsert_historical_candles(candles: List[Candle]) -> None:
     """Merge candles by timestamp so forming-bar snapshots get replaced."""
     global _historical_candles
@@ -401,7 +364,6 @@ class FetchHistoricalRequest(BaseModel):
     end_time: str = ""
     use_demo: Optional[bool] = None  # None = 從 .env 讀取
     append: bool = False           # True = merge into existing historical candles
-    merge_contracts: int = 0       # >0 = also chain N previous quarterly contracts (back-adjusted)
 
 
 class TradeResponse(BaseModel):
@@ -490,6 +452,8 @@ class MetricsResponse(BaseModel):
     current_zone_win_rate: float = 0.0
     current_zone_avg_pnl: float = 0.0
     current_zone_total_pnl: float = 0.0
+    # Week-to-week variation (std/cv/range/consistency) — see _weekly_stats()
+    weekly_stats: Dict[str, Any] = {}
     # Per-strategy breakdown
     trend_follow: Optional[SubMetricsResponse] = None
 
@@ -558,10 +522,20 @@ async def save_config(body: dict):
 
 
 @router.get("/data/candles")
-async def get_stored_candles():
-    """返回已載入的歷史 K 線數據 (用於前端圖表顯示)"""
+async def get_stored_candles(limit: int = 60000):
+    """返回已載入的歷史 K 線數據 (用於前端圖表顯示)。
+
+    limit 只限制「回傳給前端畫圖」的最近 K 線數量，避免全範圍 (數十萬根)
+    一次送出造成瀏覽器主執行緒卡死。回測 / 機器學習仍使用完整的
+    _historical_candles，不受此上限影響。limit<=0 表示不限制。
+    """
     if not _historical_candles:
         return {"candles": [], "count": 0}
+
+    rows = _historical_candles
+    total = len(rows)
+    if limit and limit > 0 and total > limit:
+        rows = rows[-limit:]
 
     return {
         "candles": [
@@ -573,9 +547,10 @@ async def get_stored_candles():
                 "close": c.close,
                 "volume": c.volume,
             }
-            for c in _historical_candles
+            for c in rows
         ],
-        "count": len(_historical_candles),
+        "count": total,
+        "shown": len(rows),
     }
 
 
@@ -860,49 +835,6 @@ async def fetch_historical(req: FetchHistoricalRequest):
             end_time=req.end_time,
         )
 
-        # Chain N previous quarterly contracts to extend history backward.
-        # Each older contract is back-adjusted (shifted by the roll gap) so the
-        # series is continuous — required so volume-profile zones stay aligned.
-        # Only on a full (non-append) fetch; appends are incremental top-ups.
-        merge_n = max(0, int(getattr(req, "merge_contracts", 0) or 0))
-        if merge_n > 0 and candles and not req.append:
-            merged = sorted(candles, key=lambda c: c.timestamp)
-            cur_id = contract_id
-            for _ in range(merge_n):
-                prev_id = _prev_quarterly_contract(cur_id)
-                if not prev_id:
-                    break
-                splice_ts = merged[0].timestamp
-                splice_end = splice_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-                try:
-                    prev_bars = await client.get_historical_bars_paginated(
-                        contract_id=prev_id,
-                        unit=BarUnit(req.unit),
-                        unit_number=req.unit_number,
-                        start_time=req.start_time,
-                        end_time=splice_end,
-                    )
-                except Exception as e:
-                    logger.warning(f"[merge] {prev_id} fetch failed: {e}")
-                    break
-                prev_bars = sorted(
-                    [b for b in prev_bars if b.timestamp < splice_ts],
-                    key=lambda c: c.timestamp,
-                )
-                if not prev_bars:
-                    logger.info(f"[merge] {prev_id}: no earlier data — stopping")
-                    cur_id = prev_id
-                    continue
-                offset = merged[0].open - prev_bars[-1].close
-                _back_adjust(prev_bars, offset)
-                logger.info(
-                    f"[merge] chained {prev_id}: +{len(prev_bars)} bars "
-                    f"(back-adjusted {offset:+.2f}), now from {prev_bars[0].timestamp.isoformat()}"
-                )
-                merged = prev_bars + merged
-                cur_id = prev_id
-            candles = merged
-
         if req.append:
             _upsert_historical_candles(candles)
         else:
@@ -1141,6 +1073,7 @@ async def run_backtest(req: BacktestRequest):
         current_zone_win_rate=getattr(m, "current_zone_win_rate", 0.0),
         current_zone_avg_pnl=getattr(m, "current_zone_avg_pnl", 0.0),
         current_zone_total_pnl=getattr(m, "current_zone_total_pnl", 0.0),
+        weekly_stats=_weekly_stats(m.daily_pnl or {}),
         trend_follow=_sub_resp(m.trend_follow_metrics),
     )
 
@@ -1149,12 +1082,94 @@ async def run_backtest(req: BacktestRequest):
         for ts, val in result.equity_curve
     ]
 
+    # Persist the per-trade journal to data/backtest/ so each run is auditable.
+    try:
+        _write_backtest_csv(req, config, strategy_params, method, tf_combo,
+                            trades_resp, metrics_resp)
+    except Exception as exc:  # CSV export must never break the API response
+        logger.warning("Backtest CSV export failed: %s", exc)
+
     return BacktestResponse(
         metrics=metrics_resp,
         trades=trades_resp,
         zones=zones_resp,
         equity_curve=equity,
     )
+
+
+# Columns written to data/backtest/backtest_<timestamp>.csv (one row per trade).
+_BACKTEST_CSV_COLUMNS = [
+    "trade_id", "strategy", "symbol", "direction", "size",
+    "entry_time", "entry_price", "exit_time", "exit_price",
+    "sl_price", "tp_price", "original_sl_price", "original_tp_price",
+    "exit_reason", "pnl", "commission", "fees",
+    "zone_id", "zone_source", "vol_ratio", "is_big_trend",
+]
+
+
+def _write_backtest_csv(req, config, strategy_params, method, tf_combo,
+                        trades_resp, metrics_resp) -> Path:
+    """Write the trade journal + a run-summary header to data/backtest/.
+
+    Returns the path of the per-trade CSV. A companion *_summary.csv carries
+    the config + headline metrics so each run is self-describing.
+    """
+    out_dir = Path(__file__).resolve().parents[2] / "data" / "backtest"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tf_label = "+".join(tf_combo) if (method == "overlap" and tf_combo) else (
+        getattr(req, "area_timeframe", None) or "1m")
+    rr = getattr(req, "rr_ratio", None)
+    base = f"backtest_{method}_{tf_label.replace('+', '-')}_rr{rr}_{stamp}"
+
+    trades_path = out_dir / f"{base}.csv"
+    with open(trades_path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_BACKTEST_CSV_COLUMNS,
+                                extrasaction="ignore")
+        writer.writeheader()
+        for t in trades_resp:
+            row = t.model_dump() if hasattr(t, "model_dump") else t.dict()
+            writer.writerow({k: row.get(k) for k in _BACKTEST_CSV_COLUMNS})
+
+    # Run summary (config + headline metrics + weekly variation).
+    wk = metrics_resp.weekly_stats or {}
+    summary = {
+        "generated": stamp,
+        "method": method,
+        "timeframes": tf_label,
+        "rr_ratio": rr,
+        "contract_id": getattr(req, "contract_id", None),
+        "contract_size": _normalize_contract_size(
+            getattr(req, "contract_id", None), getattr(req, "contract_size", None)),
+        "value_area_pct": config.value_area_pct,
+        "total_trades": metrics_resp.total_trades,
+        "wins": metrics_resp.wins,
+        "losses": metrics_resp.losses,
+        "win_rate": metrics_resp.win_rate,
+        "total_pnl": metrics_resp.total_pnl,
+        "total_gain": metrics_resp.total_gain,
+        "total_loss": metrics_resp.total_loss,
+        "max_drawdown": metrics_resp.max_drawdown,
+        "calmar_ratio": metrics_resp.calmar_ratio,
+        "profit_factor": metrics_resp.profit_factor,
+        "avg_rr_ratio": metrics_resp.avg_rr_ratio,
+        "weekly_count": wk.get("weekly_count", 0),
+        "weekly_mean": wk.get("weekly_mean", 0.0),
+        "weekly_std": wk.get("weekly_std", 0.0),
+        "weekly_cv": wk.get("weekly_cv", 0.0),
+        "weekly_min": wk.get("weekly_min", 0.0),
+        "weekly_max": wk.get("weekly_max", 0.0),
+        "weekly_consistency": wk.get("weekly_consistency", 0.0),
+    }
+    summary_path = out_dir / f"{base}_summary.csv"
+    with open(summary_path, "w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.writer(fh)
+        writer.writerow(list(summary.keys()))
+        writer.writerow(list(summary.values()))
+
+    logger.info("Backtest CSV written: %s (%d trades)", trades_path, len(trades_resp))
+    return trades_path
 
 
 @router.get("/backtest/results")
@@ -1175,7 +1190,7 @@ async def list_backtests():
 # ── Machine Learning: Run all SL/TP/Trail combinations ────────────────
 
 _ml_results_cache: List[dict] = []
-_ml_progress: dict = {"current": 0, "total": 0}
+_ml_progress: dict = {"current": 0, "total": 0, "stage": ""}
 
 import threading as _threading
 _ml_progress_lock = _threading.Lock()
@@ -1209,15 +1224,23 @@ def _ml_total_loss(r: dict) -> float:
         return 0.0
 
 
-def _ml_loss_to_final_ratio(r: dict) -> float:
+def _ml_profit_factor(r: dict) -> float:
+    """Profit Factor = gross gain / gross loss. Falls back to gain/|loss| when
+    the stored profit_factor is missing (older rows)."""
+    pf = r.get("profit_factor")
+    if pf is not None:
+        try:
+            return float(pf)
+        except (TypeError, ValueError):
+            pass
     try:
-        pnl = float(r.get("total_pnl") or 0)
+        gain = abs(float(r.get("total_gain") or 0))
     except (TypeError, ValueError):
-        pnl = 0.0
+        gain = 0.0
     loss = abs(_ml_total_loss(r))
     if loss > 0:
-        return pnl / loss
-    return 999.0 if pnl > 0 else 0.0
+        return gain / loss
+    return 999.0 if gain > 0 else 0.0
 
 
 def _ml_valid_trade_range(r: dict) -> bool:
@@ -1226,9 +1249,7 @@ def _ml_valid_trade_range(r: dict) -> bool:
 
 
 def _enrich_ml_result(r: dict) -> dict:
-    ratio = round(_ml_loss_to_final_ratio(r), 3)
-    r["loss_to_final_ratio"] = ratio
-    r["lwr"] = ratio
+    # Profit Factor + all metrics are already populated by the backtest run.
     return r
 
 
@@ -1291,7 +1312,7 @@ _ML_CSV_COLUMNS = [
     "rank", "method", "tf_label", "tf_combo", "overlap_count", "overlap_pct",
     "rr_ratio", "area_timeframe", "value_area_pct", "contract_id",
     "contract_size", "total_trades", "wins", "losses", "win_rate",
-    "total_pnl", "total_gain", "total_loss", "loss_to_final_ratio",
+    "total_pnl", "total_gain", "total_loss",
     "max_drawdown", "calmar_ratio", "profit_factor", "avg_rr_ratio",
     "avg_win", "avg_loss", "consistency_pct", "max_day_pct",
     "weekly_count", "weekly_mean", "weekly_std", "weekly_cv",
@@ -1351,8 +1372,8 @@ def _save_ml_artifacts(req: BaseModel, ranked: List[dict], total_combinations: i
         f"- Saved JSON: `{json_path}`",
         f"- Saved CSV: `{csv_path}`",
         "",
-        "| Rank | Method | Timeframes | Overlap | RR | Trades | Win% | Final PnL | Max DD | PF | LFR | Calmar | Wk Std | Wk CV |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | Method | Timeframes | Overlap | RR | Trades | Win% | Final PnL | Max DD | PF | Calmar | Wk Std | Wk CV |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for r in [_enrich_ml_result(r) for r in ranked if not r.get("error")][:25]:
         win_pct = round(float(r.get("win_rate", 0) or 0) * 100, 1)
@@ -1361,7 +1382,7 @@ def _save_ml_artifacts(req: BaseModel, ranked: List[dict], total_combinations: i
             tf_combo = "+".join(str(x) for x in tf_combo)
         lines.append(
             "| {rank} | {method} | {tf} | {overlap} | 1:{rr} | {trades} | {win}% | ${pnl} | ${dd} | "
-            "{pf} | {loss_to_final} | {calmar} | {wstd} | {wcv} |".format(
+            "{pf} | {calmar} | {wstd} | {wcv} |".format(
                 rank=r.get("rank", ""),
                 method=r.get("method", ""),
                 tf=r.get("tf_label", tf_combo or ""),
@@ -1372,7 +1393,6 @@ def _save_ml_artifacts(req: BaseModel, ranked: List[dict], total_combinations: i
                 pnl=r.get("total_pnl", ""),
                 dd=r.get("max_drawdown", ""),
                 pf=r.get("profit_factor", ""),
-                loss_to_final=r.get("loss_to_final_ratio", r.get("lwr", "")),
                 calmar=r.get("calmar_ratio", ""),
                 wstd=r.get("weekly_std", ""),
                 wcv=r.get("weekly_cv", ""),
@@ -1424,9 +1444,8 @@ def _ml_sort_value(r: dict, col: str):
         return r.get("total_pnl") or 0
     if col == "max_dd":
         return r.get("max_drawdown") or 0
-    if col in ("lwr", "loss_to_final_ratio", "loss_final_ratio"):
-        value = r.get("loss_to_final_ratio", r.get("lwr"))
-        return value if value is not None else _ml_loss_to_final_ratio(r)
+    if col in ("pf", "profit_factor", "lwr", "loss_to_final_ratio", "loss_final_ratio"):
+        return _ml_profit_factor(r)
     if col == "best_day":
         vals = list((r.get("daily_pnl") or {}).values())
         return max(vals) if vals else 0
@@ -1522,11 +1541,22 @@ def _precompute_zone_timeline(
     )
     timeline = []
 
+    # Completed/reference zones are immutable after finalisation, and each one
+    # appears in ~50 consecutive timeline entries (as 'active' then in 'recent').
+    # Memoise the slim copy by unique zone_id so each zone is copied ONCE instead
+    # of ~50×. On full-range data this collapses millions of zone copies and is
+    # the single biggest ML RAM saving.
+    _slim_cache: dict = {}
+
     def _slim(z):
         if z is None:
             return None
+        cached = _slim_cache.get(z.zone_id)
+        if cached is not None:
+            return cached
         c = copy.copy(z)
         c.candles = []   # strip raw candle list — strategy only reads price levels + profile
+        _slim_cache[z.zone_id] = c
         return c
 
     for candle in candles:
@@ -1627,10 +1657,6 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
     try:
         result = engine.run(list(candles))
         m = result.metrics
-        loss_to_final_ratio = round(_ml_loss_to_final_ratio({
-            "total_pnl": m.total_pnl,
-            "total_loss": getattr(m, "total_loss", 0.0),
-        }), 3)
         return {
             "strategy": strategy,
             "sl": sl,
@@ -1658,8 +1684,6 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             "total_pnl": round(m.total_pnl, 2),
             "total_gain": round(getattr(m, "total_gain", 0.0), 2),
             "total_loss": round(getattr(m, "total_loss", 0.0), 2),
-            "loss_to_final_ratio": loss_to_final_ratio,
-            "lwr": loss_to_final_ratio,
             "max_drawdown": round(m.max_drawdown, 2),
             "calmar_ratio": round(m.calmar_ratio, 3),
             "profit_factor": round(m.profit_factor, 3),
@@ -1753,18 +1777,29 @@ def _merge_zone_timelines(timelines: list, tfs: tuple) -> list:
         return timelines[0]
     n = min(len(t) for t in timelines)
     merged = []
+    # Consecutive candles usually share the SAME active-zone combination, which
+    # synthesises an identical merged zone. Memoise by the tuple of active
+    # zone_ids so we build each synthetic zone (with its summed profile) once
+    # instead of per-candle — a large RAM saving for overlap combos.
+    _syn_cache: dict = {}
+    _NONE_ENTRY = {"active": None, "recent": [], "mature": False, "overlap": 0}
     for i in range(n):
         actives = [t[i].get("active") for t in timelines]
         if any(a is None for a in actives):
-            merged.append({"active": None, "recent": [], "mature": False, "overlap": 0})
+            merged.append(_NONE_ENTRY)
             continue
         lo = max(a.val_80 for a in actives)
         hi = min(a.vah_80 for a in actives)
         if lo <= hi:   # value areas of all timeframes overlap
-            mz = _synthesize_merged_zone(actives, tfs)
-            merged.append({"active": mz, "recent": [mz], "mature": True, "overlap": len(actives)})
+            key = tuple(a.zone_id for a in actives)
+            entry = _syn_cache.get(key)
+            if entry is None:
+                mz = _synthesize_merged_zone(actives, tfs)
+                entry = {"active": mz, "recent": [mz], "mature": True, "overlap": len(actives)}
+                _syn_cache[key] = entry
+            merged.append(entry)
         else:
-            merged.append({"active": None, "recent": [], "mature": False, "overlap": 0})
+            merged.append(_NONE_ENTRY)
     return merged
 
 
@@ -1814,13 +1849,10 @@ def _run_ml_combo(candles, config, zone_timeline, rr, tf_combo,
         "full_tp_lock": full_tp_lock,
     }
     try:
-        engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline)
-        result = engine.run(list(candles))
+        engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline,
+                                record_equity=False)
+        result = engine.run(candles)
         m = result.metrics
-        loss_to_final_ratio = round(_ml_loss_to_final_ratio({
-            "total_pnl": m.total_pnl,
-            "total_loss": getattr(m, "total_loss", 0.0),
-        }), 3)
         base.update({
             "total_trades": m.total_trades,
             "wins": m.wins,
@@ -1829,8 +1861,6 @@ def _run_ml_combo(candles, config, zone_timeline, rr, tf_combo,
             "total_pnl": round(m.total_pnl, 2),
             "total_gain": round(getattr(m, "total_gain", 0.0), 2),
             "total_loss": round(getattr(m, "total_loss", 0.0), 2),
-            "loss_to_final_ratio": loss_to_final_ratio,
-            "lwr": loss_to_final_ratio,
             "max_drawdown": round(m.max_drawdown, 2),
             "calmar_ratio": round(m.calmar_ratio, 3),
             "profit_factor": round(m.profit_factor, 3),
@@ -1844,6 +1874,12 @@ def _run_ml_combo(candles, config, zone_timeline, rr, tf_combo,
     finally:
         with _ml_progress_lock:
             _ml_progress["current"] += 1
+            _cur = _ml_progress["current"]
+            _tot = _ml_progress["total"]
+        # Console progress: log every 10 combos (and the final one) so the run is
+        # visible in the terminal alongside the frontend progress bar.
+        if _tot and (_cur % 10 == 0 or _cur == _tot):
+            logger.info(f"[Machine Learning] progress {_cur}/{_tot} ({_cur * 100 // _tot}%)")
     return base
 
 
@@ -1891,36 +1927,71 @@ async def ml_run(req: MLRunRequest):
 
     loop = asyncio.get_running_loop()
 
+    import time as _time
+
     # ── Phase 1: pre-compute a zone timeline per timeframe (5 detectors) ──
+    # This phase + Phase 2 run BEFORE the sweep and used to be silent, so on
+    # large datasets the UI looked frozen at 0/0. Report stage + per-timeframe
+    # timing so the console and progress bar show it is preparing, not stuck.
     logger.info(
         f"[Machine Learning] Pre-computing {len(ML_TIMEFRAMES)} per-timeframe "
         f"zone timelines over {len(candles)} candles…"
     )
+    _ml_progress["current"] = 0
+    _ml_progress["total"] = 0
     tf_timelines = {}
-    for tf in ML_TIMEFRAMES:
+    for _idx, tf in enumerate(ML_TIMEFRAMES, start=1):
+        _ml_progress["stage"] = f"preparing zone timelines ({_idx}/{len(ML_TIMEFRAMES)}: {tf})"
+        _t0 = _time.perf_counter()
         tf_timelines[tf] = await loop.run_in_executor(
             None, _precompute_zone_timeline, candles, value_area_pct, False, tf,
+        )
+        logger.info(
+            f"[Machine Learning] zone timeline {tf} done ({_idx}/{len(ML_TIMEFRAMES)}) "
+            f"in {_time.perf_counter() - _t0:.1f}s"
         )
 
     # ── Phase 2: build merged timelines for every timeframe combination ──
     #   Method 1 = single timeframe; Method 2 = overlap of 2..5 timeframes.
     tf_combos = _ml_timeframe_combos()
+    _ml_progress["stage"] = f"building {len(tf_combos)} timeframe combos…"
+    logger.info(f"[Machine Learning] building {len(tf_combos)} merged timeframe timelines…")
+    _t0 = _time.perf_counter()
     merged_timelines = {}
     for combo in tf_combos:
-        merged_timelines[combo] = _merge_zone_timelines(
-            [tf_timelines[tf] for tf in combo], combo
+        merged_timelines[combo] = await loop.run_in_executor(
+            None, _merge_zone_timelines,
+            [tf_timelines[tf] for tf in combo], combo,
         )
     logger.info(
-        f"[Machine Learning] {len(tf_combos)} timeframe combos × {len(ML_RR_VALUES)} RR "
+        f"[Machine Learning] merged timelines built in {_time.perf_counter() - _t0:.1f}s — "
+        f"{len(tf_combos)} timeframe combos × {len(ML_RR_VALUES)} RR "
         f"= {len(tf_combos) * len(ML_RR_VALUES)} runs"
     )
 
     # ── Phase 3: sweep (timeframe-combo × RR) ──
     combos = [(combo, rr) for combo in tf_combos for rr in ML_RR_VALUES]
+    _ml_progress["stage"] = "running backtests"
     _ml_progress["current"] = 0
     _ml_progress["total"] = len(combos)
 
-    WORKERS = min(os.cpu_count() or 4, 32)
+    # Scale worker count DOWN as the dataset grows. Each parallel combo holds its
+    # own trade list / breakout trackers / daily-pnl over the full candle range;
+    # on full-range data (hundreds of thousands of 1m bars) running 32 at once is
+    # what drove RAM to ~97% and froze the machine. Fewer workers = lower peak RAM.
+    _cpu = os.cpu_count() or 4
+    _n = len(candles)
+    if _n > 400_000:
+        WORKERS = min(_cpu, 4)
+    elif _n > 200_000:
+        WORKERS = min(_cpu, 8)
+    elif _n > 100_000:
+        WORKERS = min(_cpu, 16)
+    else:
+        WORKERS = min(_cpu, 32)
+    logger.info(
+        f"[Machine Learning] {len(combos)} runs over {_n} candles using {WORKERS} workers"
+    )
     with ThreadPoolExecutor(max_workers=WORKERS) as executor:
         tasks = [
             loop.run_in_executor(
@@ -1949,6 +2020,7 @@ async def ml_run(req: MLRunRequest):
         results = await asyncio.gather(*tasks)
 
     # Rank by Calmar directly. Tie-break with total PnL, then lower drawdown.
+    _ml_progress["stage"] = "ranking results"
     ranked_source = sorted(
         results,
         key=lambda r: (
@@ -1983,6 +2055,7 @@ async def ml_run(req: MLRunRequest):
     display_results = _sorted_ml_results(
         ranked, "calmar", "desc", ML_DISPLAY_LIMIT
     )
+    _ml_progress["stage"] = ""
 
     return _json_safe({
         "total_combinations": len(combos),

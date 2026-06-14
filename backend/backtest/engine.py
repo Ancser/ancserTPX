@@ -60,7 +60,13 @@ class BacktestEngine:
 
     def __init__(self, config: Optional[BacktestConfig] = None,
                  strategy_params: Optional[StrategyParams] = None,
-                 zone_timeline: Optional[List[dict]] = None):
+                 zone_timeline: Optional[List[dict]] = None,
+                 record_equity: bool = True):
+        # record_equity=False skips the per-candle equity curve. Machine-learning
+        # grid runs (310 combos × up to 32 parallel workers) don't use the equity
+        # curve — metrics come from trades — and on full-range data (hundreds of
+        # thousands of 1m bars) the per-candle list is the dominant RAM hog.
+        self._record_equity = record_equity
         self.config = config or BacktestConfig()
         self.strategy_params = strategy_params or StrategyParams()
 
@@ -209,6 +215,11 @@ class BacktestEngine:
         _live_edge_guard = self._pending_max_age + 2
         total = len(candles)
 
+        # Date progress only for a normal single backtest. The ML grid sweep runs
+        # with a precomputed zone timeline (hundreds of runs) — stay silent there.
+        _log_progress = self._zone_timeline is None and total > 0
+        _prev_date = None
+
         for i, candle in enumerate(candles):
             remaining = total - i - 1
             if not self._near_data_end and remaining < _live_edge_guard:
@@ -218,6 +229,14 @@ class BacktestEngine:
                         f"[LiveEdge] 距末尾 {remaining} 根K線，取消掛單，封鎖新信號"
                     )
                     self._cancel_pending_order()
+            if _log_progress:
+                _d = candle.timestamp.strftime("%Y-%m-%d")
+                if _d != _prev_date:
+                    _prev_date = _d
+                    logger.info(
+                        f"[Backtest] {_d} | 進度 {i + 1}/{total} ({(i + 1) * 100 // total}%) "
+                        f"| 累計交易 {len(self._trades)} 筆"
+                    )
             self._process_candle(candle)
 
         if self._open_position:
@@ -273,7 +292,8 @@ class BacktestEngine:
         self.trend_follow.reset()
 
     def _process_candle(self, candle: Candle):
-        self._equity_curve.append((candle.timestamp, self._capital))
+        if self._record_equity:
+            self._equity_curve.append((candle.timestamp, self._capital))
 
         # Advance any active 60m post-breakout trackers BEFORE we touch
         # position state — they keep tracking even after the trade exits.

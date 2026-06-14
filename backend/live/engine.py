@@ -1748,7 +1748,14 @@ class LiveTradingEngine:
         else:
             ticks_moved = (self._fill_price - mkt) / self.tick_size
 
-        tp_ticks = abs(int(self._strategy_param(sig.strategy, 'tp_ticks', 0) or 0))
+        # v0.18: TP is RR-based (TP = entry ± sl_dist × RR), so the static tp_ticks
+        # param is no longer the real target. Derive the trigger from the actual
+        # signal's planned TP distance — IDENTICAL to the backtest engine's
+        # _check_trailing_sl, so live trails at the same point that was backtested.
+        tp_ticks = abs(sig.tp_price - sig.entry_price) / self.tick_size
+        if tp_ticks <= 0:
+            # Fallback to the legacy static param if the signal has no usable TP.
+            tp_ticks = abs(int(self._strategy_param(sig.strategy, 'tp_ticks', 0) or 0))
         trigger_pct = self._strategy_trigger_pct(sig.strategy)
         if trigger_pct <= 0:
             return

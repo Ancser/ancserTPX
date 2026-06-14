@@ -963,7 +963,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        1.0.0
+        1.0.1
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1000,26 +1000,14 @@
                     <label>CONTRACT ID</label>
                     <input type="text" id="contract-id" placeholder="auto-detect" value="CON.F.US.MNQ.M26">
                 </div>
-                <div class="form-group">
-                    <label>MERGE HISTORY <span style="color:var(--text2)">(chain older contracts, back-adjusted)</span></label>
-                    <select id="merge-contracts" onchange="_btDataRange=null">
-                        <option value="0" selected>OFF (this contract only)</option>
-                        <option value="1">+1 prev quarter</option>
-                        <option value="2">+2 prev quarters</option>
-                        <option value="3">+3 prev quarters</option>
-                        <option value="4">+4 prev quarters (~1yr)</option>
-                    </select>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>START</label>
-                        <input type="date" id="start-date" onchange="_btDataRange=null">
-                    </div>
-                    <div class="form-group">
-                        <label>END</label>
-                        <input type="date" id="end-date" onchange="_btDataRange=null">
-                    </div>
-                </div>
+                <!-- MERGE HISTORY removed: TopstepX API only serves ~60 days of
+                     1m bars, so chaining older quarterly contracts always returns
+                     0 rows. The merge_contracts plumbing stays dormant (defaults to
+                     0 via the null-safe lookups in connectAPI/_ensureBacktestData). -->
+                <!-- Date range removed: data always loads the contract's full available
+                     history (paginated). Hidden inputs keep legacy JS references valid. -->
+                <input type="hidden" id="start-date" value="">
+                <input type="hidden" id="end-date" value="">
                 <div class="form-row">
                     <div class="form-group">
                         <label>INTERVAL</label>
@@ -1206,7 +1194,13 @@
 
         <!-- Metrics -->
         <div class="panel" id="metrics-panel" style="display:none;">
-            <div class="panel-title">PERFORMANCE (1 MONTH)</div>
+            <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                <span>PERFORMANCE</span>
+                <select id="perf-window" onchange="onPerfWindowChange()" title="Lookback window — recomputes all metrics over the selected period"
+                        style="background:#0d0f15;color:#9aa7bd;border:1px solid rgba(100,220,255,0.18);font-family:inherit;font-size:10px;padding:2px 6px;border-radius:3px;cursor:pointer;">
+                    <option value="0">ALL</option>
+                </select>
+            </div>
             <div class="metrics-grid" id="metrics-grid"></div>
         </div>
 
@@ -1416,7 +1410,7 @@
                                     <th class="full-sort-th" data-col="worst_day"style="width:60px;" onclick="fullSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
                                     <th class="full-sort-th" data-col="wk_std"   style="width:56px;" onclick="fullSortBy('wk_std')" title="Weekly PnL std-dev">WK STD <span class="sa">↕</span></th>
                                     <th class="full-sort-th" data-col="wk_cv"    style="width:52px;" onclick="fullSortBy('wk_cv')" title="Weekly PnL coefficient of variation">WK CV <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="lwr"      style="width:48px;" onclick="fullSortBy('lwr')" title="Loss to Final Ratio">LFR <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="pf"       style="width:48px;" onclick="fullSortBy('pf')" title="Profit Factor (gross gain / gross loss)">PF <span class="sa">↕</span></th>
                                     <th class="full-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="fullSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
                                     <th style="width:32px;"></th>
                                 </tr>
@@ -1486,6 +1480,13 @@
 
 // Auto-detect port from current page URL (supports dynamic launcher ports)
 const API = window.location.origin + '/api';
+// Far-past anchor for full-range fetches. The paginated backend walks back from
+// today to the contract's earliest bar; this just has to predate any NQ/MNQ data.
+const FULL_RANGE_START = '2008-01-01';
+// Cap how many recent 1m bars get pulled into the chart. Full-range data can be
+// hundreds of thousands of bars; rendering them all blocks the main thread and
+// freezes the tab. Backtest / ML use the complete backend dataset regardless.
+const CHART_MAX_CANDLES = 60000;
 let chart = null;
 let candleSeries = null;
 let volumeSeries = null;   // kept for live-update guard; no longer rendered
@@ -2224,15 +2225,11 @@ document.addEventListener('DOMContentLoaded', () => {
     updateClock();
     setInterval(updateClock, 1000);
 
-    // Auto-set date range: last 6 months → today
-    // TopstepX limits 20k bars/request; paginated fetch handles ~9 batches for 6 months of 1m data
+    // Full-range mode: no manual dates. END = today, START = far past so the
+    // paginated fetch walks back to the contract's earliest available bar.
     const today = new Date();
-    const endStr = today.toISOString().slice(0, 10);
-    const start = new Date(today);
-    start.setDate(start.getDate() - 30);   // fixed 1M backtest range
-    const startStr = start.toISOString().slice(0, 10);
-    document.getElementById('start-date').value = startStr;
-    document.getElementById('end-date').value = endStr;
+    document.getElementById('start-date').value = FULL_RANGE_START;
+    document.getElementById('end-date').value = today.toISOString().slice(0, 10);
     ['bt', 'live'].forEach(mode => {
         syncSizeOptions(mode);
         updateTrailBounds(mode);
@@ -3231,6 +3228,11 @@ function initChart() {
             borderColor: 'rgba(100, 220, 255, 0.08)',
             timeVisible: true,
             secondsVisible: false,
+            tickMarkFormatter: _chartTickMark,
+        },
+        localization: {
+            // Crosshair tooltip shows the full "2026.04.15 15:30" stamp.
+            timeFormatter: _chartStampFull,
         },
     });
 
@@ -3329,6 +3331,34 @@ const NO_TRADE_WINDOWS_UTC = [
 function utcMsToChartTime(ms) {
     const localOffset = new Date(ms).getTimezoneOffset() * -60;
     return Math.floor(ms / 1000) + localOffset;
+}
+
+// Chart time values are local-wall-clock encoded as UTC seconds (see
+// utcMsToChartTime), so format them with getUTC* to read back the wall clock.
+function _chartStampFull(time) {
+    if (time && typeof time === 'object' && time.year != null) {
+        const M = String(time.month).padStart(2, '0');
+        const D = String(time.day).padStart(2, '0');
+        return time.year + '.' + M + '.' + D;
+    }
+    const d = new Date(time * 1000);
+    const M = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const D = String(d.getUTCDate()).padStart(2, '0');
+    const h = String(d.getUTCHours()).padStart(2, '0');
+    const mi = String(d.getUTCMinutes()).padStart(2, '0');
+    return d.getUTCFullYear() + '.' + M + '.' + D + ' ' + h + ':' + mi;
+}
+
+// Axis ticks: compact — date (MM.DD) on day/month/year marks, HH:mm intraday.
+function _chartTickMark(time, tickMarkType) {
+    if (time && typeof time === 'object' && time.year != null) {
+        return String(time.month).padStart(2, '0') + '.' + String(time.day).padStart(2, '0');
+    }
+    const d = new Date(time * 1000);
+    if (tickMarkType <= 2) {   // Year / Month / DayOfMonth
+        return String(d.getUTCMonth() + 1).padStart(2, '0') + '.' + String(d.getUTCDate()).padStart(2, '0');
+    }
+    return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
 }
 
 function getNextSessionBoundaryMs(isoStr) {
@@ -4206,21 +4236,14 @@ async function connectAPI() {
     setStatus('loading', 'CONNECTING...');
     log('Connecting to TopstepX API...', 'info');
 
-    // CONNECT fetches last 14 days of 1m bars — fast, fresh, reliable.
-    // 30s bars via TopstepX paginated API have a ~6h settle delay for large ranges.
-    // Backtest and Machine Learning extend the range lazily when needed.
-    // When MERGE HISTORY is on, widen the window back by ~1 quarter per chained
-    // contract so the older (back-adjusted) contracts actually have room to fill.
-    const mergeEl = document.getElementById('merge-contracts');
-    const mergeN  = mergeEl ? (parseInt(mergeEl.value, 10) || 0) : 0;
+    // CONNECT loads the contract's FULL available history (paginated, newest→oldest
+    // until the TopstepX API runs out — ~60 days of retention).
     const _now = new Date();
-    const _start = new Date(_now);
-    _start.setDate(_start.getDate() - 14 - mergeN * 95);
-    const startDate = _start.toISOString().slice(0, 10);
+    const startDate = FULL_RANGE_START;
     const endDate   = _now.toISOString().slice(0, 10);
 
     // If CONTRACT ID is blank (auto-detect), fall back to the CONTRACT dropdown so
-    // merge chains the right instrument (MNQ vs ENQ) instead of a generic guess.
+    // we fetch the right instrument (MNQ vs ENQ) instead of a generic guess.
     const presetSel = document.getElementById('contract-preset');
     let resolvedContract = contractId;
     if (!resolvedContract && presetSel && presetSel.value) resolvedContract = presetSel.value;
@@ -4230,7 +4253,6 @@ async function connectAPI() {
         unit_number: 1,
         start_time: startDate + 'T00:00:00Z',
         end_time: endDate + 'T23:59:59Z',
-        merge_contracts: mergeN,
     };
     if (username) body.username = username;
     if (apikey) body.api_key = apikey;
@@ -4261,6 +4283,8 @@ async function connectAPI() {
         document.getElementById('btn-run-all').disabled = false;
         document.getElementById('btn-full-filter').disabled = false;
         _updateDataInfo(data.first, data.last, 'conn', data.candles_count);
+        // CONNECT already loaded the full range → mark it so backtest/ML skip re-fetch.
+        _btDataRange = { start: startDate, end: endDate, contract: resolvedContract || '' };
 
         // Auto-save credentials to .env if user typed them
         if (username || apikey) {
@@ -4304,12 +4328,15 @@ async function connectAPI() {
 
 async function fetchAndShowChart(interval) {
     try {
-        // First try stored historical candles
-        const resp = await fetch(API + '/data/candles');
+        // Only fetch the most recent slice for charting — the full range can be
+        // hundreds of thousands of 1m bars and rendering them all freezes the tab.
+        // Backtest / machine learning still use the full backend dataset.
+        const resp = await fetch(API + '/data/candles?limit=' + CHART_MAX_CANDLES);
         const data = await resp.json();
         if (data.candles && data.candles.length > 0) {
             showCandleData(data.candles);
-            log('Chart showing ' + data.count + ' candles from TopstepX API', 'info');
+            const shown = data.shown != null ? data.shown : data.candles.length;
+            log('Chart showing ' + shown + ' / ' + data.count + ' candles (recent slice)', 'info');
             return;
         }
     } catch(e) {}
@@ -4460,13 +4487,10 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data...';
     log((appendFetch ? 'Syncing new backtest data' : 'Fetching backtest data') + ' (' + fetchLabel + ' -> ' + endDate + ')...', 'info');
 
-    const mergeEl = document.getElementById('merge-contracts');
-    const mergeN  = mergeEl ? (parseInt(mergeEl.value, 10) || 0) : 0;
     const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / machine learning
         start_time: fetchStartTime,
         end_time:   endDate   + 'T23:59:59Z',
-        append: appendFetch,
-        merge_contracts: appendFetch ? 0 : mergeN };   // merge only on full fetch
+        append: appendFetch };
     if (username)    body.username    = username;
     if (apikey)      body.api_key     = apikey;
     if (contractId)  body.contract_id = contractId;
@@ -4562,7 +4586,7 @@ function _fullSortVal(r, col) {
         case 'max_dd':    return r.max_drawdown || 0;
         case 'wk_std':    return r.weekly_std || 0;
         case 'wk_cv':     return r.weekly_cv || 0;
-        case 'lwr':       return fullResultLossToFinalRatio(r);
+        case 'pf':        return fullResultProfitFactor(r);
         case 'calmar':    return r.calmar_ratio || 0;
         case 'best_day': { const v = Object.values(r.daily_pnl || {}); return v.length ? Math.max(...v) : 0; }
         case 'worst_day':{ const v = Object.values(r.daily_pnl || {}); return v.length ? Math.min(...v) : 0; }
@@ -4575,12 +4599,12 @@ function fullResultTotalLoss(r) {
     return (Number(r.avg_loss) || 0) * (Number(r.losses) || 0);
 }
 
-function fullResultLossToFinalRatio(r) {
-    if (r.loss_to_final_ratio != null) return Number(r.loss_to_final_ratio) || 0;
-    if (r.lwr != null) return Number(r.lwr) || 0;
-    const pnl = Number(r.total_pnl) || 0;
+function fullResultProfitFactor(r) {
+    // Profit Factor = gross gain / gross loss. Prefer the backend value.
+    if (r.profit_factor != null) return Number(r.profit_factor) || 0;
+    const gain = Math.abs(Number(r.total_gain) || 0);
     const loss = Math.abs(fullResultTotalLoss(r));
-    return loss > 0 ? pnl / loss : (pnl > 0 ? Infinity : 0);
+    return loss > 0 ? gain / loss : (gain > 0 ? Infinity : 0);
 }
 
 function isFullResultAllowed(r) {
@@ -4592,8 +4616,8 @@ function normalizeFullResults(results) {
     return (results || [])
         .filter(isFullResultAllowed)
         .map(r => {
-            const ratio = fullResultLossToFinalRatio(r);
-            return Object.assign({}, r, { loss_to_final_ratio: ratio, lwr: ratio });
+            const pf = fullResultProfitFactor(r);
+            return Object.assign({}, r, { profit_factor: pf });
         });
 }
 
@@ -4653,8 +4677,14 @@ function _startFullProgress() {
             const d = await r.json();
             const cur = d.current || 0;
             const tot = d.total  || 0;
-            if (text) text.textContent = cur + ' / ' + tot;
-            if (bar && tot > 0) bar.style.width = (cur / tot * 100).toFixed(1) + '%';
+            const stage = d.stage || '';
+            // Before the sweep starts (total still 0) show the prep stage text so
+            // the bar doesn't look stuck at 0/0 while zone timelines are built.
+            if (text) {
+                if (tot > 0) text.textContent = cur + ' / ' + tot + (stage ? ' \u2014 ' + stage : '');
+                else         text.textContent = stage || 'preparing\u2026';
+            }
+            if (bar) bar.style.width = (tot > 0 ? (cur / tot * 100).toFixed(1) : 0) + '%';
         } catch(e) { /* ignore poll errors */ }
     }, 350);
 }
@@ -4850,9 +4880,9 @@ function renderFullResults(results) {
         const wr = ((r.win_rate || 0) * 100).toFixed(1);
         const calmar = r.calmar_ratio || 0;
         const calmarColor = calmar >= 1 ? 'var(--green)' : '';
-        const lossFinalRatio = fullResultLossToFinalRatio(r);
-        const lossFinalColor = lossFinalRatio >= 1 ? 'var(--green)' : 'var(--red)';
-        const lossFinalLabel = Number.isFinite(lossFinalRatio) ? lossFinalRatio.toFixed(2) : '∞';
+        const profitFactor = fullResultProfitFactor(r);
+        const pfColor = profitFactor >= 1 ? 'var(--green)' : 'var(--red)';
+        const pfLabel = (Number.isFinite(profitFactor) && profitFactor < 999) ? profitFactor.toFixed(2) : '∞';
         const pnl = r.total_pnl || 0;
         const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
         const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
@@ -4895,7 +4925,7 @@ function renderFullResults(results) {
             '<td style="text-align:right;color:var(--red);">' + worstDay + '</td>' +
             '<td style="text-align:right;">' + wkStdLabel + '</td>' +
             '<td style="text-align:center;color:' + wkCvColor + ';">' + wkCvLabel + '</td>' +
-            '<td style="text-align:center;color:' + lossFinalColor + ';">' + lossFinalLabel + '</td>' +
+            '<td style="text-align:center;color:' + pfColor + ';">' + pfLabel + '</td>' +
             '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
             '<td style="text-align:center;">' +
                 '<button class="btn btn-outline" onclick="saveFullPreset(' + origRank + ')" ' +
@@ -5345,6 +5375,74 @@ function _alignBacktestToLiveDays(backtestTrades, liveStats) {
     });
 }
 
+// ── Performance window (selectable lookback in the panel title) ──────
+let _perfWindowDays = 0;   // 0 = ALL; otherwise lookback in days
+
+// Candidate windows; only those that fit inside the available data show up.
+const _PERF_WINDOWS = [
+    { label: '1W',  days: 7 },
+    { label: '2W',  days: 14 },
+    { label: '1M',  days: 30 },
+    { label: '2M',  days: 60 },
+    { label: '3M',  days: 90 },
+    { label: '6M',  days: 180 },
+    { label: '1Y',  days: 365 },
+];
+
+function _populatePerfWindowOptions(spanDays) {
+    const sel = document.getElementById('perf-window');
+    if (!sel) return;
+    // spanDays is the CALENDAR span of the data (first→last trade), matching the
+    // calendar-based window filter. Offer a window once the data covers ≥90% of
+    // it, so e.g. a ~58-day dataset still surfaces the 2M (60d) option.
+    const span = spanDays || 0;
+    const avail = _PERF_WINDOWS.filter(w => span >= w.days * 0.9);
+    const opts = avail.map(w => '<option value="' + w.days + '">' + w.label + '</option>')
+        .concat(['<option value="0">ALL</option>']);   // ALL last
+    const joined = opts.join('');
+    if (sel.dataset.built === joined) return;   // avoid clobbering selection on re-render
+    sel.innerHTML = joined;
+    sel.dataset.built = joined;
+    // Restore current selection if still valid, else fall back to ALL
+    const valid = Array.from(sel.options).some(o => +o.value === _perfWindowDays);
+    sel.value = valid ? String(_perfWindowDays) : '0';
+    if (!valid) _perfWindowDays = 0;
+}
+
+function onPerfWindowChange() {
+    const sel = document.getElementById('perf-window');
+    _perfWindowDays = sel ? (parseInt(sel.value, 10) || 0) : 0;
+    if (typeof backtestData !== 'undefined' && backtestData && backtestData.metrics) {
+        renderMetrics(backtestData.metrics, backtestData.trades);
+    }
+}
+
+// Group a {YYYY-MM-DD: pnl} map into ISO weeks and measure week-to-week
+// variation — client-side mirror of the backend _weekly_stats().
+function _weeklyFromDaily(daily) {
+    const buckets = {};
+    Object.entries(daily || {}).forEach(([day, pnl]) => {
+        const d = new Date(String(day).slice(0, 10) + 'T00:00:00Z');
+        if (isNaN(d.getTime())) return;
+        const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+        const dayNum = (t.getUTCDay() + 6) % 7;          // Mon=0..Sun=6
+        t.setUTCDate(t.getUTCDate() - dayNum + 3);        // nearest Thursday
+        const firstThu = new Date(Date.UTC(t.getUTCFullYear(), 0, 4));
+        const week = 1 + Math.round(((t - firstThu) / 86400000 - 3 + ((firstThu.getUTCDay() + 6) % 7)) / 7);
+        const key = t.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+        buckets[key] = (buckets[key] || 0) + (Number(pnl) || 0);
+    });
+    const weekly = Object.keys(buckets).sort().map(k => buckets[k]);
+    const n = weekly.length;
+    if (!n) return { weekly_count: 0, weekly_std: 0, weekly_cv: 0, weekly_consistency: 0 };
+    const mean = weekly.reduce((a, b) => a + b, 0) / n;
+    const variance = weekly.reduce((a, b) => a + (b - mean) * (b - mean), 0) / n;
+    const std = Math.sqrt(variance);
+    const cv = mean ? std / Math.abs(mean) : 0;
+    const positive = weekly.filter(w => w > 0).length;
+    return { weekly_count: n, weekly_std: std, weekly_cv: cv, weekly_consistency: positive / n };
+}
+
 function renderMetrics(m, backtestTrades) {
     const panel = document.getElementById('metrics-panel');
     // Only show the metrics panel when the BACKTEST tab is active.
@@ -5367,41 +5465,61 @@ function renderMetrics(m, backtestTrades) {
     if (oldSub) oldSub.remove();
 
     const grid = document.getElementById('metrics-grid');
-    const backtestStats = _computeTradeStats(backtestTrades || []);
+    const allTrades = backtestTrades || [];
+    const fullStats = _computeTradeStats(allTrades);
+
+    // ── Selectable performance window ────────────────────────────────
+    // Build the dropdown from how much data we actually have (1w/2w/1m/…/ALL),
+    // then filter the trades to the chosen lookback and recompute everything.
+    // Calendar span (first→last trade) drives which windows are offered, so it
+    // matches the calendar-based filter below (not the trading-day count).
+    let _spanDays = 0;
+    if (allTrades.length) {
+        let minTs = Infinity, maxTs = 0;
+        allTrades.forEach(t => {
+            const iso = t.entry_time || t.exit_time;
+            const ms = iso ? new Date(iso).getTime() : 0;
+            if (!ms) return;
+            if (ms < minTs) minTs = ms;
+            if (ms > maxTs) maxTs = ms;
+        });
+        if (maxTs > minTs) _spanDays = (maxTs - minTs) / 86400000;
+    }
+    _populatePerfWindowOptions(_spanDays);
+    const winDays = _perfWindowDays || 0;          // 0 = ALL
+    let windowedTrades = allTrades;
+    if (winDays > 0 && allTrades.length) {
+        let maxTs = 0;
+        allTrades.forEach(t => {
+            const iso = t.exit_time || t.entry_time;
+            const ms = iso ? new Date(iso).getTime() : 0;
+            if (ms > maxTs) maxTs = ms;
+        });
+        const cutoff = maxTs - winDays * 86400000;
+        windowedTrades = allTrades.filter(t => {
+            const iso = t.entry_time || t.exit_time;
+            return iso && new Date(iso).getTime() >= cutoff;
+        });
+    }
+    const windowed = winDays > 0;
+    const backtestStats = windowed ? _computeTradeStats(windowedTrades) : fullStats;
 
     // Live trade stats — shown in parentheses as reference only.
-    // Primary display always uses machine learning range from backend (m.*).
     const live = window._liveCompletedTrades;
     const liveStats = (live && live.length > 0) ? _computeTradeStats(live) : null;
 
-    // Always use full-range backend metrics as primary
-    const total_pnl    = m.total_pnl;
-    const total_gain   = m.total_gain != null ? m.total_gain : backtestStats.total_gain;
-    const total_loss   = m.total_loss != null ? m.total_loss : backtestStats.total_loss;
-    const total_trades = m.total_trades;
-    const avg_win      = m.avg_win;
-    const avg_loss     = m.avg_loss;
-    const rr_ratio     = m.avg_rr_ratio;
-    const max_dd       = m.max_drawdown;
-    const sharpe       = m.sharpe_ratio;
+    // Primary source: full-range backend metrics when window=ALL; otherwise
+    // recompute everything client-side from the windowed trade subset.
+    const total_pnl    = windowed ? backtestStats.total_pnl  : m.total_pnl;
+    const total_gain   = windowed ? backtestStats.total_gain : (m.total_gain != null ? m.total_gain : backtestStats.total_gain);
+    const total_loss   = windowed ? backtestStats.total_loss : (m.total_loss != null ? m.total_loss : backtestStats.total_loss);
+    const total_trades = windowed ? backtestStats.trades     : m.total_trades;
+    const rr_ratio     = windowed ? backtestStats.rr_ratio   : m.avg_rr_ratio;
+    const max_dd       = windowed ? backtestStats.max_dd     : m.max_drawdown;
+    const calmarPrimary = windowed ? (backtestStats.calmar || 0) : (m.calmar_ratio || 0);
+    const activeDaily  = windowed ? (backtestStats.daily_pnl || {}) : (m.daily_pnl || {});
 
-    // Consistency metrics from backend daily_pnl
-    const dailyEntries = Object.entries(m.daily_pnl || {}).sort((a, b) => a[0].localeCompare(b[0]));
-    const dailyPnls = dailyEntries.map(e => e[1]);
-    let streak = 0, mStreak = 0;
-    for (const p of dailyPnls) {
-        if (p >= 150) { streak += 1; if (streak > mStreak) mStreak = streak; }
-        else { streak = 0; }
-    }
-    const consec3PassFinal = mStreak >= 3;
-    const maxStreakFinal   = mStreak;
-    const maxDayPnlLocal   = dailyPnls.length ? Math.max(...dailyPnls) : 0;
-    const maxDayPctFinal   = m.total_pnl > 0 ? (maxDayPnlLocal / m.total_pnl) * 100 : 0;
-    const maxDayPassFinal  = m.total_pnl > 0 && maxDayPctFinal < 40;
-
-    const passCls = (ok) => ok ? 'pos' : 'neg';
-
-    // Day span from machine learning range
+    // Day span of the active window (drives the FINAL PNL card label)
     const daySpan = backtestStats.days;
     const totalPnlLabel = daySpan > 0 ? ('FINAL PNL (' + daySpan + 'd)') : 'FINAL PNL';
 
@@ -5416,10 +5534,12 @@ function renderMetrics(m, backtestTrades) {
         );
     };
 
-    const lossToFinalRatio = (pnl, loss) => Math.abs(loss || 0) > 0 ? pnl / Math.abs(loss) : (pnl > 0 ? Infinity : 0);
-    const lossFinalPrimary = lossToFinalRatio(total_pnl, total_loss);
-    const lossFinalLive = liveStats ? lossToFinalRatio(liveStats.total_pnl, liveStats.total_loss) : null;
-    const fmtLossFinal = (v) => Number.isFinite(v) ? v.toFixed(2) + 'x' : '∞';
+    // Profit Factor = gross gain / gross loss. PF>1 profitable, >2 strong.
+    const profitFactorOf = (gain, loss) => Math.abs(loss || 0) > 0 ? Math.abs(gain || 0) / Math.abs(loss) : (gain > 0 ? Infinity : 0);
+    const pfPrimary = windowed ? profitFactorOf(total_gain, total_loss)
+                               : ((m.profit_factor != null) ? m.profit_factor : profitFactorOf(total_gain, total_loss));
+    const pfLive = liveStats ? (liveStats.profit_factor != null ? liveStats.profit_factor : profitFactorOf(liveStats.total_gain, liveStats.total_loss)) : null;
+    const fmtPF = (v) => (Number.isFinite(v) && v < 999) ? v.toFixed(2) : '∞';
 
     // Exit-path distribution — % of trades that exited via each reason (NOT win rate)
     const fmtTpSlTrail = (tp, sl, trail) => (
@@ -5445,7 +5565,25 @@ function renderMetrics(m, backtestTrades) {
         if (!stats || !stats.trades) return '--';
         return fmtPctTriple(stats);
     };
-    const currentZoneStats = _computeTradeStats((backtestTrades || []).filter(t => t.zone_source === 'current'));
+    const currentZoneStats = _computeTradeStats((windowed ? windowedTrades : allTrades).filter(t => t.zone_source === 'current'));
+
+    // Week-to-week variation: σ of weekly PnL, with consistency (% of green weeks).
+    // Lower CV + higher consistency = steadier equity curve, less luck-dependent.
+    const wk = windowed ? _weeklyFromDaily(activeDaily) : (m.weekly_stats || {});
+    const wkCount = wk.weekly_count || 0;
+    const wkStd = wk.weekly_std != null ? wk.weekly_std : 0;
+    const wkCv = wk.weekly_cv != null ? wk.weekly_cv : 0;
+    const wkConsist = wk.weekly_consistency != null ? wk.weekly_consistency : 0;
+    const weeklyVarItem = {
+        label: 'WEEKLY VARIATION (σ/CV)',
+        value: wkCount > 0
+            ? ('$' + Math.round(wkStd) + ' / ' + wkCv.toFixed(2) +
+               ' <span class="metric-real">(' + Math.round(wkConsist * 100) + '% green, ' +
+               wkCount + 'w)</span>')
+            : '--',
+        // Steady = low CV. Flag green when weekly CV < 1 and most weeks positive.
+        cls: wkCount > 0 ? ((wkCv < 1 && wkConsist >= 0.6) ? 'pos' : (wkCv > 2 ? 'neg' : '')) : '',
+    };
 
     const items = [
         { label: totalPnlLabel,
@@ -5460,15 +5598,16 @@ function renderMetrics(m, backtestTrades) {
         { label: 'TOTAL LOSS',
           value: '$' + total_loss.toFixed(0) + paren(liveStats ? '$' + liveStats.total_loss.toFixed(0) : ''),
           cls: total_loss < 0 ? 'neg' : '' },
-        { label: 'LOSS TO FINAL RATIO',
-          value: fmtLossFinal(lossFinalPrimary) + paren(lossFinalLive != null ? fmtLossFinal(lossFinalLive) : ''),
-          cls: lossFinalPrimary >= 1 ? 'pos' : 'neg' },
+        { label: 'PROFIT FACTOR',
+          value: fmtPF(pfPrimary) + paren(pfLive != null ? fmtPF(pfLive) : ''),
+          cls: pfPrimary >= 1 ? 'pos' : 'neg' },
         { label: 'CALMAR',
-          value: (m.calmar_ratio != null ? m.calmar_ratio : 0).toFixed(2) + paren(liveStats ? (liveStats.calmar != null ? liveStats.calmar : 0).toFixed(2) : ''),
-          cls: (m.calmar_ratio || 0) >= 1 ? 'pos' : '' },
+          value: calmarPrimary.toFixed(2) + paren(liveStats ? (liveStats.calmar != null ? liveStats.calmar : 0).toFixed(2) : ''),
+          cls: calmarPrimary >= 1 ? 'pos' : '' },
         { label: 'TRADE COUNTS',
           value: String(total_trades || 0) + paren(liveStats ? String(liveStats.trades || 0) : ''),
           cls: '' },
+        weeklyVarItem,
         { label: 'RR RATIO',
           value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
           cls: rr_ratio > 1 ? 'pos' : 'neg' },
