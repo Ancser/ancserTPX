@@ -10,7 +10,33 @@ The system is centered around **1-minute candles** and supports both backtesting
 
 ## Strategy Overview
 
-The main strategy is **Session Trend Follow**. It builds Volume Profile zones (VAH / VAL / POC) for each market session, then looks for entries after a breakout.
+The main strategy is **Session Trend Follow** — a Volume-Profile breakout system built on 1-minute candles.
+
+### Value Area zones
+
+Price is grouped into **fixed clock buckets** of a selectable timeframe (5m / 15m / 30m / 1h / 4h), aligned to clock boundaries — e.g. 4h buckets start at 00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00. Each **completed** bucket becomes a reference Value Area carrying **VAH / VAL / POC** plus its full volume-profile histogram. Only completed buckets are used as references; the in-progress bucket is never traded.
+
+Two zone methods:
+
+- **Single** — break out of one timeframe's Value Area.
+- **Overlap** — require the breakout to clear the *overlapping* VAH / VAL of 2–5 timeframes at once (stricter, fewer but higher-quality signals).
+
+### Entry / Exit (RR-based)
+
+- **Entry**: after `CONFIRM` consecutive 1-minute closes fully outside the Value Area (default **7**), arm a limit order at the value-area edge — **VAH** for an upside breakout, **VAL** for a downside breakout. The limit order is valid for **1 candle (1 minute)**; if unfilled it is cancelled and re-evaluated against the latest VAH / VAL.
+- **Stop Loss**: the **lowest-volume price node** inside the value area (POC→VAH for longs, POC→VAL for shorts); falls back to a fixed tick distance if no valid node exists.
+- **Take Profit**: `RR × |entry − SL|`, where the reward-to-risk ratio **RR** is selectable from **1:1 to 1:10**.
+- **Trail SL**: once price reaches the configured trigger %, the stop is moved up to lock in profit.
+- **Flatten**: all positions are closed daily at **12:45 PM PT**.
+
+### Backtest & Machine Learning
+
+- **Backtest** runs the chosen settings over the full loaded history (~60 days, the TopstepX data-retention limit), reports performance metrics, and writes a per-trade CSV under `data/backtest/`.
+- **Machine Learning** sweeps every timeframe combination (single + overlap of 5m / 15m / 30m / 1h / 4h = 31) × every RR (1:1 … 1:10) = **310 combinations**, then ranks them by **Calmar ratio** (Profit Factor, max drawdown and weekly variation are also reported). `AREA %` and `CONFIRM` are held fixed across the sweep; STRATEGY / METHOD / AREA TF do not affect the sweep.
+
+### Trading sessions
+
+Sessions are used for flatten timing and per-session trade limits:
 
 | Session | Time (ET) | UTC |
 |---------|-----------|-----|
@@ -19,14 +45,6 @@ The main strategy is **Session Trend Follow**. It builds Volume Profile zones (V
 | PRE | 7:00 AM - 9:30 AM | 11:00 - 13:30 |
 | RTH | 9:30 AM - 4:00 PM | 13:30 - 20:00 |
 | AH | 4:00 PM - 6:00 PM | 20:00 - 22:00 |
-
-Current default trading settings:
-
-- **Entry**: after 5 consecutive 1-minute closes outside VAH / VAL, place a limit order at the 50% retracement
-- **Stop Loss**: 50 ticks
-- **Take Profit**: 150 ticks
-- **Trail SL**: 5 ticks
-- **Flatten**: all positions are closed daily at 12:45 PM PT
 
 ---
 

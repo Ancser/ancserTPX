@@ -10,7 +10,33 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 
 ## 策略概要
 
-目前主要策略為 **Session Trend Follow**，依照不同市場時段建立 Volume Profile 區間（VAH / VAL / POC），再在區間突破後尋找進場機會。
+目前主要策略為 **Session Trend Follow**，是建立在 1 分鐘 K 線上的 Volume Profile 突破系統。
+
+### Value Area 區間
+
+價格會被分進**固定時鐘分桶（fixed clock buckets）**，分桶長度可選（5m / 15m / 30m / 1h / 4h），並對齊時鐘邊界——例如 4h 桶從 00:00 / 04:00 / 08:00 / 12:00 / 16:00 / 20:00 開始。每個**已完成**的桶會成為一個參考 Value Area，帶有 **VAH / VAL / POC** 與完整的成交量分佈直方圖。只有已完成的桶會被當作參考；正在形成中的桶永遠不會拿來交易。
+
+兩種區間模式：
+
+- **Single（單一）**——突破單一時間框架的 Value Area。
+- **Overlap（疊加）**——要求突破同時穿越 2~5 個時間框架**重疊**的 VAH / VAL（更嚴格、訊號較少但品質較高）。
+
+### 進出場（以 RR 為基礎）
+
+- **Entry**：當連續 `CONFIRM` 根 1 分鐘 K 線完全站在 Value Area 之外（預設 **7**），在 value-area 邊緣掛限價單——向上突破掛在 **VAH**，向下突破掛在 **VAL**。限價單只存活 **1 根 K 線（1 分鐘）**；若未成交即取消，並依最新的 VAH / VAL 重新評估。
+- **Stop Loss**：value area 內的**最低成交量價格節點**（多單取 POC→VAH 之間，空單取 POC→VAL 之間）；若找不到有效節點，退回固定 tick 距離。
+- **Take Profit**：`RR × |entry − SL|`，盈虧比 **RR** 可選 **1:1 到 1:10**。
+- **Trail SL**：價格達到設定的觸發 % 後，將停損上移以鎖住獲利。
+- **Flatten**：每日美西時間 **12:45 PM** 強制平倉。
+
+### 回測與機器學習
+
+- **回測**：以目前設定跑完整載入的歷史資料（約 60 天，TopstepX 資料保留上限），輸出績效指標，並在 `data/backtest/` 下寫出逐筆交易 CSV。
+- **機器學習**：掃描所有時間框架組合（single + 5m / 15m / 30m / 1h / 4h 的 overlap = 31 種）× 所有 RR（1:1 … 1:10）= **310 組**，再依 **Calmar ratio** 排名（同時報告 Profit Factor、最大回撤與週變異）。掃描期間 `AREA %` 與 `CONFIRM` 固定不變；STRATEGY / METHOD / AREA TF 不影響掃描。
+
+### 市場時段
+
+時段用於平倉時間與每個時段的交易次數限制：
 
 | Session | 美東時間（ET） | UTC |
 |---------|----------------|-----|
@@ -19,14 +45,6 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 | PRE | 7:00 AM - 9:30 AM | 11:00 - 13:30 |
 | RTH | 9:30 AM - 4:00 PM | 13:30 - 20:00 |
 | AH | 4:00 PM - 6:00 PM | 20:00 - 22:00 |
-
-目前預設交易參數如下：
-
-- **Entry**：連續 5 根 1 分鐘 K 線突破 VAH / VAL 後，以 50% retracement 掛限價單
-- **Stop Loss**：50 ticks
-- **Take Profit**：150 ticks
-- **Trail SL**：5 ticks
-- **Flatten**：每日美西時間 12:45 PM 強制平倉
 
 ---
 
