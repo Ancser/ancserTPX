@@ -31,6 +31,9 @@ load_dotenv(ROOT / ".env")
 PRESETS_FILE = ROOT / "data" / "presets.json"
 MNQ_SIZE_CHOICES = (1, 3, 5, 10)
 TRAIL_TICK_STEP = 5
+# Keep in sync with backend.api.routes.ML_TIMEFRAMES so terminal honours the
+# same area-timeframe / overlap selections the web UI saves into presets.
+ML_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h")
 DEFAULT_PRESET_NAME = "TR MNQx3 50/200 TRIG30 TRAILTP5% TPLOCKOFF"
 DEFAULT_PRESET_PARAMS = {
     "strategy": "trend",
@@ -54,6 +57,11 @@ DEFAULT_PRESET_PARAMS = {
     "one_trade_per_session_direction": True,
     "tr_one_trade_per_session": True,
     "value_area_pct": 0.80,
+    "area_timeframe": "5m",
+    "method": "single",
+    "tf_combo": [],
+    "rr_ratio": 2,
+    "breakout_confirm_bars": 7,
     "skip_zone_stability": False,
 }
 BUILTIN_PRESETS = {}
@@ -130,7 +138,8 @@ def _load_presets_file() -> dict:
             "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
             "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
             "contract_size", "full_tp_lock", "one_trade_per_session_direction",
-            "value_area_pct", "skip_zone_stability",
+            "value_area_pct", "area_timeframe", "method", "tf_combo",
+            "rr_ratio", "breakout_confirm_bars", "skip_zone_stability",
             "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
             "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
             "tr_one_trade_per_session",
@@ -327,6 +336,25 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         contract_id,
         preset.get("contract_size", DEFAULT_PRESET_PARAMS["contract_size"]),
     )
+    # Zone selection (v0.18) — keep terminal in sync with the web flow so an
+    # OVERLAP or non-5m area-timeframe preset runs the same detector here.
+    area_timeframe = str(preset.get("area_timeframe") or "5m").lower()
+    if area_timeframe not in ML_TIMEFRAMES:
+        area_timeframe = "5m"
+    method = str(preset.get("method") or "single").lower()
+    if method != "overlap":
+        method = "single"
+    tf_combo = [t for t in (preset.get("tf_combo") or []) if t in ML_TIMEFRAMES]
+    try:
+        rr_ratio = int(preset.get("rr_ratio", DEFAULT_PRESET_PARAMS["rr_ratio"]) or 2)
+    except (TypeError, ValueError):
+        rr_ratio = 2
+    rr_ratio = max(1, min(10, rr_ratio))
+    try:
+        confirm_bars = int(preset.get("breakout_confirm_bars", DEFAULT_PRESET_PARAMS["breakout_confirm_bars"]) or 7)
+    except (TypeError, ValueError):
+        confirm_bars = 7
+    confirm_bars = max(1, min(10, confirm_bars))
     return StrategyParams(
         strategy="trend",
         tp_ticks=primary["tp"],
@@ -343,8 +371,14 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         candle_seconds=int(preset.get("candle_seconds") or 60),
         contract_id=contract_id,
         contract_size=contract_size,
+        area_timeframe=area_timeframe,
+        method=method,
+        tf_combo=tf_combo,
+        rr_ratio=rr_ratio,
+        breakout_confirm_bars=confirm_bars,
         full_tp_lock=primary["lock"],
         one_trade_per_session_direction=bool(preset.get("one_trade_per_session_direction", True)),
+        tr_one_trade_per_session=bool(preset.get("tr_one_trade_per_session", True)),
         skip_zone_stability=False,
     )
 
@@ -415,8 +449,18 @@ async def run_terminal_live() -> int:
             str(preset.get("contract_id") or "").strip()
             or os.getenv("TOPSTEPX_CONTRACT_ID", "").strip()
         )
-        if not contract_id:
-            contract_id = await client.get_nq_contract_id()
+        # Auto front-month rollover: resolve to the current tradable contract so an
+        # expired month never gets orders rejected (code=9 ContractNotActive).
+        try:
+            resolved = await client.get_front_month_contract_id(contract_id or "MNQ")
+            if resolved:
+                if resolved != contract_id:
+                    logger.info("Auto front-month: %s -> %s", contract_id or "(auto)", resolved)
+                contract_id = resolved
+        except Exception as exc:
+            logger.warning("Front-month resolve failed: %s", exc)
+            if not contract_id:
+                contract_id = await client.get_nq_contract_id()
 
         params = _build_strategy_params(preset, contract_id)
         candles = await _fetch_warmup_candles(client, contract_id)
@@ -435,9 +479,15 @@ async def run_terminal_live() -> int:
             contract_id,
             params.contract_size,
         )
+        zone_desc = (
+            "overlap[" + "+".join(params.tf_combo) + "]"
+            if params.method == "overlap" and len(params.tf_combo) >= 2
+            else "single " + params.area_timeframe
+        )
         logger.info(
-            "Params: MODE=%s AREA=%s SL=%s TP=%s trail=%s trigger=%s%% tp_lock=%s",
+            "Params: MODE=%s ZONE=%s VA=%s SL=%s TP=%s trail=%s trigger=%s%% tp_lock=%s",
             params.strategy,
+            zone_desc,
             int(value_area_pct * 100),
             params.sl_ticks,
             params.tp_ticks,
@@ -474,8 +524,8 @@ async def run_terminal_live() -> int:
                 pending = status.get("pending_order_id")
                 daily = float(status.get("daily_pnl") or 0)
                 phase = status.get("phase") or "--"
-                state = "POSITION" if pos else ("PENDING" if pending else "FLAT")
-                logger.info("Status: %s | daily_pnl=$%.0f | %s", state, daily, phase)
+                order = "持倉中" if pos else ("掛單中" if pending else "無")
+                logger.info("[LIVE] %s | 訂單: %s | daily_pnl=$%.0f", phase, order, daily)
             await asyncio.sleep(1)
 
         logger.info("Stopping terminal live engine...")

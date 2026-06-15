@@ -277,6 +277,8 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         area_timeframe=_normalize_area_timeframe(getattr(req, "area_timeframe", "5m")),
         value_area_pct=_normalize_value_area_pct(getattr(req, "value_area_pct", 0.80)),
         rr_ratio=_normalize_rr_ratio(getattr(req, "rr_ratio", 2)),
+        method=str(getattr(req, "method", "single") or "single").lower(),
+        tf_combo=[t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES],
     )
 
 # ── 臨時存儲（後續改用 SQLite）──────────────────────────
@@ -364,6 +366,7 @@ class FetchHistoricalRequest(BaseModel):
     end_time: str = ""
     use_demo: Optional[bool] = None  # None = 從 .env 讀取
     append: bool = False           # True = merge into existing historical candles
+    continuous_contract: bool = True  # True = merge previous quarterly contract for rollover history
 
 
 class TradeResponse(BaseModel):
@@ -695,13 +698,30 @@ async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
     (5m/15m/30m/1h/4h) and the zones are returned together, each tagged with
     its own ``timeframe`` so the chart can overlay all VAH/VAL/POC at once.
     """
-    if not _historical_candles:
-        raise HTTPException(400, "No candles loaded")
-
     from backend.strategy.consolidation import build_zone_detector
 
     value_area_pct = _normalize_value_area_pct(req.value_area_pct)
-    sorted_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+    # During a live session, prefer the engine's rolling candle history (warm-up +
+    # live) so the chart's multi-timeframe zone filter reflects the freshest bars.
+    base_candles = _historical_candles
+    if _live_engine is not None and getattr(_live_engine, "is_running", False):
+        live_hist = _live_engine.get_candle_history()
+        if live_hist:
+            base_candles = live_hist
+    if not base_candles:
+        # No candles yet (e.g. live just connecting / warm-up not produced bars).
+        # This is a normal transient state — return empty zones instead of 400 so
+        # the chart's multi-timeframe filter doesn't spam Bad Request.
+        if getattr(req, "all_timeframes", False):
+            return {
+                "zones": [],
+                "count": 0,
+                "area_timeframe": "all",
+                "timeframes": list(ML_TIMEFRAMES),
+            }
+        area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "5m"))
+        return {"zones": [], "count": 0, "area_timeframe": area_timeframe}
+    sorted_candles = sorted(base_candles, key=lambda c: c.timestamp)
 
     if getattr(req, "all_timeframes", False):
         zone_list = []
@@ -821,19 +841,50 @@ async def fetch_historical(req: FetchHistoricalRequest):
                 pass
         _topstepx_client = client
 
-        # 自動找 NQ 合約
-        if not contract_id:
-            contract_id = await client.get_nq_contract_id()
-            logger.info(f"Auto-detected contract: {contract_id}")
+        # Auto front-month rollover: resolve to the CURRENT tradable contract so
+        # an expired month (e.g. MNQM26 after June) never gets used. Defaults to
+        # MNQ when nothing was specified.
+        try:
+            resolved = await client.get_front_month_contract_id(contract_id or "MNQ")
+            if resolved:
+                if resolved != contract_id:
+                    logger.info(f"Auto front-month: {contract_id or '(auto)'} -> {resolved}")
+                contract_id = resolved
+        except Exception as e:
+            logger.warning(f"Front-month resolve failed: {e}")
+            if not contract_id:
+                contract_id = await client.get_nq_contract_id()
         _live_contract_id = contract_id
 
-        candles = await client.get_historical_bars_paginated(
-            contract_id=contract_id,
-            unit=BarUnit(req.unit),
-            unit_number=req.unit_number,
-            start_time=req.start_time,
-            end_time=req.end_time,
-        )
+        fetch_contracts: List[str] = [contract_id]
+        if req.continuous_contract:
+            try:
+                prev_contract = await client.get_previous_quarter_contract_id(contract_id)
+                if prev_contract and prev_contract not in fetch_contracts:
+                    fetch_contracts.insert(0, prev_contract)
+                    logger.info(f"Continuous contract merge: {prev_contract} + {contract_id}")
+            except Exception as e:
+                logger.warning(f"Previous-contract resolve skipped: {e}")
+
+        candles: List[Candle] = []
+        contract_counts: Dict[str, int] = {}
+        for cid in fetch_contracts:
+            batch = await client.get_historical_bars_paginated(
+                contract_id=cid,
+                unit=BarUnit(req.unit),
+                unit_number=req.unit_number,
+                start_time=req.start_time,
+                end_time=req.end_time,
+            )
+            contract_counts[cid] = len(batch)
+            candles.extend(batch)
+
+        by_ts = {}
+        # Later contracts overwrite overlapping timestamps so the current front
+        # month wins across the roll overlap.
+        for c in sorted(candles, key=lambda c: c.timestamp):
+            by_ts[c.timestamp.isoformat()] = c
+        candles = sorted(by_ts.values(), key=lambda c: c.timestamp)
 
         if req.append:
             _upsert_historical_candles(candles)
@@ -845,6 +896,8 @@ async def fetch_historical(req: FetchHistoricalRequest):
         return {
             "success": True,
             "contract_id": contract_id,
+            "contracts": fetch_contracts,
+            "contract_counts": contract_counts,
             "candles_count": len(stored),
             "fetched_count": len(candles),
             "interval": f"{req.unit_number}{'m' if req.unit == 2 else 's'}",
@@ -2110,6 +2163,10 @@ class LiveStartRequest(BaseModel):
     value_area_pct: float = 0.80
     area_timeframe: str = "5m"
     rr_ratio: int = 2                     # reward:risk multiple (1..10)
+    # v0.18: "single" = one area timeframe; "overlap" = enter at the AVERAGE
+    # overlapping VAH/VAL of the timeframes in tf_combo (mirrors backtest/ML).
+    method: str = "single"
+    tf_combo: Optional[List[str]] = None
     # Strategy params
     strategy: str = "trend"
     tp_ticks: int = 200
@@ -2169,6 +2226,20 @@ async def live_start(req: LiveStartRequest):
         raise HTTPException(500, f"Account check failed: {e}")
 
     from backend.live.engine import LiveTradingEngine
+
+    # ── Auto front-month rollover ──
+    # Resolve the configured contract to the CURRENT tradable front month so an
+    # expired/stale contract (e.g. MNQM26 after June expiry) doesn't get orders
+    # rejected with code=9 ContractNotActive. Everything below uses the resolved id.
+    try:
+        resolved_cid = await _topstepx_client.get_front_month_contract_id(req.contract_id)
+        if resolved_cid and resolved_cid != req.contract_id:
+            logger.info(f"[LIVE START] Auto-roll 合約 {req.contract_id} -> {resolved_cid}")
+            req.contract_id = resolved_cid
+        global _live_contract_id
+        _live_contract_id = req.contract_id
+    except Exception as e:
+        logger.warning(f"[LIVE START] Front-month resolve skipped: {e}")
 
     # ── Fetch fresh candles for live warm-up (separate from backtest data) ──
     # Don't overwrite _historical_candles — backtest needs the full dataset.

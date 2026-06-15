@@ -42,9 +42,11 @@ SignalR Hub: https://rtc.topstepx.com/hubs/market (市場數據)
 
 from __future__ import annotations
 import asyncio
+import calendar
 import logging
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -53,6 +55,74 @@ from backend.db.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ProjectX Gateway /api/Order/place errorCode enum → human-readable meaning.
+# errorMessage is frequently null, so this map is what makes a rejection legible.
+ORDER_ERROR_CODES: Dict[int, str] = {
+    0: "Success",
+    1: "AccountNotFound",
+    2: "OrderRejected",
+    3: "InsufficientFunds",
+    4: "AccountViolation (風控規則阻擋, 例如日內虧損上限/部位上限)",
+    5: "OutsideTradingHours (非交易時段)",
+    6: "OrderPending",
+    7: "UnknownError",
+    8: "ContractNotFound (合約代碼錯誤)",
+    9: "ContractNotActive (合約未啟用/非可交易狀態, 常見於換月或合約到期)",
+}
+
+
+def order_error_meaning(code: Optional[int]) -> str:
+    try:
+        return ORDER_ERROR_CODES.get(int(code), f"未知錯誤碼({code})")
+    except (TypeError, ValueError):
+        return f"未知錯誤碼({code})"
+
+
+# ── Futures contract month codes & auto front-month rollover ──────────────
+# Single-letter month codes used in contract ids (e.g. 'U26' = Sept 2026).
+_MONTH_CODE_TO_NUM: Dict[str, int] = {
+    "F": 1, "G": 2, "H": 3, "J": 4, "K": 5, "M": 6,
+    "N": 7, "Q": 8, "U": 9, "V": 10, "X": 11, "Z": 12,
+}
+_NUM_TO_MONTH_CODE: Dict[int, str] = {v: k for k, v in _MONTH_CODE_TO_NUM.items()}
+_QUARTERLY_MONTHS = (3, 6, 9, 12)
+
+# Map a human symbol root → the product token used inside ProjectX contract ids.
+# (E-mini NASDAQ ids use "ENQ"; the micro uses "MNQ".)
+_PRODUCT_TOKEN: Dict[str, str] = {
+    "NQ": "ENQ", "ENQ": "ENQ", "MNQ": "MNQ",
+    "ES": "ES", "MES": "MES",
+}
+
+
+def _parse_contract_expiry(contract_id: str) -> Optional[Tuple[int, int]]:
+    """'CON.F.US.MNQ.U26' or short 'MNQU26' → (year, month) e.g. (2026, 9)."""
+    if not contract_id:
+        return None
+    token = contract_id.split(".")[-1] if "." in contract_id else contract_id
+    m = re.search(r"([FGHJKMNQUVXZ])(\d{2})$", token.upper())
+    if not m:
+        return None
+    return (2000 + int(m.group(2)), _MONTH_CODE_TO_NUM[m.group(1)])
+
+
+def _previous_quarter(year: int, month: int) -> Tuple[int, int]:
+    quarters = list(_QUARTERLY_MONTHS)
+    prev = [m for m in quarters if m < month]
+    if prev:
+        return year, prev[-1]
+    return year - 1, quarters[-1]
+
+
+def _third_friday(year: int, month: int):
+    """3rd Friday of the month — the standard equity-index futures expiry day."""
+    fridays = [
+        d for d in calendar.Calendar().itermonthdates(year, month)
+        if d.month == month and d.weekday() == 4
+    ]
+    return fridays[2]
 
 
 class TopstepXClient:
@@ -247,6 +317,103 @@ class TopstepXClient:
             raise ValueError("找不到 NQ 合約")
         # 按到期日排序，取最近的
         return nq_contracts[0]["id"]
+
+    async def get_front_month_contract_id(self, symbol_or_id: str) -> str:
+        """Resolve any symbol/contract id to the CURRENT front-month tradable id.
+
+        Handles quarterly futures rollover automatically: given an expired or
+        stale contract (e.g. 'CON.F.US.MNQ.M26' after June expiry) it returns
+        the active front month (e.g. 'CON.F.US.MNQ.U26'). Accepts a full id,
+        a short id ('MNQU26'), or a bare root ('MNQ').
+
+        Selection order:
+          1. API's activeContract flag, when present and unambiguous.
+          2. Otherwise the nearest contract whose 3rd-Friday expiry is today or
+             later (i.e. not yet expired), by soonest expiry.
+        Falls back to _resolve_contract_id on any failure so callers are safe.
+        """
+        raw = (symbol_or_id or "").strip().upper()
+        # Determine the product token used inside ids (MNQ / ENQ / ...).
+        if raw.startswith("CON."):
+            parts = raw.split(".")
+            product = parts[3] if len(parts) >= 4 else "MNQ"
+        else:
+            m = re.match(r"^([A-Z]+?)(?:[FGHJKMNQUVXZ]\d{2})?$", raw)
+            root = m.group(1) if m else raw
+            product = _PRODUCT_TOKEN.get(root, root)
+
+        # Search text: ENQ-family searches under "NQ"; others use the token.
+        search_text = "NQ" if product == "ENQ" else product
+
+        try:
+            contracts = await self.search_contracts(search_text)
+            today = datetime.now(timezone.utc).date()
+            candidates = []  # (id, (year, month) | None, active_flag)
+            for c in contracts:
+                cid = c.get("id", "")
+                cparts = cid.split(".")
+                if len(cparts) < 5 or cparts[3].upper() != product:
+                    continue
+                active = c.get("activeContract")
+                if active is None:
+                    active = c.get("active", c.get("isActive"))
+                candidates.append((cid, _parse_contract_expiry(cid), active))
+
+            if candidates:
+                # 1. Trust an unambiguous API active flag.
+                actives = [c for c in candidates if c[2] is True]
+                if len(actives) == 1:
+                    return actives[0][0]
+                pool = actives if actives else candidates
+                dated = [c for c in pool if c[1]]
+                if dated:
+                    # Roll buffer: liquidity moves to the next contract ~8 days
+                    # before the 3rd-Friday expiry, so treat a contract as no
+                    # longer front once we're within that window.
+                    roll_buffer = timedelta(days=8)
+                    not_expired = [
+                        c for c in dated
+                        if _third_friday(c[1][0], c[1][1]) - roll_buffer >= today
+                    ]
+                    chosen_pool = not_expired or dated
+                    return min(chosen_pool, key=lambda c: c[1])[0]
+                return pool[0][0]
+        except Exception as e:
+            logger.warning(f"Front-month resolve failed for '{symbol_or_id}': {e}")
+
+        # Fallback: literal resolution of whatever was given.
+        return await self._resolve_contract_id(symbol_or_id)
+
+    async def get_previous_quarter_contract_id(self, contract_id: str) -> Optional[str]:
+        """Return the previous quarterly contract id for a resolved futures id.
+
+        Example: CON.F.US.MNQ.U26 -> CON.F.US.MNQ.M26.
+        Returns None when the id is not parseable or the product is unknown.
+        """
+        parsed = _parse_contract_expiry(contract_id)
+        if not parsed:
+            return None
+        parts = contract_id.split(".")
+        if len(parts) < 5:
+            return None
+        year, month = parsed
+        prev_year, prev_month = _previous_quarter(year, month)
+        code = _NUM_TO_MONTH_CODE.get(prev_month)
+        if not code:
+            return None
+        yy = str(prev_year % 100).zfill(2)
+        prev_id = ".".join(parts[:-1] + [f"{code}{yy}"])
+
+        # Prefer exact contract search if the API knows it; otherwise the
+        # constructed id is still the canonical ProjectX format.
+        try:
+            contracts = await self.search_contracts(f"{parts[3]}{code}{yy}")
+            for c in contracts:
+                if str(c.get("id", "")).upper() == prev_id.upper():
+                    return c.get("id")
+        except Exception:
+            pass
+        return prev_id
 
     async def _resolve_contract_id(self, short_id: str) -> str:
         """
@@ -568,24 +735,28 @@ class TopstepXClient:
 
         data = raw_resp.json()
 
-        # Log full response on error for debugging
-        if raw_resp.status_code >= 400:
-            logger.error(
-                f"[ORDER ERROR] HTTP {raw_resp.status_code} | payload={payload} | "
-                f"response={data}"
-            )
-
         resp = OrderResponse(
             order_id=data.get("orderId", 0),
             success=data.get("success", False),
             error_code=data.get("errorCode", 0),
             error_message=data.get("errorMessage"),
+            raw=data,
         )
-        logger.info(
-            f"[ORDER RESP] success={resp.success} order_id={resp.order_id} "
-            f"error_code={resp.error_code} error_msg={resp.error_message} "
-            f"raw_keys={list(data.keys())}"
-        )
+
+        if not resp.success:
+            # Gateway rejected the order — it never reaches the order book, so it
+            # won't show up in TopstepX. Log the FULL body + decoded meaning so the
+            # cause is legible even when errorMessage is null.
+            logger.error(
+                f"[ORDER ERROR] HTTP {raw_resp.status_code} | "
+                f"code={resp.error_code} ({order_error_meaning(resp.error_code)}) | "
+                f"msg={resp.error_message} | payload={payload} | response={data}"
+            )
+        else:
+            logger.info(
+                f"[ORDER RESP] success={resp.success} order_id={resp.order_id} "
+                f"raw_keys={list(data.keys())}"
+            )
         return resp
 
     async def modify_order(

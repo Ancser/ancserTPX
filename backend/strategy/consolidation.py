@@ -926,13 +926,174 @@ class ClockBucketZoneDetector:
             pass
 
 
+# ══════════════════════════════════════════════════════════
+# Multi-timeframe OVERLAP Zone Detector (live mirror of backtest)
+# ══════════════════════════════════════════════════════════
+
+def _synthesize_overlap_zone(actives: List[ConsolidationZone], tfs) -> ConsolidationZone:
+    """Average the overlapping reference zones into one synthetic zone.
+
+    Mirrors backend.api.routes._synthesize_merged_zone EXACTLY so live overlap
+    behaves identically to the backtest/ML overlap sweep. Entry levels
+    (VAH/VAL/POC) are the mean across timeframes; the VP histogram is summed so
+    the lowest-volume-node SL still works.
+    """
+    n = len(actives)
+    vah = sum(z.vah_80 for z in actives) / n
+    val = sum(z.val_80 for z in actives) / n
+    poc = sum(z.poc for z in actives) / n
+    profile: Dict[float, float] = {}
+    for z in actives:
+        for p, v in (z.profile or {}).items():
+            profile[p] = profile.get(p, 0) + v
+    zid = "M:" + "+".join(str(z.zone_id) for z in actives)
+    return ConsolidationZone(
+        zone_id=zid,
+        formed_at=actives[-1].formed_at,
+        left_at=actives[-1].left_at,
+        poc=poc, vah_80=vah, val_80=val,
+        high_100=max(z.high_100 for z in actives),
+        low_100=min(z.low_100 for z in actives),
+        total_volume=sum(z.total_volume for z in actives),
+        duration_minutes=0, num_candles=0,
+        status=ZoneStatus.LEFT, exit_direction=None, candles=[],
+        timeframe="+".join(tfs), profile=profile,
+    )
+
+
+class OverlapZoneDetector:
+    """Multi-timeframe overlap detector exposing the SAME public interface as
+    ClockBucketZoneDetector, so the live engine can use it as a drop-in.
+
+    Internally holds one ClockBucketZoneDetector per timeframe in the combo.
+    On each candle, a merged reference zone exists ONLY when every timeframe has
+    a completed active zone and all their value areas overlap (intersection
+    non-empty). This is the exact rule used by the backtest/ML overlap sweep
+    (routes._merge_zone_timelines): lo = max(val_80), hi = min(vah_80); merged
+    exists iff lo <= hi. Entry happens at the AVERAGE overlapping VAH/VAL level.
+    """
+
+    def __init__(
+        self,
+        tf_combo: List[str],
+        value_area_pct: float = 0.80,
+        tick_size: float = 0.25,
+        max_recent: int = 10,
+    ):
+        order = {tf: i for i, tf in enumerate(AREA_TIMEFRAME_MINUTES.keys())}
+        tfs = [t for t in tf_combo if t in AREA_TIMEFRAME_MINUTES]
+        # dedupe + stable timeframe order
+        seen = set()
+        tfs = [t for t in tfs if not (t in seen or seen.add(t))]
+        tfs.sort(key=lambda t: order[t])
+        self.tfs: Tuple[str, ...] = tuple(tfs)
+        self.area_timeframe = "+".join(self.tfs)
+        self.value_area_pct = value_area_pct
+        self.tick_size = tick_size
+        self.max_recent = max_recent
+
+        self._detectors: List[ClockBucketZoneDetector] = [
+            ClockBucketZoneDetector(
+                area_timeframe=tf,
+                value_area_pct=value_area_pct,
+                tick_size=tick_size,
+                max_recent=max_recent,
+            )
+            for tf in self.tfs
+        ]
+        self._merged_active: Optional[ConsolidationZone] = None
+        self._merged_history: List[ConsolidationZone] = []
+        self._last_key: Optional[tuple] = None
+
+    # ── public API (mirrors ClockBucketZoneDetector) ──
+
+    def update(self, candle: Candle) -> Optional[ZoneEvent]:
+        for d in self._detectors:
+            d.update(candle)
+        self._recompute_merged()
+        return None
+
+    def _recompute_merged(self):
+        actives = [d.get_active_zone() for d in self._detectors]
+        if any(a is None for a in actives):
+            self._merged_active = None
+            self._last_key = None
+            return
+        lo = max(a.val_80 for a in actives)
+        hi = min(a.vah_80 for a in actives)
+        if lo <= hi:
+            key = tuple(a.zone_id for a in actives)
+            if key != self._last_key:
+                mz = _synthesize_overlap_zone(actives, self.tfs)
+                self._merged_active = mz
+                self._last_key = key
+                self._merged_history.append(mz)
+                if len(self._merged_history) > max(self.max_recent * 4, 50):
+                    self._merged_history = self._merged_history[-(self.max_recent * 4):]
+        else:
+            self._merged_active = None
+            self._last_key = None
+
+    @property
+    def is_zone_mature(self) -> bool:
+        return self._merged_active is not None
+
+    def get_active_zone(self) -> Optional[ConsolidationZone]:
+        return self._merged_active
+
+    def get_forming_zone(self) -> Optional[ConsolidationZone]:
+        # No single forming bucket for an overlap; expose nothing.
+        return None
+
+    def get_recent_zones(self, n: Optional[int] = None) -> List[ConsolidationZone]:
+        return [self._merged_active] if self._merged_active else []
+
+    def get_completed_zones(self) -> List[ConsolidationZone]:
+        return [self._merged_active] if self._merged_active else []
+
+    def get_all_zones(self) -> List[ConsolidationZone]:
+        return [self._merged_active] if self._merged_active else []
+
+    def get_last_left_zone(self) -> Optional[ConsolidationZone]:
+        return self._merged_active
+
+    def close_final_zone(self, last_candle: Candle):
+        for d in self._detectors:
+            d.close_final_zone(last_candle)
+        self._recompute_merged()
+
+    def reset(self):
+        for d in self._detectors:
+            d.reset()
+        self._merged_active = None
+        self._merged_history = []
+        self._last_key = None
+
+
 def build_zone_detector(
     area_timeframe: str = "5m",
     value_area_pct: float = 0.80,
     tick_size: float = 0.25,
     max_recent: int = 10,
-) -> ClockBucketZoneDetector:
-    """Factory: fixed clock-bucket zone detector keyed by the selected area timeframe."""
+    tf_combo: Optional[List[str]] = None,
+):
+    """Factory: returns a zone detector keyed by the selected method.
+
+    - When ``tf_combo`` has >= 2 valid timeframes → OverlapZoneDetector
+      (multi-timeframe overlap, identical to the backtest/ML overlap sweep).
+    - Otherwise → single-timeframe ClockBucketZoneDetector keyed by
+      ``area_timeframe`` (or the single timeframe in tf_combo if given).
+    """
+    valid_combo = [t for t in (tf_combo or []) if t in AREA_TIMEFRAME_MINUTES]
+    if len(valid_combo) >= 2:
+        return OverlapZoneDetector(
+            tf_combo=valid_combo,
+            value_area_pct=value_area_pct,
+            tick_size=tick_size,
+            max_recent=max_recent,
+        )
+    if len(valid_combo) == 1:
+        area_timeframe = valid_combo[0]
     return ClockBucketZoneDetector(
         area_timeframe=area_timeframe,
         value_area_pct=value_area_pct,

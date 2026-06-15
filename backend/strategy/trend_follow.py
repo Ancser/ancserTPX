@@ -451,7 +451,7 @@ class SessionTrendFollow:
     def reset_state_only(self):
         self.reset()
 
-    def warmup(self, candle: Candle):
+    def _remember_candle(self, candle: Candle):
         if self._recent_candles:
             gap = (candle.timestamp - self._recent_candles[-1].timestamp).total_seconds() / 60
             if gap > 60:
@@ -459,6 +459,90 @@ class SessionTrendFollow:
         self._recent_candles.append(candle)
         if len(self._recent_candles) > 20:
             self._recent_candles = self._recent_candles[-20:]
+
+    def warmup(self, candle: Candle):
+        self._remember_candle(candle)
+
+    @staticmethod
+    def _normalize_zones(zones) -> List[ConsolidationZone]:
+        if zones is None:
+            return []
+        if isinstance(zones, ConsolidationZone):
+            return [zones]
+        return [z for z in zones if z is not None]
+
+    @staticmethod
+    def _breakout_context(candle: Candle, zone_list: List[ConsolidationZone]):
+        up_zones = [z for z in zone_list
+                    if candle.open > z.vah_80 and candle.close > z.vah_80]
+        down_zones = [z for z in zone_list
+                      if candle.open < z.val_80 and candle.close < z.val_80]
+        inside_any = any(
+            z.val_80 <= candle.open <= z.vah_80 and z.val_80 <= candle.close <= z.vah_80
+            for z in zone_list
+        )
+
+        up = bool(up_zones) and not down_zones
+        down = bool(down_zones) and not up_zones
+        direction = "up" if up else ("down" if down else None)
+        return direction, up_zones, down_zones, inside_any
+
+    def _clear_breakout_state(self):
+        self._state = "idle"
+        self._breakout_direction = None
+        self._confirm_count = 0
+        self._armed = False
+
+    def reset_breakout_confirmation(self):
+        self._clear_breakout_state()
+
+    def _advance_breakout_state(self, candle: Candle, zone_list: List[ConsolidationZone], is_mature: bool):
+        if not zone_list or not is_mature:
+            return None, [], []
+        if self._state == "in_trade":
+            return None, [], []
+
+        direction, up_zones, down_zones, inside_any = self._breakout_context(candle, zone_list)
+
+        if inside_any and direction is None:
+            self._clear_breakout_state()
+            return None, up_zones, down_zones
+
+        if direction == "up":
+            if self._breakout_direction == "up":
+                self._confirm_count += 1
+            else:
+                self._breakout_direction = "up"
+                self._confirm_count = 1
+                self._state = "watching"
+        elif direction == "down":
+            if self._breakout_direction == "down":
+                self._confirm_count += 1
+            else:
+                self._breakout_direction = "down"
+                self._confirm_count = 1
+                self._state = "watching"
+        else:
+            if not self._armed:
+                self._clear_breakout_state()
+
+        if self._confirm_count >= self.CONFIRM_BARS:
+            self._armed = True
+
+        return direction, up_zones, down_zones
+
+    def observe(
+        self,
+        candle: Candle,
+        zones,
+        is_mature: bool,
+    ) -> None:
+        """Advance breakout confirmation from historical/catch-up candles only."""
+        self._remember_candle(candle)
+        zone_list = self._normalize_zones(zones)
+        self._advance_breakout_state(candle, zone_list, is_mature)
+        if self._state == "confirmed":
+            self._state = "watching"
 
     def evaluate(
         self,
@@ -476,73 +560,17 @@ class SessionTrendFollow:
         (highest VAH for longs / lowest VAL for shorts), and its VP profile
         drives the lowest-volume-node SL.
         """
-        if self._recent_candles:
-            gap = (candle.timestamp - self._recent_candles[-1].timestamp).total_seconds() / 60
-            if gap > 60:
-                self._recent_candles = []
-        self._recent_candles.append(candle)
-        if len(self._recent_candles) > 20:
-            self._recent_candles = self._recent_candles[-20:]
+        self._remember_candle(candle)
 
         # Normalize to a list of reference zones.
-        if zones is None:
-            zone_list: List[ConsolidationZone] = []
-        elif isinstance(zones, ConsolidationZone):
-            zone_list = [zones]
-        else:
-            zone_list = [z for z in zones if z is not None]
+        zone_list = self._normalize_zones(zones)
 
         if not zone_list or not is_mature:
             return None
         if self._state == "in_trade":
             return None
 
-        # Zones the candle fully broke above (up) / below (down).
-        up_zones = [z for z in zone_list
-                    if candle.open > z.vah_80 and candle.close > z.vah_80]
-        down_zones = [z for z in zone_list
-                      if candle.open < z.val_80 and candle.close < z.val_80]
-        inside_any = any(
-            z.val_80 <= candle.open <= z.vah_80 and z.val_80 <= candle.close <= z.vah_80
-            for z in zone_list
-        )
-
-        up = bool(up_zones) and not down_zones
-        down = bool(down_zones) and not up_zones
-
-        # Candle fully inside some zone's VA and not breaking out → disarm.
-        if inside_any and not up and not down:
-            self._state = "idle"
-            self._breakout_direction = None
-            self._confirm_count = 0
-            self._armed = False
-            return None
-
-        # Count consecutive candles breaking out in the same direction.
-        if up:
-            if self._breakout_direction == "up":
-                self._confirm_count += 1
-            else:
-                self._breakout_direction = "up"
-                self._confirm_count = 1
-                self._state = "watching"
-        elif down:
-            if self._breakout_direction == "down":
-                self._confirm_count += 1
-            else:
-                self._breakout_direction = "down"
-                self._confirm_count = 1
-                self._state = "watching"
-        else:
-            # Ambiguous candle — breaks the consecutive chain unless already armed.
-            if not self._armed:
-                self._confirm_count = 0
-                self._breakout_direction = None
-                self._state = "idle"
-
-        # Once N consecutive breakout candles → armed (stays armed).
-        if self._confirm_count >= self.CONFIRM_BARS:
-            self._armed = True
+        _, up_zones, down_zones = self._advance_breakout_state(candle, zone_list, is_mature)
 
         # Armed → choose the strongest broken zone and place/refresh order.
         if self._armed and self._breakout_direction:

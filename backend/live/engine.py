@@ -28,7 +28,7 @@ from backend.db.models import (
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.trend_follow import SessionTrendFollow
-from backend.broker.topstepx import TopstepXClient
+from backend.broker.topstepx import TopstepXClient, order_error_meaning
 
 logger = logging.getLogger(__name__)
 
@@ -87,16 +87,22 @@ class LiveTradingEngine:
         self.point_value = get_point_value(contract_id)
         self.tick_size = get_tick_size(contract_id)
 
-        # v0.18: value-area width + area timeframe are selectable.
+        # v0.18: value-area width + area timeframe + method (single/overlap) are selectable.
         value_area_pct = float(getattr(self.strategy_params, "value_area_pct", value_area_pct) or value_area_pct)
         area_timeframe = getattr(self.strategy_params, "area_timeframe", "5m") or "5m"
+        method = (getattr(self.strategy_params, "method", "single") or "single").lower()
+        tf_combo = list(getattr(self.strategy_params, "tf_combo", None) or [])
 
-        # Clock-bucket zone detector — keeps the recent 10 reference zones.
+        # Clock-bucket zone detector — single timeframe, or multi-timeframe
+        # OVERLAP (identical to the backtest/ML overlap sweep) when method=overlap
+        # with 2+ timeframes. Keeps the recent 10 reference zones.
+        overlap_combo = tf_combo if (method == "overlap" and len(tf_combo) >= 2) else None
         self.detector = build_zone_detector(
             area_timeframe=area_timeframe,
             value_area_pct=value_area_pct,
             tick_size=self.tick_size,
             max_recent=10,
+            tf_combo=overlap_combo,
         )
         # Only the trend strategy remains.
         self.strategy_mode = "trend"
@@ -141,6 +147,12 @@ class LiveTradingEngine:
         self._session_direction_locks: set[tuple[str, str]] = set()
         self._capital: float = 0.0
         self._candles_processed: int = 0
+        # Rolling 1m candle history (warm-up + live) so the chart's multi-timeframe
+        # zone filter can recompute all-TF zones from the freshest data.
+        self._all_candles: List[Candle] = []
+        # Per-timeframe breakout state for the PHASE display:
+        #   { tf: {"dir": "up"|"down"|None, "count": int} }
+        self._tf_breakout: Dict[str, Dict] = {}
         self._last_market_price: Optional[float] = None
         self._last_candle_time: Optional[str] = None
         self._last_account_refresh: float = 0.0
@@ -514,6 +526,13 @@ class LiveTradingEngine:
                 self._log_event(f"Zone 快照過期 ({age_hours:.1f}h) — 重新偵測")
                 return False
 
+            # Overlap detector synthesizes merged zones live from its per-tf
+            # sub-detectors (rebuilt during warm-up); it has no flat
+            # _completed_zones list to restore into, so skip the snapshot.
+            if not hasattr(self.detector, "_completed_zones"):
+                self._log_event("Overlap 模式 — 略過 zone 快照 (即時由各 TF 重建)")
+                return False
+
             active_id = data.get("active_zone_id")
             loaded = 0
             for zd in data.get("zones", []):
@@ -720,6 +739,86 @@ class LiveTradingEngine:
         self._session_direction_locks = set(keys)
         return keys
 
+    def _completed_exit_lock_keys(self) -> set[tuple[str, str]]:
+        today = self._get_topstep_trade_date()
+        zones = self._candidate_lock_zones()
+        exits = self._read_json_list_or_dict(self._exits_file)
+        keys: set[tuple[str, str]] = set()
+        for row in (exits if isinstance(exits, list) else []):
+            if not isinstance(row, dict):
+                continue
+            if row.get("account_id") != self.account_id:
+                continue
+            if row.get("contract_id") != self.contract_id:
+                continue
+            if self._lock_date_for_ts(row.get("entry_time") or row.get("exit_time")) != today:
+                continue
+            inferred = self._infer_lock_from_exit(row, zones)
+            if inferred:
+                keys.add(inferred)
+        return keys
+
+    async def _prune_stale_pending_breakout_locks(self) -> None:
+        """Remove startup locks left behind by cancelled/disappeared pending entries.
+
+        A completed trade is still locked via live_exits.json. An active position
+        or any open order on this contract also keeps the lock. Only flat/no-open
+        order startup locks with no exit record are considered stale.
+        """
+        if self._open_position:
+            return
+        data = self._read_json_list_or_dict(self._breakout_locks_file)
+        if not isinstance(data, dict):
+            return
+        records = data.get("locks")
+        if not isinstance(records, list):
+            return
+
+        try:
+            open_orders = await self.client.get_open_orders(self.account_id)
+        except Exception as e:
+            self._log_event(f"無法檢查 open orders，保留 breakout 鎖: {e}", "error")
+            return
+        if any(self._order_contract_matches(od) for od in (open_orders or [])):
+            return
+
+        today = self._get_topstep_trade_date()
+        completed = self._completed_exit_lock_keys()
+        kept = []
+        removed = 0
+        for row in records:
+            if not isinstance(row, dict):
+                kept.append(row)
+                continue
+            if row.get("trade_date") != today:
+                kept.append(row)
+                continue
+            if row.get("account_id") != self.account_id:
+                kept.append(row)
+                continue
+            if row.get("contract_id") != self.contract_id:
+                kept.append(row)
+                continue
+
+            key = (str(row.get("zone_id")), row.get("direction"))
+            if key in completed:
+                kept.append(row)
+                continue
+            removed += 1
+
+        if not removed:
+            return
+
+        data["locks"] = kept
+        data["saved_at"] = datetime.utcnow().isoformat()
+        try:
+            os.makedirs(os.path.dirname(self._breakout_locks_file), exist_ok=True)
+            with open(self._breakout_locks_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            self._log_event(f"清除 {removed} 個 stale pending breakout 鎖")
+        except Exception as e:
+            logger.warning(f"Failed to prune stale breakout locks: {e}")
+
     def _persist_breakout_lock(self, signal: TradeSignal):
         direction = self._breakout_direction_from_trade_direction(signal.direction.value)
         if not signal.zone_id or not direction:
@@ -754,6 +853,8 @@ class LiveTradingEngine:
             "zone_id": str(signal.zone_id),
             "direction": direction,
             "entry_price": signal.entry_price,
+            "order_id": self._pending_order_id,
+            "status": "pending_entry",
             "created_at": datetime.utcnow().isoformat(),
         })
         data["saved_at"] = datetime.utcnow().isoformat()
@@ -783,6 +884,56 @@ class LiveTradingEngine:
         direction = self._breakout_direction_from_trade_direction(signal.direction.value)
         if hasattr(self.trend_follow, "unlock_breakout") and signal.zone_id and direction:
             self.trend_follow.unlock_breakout(signal.zone_id, direction)
+
+    def _release_breakout_lock(self, signal: TradeSignal):
+        """Release a cleanly-cancelled pending-entry lock so the same breakout
+        can be refreshed immediately on the latest candle."""
+        direction = self._breakout_direction_from_trade_direction(signal.direction.value)
+        if not signal.zone_id or not direction:
+            return
+
+        key = (str(signal.zone_id), direction)
+        self._session_direction_locks.discard(key)
+        if hasattr(self.trend_follow, "unlock_breakout"):
+            self.trend_follow.unlock_breakout(signal.zone_id, direction)
+
+        today = self._get_topstep_trade_date()
+        data = self._read_json_list_or_dict(self._breakout_locks_file)
+        if not isinstance(data, dict):
+            return
+        records = data.get("locks")
+        if not isinstance(records, list):
+            return
+
+        kept = []
+        removed = 0
+        for row in records:
+            if not isinstance(row, dict):
+                kept.append(row)
+                continue
+            row_key = (
+                row.get("trade_date"),
+                row.get("account_id"),
+                row.get("contract_id"),
+                str(row.get("zone_id")),
+                row.get("direction"),
+            )
+            if row_key == (today, self.account_id, self.contract_id, str(signal.zone_id), direction):
+                removed += 1
+                continue
+            kept.append(row)
+
+        if not removed:
+            return
+
+        data["locks"] = kept
+        data["saved_at"] = datetime.utcnow().isoformat()
+        try:
+            os.makedirs(os.path.dirname(self._breakout_locks_file), exist_ok=True)
+            with open(self._breakout_locks_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to release breakout lock: {e}")
 
     async def _calc_pnl_from_trades(self, *, emit_log: bool = True) -> float:
         """Fallback: sum today's realized PnL from trade history.
@@ -1004,13 +1155,102 @@ class LiveTradingEngine:
             return "入場準備"
         return "等待突破"
 
+    def _get_order_short(self) -> str:
+        """Order/position state only (no breakout text): 無 / 掛單中 / 持倉中."""
+        if self._open_position:
+            age = self._position_age
+            hours = age // 60
+            mins = age % 60
+            return f"持倉中({hours}h{mins:02d}m)" if age > 0 else "持倉中"
+        if self._pending_order_id:
+            age = self._pending_age
+            timeout = self.trend_follow.PENDING_TIMEOUT_CANDLES
+            if timeout >= 999:
+                return f"市價單中({age}s)"
+            return f"掛單中({age}/{timeout})"
+        return "無"
+
+    def _tf_detectors(self):
+        """Return [(timeframe, ClockBucketZoneDetector), ...] for the active detector.
+
+        Overlap mode exposes one sub-detector per timeframe; single mode has one.
+        """
+        d = self.detector
+        sub = getattr(d, "_detectors", None)
+        tfs = getattr(d, "tfs", None)
+        if sub and tfs:
+            return list(zip(tfs, sub))
+        return [(getattr(d, "area_timeframe", "5m"), d)]
+
+    def _update_tf_breakout(self, candle: Candle):
+        """Track consecutive breakout candles per timeframe (open+close outside VA)."""
+        for tf, det in self._tf_detectors():
+            z = det.get_active_zone()
+            st = self._tf_breakout.setdefault(tf, {"dir": None, "count": 0})
+            if z is None:
+                st["dir"], st["count"] = None, 0
+                continue
+            up = candle.open > z.vah_80 and candle.close > z.vah_80
+            down = candle.open < z.val_80 and candle.close < z.val_80
+            if up:
+                st["count"] = st["count"] + 1 if st["dir"] == "up" else 1
+                st["dir"] = "up"
+            elif down:
+                st["count"] = st["count"] + 1 if st["dir"] == "down" else 1
+                st["dir"] = "down"
+            else:
+                st["dir"], st["count"] = None, 0
+
+    def _tf_breakout_summary(self):
+        tfs = [tf for tf, _ in self._tf_detectors()]
+        breaking = 0
+        dirs = []
+        counts = []
+        for tf in tfs:
+            st = self._tf_breakout.get(tf, {"dir": None, "count": 0})
+            c = int(st.get("count", 0) or 0)
+            d = st.get("dir")
+            if c > 0 and d in ("up", "down"):
+                breaking += 1
+                dirs.append(d)
+                counts.append(c)
+
+        all_breaking = bool(tfs) and breaking == len(tfs) and len(set(dirs)) == 1
+        total_count = min(counts) if all_breaking and counts else 0
+        direction = dirs[0] if all_breaking else None
+        return tfs, breaking, total_count, direction, all_breaking
+
+    def _reset_breakout_confirmation(self):
+        if hasattr(self.trend_follow, "reset_breakout_confirmation"):
+            self.trend_follow.reset_breakout_confirmation()
+        else:
+            self.trend_follow.reset()
+
+    def _all_tf_breakout_required(self) -> bool:
+        return len(self._tf_detectors()) > 1
+
+    def _strategy_breakout_observable(self) -> bool:
+        if not self._all_tf_breakout_required():
+            return True
+        return self._tf_breakout_summary()[4]
+
     def _get_phase(self) -> str:
-        """Combined phase for frontend display."""
-        return (
-            f"區間:{self._get_zone_phase()} | "
-            f"交易區間:{self._get_trade_zone_phase()} | "
-            f"訂單:{self._get_order_phase()}"
-        )
+        """Per-timeframe breakout phase for the top-bar PHASE display, e.g.
+        '5m:等待突破  15m:突破中↑(3/7分)  縂突破區間(1/2) 縂突破時長(3/7分)'.
+        """
+        confirm = max(1, int(getattr(self.trend_follow, "CONFIRM_BARS", 1) or 1))
+        tfs, breaking, total_count, _, _ = self._tf_breakout_summary()
+        parts = []
+        for tf in tfs:
+            st = self._tf_breakout.get(tf, {"dir": None, "count": 0})
+            c = int(st.get("count", 0) or 0)
+            if c > 0:
+                arrow = "↑" if st.get("dir") == "up" else "↓"
+                parts.append(f"{tf}:突破中{arrow}({c}/{confirm}分)")
+            else:
+                parts.append(f"{tf}:等待突破")
+        tail = f"縂突破區間({breaking}/{len(tfs)}) 縂突破時長({total_count}/{confirm}分)"
+        return "  ".join(parts) + "  " + tail
 
     def _get_zone_summary(self) -> List[Dict]:
         zones = self.detector.get_all_zones()
@@ -1068,28 +1308,46 @@ class LiveTradingEngine:
         else:
             self._log_event("無歷史K線! warm-up 跳過", "error")
 
-        # Warm up: feed historical candles to session zone detector + strategy
+        # Warm up: feed historical candles to the zone detector and rebuild
+        # breakout confirmation state without placing historical orders.
         # MUST sort chronologically — API returns newest-first
         historical_candles = sorted(historical_candles, key=lambda c: c.timestamp)
+        can_observe_strategy = hasattr(self.trend_follow, "observe")
         for c in historical_candles:
             self.detector.update(c)
-            # Feed to strategy for warm-up buffers without generating trade signals.
-            if hasattr(self.trend_follow, 'warmup'):
+            self._update_tf_breakout(c)
+            if can_observe_strategy:
+                if self._strategy_breakout_observable():
+                    self.trend_follow.observe(
+                        c,
+                        self.detector.get_recent_zones(),
+                        self.detector.is_zone_mature,
+                    )
+                else:
+                    self._reset_breakout_confirmation()
+            elif hasattr(self.trend_follow, 'warmup'):
                 self.trend_follow.warmup(c)
 
         self._candles_processed = len(historical_candles)
+        self._all_candles = list(historical_candles)
         self._last_candle_time = historical_candles[-1].timestamp.isoformat() if historical_candles else None
 
-        # Soft reset: clear strategy state after warm-up while keeping any rolling buffers.
-        if hasattr(self.trend_follow, 'reset_state_only'):
+        # Legacy fallback: old strategies only warmed recent-candle buffers, so
+        # clear any accidental state. SessionTrendFollow.observe() intentionally
+        # keeps the restored breakout count/armed state.
+        if not can_observe_strategy and hasattr(self.trend_follow, 'reset_state_only'):
             self.trend_follow.reset_state_only()
-        else:
+        elif not can_observe_strategy:
             self.trend_follow.reset()
 
-        locked = self._load_breakout_locks()
-        if locked:
-            labels = ", ".join(f"{zid}:{direction}" for zid, direction in sorted(locked))
-            self._log_event(f"載入 breakout 鎖: {labels}")
+        confirm_count = int(getattr(self.trend_follow, "_confirm_count", 0) or 0)
+        if confirm_count > 0:
+            confirm_total = max(1, int(getattr(self.trend_follow, "CONFIRM_BARS", 1) or 1))
+            direction = getattr(self.trend_follow, "_breakout_direction", None) or "?"
+            armed = "YES" if getattr(self.trend_follow, "_armed", False) else "NO"
+            self._log_event(
+                f"恢復突破確認狀態: dir={direction} count={confirm_count}/{confirm_total} armed={armed}"
+            )
 
         active = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
@@ -1110,6 +1368,12 @@ class LiveTradingEngine:
             await self._refresh_account_snapshot("帳戶初始化", emit_log=True, attempts=2)
         except Exception as e:
             self._log_event(f"取得帳戶資訊失敗: {e}", "error")
+
+        await self._prune_stale_pending_breakout_locks()
+        locked = self._load_breakout_locks()
+        if locked:
+            labels = ", ".join(f"{zid}:{direction}" for zid, direction in sorted(locked))
+            self._log_event(f"載入 breakout 鎖: {labels}")
 
         active = self.detector.get_active_zone()
         all_z = self.detector.get_all_zones()
@@ -1460,16 +1724,15 @@ class LiveTradingEngine:
 
         # ── ALWAYS update zone detector first (even during flatten/limits) ──
         self.detector.update(candle)
+        self._append_history(candle)
+        self._update_tf_breakout(candle)
 
         # ── Periodic status log every minute ──
         current_minute = now.minute
         if current_minute != self._last_status_log_minute:
             self._last_status_log_minute = current_minute
             self._log_event(
-                f"區間:{self._get_zone_phase()} | "
-                f"交易區間:{self._get_trade_zone_phase()} | "
-                f"訂單:{self._get_order_phase()} | "
-                f"市價={self._last_market_price or 0:.2f}"
+                f"{self._get_phase()} | 訂單: {self._get_order_short()}"
             )
 
         # Use UTC directly for time checks
@@ -1502,9 +1765,9 @@ class LiveTradingEngine:
                 return
             self._pending_age += 1
             timeout = self.trend_follow.PENDING_TIMEOUT_CANDLES
-            if self._pending_age > timeout:
+            if self._pending_age >= timeout:
                 self._log_event(f"掛單超時 {timeout} 分鐘取消")
-                await self._cancel_pending()
+                await self._cancel_pending(release_breakout_lock=True)
 
         # Auto OCO protection is monitored before the candle gate; trailing still needs price.
         if self._open_position:
@@ -1534,8 +1797,15 @@ class LiveTradingEngine:
                 self._active_signal = None
                 self._protection_synced = False
 
+        if self._pending_order_id:
+            return
+
         # ── Strategy evaluation ──
         # Evaluate breakout vs the recent 10 reference zones (v0.18).
+        if not self._strategy_breakout_observable():
+            self._reset_breakout_confirmation()
+            return
+
         eval_zones = self.detector.get_recent_zones()
         eval_mature = self.detector.is_zone_mature
 
@@ -1680,9 +1950,10 @@ class LiveTradingEngine:
                 return True
             else:
                 self._log_event(
-                    f"掛單失敗: code={resp.error_code} msg={resp.error_message} "
+                    f"掛單失敗: code={resp.error_code} ({order_error_meaning(resp.error_code)}) "
+                    f"msg={resp.error_message} "
                     f"| entry={signal.entry_price:.2f} side={'BUY' if side == 1 else 'SELL'} "
-                    f"(api_side={0 if side == 1 else 1})",
+                    f"(api_side={0 if side == 1 else 1}) | 訂單遭 gateway 拒絕, 不會出現在 TopstepX",
                     "error"
                 )
                 return False
@@ -1727,7 +1998,8 @@ class LiveTradingEngine:
                 return True
             else:
                 self._log_event(
-                    f"市價單失敗: code={resp.error_code} msg={resp.error_message}",
+                    f"市價單失敗: code={resp.error_code} ({order_error_meaning(resp.error_code)}) "
+                    f"msg={resp.error_message} | 訂單遭 gateway 拒絕, 不會出現在 TopstepX",
                     "error"
                 )
                 return False
@@ -1821,7 +2093,7 @@ class LiveTradingEngine:
         else:
             self._log_event(f"取消 {label} #{order_id} 失敗 (可能已成交)")
 
-    async def _cancel_pending(self):
+    async def _cancel_pending(self, *, release_breakout_lock: bool = False):
         """Cancel the pending limit order. Retries up to 3 times."""
         if not self._pending_order_id:
             return
@@ -1850,6 +2122,8 @@ class LiveTradingEngine:
 
         if self._pending_signal:
             self.trend_follow.notify_order_cancelled()
+            if release_breakout_lock:
+                self._release_breakout_lock(self._pending_signal)
 
         self._pending_order_id = None
         self._pending_signal = None
@@ -2146,6 +2420,17 @@ class LiveTradingEngine:
             self._log_event(f"[SYNC ERROR] {e}", "error")
             logger.error(f"[SYNC] position sync failed: {e}", exc_info=True)
 
+    def _append_history(self, candle: Candle):
+        """Append a 1m candle to the rolling history, capped to ~70 days of bars."""
+        self._all_candles.append(candle)
+        cap = 100000  # ~69 days of 1m bars; bounds memory
+        if len(self._all_candles) > cap:
+            self._all_candles = self._all_candles[-cap:]
+
+    def get_candle_history(self) -> List[Candle]:
+        """Warm-up + live 1m candles (chronological) for multi-TF zone detection."""
+        return list(self._all_candles)
+
     def _ingest_catchup_candle(self, candle: Candle):
         """Replay a missed candle into local state without placing stale orders."""
         self._last_market_price = candle.close
@@ -2154,7 +2439,18 @@ class LiveTradingEngine:
         if self._candles_processed % 5 == 0:
             self._save_zones()
         self.detector.update(candle)
-        if hasattr(self.trend_follow, "warmup"):
+        self._append_history(candle)
+        self._update_tf_breakout(candle)
+        if hasattr(self.trend_follow, "observe"):
+            if self._strategy_breakout_observable():
+                self.trend_follow.observe(
+                    candle,
+                    self.detector.get_recent_zones(),
+                    self.detector.is_zone_mature,
+                )
+            else:
+                self._reset_breakout_confirmation()
+        elif hasattr(self.trend_follow, "warmup"):
             self.trend_follow.warmup(candle)
 
     async def _fetch_latest_candles(self, unit_number: int = 30) -> List[Candle]:

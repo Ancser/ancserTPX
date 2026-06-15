@@ -963,7 +963,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        1.0.1
+        1.0.2
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -1067,20 +1067,6 @@
                     </select>
                 </div>
                 <div class="form-group" style="flex:1;">
-                    <label>METHOD</label>
-                    <select id="method-bt" onchange="onMethodChange('bt')">
-                        <option value="single" selected>SINGLE</option>
-                        <option value="overlap">OVERLAP</option>
-                    </select>
-                </div>
-                <div class="form-group" style="flex:1;" id="area-tf-group-bt">
-                    <label>AREA TF</label>
-                    <select id="area-tf-bt" onchange="onAreaConfigChange('bt')">
-                        <option value="5m" selected>5m</option><option value="15m">15m</option>
-                        <option value="30m">30m</option><option value="1h">1h</option><option value="4h">4h</option>
-                    </select>
-                </div>
-                <div class="form-group" style="flex:1;">
                     <label>AREA %</label>
                     <select id="area-pct-bt" onchange="onAreaConfigChange('bt')">
                         <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
@@ -1097,25 +1083,22 @@
                     </select>
                 </div>
             </div>
-            <div class="form-row" id="overlap-tf-row-bt" style="display:none;">
+            <div class="form-row" id="overlap-tf-row-bt">
                 <div class="form-group" style="flex:1;">
-                    <label>OVERLAP TIMEFRAMES <span style="color:var(--text2)">(need 2+; enters at avg when value areas overlap)</span></label>
+                    <label>TIMEFRAMES <span style="color:var(--text2)">(pick 1 = single; pick 2+ = overlap)</span></label>
                     <div id="overlap-tf-bt" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="5m" checked> 5m</label>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="15m" checked> 15m</label>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="30m"> 30m</label>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="1h"> 1h</label>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="4h"> 4h</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="5m" checked onchange="onTfSelectionChange('bt')"> 5m</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="15m" onchange="onTfSelectionChange('bt')"> 15m</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="30m" onchange="onTfSelectionChange('bt')"> 30m</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="1h" onchange="onTfSelectionChange('bt')"> 1h</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="4h" onchange="onTfSelectionChange('bt')"> 4h</label>
                     </div>
                 </div>
             </div>
             <div id="tr-params-bt" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
                 <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">TREND</div>
-                <div class="form-group">
-                    <label>SL <span style="color:var(--text2)">= lowest-volume node (POC↔VAH/VAL, auto)</span></label>
-                    <input type="hidden" id="sl-ticks-bt" value="50">
-                    <span id="sl-ticks-bt-val" style="display:none">50</span>
-                </div>
+                <input type="hidden" id="sl-ticks-bt" value="50">
+                <span id="sl-ticks-bt-val" style="display:none">50</span>
                 <div class="form-group">
                     <label>RR RATIO <span id="rr-ratio-bt-val" style="color:var(--accent)">1:2</span></label>
                     <select id="rr-ratio-bt" onchange="onRrChange('bt')">
@@ -1177,8 +1160,6 @@
                         <label class="full-fix-row"><input type="checkbox" id="full-fix-full-tp-lock"> FULL TP LOCK</label>
                     </div>
                 </div>
-                <button class="btn btn-outline" id="btn-draw-all-tf" onclick="toggleAllTimeframeZones()"
-                        style="margin-top:6px;" title="Overlay VAH/VAL/POC for every timeframe (5m-4h)">SHOW ALL TF ZONES</button>
             </div>
             <!-- Machine Learning progress bar -->
             <div id="full-progress-wrap" style="display:none;margin-top:7px;">
@@ -1235,17 +1216,10 @@
                     </div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:2;">
+                    <div class="form-group" style="flex:1;">
                         <label>STRATEGY</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
                             <option value="trend" selected>TREND</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="flex:1;">
-                        <label>AREA TF</label>
-                        <select id="area-tf-live" onchange="onAreaConfigChange('live')">
-                            <option value="5m" selected>5m</option><option value="15m">15m</option>
-                            <option value="30m">30m</option><option value="1h">1h</option><option value="4h">4h</option>
                         </select>
                     </div>
                     <div class="form-group" style="flex:1;">
@@ -1265,13 +1239,22 @@
                         </select>
                     </div>
                 </div>
+                <div class="form-row" id="overlap-tf-row-live">
+                    <div class="form-group" style="flex:1;">
+                        <label>TIMEFRAMES <span style="color:var(--text2)">(pick 1 = single; pick 2+ = overlap)</span></label>
+                        <div id="overlap-tf-live" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="5m" checked onchange="onTfSelectionChange('live')"> 5m</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="15m" onchange="onTfSelectionChange('live')"> 15m</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="30m" onchange="onTfSelectionChange('live')"> 30m</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="1h" onchange="onTfSelectionChange('live')"> 1h</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="4h" onchange="onTfSelectionChange('live')"> 4h</label>
+                        </div>
+                    </div>
+                </div>
                 <div id="tr-params-live" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
                     <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">TREND</div>
-                    <div class="form-group">
-                        <label>SL <span style="color:var(--text2)">= lowest-volume node (POC↔VAH/VAL, auto)</span></label>
-                        <input type="hidden" id="sl-ticks-live" value="50">
-                        <span id="sl-ticks-live-val" style="display:none">50</span>
-                    </div>
+                    <input type="hidden" id="sl-ticks-live" value="50">
+                    <span id="sl-ticks-live-val" style="display:none">50</span>
                     <div class="form-group">
                         <label>RR RATIO <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
                         <select id="rr-ratio-live" onchange="onRrChange('live')">
@@ -1353,11 +1336,10 @@
             <!-- Live Monitor Top Bar -->
             <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'IBM Plex Mono',monospace;font-size:11px;">
                 <div style="display:flex;align-items:stretch;height:28px;">
+                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MARKET: <span id="lv-session" style="color:var(--amber);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">STRAT: <span id="lv-strategy" style="color:var(--cyan);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MODE: <span id="lv-mode" style="color:var(--green);margin-left:6px;">--</span></div>
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">ZONE: <span id="lv-zone-status" style="color:var(--text3);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">PHASE: <span id="lv-phase-top" style="color:var(--text3);margin-left:6px;">--</span></div>
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MARKET: <span id="lv-session" style="color:var(--amber);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">持倉: <span id="lv-position" style="color:var(--text2);margin-left:6px;">FLAT</span></div>
                     <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:0 8px;">資金: <span id="lv-capital" style="color:var(--green);margin-left:6px;">--</span></div>
                 </div>
@@ -1761,14 +1743,11 @@ function onRrChange(mode) {
 // SINGLE vs OVERLAP method. Overlap reveals the timeframe multi-select and uses
 // the merged synthetic zone (avg VAH/VAL/POC) only when all selected TFs' value
 // areas overlap. Single uses one AREA TF zone.
-function onMethodChange(mode) {
-    const sel = document.getElementById('method-' + mode);
-    const method = sel ? sel.value : 'single';
-    const ovRow = document.getElementById('overlap-tf-row-' + mode);
-    const areaGrp = document.getElementById('area-tf-group-' + mode);
-    const isOverlap = method === 'overlap';
-    if (ovRow) ovRow.style.display = isOverlap ? 'flex' : 'none';
-    if (areaGrp) areaGrp.style.opacity = isOverlap ? '0.4' : '1';
+// Timeframe checkbox changed → re-detect zones at the new area TF and redraw.
+function onTfSelectionChange(mode) {
+    syncZoneFilterUI();
+    onAreaConfigChange(mode);
+    refreshTfZones(true);
 }
 
 function readOverlapTfCombo(mode) {
@@ -1806,6 +1785,8 @@ function onStrategyChange(mode) {
 // Re-detect zones at the selected area timeframe + value-area % and redraw VAH/VAL/POC.
 async function onAreaConfigChange(mode) {
     const sp = collectStrategyParams(mode);
+    // Value-area width changed → refresh the all-timeframe zone cache for the filter.
+    refreshTfZones(true);
     try {
         const resp = await fetch(API + '/data/detect-zones', {
             method: 'POST',
@@ -1819,8 +1800,6 @@ async function onAreaConfigChange(mode) {
         const data = await resp.json();
         if (data.zones && data.zones.length > 0) {
             _cachedVPZones = data.zones;
-            drawVolumeProfile(data.zones);
-            drawBacktestZones(data.zones);
             log('Area ' + sp.area_timeframe + ' / ' + Math.round(sp.value_area_pct * 100) + '%: ' + data.zones.length + ' zones', 'info');
         }
     } catch (e) {
@@ -1920,9 +1899,14 @@ function collectStrategyParams(mode) {
 
     const tr = readLeg('tr');
     const primary = tr;
-    const methodEl = document.getElementById('method-' + mode);
-    const method = (methodEl && methodEl.value === 'overlap') ? 'overlap' : 'single';
-    const tfCombo = method === 'overlap' ? readOverlapTfCombo(mode) : [];
+    // Timeframe selection alone decides single vs overlap:
+    //   1 TF  → single (tf_combo empty, area_timeframe = that TF)
+    //   2+ TF → overlap (tf_combo = selected TFs, area_timeframe = first/smallest)
+    const selTfs = readOverlapTfCombo(mode);
+    const tfs = selTfs.length ? selTfs : ['5m'];
+    const method = tfs.length >= 2 ? 'overlap' : 'single';
+    const tfCombo = method === 'overlap' ? tfs : [];
+    const areaTimeframe = tfs[0];
     return {
         strategy: 'trend',
         method: method,
@@ -1944,7 +1928,7 @@ function collectStrategyParams(mode) {
         contract_id: contractId,
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
         value_area_pct: _float('area-pct-' + mode, 0.80),
-        area_timeframe: _val('area-tf-' + mode) || '5m',
+        area_timeframe: areaTimeframe,
         rr_ratio: Math.max(1, Math.min(10, _int('rr-ratio-' + mode, 2))),
         full_tp_lock: primary.full_tp_lock,
         one_trade_per_session_direction: true,
@@ -1961,7 +1945,6 @@ function applyStrategyParams(mode, params) {
     const _ticks = (val, fallback) => Math.max(50, Math.min(200, parseInt(val != null ? val : fallback, 10) || fallback));
     p.strategy = normalizeStrategyName(p.strategy);
     _set('strategy-' + mode, p.strategy);
-    _set('area-tf-' + mode, String(p.area_timeframe || '5m'));
     _set('area-pct-' + mode, (p.value_area_pct != null ? Number(p.value_area_pct) : 0.80).toFixed(2));
     const cidEl = document.getElementById('contract-' + mode);
     if (cidEl) {
@@ -2018,13 +2001,16 @@ function applyStrategyParams(mode, params) {
 
     _set('confirm-bars-' + mode, String(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7));
 
+    // Timeframe checkboxes: overlap → tf_combo; single → [area_timeframe].
     const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
     const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
-    _set('method-' + mode, method === 'overlap' ? 'overlap' : 'single');
-    if (tfCombo.length) setOverlapTfCombo(mode, tfCombo);
-    onMethodChange(mode);
+    const selectedTfs = (method === 'overlap' && tfCombo.length >= 2)
+        ? tfCombo
+        : [String(p.area_timeframe || '5m')];
+    setOverlapTfCombo(mode, selectedTfs);
 
     updateStrategyParamVisibility(mode);
+    syncZoneFilterUI();
 }
 
 // CONTRACT preset dropdown in the connect panel — fills the contract-id text input.
@@ -2051,26 +2037,26 @@ function isFixedPreset(name) {
 
 function buildPresetName(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
-    const prefix = 'TR';
+    const vaPct = Math.round((p.value_area_pct != null ? Number(p.value_area_pct) : 0.80) * 100);
+    const rr = Math.max(1, Math.min(10, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
+    const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
+    const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
+    const tfs = (method === 'overlap' && tfCombo.length >= 2)
+        ? tfCombo
+        : (tfCombo.length ? [tfCombo[0]] : [p.area_timeframe || '5m']);
+    const confirm = Math.max(1, Math.min(10, parseInt(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7, 10) || 7));
     const contractLabel = contractLabelFromId(p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id);
     const contractSize = normalizeContractSize(
         p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id,
         p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
     );
-    const rr = Math.max(1, Math.min(10, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
-    const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
-    const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
-    const isOverlap = method === 'overlap' && tfCombo.length >= 2;
-    const tfLabel = isOverlap
-        ? tfCombo.join('+')
-        : (tfCombo.length ? tfCombo[0] : (p.area_timeframe || '5m'));
-    const confirm = Math.max(1, Math.min(10, parseInt(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7, 10) || 7));
-    // New model naming: contract@size · RR · timeframe(s) · SINGLE/OVERLAP · confirm bars
-    return prefix + ' ' + contractLabel + '@' + contractSize +
+    // Naming: TR{VA%} {tf/tf/...} RR1:{rr} C{confirm} {contract}@{size}
+    //   → e.g. "TR80 5m/1h/4h RR1:3 C7 MNQ@3"
+    return 'TR' + vaPct +
+        ' ' + tfs.join('/') +
         ' RR1:' + rr +
-        ' ' + tfLabel +
-        ' ' + (isOverlap ? 'OVERLAP' : 'SINGLE') +
-        ' C' + confirm;
+        ' C' + confirm +
+        ' ' + contractLabel + '@' + contractSize;
 }
 
 async function fetchPresets() {
@@ -2439,12 +2425,36 @@ function updateLiveTopBar() {
         stratEl.textContent = s;
     }
 
-    // Zone status default
-    const zsEl = document.getElementById('lv-zone-status');
-    if (zsEl) { zsEl.textContent = 'WAITING'; zsEl.style.color = 'var(--text3)'; }
-
     if (currentAccount) {
         document.getElementById('lv-capital').textContent = '$' + currentAccount.balance.toLocaleString(undefined, {maximumFractionDigits: 0});
+    }
+}
+
+async function refreshLiveZoneOverlay(stratParams) {
+    try {
+        const zoneResp = await fetch(API + '/data/detect-zones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                value_area_pct: stratParams.value_area_pct,
+                area_timeframe: stratParams.area_timeframe,
+            }),
+        });
+        if (zoneResp.ok) {
+            const zoneData = await zoneResp.json();
+            if (zoneData.zones && zoneData.zones.length > 0) {
+                drawVolumeProfile(zoneData.zones);
+                drawBacktestZones(zoneData.zones);
+                log('偵測到 ' + zoneData.zones.length + ' 個盤整區間', 'success');
+                if (window._lastChartData) {
+                    applyDefaultChartView(window._lastChartData, zoneData.zones);
+                }
+            } else {
+                log('未偵測到盤整區間', 'info');
+            }
+        }
+    } catch(e) {
+        log('Zone detection failed: ' + e.message, 'warn');
     }
 }
 
@@ -2467,38 +2477,18 @@ async function goLive() {
     log('GO LIVE: account=' + liveAccount.name + ' (' + (liveAccount.is_practice ? 'practice' : 'FUNDED') + ')', 'info');
     const stratParams = collectStrategyParams('live');
 
+    // Switch the zone filter to LIVE and preselect the timeframe(s) being traded
+    // (overlap combo, or the single area timeframe).
+    _zoneFilter.mode = 'live';
+    const liveTfs = (stratParams.method === 'overlap' && stratParams.tf_combo && stratParams.tf_combo.length)
+        ? stratParams.tf_combo
+        : [stratParams.area_timeframe];
+    _zoneFilter.tfs = new Set(liveTfs);
+    syncZoneFilterUI();
+
     // Show live top bar (chart data stays as-is from connect)
     document.getElementById('live-top-bar').style.display = 'block';
     updateLiveTopBar();
-
-    // Run zone detection on loaded candles → draw POC/VP immediately
-    try {
-        const zoneResp = await fetch(API + '/data/detect-zones', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                value_area_pct: stratParams.value_area_pct,
-                area_timeframe: stratParams.area_timeframe,
-            }),
-        });
-        if (zoneResp.ok) {
-            const zoneData = await zoneResp.json();
-            if (zoneData.zones && zoneData.zones.length > 0) {
-                drawVolumeProfile(zoneData.zones);
-                drawBacktestZones(zoneData.zones);
-                log('偵測到 ' + zoneData.zones.length + ' 個盤整區間', 'success');
-
-                // Apply view centered on price with 4x VAH-VAL height
-                if (window._lastChartData) {
-                    applyDefaultChartView(window._lastChartData, zoneData.zones);
-                }
-            } else {
-                log('未偵測到盤整區間', 'info');
-            }
-        }
-    } catch(e) {
-        log('Zone detection failed: ' + e.message, 'warn');
-    }
 
     // ── Start candle polling + status polling (always, even if engine fails) ──
     _cachedVPZones = null;  // clear backtest zones to avoid overlap with live zones
@@ -2540,6 +2530,8 @@ async function goLive() {
         } else {
             engineStarted = true;
             log('即時交易引擎啟動', 'success');
+            refreshTfZones(true);
+            setTimeout(() => refreshLiveZoneOverlay(stratParams), 0);
         }
     } catch(e) {
         log('交易引擎連線失敗: ' + e.message + ' (僅監控模式)', 'warn');
@@ -2840,25 +2832,6 @@ async function pollLiveStatus() {
             window._liveStrategyName = sn;
         }
 
-        // ── Top bar: Zone status ──
-        const zoneStatusEl = document.getElementById('lv-zone-status');
-        if (zoneStatusEl) {
-            const phase = st.phase || '--';
-            let zLabel = '--', zColor = 'var(--text3)';
-            if (/等待/.test(phase)) { zLabel = 'WAITING'; zColor = 'var(--text3)'; }
-            else if (/形成|發展|forming/i.test(phase)) { zLabel = 'FORMING'; zColor = 'var(--amber)'; }
-            else if (/盤整|consolidat/i.test(phase)) { zLabel = 'CONSOLIDATION'; zColor = 'var(--cyan)'; }
-            else if (/出界|break/i.test(phase)) { zLabel = 'BREAKING'; zColor = 'var(--amber)'; }
-            else if (/確認|confirm/i.test(phase)) { zLabel = 'CONFIRMED ✓'; zColor = 'var(--green)'; }
-            else if (/入場|entry|掛單/i.test(phase)) { zLabel = 'ENTRY READY'; zColor = 'var(--green)'; }
-            else if (/持倉/i.test(phase)) { zLabel = 'IN TRADE'; zColor = 'var(--green)'; }
-            else if (/1min出界/.test(phase)) { zLabel = '1M BREAKING'; zColor = 'var(--amber)'; }
-            else if (/1min/.test(phase)) { zLabel = '1M ZONE'; zColor = 'var(--cyan)'; }
-            else { zLabel = phase; }
-            zoneStatusEl.textContent = zLabel;
-            zoneStatusEl.style.color = zColor;
-        }
-
         // ── Top bar: Active zone levels (text) ──
         const zoneRow = document.getElementById('lv-zone-row');
         if (zoneRow && st.zones && st.zones.length > 0) {
@@ -2955,7 +2928,7 @@ async function pollLiveStatus() {
             // Color based on phase
             if (st.tp_locked) phaseTopEl.style.color = 'var(--amber)';
             else if (/交易中|持倉|TRADE/i.test(phaseText)) phaseTopEl.style.color = 'var(--green)';
-            else if (/出界|break/i.test(phaseText)) phaseTopEl.style.color = 'var(--amber)';
+            else if (/突破中|出界|break/i.test(phaseText)) phaseTopEl.style.color = 'var(--amber)';
             else if (/盤整|區間內/i.test(phaseText)) phaseTopEl.style.color = 'var(--cyan)';
             else phaseTopEl.style.color = 'var(--text3)';
         }
@@ -3029,7 +3002,9 @@ async function pollLiveStatus() {
             const zoneKey = st.zones.map(z => z.zone_id + z.status + z.poc.toFixed(2) + z.num_candles).join('|');
             if (zoneKey !== window._lastLiveZoneKey) {
                 window._lastLiveZoneKey = zoneKey;
-                drawVolumeProfile(st.zones);
+                // Refresh the all-timeframe cache (throttled inside) so the LIVE
+                // filter shows the freshest currently-using zone per timeframe.
+                refreshTfZones();
             }
         }
 
@@ -3251,8 +3226,7 @@ function initChart() {
             height: container.clientHeight
         });
         // Redraw VP overlay on resize
-        const zones = (backtestData && backtestData.zones) || _cachedVPZones;
-        if (zones) drawVolumeProfile(zones);
+        renderTfZones();
         clearPositionOverlay();
         if (backtestData && backtestData.trades) {
             drawPositionTools(backtestData.trades);
@@ -3266,7 +3240,7 @@ function initChart() {
         if (_vpRafId) return; // already scheduled
         _vpRafId = requestAnimationFrame(() => {
             _vpRafId = null;
-            if (_cachedVPZones) drawVolumeProfile(_cachedVPZones);
+            renderTfZones();
             clearPositionOverlay();
             if (backtestData && backtestData.trades) {
                 drawPositionTools(backtestData.trades);
@@ -3504,9 +3478,112 @@ function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
     ctx.restore();
 }
 
-function drawVolumeProfile(zones) {
-    if (!zones || zones.length === 0) return;
-    _cachedVPZones = zones;  // cache for redraw on scroll/zoom
+// ── Timeframe zone filter state (bottom-left chart control) ──
+// Draws clean VAH/VAL/POC LINES per timeframe (no VP histogram). Line width
+// scales with timeframe size; colour = orange (live) / white (backtest).
+const TF_ORDER = ['5m', '15m', '30m', '1h', '4h'];
+const TF_LINE_WIDTH = { '5m': 1.0, '15m': 1.3, '30m': 1.7, '1h': 2.1, '4h': 2.6 };
+let _zoneFilter = { tfs: new Set(['5m']), mode: 'backtest' };
+let _tfAllZones = [];          // all-timeframe zones (each tagged with .timeframe)
+let _tfZonesFetching = false;
+let _tfZonesLastFetch = 0;
+
+function _zoneFilterAreaPct() {
+    const live = document.getElementById('area-pct-live');
+    const bt = document.getElementById('area-pct-bt');
+    const el = (_zoneFilter.mode === 'live' && live) ? live : (bt || live);
+    const v = el ? parseFloat(el.value) : 0.80;
+    return (v >= 0.50 && v <= 0.95) ? v : 0.80;
+}
+
+// Which param panel drives the chart zones (live when running, else backtest).
+function _activeZonePanel() {
+    return (_zoneFilter.mode === 'live') ? 'live' : 'bt';
+}
+
+// Pull the chart-zone timeframes from the active param panel's TF selection.
+function syncZoneFilterUI() {
+    let sel = [];
+    try { sel = readOverlapTfCombo(_activeZonePanel()); } catch (e) {}
+    _zoneFilter.tfs = new Set(sel.length ? sel : ['5m']);
+}
+
+// Kept for back-compat callers: re-sync TFs from params, then refetch + redraw.
+function onZoneFilterChange() {
+    syncZoneFilterUI();
+    refreshTfZones(true);
+}
+
+// Fetch all-timeframe zones from the server (throttled), then render.
+async function refreshTfZones(force) {
+    const now = Date.now();
+    if (_tfZonesFetching) return;
+    if (!force && now - _tfZonesLastFetch < 15000) { renderTfZones(); return; }
+    _tfZonesFetching = true;
+    try {
+        const resp = await fetch(API + '/data/detect-zones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ all_timeframes: true, value_area_pct: _zoneFilterAreaPct() }),
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            _tfAllZones = data.zones || [];
+        }
+    } catch (e) {
+        // silent — keep previous cache
+    } finally {
+        // Always advance throttle timestamp (even on error) so a failing
+        // request doesn't bypass the 15s throttle and spam the backend.
+        _tfZonesLastFetch = Date.now();
+        _tfZonesFetching = false;
+        renderTfZones();
+    }
+}
+
+// Draw one zone's VAH/VAL (solid) + POC (dashed) horizontal lines.
+// `op` is an opacity multiplier (backtest zones = 0.8, live/current zone = 1.0).
+function _drawZoneLines(ctx, z, tf, lw, color, op, W, H, rightX, priceToY, tX) {
+    const yVAH = priceToY(z.vah_80);
+    const yVAL = priceToY(z.val_80);
+    const yPOC = priceToY(z.poc);
+    if ([yVAH, yVAL, yPOC].every(y => y < 0 || y > H)) return;
+
+    // Always clamp the horizontal extent to the zone's own time range
+    // (formed_at → left_at) so the line spans exactly the bucket — never the
+    // full chart width — for both live and backtest.
+    const a = tX(z.formed_at);
+    const b = z.left_at ? tX(z.left_at) : null;
+    let x0 = (a !== null) ? a : 0;
+    let x1 = (b !== null) ? b : rightX;
+    if (x1 < 0 || x0 > W) return;
+    x0 = Math.max(0, x0);
+    x1 = Math.min(rightX, x1);
+    if (x1 <= x0 + 2) return;
+
+    ctx.lineWidth = lw;
+    // VAH / VAL — solid
+    ctx.setLineDash([]);
+    ctx.strokeStyle = `rgba(${color}, ${(0.9 * op).toFixed(3)})`;
+    if (yVAH >= 0 && yVAH <= H) { ctx.beginPath(); ctx.moveTo(x0, yVAH); ctx.lineTo(x1, yVAH); ctx.stroke(); }
+    if (yVAL >= 0 && yVAL <= H) { ctx.beginPath(); ctx.moveTo(x0, yVAL); ctx.lineTo(x1, yVAL); ctx.stroke(); }
+    // POC — dashed
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = `rgba(${color}, ${(0.65 * op).toFixed(3)})`;
+    if (yPOC >= 0 && yPOC <= H) { ctx.beginPath(); ctx.moveTo(x0, yPOC); ctx.lineTo(x1, yPOC); ctx.stroke(); }
+    ctx.setLineDash([]);
+
+    // TF label at the left edge of the VAH line
+    ctx.fillStyle = `rgba(${color}, ${(0.85 * op).toFixed(3)})`;
+    ctx.font = '9px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'left';
+    const lx = Math.max(2, x0 + 4);
+    if (yVAH >= 0 && yVAH <= H) ctx.fillText(tf, lx, yVAH - 3);
+    else if (yPOC >= 0 && yPOC <= H) ctx.fillText(tf, lx, yPOC - 3);
+}
+
+// Render the selected-timeframe zones onto the VP overlay canvas.
+function renderTfZones() {
     const canvas = createVPOverlay();
     const container = document.getElementById('chart-container');
     const dpr = window.devicePixelRatio || 1;
@@ -3521,324 +3598,63 @@ function drawVolumeProfile(zones) {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
 
-    const priceToY = (price) => {
-        try {
-            const y = candleSeries.priceToCoordinate(price);
-            return y !== null ? y : -1;
-        } catch(e) { return -1; }
-    };
+    const tfs = _zoneFilter.tfs;
+    if (!tfs || tfs.size === 0) return;
+    if (!_tfAllZones || _tfAllZones.length === 0) { if (!_tfZonesFetching) refreshTfZones(); return; }
 
-    const timeToX = (isoStr) => {
-        if (!isoStr) return null;
-        const ts = isoToChartTime(isoStr);
-        return chart.timeScale().timeToCoordinate(ts);
-    };
+    // Combined view (no filter): every completed reference zone is drawn as a
+    // "backtest" line at 80% opacity, and the most-recent completed zone per TF
+    // (the one the live engine is currently trading against) is redrawn on top
+    // at 100% opacity in orange.
+    const BT_COLOR = '255, 255, 255';   // backtest reference zones (dim)
+    const LIVE_COLOR = '255, 165, 0';   // current/live zone (bright)
+    const rightX = W - 60;
 
-    // ── All-timeframe overlay: thin lines only (white VAH/VAL, red POC), no IDs ──
-    if (_allTfZonesActive) {
-        const chartRightX = W - 60;
-        const lineX0 = 0;
-        zones.forEach(z => {
-            const yVAH = priceToY(z.vah_80);
-            const yVAL = priceToY(z.val_80);
-            const yPOC = priceToY(z.poc);
-            ctx.lineWidth = 1;
-            ctx.setLineDash([]);
-            // VAH / VAL — white
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
-            if (yVAH >= 0 && yVAH <= H) { ctx.beginPath(); ctx.moveTo(lineX0, yVAH); ctx.lineTo(chartRightX, yVAH); ctx.stroke(); }
-            if (yVAL >= 0 && yVAL <= H) { ctx.beginPath(); ctx.moveTo(lineX0, yVAL); ctx.lineTo(chartRightX, yVAL); ctx.stroke(); }
-            // POC — red
-            ctx.strokeStyle = 'rgba(255, 48, 72, 0.6)';
-            if (yPOC >= 0 && yPOC <= H) { ctx.beginPath(); ctx.moveTo(lineX0, yPOC); ctx.lineTo(chartRightX, yPOC); ctx.stroke(); }
+    const priceToY = (p) => { try { const y = candleSeries.priceToCoordinate(p); return y !== null ? y : -1; } catch (e) { return -1; } };
+    const tX = (iso) => { if (!iso) return null; try { return chart.timeScale().timeToCoordinate(isoToChartTime(iso)); } catch (e) { return null; } };
+
+    // Visible time range for viewport culling
+    let vFrom = null, vTo = null;
+    try { const vr = chart.timeScale().getVisibleRange(); if (vr) { vFrom = vr.from; vTo = vr.to; } } catch (e) {}
+
+    TF_ORDER.forEach(tf => {
+        if (!tfs.has(tf)) return;
+        const zonesTf = _tfAllZones.filter(z => z.timeframe === tf);
+        if (zonesTf.length === 0) return;
+        const lw = TF_LINE_WIDTH[tf] || 1.5;
+
+        // All completed zones in the viewport (backtest layer, 80% opacity).
+        const completed = zonesTf.filter(z => z.status === 'left');
+        const inView = [];
+        completed.forEach(z => {
+            const f = isoToChartTime(z.formed_at);
+            const l = z.left_at ? isoToChartTime(z.left_at) : f;
+            if (vFrom !== null && vTo !== null && (l < vFrom || f > vTo)) return;
+            inView.push(z);
         });
-        return;
-    }
 
-    // ── PASS 1: Draw zone bodies (histogram, background, VAH/VAL) ──
-    zones.forEach(z => {
-        const is1m = z.timeframe === '1m';
-        const isLeft = z.status === 'left';
-        const isDeveloping = z.status === 'forming' || !z.mature;
-        const poc = z.poc, vah = z.vah_80, val = z.val_80;
-        const h100 = z.high_100, l100 = z.low_100;
-
-        const yPOC = priceToY(poc);
-        const yVAH = priceToY(vah);
-        const yVAL = priceToY(val);
-        const yH100 = priceToY(h100);
-        const yL100 = priceToY(l100);
-        // Check if ANY zone level is visible (don't skip just because POC is off-screen)
-        const anyVisible = [yPOC, yVAH, yVAL, yH100, yL100].some(y => y >= -50 && y <= H + 50);
-        if (!anyVisible) return;
-
-        // Zone X boundaries (histogram + background only within zone time)
-        const xStart = timeToX(z.formed_at);
-        const xEnd = z.left_at ? timeToX(z.left_at) : null;
-
-        // For LEFT zones: both start and end must resolve, skip if either is null
-        // For ACTIVE zones: end extends to the last loaded candle (NOT the
-        // full canvas width — otherwise old backtest POCs extend forever
-        // across days/weeks of later chart data).
-        let x0, x1;
-        if (isLeft) {
-            if (xStart === null && xEnd === null) return; // completely off chart
-            x0 = xStart !== null ? xStart : -200;
-            x1 = xEnd !== null ? xEnd : x0 + Math.min(400, Math.max(80, (z.num_candles || 60) * 3));
-        } else {
-            x0 = xStart !== null ? xStart : 0;
-            // Cap active-zone extent at the last candle's X coordinate
-            let lastBarX = null;
-            const cd = window._lastChartData;
-            if (cd && cd.length > 0) {
-                try { lastBarX = chart.timeScale().timeToCoordinate(cd[cd.length - 1].time); } catch(_) {}
-            }
-            x1 = lastBarX !== null ? lastBarX : (W - 60);
-        }
-        // Critical: skip if zone is entirely off-screen horizontally
-        if (x1 < 0 || x0 > W) return;
-        // Clamp to visible area
-        x0 = Math.max(-10, x0);
-        x1 = Math.min(W - 60, x1);
-        if (x1 <= x0 + 20) return; // too narrow
-
-        // ── VP Histogram at zone start ──
-        const histW = 80;
-        const histX = x0;
-
-        if (z.profile && z.profile.length > 0 && yH100 >= 0 && yL100 >= 0) {
-            const maxPct = Math.max(...z.profile.map(p => p.pct));
-            z.profile.forEach(p => {
-                const y = priceToY(p.price);
-                if (y < 0 || y > H) return;
-                const barW = (p.pct / (maxPct || 1)) * histW;
-                if (barW < 1) return;
-
-                const isPOC = Math.abs(p.price - poc) < 1.0;
-                const isVA = p.price >= val && p.price <= vah;
-
-                if (isPOC) {
-                    ctx.fillStyle = `rgba(255, 48, 72, ${0.10 + p.pct * 0.12})`;
-                } else if (isVA) {
-                    ctx.fillStyle = `rgba(0, 229, 190, ${0.02 + p.pct * 0.08})`;
-                } else {
-                    ctx.fillStyle = `rgba(0, 229, 190, ${0.01 + p.pct * 0.035})`;
-                }
-                ctx.fillRect(histX, y - 1, barW, 2);
-            });
-        } else if (yVAH >= 0 && yVAL >= 0) {
-            const vaTop = Math.min(yVAH, yVAL);
-            const vaHeight = Math.abs(yVAL - yVAH);
-            const steps = Math.max(8, Math.floor(vaHeight / 3));
-            const stepH = vaHeight / steps;
-
-            for (let i = 0; i < steps; i++) {
-                const yStep = vaTop + i * stepH;
-                const distFromCenter = Math.abs((yStep + stepH / 2) - yPOC) / (vaHeight / 2 + 1);
-                const intensity = Math.exp(-distFromCenter * distFromCenter * 2);
-                const barW = histW * intensity;
-
-                if (Math.abs((yStep + stepH / 2) - yPOC) < stepH * 1.5) {
-                    ctx.fillStyle = `rgba(255, 48, 72, ${0.08 + intensity * 0.12})`;
-                } else {
-                    ctx.fillStyle = `rgba(0, 229, 190, ${0.015 + intensity * 0.07})`;
-                }
-                ctx.fillRect(histX, yStep, barW, Math.max(1, stepH - 1));
-            }
+        // Most-recent completed zone = current/live reference (100% opacity).
+        let liveZone = null;
+        if (completed.length) {
+            const sorted = completed.slice().sort((a, b) => ((a.left_at || '') < (b.left_at || '')) ? 1 : -1);
+            liveZone = sorted[0];
         }
 
-        // ── 80% VA zone background: VAH→POC white, POC→VAL gray ──
-        if (yVAH >= 0 && yVAL >= 0 && yPOC >= 0) {
-            const alpha = isLeft ? 0.04 : 0.07;
-            // VAH to POC — light white
-            const topY = Math.min(yVAH, yPOC);
-            const whiteH = Math.abs(yPOC - yVAH);
-            if (whiteH > 1) {
-                ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
-                ctx.fillRect(x0, topY, x1 - x0, whiteH);
-            }
-            // POC to VAL — gray
-            const botY = Math.min(yPOC, yVAL);
-            const grayH = Math.abs(yVAL - yPOC);
-            if (grayH > 1) {
-                ctx.fillStyle = `rgba(160, 170, 190, ${alpha})`;
-                ctx.fillRect(x0, botY, x1 - x0, grayH);
-            }
-        }
-
-        // ── 80% VAH / VAL boundary lines (dynamic curve or flat fallback) ──
-        const lineAlpha = isDeveloping ? 0.70 : (isLeft ? 0.72 : 0.96);
-        const boundaryColor = isDeveloping
-            ? `rgba(150, 154, 164, ${lineAlpha})`
-            : `rgba(255, 255, 255, ${lineAlpha})`;
-        const labelColor = isDeveloping
-            ? 'rgba(150, 154, 164, 0.75)'
-            : 'rgba(255, 255, 255, 0.85)';
-        const tfLabel = is1m ? '1m ' : '';
-
-        ctx.strokeStyle = boundaryColor;
-        ctx.lineWidth = isLeft ? 0.8 : 1.15;
-        ctx.setLineDash([]);
-
-        if (z.va_curve && z.va_curve.length >= 2) {
-            // VAH step-line (raw VP values, no smoothing)
-            ctx.beginPath();
-            let vahStarted = false;
-            for (let i = 0; i < z.va_curve.length; i++) {
-                const pt = z.va_curve[i];
-                const px = timeToX(pt.ts);
-                const py = priceToY(pt.vah);
-                if (px === null || py < 0) continue;
-                const cx = Math.max(x0, Math.min(x1, px));
-                if (!vahStarted) { ctx.moveTo(cx, py); vahStarted = true; }
-                else { ctx.lineTo(cx, py); }
-            }
-            if (vahStarted && yVAH >= 0) ctx.lineTo(x1, yVAH);
-            if (vahStarted) ctx.stroke();
-            // VAL step-line
-            ctx.beginPath();
-            let valStarted = false;
-            for (let i = 0; i < z.va_curve.length; i++) {
-                const pt = z.va_curve[i];
-                const px = timeToX(pt.ts);
-                const py = priceToY(pt.val);
-                if (px === null || py < 0) continue;
-                const cx = Math.max(x0, Math.min(x1, px));
-                if (!valStarted) { ctx.moveTo(cx, py); valStarted = true; }
-                else { ctx.lineTo(cx, py); }
-            }
-            if (valStarted && yVAL >= 0) ctx.lineTo(x1, yVAL);
-            if (valStarted) ctx.stroke();
-        } else {
-            if (yVAH >= 0) {
-                ctx.beginPath(); ctx.moveTo(x0, yVAH); ctx.lineTo(x1, yVAH); ctx.stroke();
-            }
-            if (yVAL >= 0) {
-                ctx.beginPath(); ctx.moveTo(x0, yVAL); ctx.lineTo(x1, yVAL); ctx.stroke();
-            }
-        }
-        // Labels at current VAH/VAL
-        if (!isLeft) {
-            ctx.fillStyle = labelColor;
-            ctx.font = (is1m ? '9' : '10') + 'px "IBM Plex Mono", monospace';
-            ctx.textAlign = 'left';
-            if (yVAH >= 0) ctx.fillText(tfLabel + 'VAH', x0 + histW + 4, yVAH - 2);
-            if (yVAL >= 0) ctx.fillText(tfLabel + 'VAL', x0 + histW + 4, yVAL + 10);
-        }
-        ctx.setLineDash([]);
-
-        // ── Zone ID + maturity label ──
-        if (!isLeft) {
-            const matureTag = z.mature ? ' [MATURE]' : '';
-            const spreadTicks = ((vah - val) / 0.25).toFixed(0);
-            ctx.fillStyle = z.mature ? 'rgba(0, 229, 160, 0.5)' : 'rgba(255, 255, 255, 0.3)';
-            ctx.font = '9px "IBM Plex Mono", monospace';
-            ctx.textAlign = 'left';
-            if (yH100 >= 0) {
-                ctx.fillText(z.zone_id + matureTag + ' | ' + z.num_candles + ' bars | ' + spreadTicks + 'tick', x0 + 2, Math.min(yH100, yL100) - 4);
-            }
-        } else {
-            // Left (ended) zones — show zone ID + POC price
-            ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
-            ctx.font = '8px "IBM Plex Mono", monospace';
-            ctx.textAlign = 'left';
-            const labelY = (yVAH >= 0 && yVAH <= H) ? yVAH - 4 : ((yH100 >= 0) ? Math.min(yH100, yL100) - 4 : -1);
-            if (labelY >= 0) {
-                ctx.fillText(z.zone_id + ' POC=' + poc.toFixed(0), x0 + 2, labelY);
-            }
-        }
-    });
-
-    // ── PASS 2: Draw POC lines ──
-    // POC extends to the next session boundary, matching the session VP behavior.
-    const chartRight = W - 60;
-    const sessionEndToX = (isoStr) => {
-        const endMs = getNextSessionBoundaryMs(isoStr);
-        if (endMs === null) return null;
-        return chart.timeScale().timeToCoordinate(utcMsToChartTime(endMs));
-    };
-    const pocLabels = [];  // collect for POC price tags (active only)
-
-    zones.forEach(z => {
-        const is1m = z.timeframe === '1m';
-        const isLeft = z.status === 'left';
-        const poc = z.poc;
-        const yPOC = priceToY(poc);
-        // Only skip if POC is far off-screen (allow partial visibility)
-        if (yPOC < -100 || yPOC > H + 100) return;
-
-        const xStart = timeToX(z.formed_at);
-        const xSessionEnd = sessionEndToX(z.formed_at);
-        let x0, x1;
-        if (isLeft) {
-            const xLeft = z.left_at ? timeToX(z.left_at) : null;
-            if (xStart === null && xLeft === null && xSessionEnd === null) return;
-            x0 = xStart !== null ? xStart : -200;
-            x1 = xSessionEnd !== null
-                ? xSessionEnd
-                : (xLeft !== null ? xLeft : x0 + Math.min(400, Math.max(80, (z.num_candles || 60) * 3)));
-        } else {
-            x0 = xStart !== null ? xStart : 0;
-            x1 = xSessionEnd !== null ? xSessionEnd : chartRight;
-        }
-        if (x1 < 0 || x0 > W) return;
-        x0 = Math.max(-10, x0);
-        x1 = Math.min(chartRight, x1);
-        if (x1 <= x0 + 5) return;
-
-        const activeAlpha = is1m ? 0.8 : 1.0;
-        const leftAlpha = is1m ? 0.15 : 0.2;
-        const alpha = isLeft ? leftAlpha : activeAlpha;
-
-        ctx.strokeStyle = `rgba(255, 48, 72, ${alpha})`;
-        ctx.lineWidth = isLeft ? 0.5 : 1.5;
-        ctx.setLineDash(isLeft ? [2, 6] : (is1m ? [4, 3] : []));
-
-        ctx.beginPath();
-        ctx.moveTo(x0, yPOC);
-        ctx.lineTo(x1, yPOC);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Label only for ACTIVE zones (left zones: no label to reduce clutter)
-        if (!isLeft) {
-            const pocColor = `rgba(255, 48, 72, ${alpha})`;
-            const tfLabel = is1m ? '1m ' : '';
-            ctx.fillStyle = pocColor;
-            ctx.font = (is1m ? '9' : '10') + 'px "IBM Plex Mono", monospace';
-            ctx.textAlign = 'left';
-            const histW = 80;
-            ctx.fillText(tfLabel + 'POC ' + poc.toFixed(0), x0 + histW + 4, yPOC - 4);
-            pocLabels.push({ y: yPOC, x: x1, price: poc, is1m, alpha });
-        }
-    });
-
-    // ── PASS 3: POC price tags (active zones only, deduped) ──
-    pocLabels.sort((a, b) => a.y - b.y);
-    let lastLabelY = -20;
-    pocLabels.forEach(lbl => {
-        if (Math.abs(lbl.y - lastLabelY) < 14) return;
-        lastLabelY = lbl.y;
-
-        const tagW = 58;
-        const tagH = 14;
-        const tagX = Math.min(W - tagW - 2, Math.max(2, lbl.x + 2));
-        const tagY = lbl.y - tagH / 2;
-
-        ctx.fillStyle = 'rgba(255, 48, 72, 0.2)';
-        ctx.fillRect(tagX, tagY, tagW, tagH);
-
-        ctx.strokeStyle = 'rgba(255, 48, 72, 0.5)';
-        ctx.lineWidth = 0.5;
-        ctx.strokeRect(tagX, tagY, tagW, tagH);
-
-        ctx.fillStyle = `rgba(255, 48, 72, ${lbl.alpha})`;
-        ctx.font = '9px "IBM Plex Mono", monospace';
-        ctx.textAlign = 'center';
-        const prefix = lbl.is1m ? '1m ' : '';
-        ctx.fillText(prefix + lbl.price.toFixed(1), tagX + tagW / 2, tagY + 10);
+        inView.forEach(z => {
+            if (z === liveZone) return;   // drawn brighter below
+            _drawZoneLines(ctx, z, tf, lw, BT_COLOR, 0.8, W, H, rightX, priceToY, tX);
+        });
+        if (liveZone) _drawZoneLines(ctx, liveZone, tf, lw, LIVE_COLOR, 1.0, W, H, rightX, priceToY, tX);
     });
 }
+
+// Back-compat shim: callers still pass single-TF zones; the actual rendering is
+// filter-driven from the all-TF cache. Keep _cachedVPZones for legacy redraw paths.
+function drawVolumeProfile(zones) {
+    if (zones && zones.length) _cachedVPZones = zones;
+    renderTfZones();
+}
+
 
 function clearVPOverlay() {
     if (vpOverlayCanvas) {
@@ -4253,6 +4069,7 @@ async function connectAPI() {
         unit_number: 1,
         start_time: startDate + 'T00:00:00Z',
         end_time: endDate + 'T23:59:59Z',
+        continuous_contract: true,
     };
     if (username) body.username = username;
     if (apikey) body.api_key = apikey;
@@ -4302,6 +4119,9 @@ async function connectAPI() {
         }
 
         log('Connected // Contract: ' + data.contract_id, 'success');
+        if (data.contracts && data.contracts.length > 1) {
+            log('Continuous contract: ' + data.contracts.map(contractLabelFromId).join(' + '), 'info');
+        }
         log('Loaded ' + data.candles_count + ' bars (' + data.interval + ') from ' + data.first + ' to ' + data.last, 'success');
 
         // Close connection dropdown
@@ -4367,6 +4187,8 @@ function showCandleData(candles) {
 
     applyDefaultChartView(chartData);
     drawSessionDividers();
+    // Populate the all-timeframe zone cache so the filter draws lines immediately.
+    refreshTfZones(true);
 }
 
 function applyDefaultChartView(chartData, zones) {
@@ -4490,7 +4312,8 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
     const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / machine learning
         start_time: fetchStartTime,
         end_time:   endDate   + 'T23:59:59Z',
-        append: appendFetch };
+        append: appendFetch,
+        continuous_contract: true };
     if (username)    body.username    = username;
     if (apikey)      body.api_key     = apikey;
     if (contractId)  body.contract_id = contractId;
@@ -4506,6 +4329,9 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
         document.getElementById('data-count').value = data.candles_count + ' bars';
         _btDataRange = { start: startDate, end: endDate, contract: contractId || '' };
         _updateDataInfo(data.first, data.last, 'bt', data.candles_count);
+        if (data.contracts && data.contracts.length > 1) {
+            log('Continuous contract: ' + data.contracts.map(contractLabelFromId).join(' + '), 'info');
+        }
         log('Backtest data ready: ' + data.candles_count + ' bars' + (data.fetched_count != null ? ' (' + data.fetched_count + ' fetched)' : ''), 'success');
         // Refresh chart to show the full loaded range
         await fetchAndShowChart('1m');
@@ -5083,6 +4909,11 @@ function _setLiveRealtimeMarkers(markers) {
 
 function renderChart(data) {
     if (!data) { log('No backtest data to render', 'warn'); return; }
+
+    // Backtest finished → switch the zone filter to BT and refresh the all-TF cache.
+    _zoneFilter.mode = 'backtest';
+    syncZoneFilterUI();
+    refreshTfZones(true);
 
     // Draw zones (VP overlay + legend)
     drawBacktestZones(data.zones);

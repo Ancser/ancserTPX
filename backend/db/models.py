@@ -339,6 +339,10 @@ class StrategyParams:
     # Area (zone) configuration — fixed clock-bucket timeframe + value-area width.
     area_timeframe: str = "5m"             # "5m" | "15m" | "30m" | "1h" | "4h"
     value_area_pct: float = 0.80           # value-area width fraction (0.50..0.95)
+    # Zone method (v0.18): "single" = one timeframe; "overlap" = require 2..5
+    # timeframes' value areas to overlap (identical to backtest/ML overlap sweep).
+    method: str = "single"                 # "single" | "overlap"
+    tf_combo: List[str] = field(default_factory=list)  # overlap timeframes, e.g. ["5m","15m"]
     # SL/TP model (v0.18): SL = lowest-volume node between POC and VAH/VAL;
     # TP = entry ± rr_ratio × SL-distance. rr_ratio selectable 1..10. No fixed ticks.
     rr_ratio: int = 2                      # reward:risk multiple (1..10)
@@ -462,6 +466,7 @@ class OrderResponse:
     success: bool
     error_code: int = 0
     error_message: Optional[str] = None
+    raw: Optional[Dict[str, Any]] = None
 
 
 @dataclass
