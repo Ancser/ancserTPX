@@ -355,8 +355,26 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
     except (TypeError, ValueError):
         confirm_bars = 7
     confirm_bars = max(1, min(10, confirm_bars))
+
+    # v0.19: confluence (explainable ML) mode — driven by preset["strategy"].
+    strategy_mode = str(preset.get("strategy") or "trend").lower()
+    if strategy_mode != "confluence":
+        strategy_mode = "trend"
+
+    def _conf_float(key, default):
+        try:
+            return float(preset.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _conf_int(key, default):
+        try:
+            return int(preset.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
     return StrategyParams(
-        strategy="trend",
+        strategy=strategy_mode,
         tp_ticks=primary["tp"],
         sl_ticks=primary["sl"],
         trail_sl_ticks=primary["trail"],
@@ -380,6 +398,15 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         one_trade_per_session_direction=bool(preset.get("one_trade_per_session_direction", True)),
         tr_one_trade_per_session=bool(preset.get("tr_one_trade_per_session", True)),
         skip_zone_stability=False,
+        # v0.19 confluence config (used only when strategy == "confluence")
+        conf_band_ticks=_conf_float("conf_band_ticks", 8.0),
+        conf_min_distinct_tf=_conf_int("conf_min_distinct_tf", 3),
+        conf_rr=_conf_float("conf_rr", 1.5),
+        conf_wait_minutes=_conf_int("conf_wait_minutes", 60),
+        conf_base_minutes=_conf_int("conf_base_minutes", 1),
+        conf_min_prob=_conf_float("conf_min_prob", 0.0),
+        conf_use_scorer=bool(preset.get("conf_use_scorer", True)),
+        conf_shadow=bool(preset.get("conf_shadow", False)),
     )
 
 
@@ -419,6 +446,23 @@ async def run_terminal_live() -> int:
         return 2
 
     preset_name, preset, preset_source = _load_default_preset()
+
+    # v0.19: one-line console confluence switch (no preset editing needed).
+    #   TOPSTEPX_CONFLUENCE=1            -> run the explainable ML confluence mode
+    #   TOPSTEPX_CONFLUENCE_SHADOW=1     -> log signals only (default: LIVE places orders)
+    #   TOPSTEPX_CONF_MIN_PROB=0.55      -> skip signals below this win-probability
+    # Base candle resolution is standardized at 1m (matches stored data + backtest).
+    if _env_bool("TOPSTEPX_CONFLUENCE", False):
+        preset = dict(preset)
+        preset["strategy"] = "confluence"
+        preset["conf_shadow"] = _env_bool("TOPSTEPX_CONFLUENCE_SHADOW", False)
+        preset["conf_base_minutes"] = 1
+        try:
+            preset["conf_min_prob"] = float(os.getenv("TOPSTEPX_CONF_MIN_PROB", "0") or 0)
+        except ValueError:
+            preset["conf_min_prob"] = 0.0
+        preset_source = f"{preset_source}+confluence_env"
+
     client = TopstepXClient(username=username, api_key=api_key, use_demo=use_demo)
     engine: Optional[LiveTradingEngine] = None
     stop_event = asyncio.Event()

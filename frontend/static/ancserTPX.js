@@ -1,1461 +1,3 @@
-﻿<!--
-  ============================================================
-  文件: frontend/static/index.html
-  狀態: v0.17.0
-  功能 / Features:
-    1. Backtest, Machine Learning, Live Monitor 共用 completed 1m candle decision flow.
-    2. 策略固定為 trend。
-    3. Value Area 固定 80%，preset 名稱不再包含 area sweep。
-    4. Full TP Lock 取代舊 profit lock，達到 1/2/3 次完整 TP 後下一 session 前停止新單。
-    5. Chart overlay 標示 session boundary、VP zone、禁止交易時段紅色斜線。
-  ============================================================
--->
-<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ancserTPX</title>
-    <link rel="icon" href="/static/favicon.ico" sizes="any">
-    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root {
-            --bg:     #08090d;
-            --bg2:    #0d1017;
-            --bg3:    #131620;
-            --bg4:    #1a1e2a;
-            --border: rgba(100, 220, 255, 0.08);
-            --border-h: rgba(100, 220, 255, 0.2);
-            --text:   #c8d0e0;
-            --text2:  #556178;
-            --text3:  #3a4560;
-            --cyan:   #64dcff;
-            --cyan2:  rgba(100, 220, 255, 0.15);
-            --cyan3:  rgba(100, 220, 255, 0.05);
-            --green:  #00e5a0;
-            --green2: rgba(0, 229, 160, 0.12);
-            --red:    #ff4060;
-            --red2:   rgba(255, 64, 96, 0.12);
-            --amber:  #ffa726;
-            --amber2: rgba(255, 167, 38, 0.12);
-            --white:  #eaf0ff;
-        }
-
-        body {
-            font-family: 'Rajdhani', 'Noto Sans TC', sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            overflow: hidden;
-            height: 100vh;
-        }
-
-        /* ── GFL2 Corner Cuts ── */
-        .cut-tl { clip-path: polygon(12px 0, 100% 0, 100% 100%, 0 100%, 0 12px); }
-        .cut-tr { clip-path: polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%); }
-        .cut-bl { clip-path: polygon(0 0, 100% 0, 100% 100%, 12px 100%, 0 calc(100% - 12px)); }
-        .cut-br { clip-path: polygon(0 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%); }
-
-        /* ── Header ── */
-        .header {
-            background: var(--bg2);
-            border-bottom: 1px solid var(--border);
-            padding: 0 24px;
-            height: 48px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            position: relative;
-        }
-        .header::after {
-            content: '';
-            position: absolute;
-            bottom: 0; left: 0;
-            width: 100%;
-            height: 1px;
-            background: linear-gradient(90deg, transparent, var(--cyan) 20%, var(--cyan) 80%, transparent);
-            opacity: 0.3;
-        }
-        .header h1 {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 16px;
-            font-weight: 400;
-            letter-spacing: 4px;
-            color: var(--white);
-        }
-        .header h1 .sys-tag {
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 10px;
-            font-weight: 400;
-            letter-spacing: 2px;
-            color: var(--text2);
-            margin-left: 12px;
-            padding: 2px 8px;
-            border: 1px solid var(--border);
-            vertical-align: middle;
-        }
-        .header-right {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 12px;
-        }
-        .status-indicator {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            color: var(--text2);
-        }
-        .status-dot {
-            width: 6px; height: 6px;
-            border-radius: 0;
-            display: inline-block;
-            transform: rotate(45deg);
-        }
-        .status-dot.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
-        .status-dot.err { background: var(--red); box-shadow: 0 0 8px var(--red); }
-        .status-dot.loading { background: var(--amber); animation: pulse 1.2s ease-in-out infinite; }
-        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.2; } }
-
-        #clock {
-            color: var(--cyan);
-            letter-spacing: 2px;
-        }
-
-        /* ── Tabs (inside header) ── */
-        .header-tabs {
-            display: flex;
-            gap: 24px;
-            position: absolute;
-            left: 50%;
-            transform: translateX(-50%);
-            height: 100%;
-            align-items: center;
-        }
-        .tab {
-            padding: 14px 4px 12px;
-            cursor: pointer;
-            color: var(--text2);
-            font-family: 'Orbitron', sans-serif;
-            font-size: 10px;
-            font-weight: 400;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            border-bottom: 2px solid transparent;
-            transition: all 0.3s ease;
-            position: relative;
-            height: 100%;
-            display: flex;
-            align-items: center;
-        }
-        .tab:hover { color: var(--text); }
-        .tab.active {
-            color: var(--white);
-            border-bottom-color: var(--white);
-        }
-        .tab.active::after {
-            content: '';
-            position: absolute;
-            bottom: -1px;
-            left: 0;
-            right: 0;
-            height: 6px;
-            background: linear-gradient(to top, rgba(255,255,255,0.15), transparent);
-            pointer-events: none;
-        }
-
-        /* ── Layout ── */
-        .main { display: flex; height: calc(100vh - 48px); }
-        .sidebar {
-            width: 400px;
-            background: var(--bg2);
-            border-right: 1px solid var(--border);
-            overflow-y: auto;
-            flex-shrink: 0;
-        }
-        .sidebar::-webkit-scrollbar { width: 2px; }
-        .sidebar::-webkit-scrollbar-thumb { background: var(--border-h); }
-        .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-
-        /* ── Panels ── */
-        .panel {
-            padding: 16px;
-            border-bottom: 1px solid var(--border);
-            position: relative;
-        }
-        .panel::before {
-            content: '';
-            position: absolute;
-            bottom: 0; left: 0;
-            width: 100%; height: 1px;
-            background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%);
-        }
-        .panel::after {
-            content: '';
-            position: absolute;
-            bottom: 0; left: 0;
-            width: 100%; height: 14px;
-            background: radial-gradient(ellipse at 50% 100%, rgba(255,255,255,0.05) 0%, transparent 70%);
-            pointer-events: none;
-        }
-        .panel-title {
-            font-family: 'Orbitron', sans-serif;
-            font-size: 10px;
-            font-weight: 400;
-            color: var(--white);
-            text-transform: uppercase;
-            letter-spacing: 3px;
-            margin-bottom: 14px;
-            padding-bottom: 6px;
-            border-bottom: 1px solid var(--border);
-            position: relative;
-        }
-        .panel-title::before {
-            content: '>';
-            margin-right: 6px;
-            opacity: 0.4;
-            font-family: 'IBM Plex Mono', monospace;
-        }
-
-        /* ── Forms ── */
-        .form-group { margin-bottom: 12px; }
-        .form-group label {
-            display: block;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 11px;
-            font-weight: 500;
-            color: var(--text2);
-            letter-spacing: 1px;
-            text-transform: uppercase;
-            margin-bottom: 4px;
-        }
-        .form-group input, .form-group select {
-            width: 100%;
-            padding: 8px 10px;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 0;
-            color: var(--text);
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 12px;
-            transition: border-color 0.2s;
-        }
-        .form-group input:focus, .form-group select:focus {
-            border-color: var(--cyan);
-            outline: none;
-            box-shadow: 0 0 0 1px rgba(100, 220, 255, 0.1);
-        }
-        .form-group input::placeholder { color: var(--text3); }
-        .form-row { display: flex; gap: 8px; }
-        .form-row .form-group { flex: 1; }
-        /* ── Buttons ── */
-        .btn {
-            padding: 10px 16px;
-            border: 1px solid transparent;
-            border-radius: 0;
-            cursor: pointer;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 13px;
-            font-weight: 600;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            transition: all 0.2s;
-            width: 100%;
-            position: relative;
-            overflow: hidden;
-        }
-        /* hover shimmer removed */
-
-        .btn-primary {
-            background: rgba(255, 167, 38, 0.12);
-            border-color: var(--amber);
-            color: var(--amber);
-        }
-        .btn-primary:hover {
-            background: rgba(255, 167, 38, 0.25);
-            box-shadow: 0 0 20px rgba(255, 167, 38, 0.15);
-        }
-        .btn-primary:disabled { opacity: 0.3; cursor: not-allowed; }
-        .btn-primary:disabled:hover { background: rgba(255, 167, 38, 0.12); box-shadow: none; }
-
-        .btn-green {
-            background: rgba(0, 229, 160, 0.1);
-            border-color: var(--green);
-            color: var(--green);
-        }
-        .btn-green:hover {
-            background: rgba(0, 229, 160, 0.2);
-            box-shadow: 0 0 20px rgba(0, 229, 160, 0.1);
-        }
-        .btn-green:disabled { opacity: 0.3; cursor: not-allowed; }
-
-        .btn-red {
-            background: var(--red2); border-color: var(--red); color: var(--red);
-        }
-        .btn-red:hover {
-            background: rgba(255, 64, 96, 0.25);
-            box-shadow: 0 0 20px rgba(255, 64, 96, 0.15);
-        }
-        .btn-red:disabled { opacity: 0.3; cursor: not-allowed; }
-        .btn-red:disabled:hover { background: var(--red2); box-shadow: none; }
-
-        .btn-amber {
-            background: var(--amber2); border-color: var(--amber); color: var(--amber);
-        }
-        .btn-amber:hover {
-            background: rgba(255, 167, 38, 0.25);
-            box-shadow: 0 0 20px rgba(255, 167, 38, 0.15);
-        }
-        .btn-amber:disabled { opacity: 0.3; cursor: not-allowed; }
-        .btn-amber:disabled:hover { background: var(--amber2); box-shadow: none; }
-
-        /* -- Machine Learning hazard-stripe button -- */
-        .btn-full {
-            position: relative;
-            overflow: hidden;
-            border: 1px solid var(--amber);
-            color: var(--amber);
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 13px;
-            letter-spacing: 2px;
-            font-weight: 600;
-            background: repeating-linear-gradient(
-                -45deg,
-                rgba(255, 167, 38, 0.10) 0px,
-                rgba(255, 167, 38, 0.10) 6px,
-                rgba(255, 167, 38, 0.03) 6px,
-                rgba(255, 167, 38, 0.03) 12px
-            );
-        }
-        .btn-full::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: repeating-linear-gradient(
-                -45deg,
-                transparent 0px,
-                transparent 6px,
-                rgba(255, 167, 38, 0.06) 6px,
-                rgba(255, 167, 38, 0.06) 7px
-            );
-            pointer-events: none;
-        }
-        .btn-full:hover:not(:disabled) {
-            background: repeating-linear-gradient(
-                -45deg,
-                rgba(255, 167, 38, 0.20) 0px,
-                rgba(255, 167, 38, 0.20) 6px,
-                rgba(255, 167, 38, 0.08) 6px,
-                rgba(255, 167, 38, 0.08) 12px
-            );
-            box-shadow: 0 0 20px rgba(255, 167, 38, 0.2);
-        }
-        .btn-full:disabled {
-            opacity: 0.3;
-            cursor: not-allowed;
-        }
-        .btn-full:disabled:hover {
-            box-shadow: none;
-        }
-        .full-run-wrap {
-            position: relative;
-            display: flex;
-            width: 100%;
-        }
-        .full-run-wrap #btn-run-all {
-            flex: 1;
-        }
-        .full-filter-btn {
-            flex: 0 0 34px;
-            width: 34px;
-            padding: 0 !important;
-            border-left: 0;
-            font-size: 12px;
-        }
-        .full-filter-panel {
-            display: none;
-            position: fixed;
-            z-index: 20000;
-            width: 184px;
-            padding: 8px;
-            background: var(--bg2);
-            border: 1px solid var(--border-h);
-            box-shadow: 0 10px 24px rgba(0,0,0,0.45);
-        }
-        .full-filter-panel.open {
-            display: block;
-        }
-        .full-fix-row {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            height: 24px;
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 10px;
-            color: var(--text2);
-            letter-spacing: 0.8px;
-        }
-        .full-fix-row input {
-            margin: 0;
-            cursor: pointer;
-        }
-
-        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text2); }
-        .btn-outline:hover { border-color: var(--text2); color: var(--text); }
-
-        /* ── Checkbox ── */
-        input[type="checkbox"] {
-            appearance: none;
-            width: 14px; height: 14px;
-            border: 1px solid var(--border-h);
-            background: var(--bg);
-            cursor: pointer;
-            position: relative;
-        }
-        input[type="checkbox"]:checked {
-            border-color: var(--cyan);
-            background: rgba(100, 220, 255, 0.15);
-        }
-        input[type="checkbox"]:checked::after {
-            content: '';
-            position: absolute;
-            top: 2px; left: 2px;
-            width: 8px; height: 8px;
-            background: var(--cyan);
-        }
-
-        /* ── Global Input Fix ── */
-        input[type="number"],
-        input[type="text"],
-        select {
-            background: var(--bg);
-            color: var(--text);
-            border: 1px solid var(--border);
-            border-radius: 0;
-            font-family: 'IBM Plex Mono', monospace;
-        }
-        input[type="number"]:focus,
-        input[type="text"]:focus,
-        select:focus {
-            border-color: var(--cyan);
-            outline: none;
-            box-shadow: 0 0 0 1px rgba(100, 220, 255, 0.1);
-        }
-
-        /* ── Range Slider ── */
-        .slider-group {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-        .slider-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .slider-value {
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 11px;
-            color: var(--cyan);
-            min-width: 54px;
-            text-align: right;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            padding: 3px 6px;
-        }
-        input[type="range"] {
-            -webkit-appearance: none;
-            appearance: none;
-            flex: 1;
-            height: 4px;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: 0;
-            outline: none;
-            cursor: pointer;
-        }
-        input[type="range"]:hover {
-            border-color: var(--border-h);
-        }
-        input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 12px;
-            height: 14px;
-            background: var(--cyan);
-            border: none;
-            border-radius: 0;
-            cursor: pointer;
-            box-shadow: 0 0 4px rgba(100, 220, 255, 0.4);
-        }
-        input[type="range"]::-moz-range-thumb {
-            width: 12px;
-            height: 14px;
-            background: var(--cyan);
-            border: none;
-            border-radius: 0;
-            cursor: pointer;
-            box-shadow: 0 0 4px rgba(100, 220, 255, 0.4);
-        }
-        input[type="range"]::-webkit-slider-runnable-track {
-            height: 4px;
-            background: var(--bg3);
-        }
-        input[type="range"]::-moz-range-track {
-            height: 4px;
-            background: var(--bg3);
-        }
-
-        /* ── Radio ── */
-        input[type="radio"] {
-            appearance: none;
-            width: 14px; height: 14px;
-            border: 1px solid var(--border-h);
-            border-radius: 50%;
-            background: var(--bg);
-            cursor: pointer;
-            position: relative;
-        }
-        input[type="radio"]:checked {
-            border-color: var(--cyan);
-            background: rgba(100, 220, 255, 0.15);
-        }
-        input[type="radio"]:checked::after {
-            content: '';
-            position: absolute;
-            top: 3px; left: 3px;
-            width: 6px; height: 6px;
-            border-radius: 50%;
-            background: var(--cyan);
-        }
-
-        /* ── Metrics ── */
-        .metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-        .metric-card.metric-wide { grid-column: 1 / -1; }
-        .metric-card {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            padding: 7px 10px;
-            position: relative;
-        }
-        .metric-card::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0;
-            width: 1px; height: 100%;
-            background: var(--text3);
-        }
-        .metric-card::after {
-            content: '';
-            position: absolute;
-            top: 0; left: 0;
-            width: 16px; height: 100%;
-            background: radial-gradient(ellipse at 0% 50%, rgba(255,255,255,0.06) 0%, transparent 70%);
-            pointer-events: none;
-        }
-        .metric-card .label {
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 12px;
-            font-weight: 500;
-            color: var(--text2);
-            letter-spacing: 1px;
-            text-transform: uppercase;
-        }
-        .metric-card .value {
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 20px;
-            font-weight: 400;
-            margin-top: 1px;
-            color: var(--white);
-        }
-        .metric-card .value.pos { color: var(--green); }
-        .metric-card .value.neg { color: var(--red); }
-        .metric-card .metric-real {
-            display: block;
-            font-size: 13px;
-            color: var(--text2);
-            opacity: 0.85;
-            margin-top: 1px;
-        }
-        .metric-card:has(.value.pos)::before {
-            background: var(--green);
-        }
-        .metric-card:has(.value.pos)::after {
-            background: radial-gradient(ellipse at 0% 50%, rgba(0,229,160,0.1) 0%, transparent 70%);
-        }
-        .metric-card:has(.value.neg)::before {
-            background: var(--red);
-        }
-        .metric-card:has(.value.neg)::after {
-            background: radial-gradient(ellipse at 0% 50%, rgba(255,64,96,0.1) 0%, transparent 70%);
-        }
-
-        /* ── Chart ── */
-        #chart-container {
-            flex: 1;
-            position: relative;
-            min-height: 400px;
-            border-bottom: 1px solid var(--border);
-        }
-
-        /* ── Zone Legend ── */
-        /* ── Tables ── */
-        /* No inner scroll — let .bottom-content handle scrolling so sticky thead
-           works against that container without two nested scrollbars. */
-        .trade-table-wrap { }
-        table { width: 100%; border-collapse: collapse; }
-        th {
-            background: var(--bg3);
-            color: var(--text2);
-            padding: 7px 10px;
-            text-align: left;
-            position: sticky;
-            top: 0;
-            z-index: 3;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 12px;
-            font-weight: 600;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            border-bottom: 1px solid var(--border-h);
-        }
-        /* -- Machine Learning sortable column headers -- */
-        .full-sort-th {
-            cursor: pointer;
-            user-select: none;
-            white-space: nowrap;
-        }
-        .full-sort-th:hover { color: var(--cyan); }
-        .full-sort-th.sort-active { color: var(--cyan); }
-        .full-sort-th .sa { opacity: 0.25; font-size: 9px; margin-left: 2px; }
-        .full-sort-th.sort-active .sa { opacity: 1; color: var(--cyan); }
-        td {
-            padding: 5px 10px;
-            border-bottom: 1px solid var(--border);
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 12px;
-            color: var(--text);
-        }
-        tr:hover { background: var(--cyan3); }
-        .pnl-pos { color: var(--green); font-weight: 500; }
-        .pnl-neg { color: var(--red); font-weight: 500; }
-
-        /* ── Log ── */
-        .log {
-            background: var(--bg);
-            padding: 10px;
-            overflow-y: auto;
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 11px;
-            line-height: 1.8;
-        }
-        .log::-webkit-scrollbar { width: 2px; }
-        .log::-webkit-scrollbar-thumb { background: var(--border-h); }
-        #tpx-real-state::-webkit-scrollbar { width: 2px; }
-        #tpx-real-state::-webkit-scrollbar-thumb { background: var(--border-h); }
-        .log-entry { color: var(--text3); }
-        .log-entry.info { color: var(--cyan); }
-        .log-entry.success { color: var(--green); }
-        .log-entry.error { color: var(--red); }
-        .log-entry.warn { color: var(--amber); }
-
-        /* ── Bottom Panel ── */
-        .bottom-panel {
-            border-top: 1px solid var(--border-h);
-            background: var(--bg2);
-            height: 36vh;
-            min-height: 80px;
-            max-height: 75vh;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-            position: relative;
-            flex-shrink: 0;
-        }
-        /* Drag handle island */
-        #bottom-drag-handle {
-            position: absolute;
-            top: -7px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 52px;
-            height: 14px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: row-resize;
-            z-index: 50;
-        }
-        #bottom-drag-handle .drag-pill {
-            width: 44px;
-            height: 4px;
-            border-radius: 2px;
-            background: var(--border-h);
-            transition: background 0.15s, width 0.15s;
-        }
-        #bottom-drag-handle:hover .drag-pill {
-            background: var(--cyan);
-            width: 52px;
-        }
-        .bottom-tabs {
-            display: flex;
-            gap: 24px;
-            border-bottom: 1px solid var(--border);
-            flex-shrink: 0;
-            padding: 0 12px;
-        }
-        .bottom-tab {
-            padding: 8px 4px 6px;
-            cursor: pointer;
-            color: var(--text3);
-            font-family: 'Orbitron', sans-serif;
-            font-size: 11px;
-            font-weight: 400;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            border-bottom: 2px solid transparent;
-            transition: all 0.3s ease;
-            position: relative;
-        }
-        .bottom-tab:hover { color: var(--text); }
-        .bottom-tab.active {
-            color: var(--white);
-            border-bottom-color: var(--white);
-        }
-        .bottom-tab.active::after {
-            content: '';
-            position: absolute;
-            bottom: -1px;
-            left: 0;
-            right: 0;
-            height: 6px;
-            background: linear-gradient(to top, rgba(255,255,255,0.15), transparent);
-            pointer-events: none;
-        }
-        .bottom-content { flex: 1; overflow-y: auto; padding: 0; }
-        .bottom-content::-webkit-scrollbar { width: 2px; }
-        .bottom-content::-webkit-scrollbar-thumb { background: var(--border-h); }
-        .bottom-content::-webkit-scrollbar-track { background: transparent; }
-
-        /* ── Scanline Effect ── */
-        body::before {
-            content: '';
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: repeating-linear-gradient(
-                0deg,
-                transparent,
-                transparent 2px,
-                rgba(100, 220, 255, 0.008) 2px,
-                rgba(100, 220, 255, 0.008) 4px
-            );
-            pointer-events: none;
-            z-index: 9999;
-        }
-
-        /* ── Live Strategy Metrics Panel ── */
-        .live-metrics-panel {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            padding: 10px;
-            margin-top: 10px;
-        }
-        .live-metrics-title {
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 10px;
-            font-weight: 600;
-            color: var(--amber);
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            margin-bottom: 8px;
-            padding-bottom: 4px;
-            border-bottom: 1px solid var(--border);
-        }
-        .live-metric-row {
-            display: flex;
-            justify-content: space-between;
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 11px;
-            line-height: 1.8;
-        }
-        .live-metric-row .lm-label { color: var(--text2); }
-        .live-metric-row .lm-value { color: var(--white); }
-        .live-metric-row .lm-value.pos { color: var(--green); }
-        .live-metric-row .lm-value.neg { color: var(--red); }
-
-        /* ── Open Trade Card ── */
-        .open-trade-card {
-            background: var(--bg);
-            border: 1px solid var(--border-h);
-            padding: 8px;
-            margin-top: 6px;
-            position: relative;
-        }
-        .open-trade-card.buy-trade { border-left: 3px solid var(--green); }
-        .open-trade-card.sell-trade { border-left: 3px solid var(--red); }
-        .open-trade-card .otc-header {
-            display: flex;
-            justify-content: space-between;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 12px;
-            font-weight: 600;
-            letter-spacing: 1px;
-        }
-        .open-trade-card .otc-detail {
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 10px;
-            color: var(--text2);
-            line-height: 1.6;
-            margin-top: 4px;
-        }
-
-        /* ── Account Switcher ── */
-        .account-switcher {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .account-select {
-            background: var(--bg);
-            border: 1px solid var(--border);
-            color: var(--text);
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 11px;
-            padding: 4px 24px 4px 8px;
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23556178'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 6px center;
-            cursor: pointer;
-            min-width: 200px;
-        }
-        .account-select:focus { border-color: var(--cyan); outline: none; }
-        .account-select:disabled { opacity: 0.4; cursor: not-allowed; }
-        .account-badge {
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 1px;
-            padding: 2px 6px;
-        }
-        .account-badge.practice { background: rgba(0,229,160,0.15); color: var(--green); border: 1px solid rgba(0,229,160,0.3); }
-        .account-badge.funded { background: rgba(255,167,38,0.15); color: var(--amber); border: 1px solid rgba(255,167,38,0.3); }
-
-        /* ── Connection Dropdown ── */
-        .conn-dropdown-wrap {
-            position: relative;
-        }
-        .conn-trigger {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            cursor: pointer;
-            padding: 4px 10px;
-            border: 1px solid var(--border);
-            background: var(--bg);
-            color: var(--text2);
-            font-family: 'IBM Plex Mono', monospace;
-            font-size: 11px;
-            transition: all 0.2s;
-        }
-        .conn-trigger:hover { border-color: var(--border-h); color: var(--text); }
-        .conn-trigger.connected { border-color: rgba(0,229,160,0.3); color: var(--green); }
-        .conn-trigger .conn-arrow {
-            font-size: 8px;
-            transition: transform 0.2s;
-        }
-        .conn-trigger.open .conn-arrow { transform: rotate(180deg); }
-        .conn-panel {
-            display: none;
-            position: absolute;
-            top: calc(100% + 6px);
-            right: 0;
-            width: 300px;
-            background: var(--bg2);
-            border: 1px solid var(--border-h);
-            padding: 12px;
-            z-index: 1000;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-        }
-        .conn-panel.open { display: block; }
-        .conn-panel .form-group { margin-bottom: 8px; }
-        .conn-panel .form-group label {
-            font-size: 9px;
-            letter-spacing: 1.5px;
-            color: var(--text2);
-            margin-bottom: 3px;
-            display: block;
-        }
-        .conn-panel .form-group input,
-        .conn-panel .form-group select {
-            width: 100%;
-            padding: 5px 8px;
-            font-size: 11px;
-        }
-        .conn-panel .form-row {
-            display: flex;
-            gap: 8px;
-        }
-        .conn-panel .form-row .form-group { flex: 1; }
-        .conn-panel .btn { width: 100%; margin-top: 4px; }
-
-        /* ── Misc ── */
-        @media (max-width: 1200px) { .sidebar { width: 350px; } }
-        .hidden { display: none !important; }
-        .spinner {
-            display: inline-block;
-            width: 12px; height: 12px;
-            border: 1px solid var(--border-h);
-            border-top-color: var(--amber);
-            animation: spin 0.6s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .think-dots {
-            display: inline-flex;
-            gap: 4px;
-            vertical-align: middle;
-            margin-right: 6px;
-        }
-        .think-dots span {
-            display: inline-block;
-            width: 6px; height: 6px;
-            background: var(--text3);
-            opacity: 0.3;
-            animation: think-pulse 1.2s ease-in-out infinite;
-        }
-        .think-dots span:nth-child(1) { animation-delay: 0s; }
-        .think-dots span:nth-child(2) { animation-delay: 0.3s; }
-        .think-dots span:nth-child(3) { animation-delay: 0.6s; }
-        .think-dots span:nth-child(4) { animation-delay: 0.9s; }
-        @keyframes think-pulse {
-            0%, 100% { opacity: 0.15; background: var(--text3); }
-            50% { opacity: 1; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
-        }
-
-        /* ── Select Styling ── */
-        select {
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23556178'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 10px center;
-            padding-right: 28px !important;
-        }
-
-        /* ── GFL2 corner decorations ── */
-        .corner-decor {
-            position: absolute;
-            width: 8px; height: 8px;
-            border-color: var(--cyan);
-            opacity: 0.3;
-        }
-        .corner-decor.tl { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
-        .corner-decor.tr { top: -1px; right: -1px; border-top: 1px solid; border-right: 1px solid; }
-        .corner-decor.bl { bottom: -1px; left: -1px; border-bottom: 1px solid; border-left: 1px solid; }
-        .corner-decor.br { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
-    </style>
-</head>
-<body>
-
-<div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX 
-        <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        1.0.2
-        </span></h1>
-    <div class="header-tabs">
-        <div class="tab active" data-tab="backtest">Backtest</div>
-        <div class="tab" data-tab="live">Live Monitor</div>
-    </div>
-    <div class="header-right">
-        <div class="account-switcher">
-            <span class="account-badge" id="account-badge">--</span>
-        </div>
-        <div class="conn-dropdown-wrap">
-            <div class="conn-trigger" id="conn-trigger" onclick="toggleConnDropdown()">
-                <span class="status-dot" id="api-status"></span>
-                <span id="api-status-text">DISCONNECTED</span>
-                <span class="conn-arrow">▼</span>
-            </div>
-            <div class="conn-panel" id="conn-panel">
-                <div class="form-group">
-                    <label>USERNAME</label>
-                    <input type="text" id="username" placeholder="your_username">
-                </div>
-                <div class="form-group">
-                    <label>API KEY</label>
-                    <input type="password" id="apikey" placeholder="your_api_key">
-                </div>
-                <div class="form-group">
-                    <label>CONTRACT</label>
-                    <select id="contract-preset" onchange="onContractPresetChange()">
-                        <option value="CON.F.US.MNQ.M26" selected>MNQ (Micro NQ — $2/pt)</option>
-                        <option value="CON.F.US.ENQ.M26">NQ (Mini NQ — $20/pt)</option>
-                        <option value="">CUSTOM…</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>CONTRACT ID</label>
-                    <input type="text" id="contract-id" placeholder="auto-detect" value="CON.F.US.MNQ.M26">
-                </div>
-                <!-- MERGE HISTORY removed: TopstepX API only serves ~60 days of
-                     1m bars, so chaining older quarterly contracts always returns
-                     0 rows. The merge_contracts plumbing stays dormant (defaults to
-                     0 via the null-safe lookups in connectAPI/_ensureBacktestData). -->
-                <!-- Date range removed: data always loads the contract's full available
-                     history (paginated). Hidden inputs keep legacy JS references valid. -->
-                <input type="hidden" id="start-date" value="">
-                <input type="hidden" id="end-date" value="">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>INTERVAL</label>
-                        <input type="text" value="1 MIN" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
-                    </div>
-                    <div class="form-group">
-                        <label>BARS</label>
-                        <input type="text" id="data-count" value="--" readonly style="background:var(--bg3);color:var(--text2);">
-                    </div>
-                </div>
-                <!-- Data range indicator — updated by connectAPI() and _ensureBacktestData() -->
-                <div id="data-range-info" style="display:none;margin:4px 0 0;padding:3px 6px;background:rgba(0,0,0,0.35);border-radius:2px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.8px;color:var(--text3);">—</div>
-                <button class="btn btn-primary" id="btn-connect" onclick="connectAPI()">CONNECT</button>
-            </div>
-        </div>
-        <div id="clock"></div>
-    </div>
-</div>
-
-<div class="main">
-    <!-- Sidebar -->
-    <div class="sidebar">
-        <!-- Backtest Config (SessionTrendFollow only) -->
-        <div class="panel" id="backtest-config-panel">
-            <div class="panel-title">BACKTEST PARAMS</div>
-            <!-- Strategy Params -->
-            <div class="form-row" style="margin-top:8px;">
-                <div class="form-group" style="flex:2;">
-                    <label>CONTRACT</label>
-                    <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt')">
-                        <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
-                        <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
-                    </select>
-                </div>
-                <div class="form-group" style="flex:1;">
-                    <label>SIZE</label>
-                    <select id="size-bt" onchange="updateTrailBounds('bt')"></select>
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group" style="flex:2">
-                    <label>PRESET</label>
-                    <select id="preset-bt" onchange="loadPreset('bt')">
-                        <option value="default">Default</option>
-                    </select>
-                </div>
-                <div class="form-group" style="flex:1;display:flex;align-items:flex-end;gap:4px;">
-                    <button class="btn btn-outline" onclick="savePreset('bt')" style="padding:7px 6px;font-size:10px;">SAVE</button>
-                    <button class="btn btn-outline" onclick="deletePreset('bt')" style="padding:7px 6px;font-size:10px;" title="Delete selected preset">DEL</button>
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group" style="flex:1;">
-                    <label>STRATEGY</label>
-                    <select id="strategy-bt" onchange="onStrategyChange('bt')">
-                        <option value="trend" selected>TREND</option>
-                    </select>
-                </div>
-                <div class="form-group" style="flex:1;">
-                    <label>AREA %</label>
-                    <select id="area-pct-bt" onchange="onAreaConfigChange('bt')">
-                        <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
-                        <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
-                    </select>
-                </div>
-                <div class="form-group" style="flex:1;">
-                    <label>CONFIRM</label>
-                    <select id="confirm-bars-bt">
-                        <option value="1">1</option><option value="2">2</option><option value="3">3</option>
-                        <option value="4">4</option><option value="5">5</option><option value="6">6</option>
-                        <option value="7" selected>7</option><option value="8">8</option><option value="9">9</option>
-                        <option value="10">10</option>
-                    </select>
-                </div>
-            </div>
-            <div class="form-row" id="overlap-tf-row-bt">
-                <div class="form-group" style="flex:1;">
-                    <label>TIMEFRAMES <span style="color:var(--text2)">(pick 1 = single; pick 2+ = overlap)</span></label>
-                    <div id="overlap-tf-bt" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="5m" checked onchange="onTfSelectionChange('bt')"> 5m</label>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="15m" onchange="onTfSelectionChange('bt')"> 15m</label>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="30m" onchange="onTfSelectionChange('bt')"> 30m</label>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="1h" onchange="onTfSelectionChange('bt')"> 1h</label>
-                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="4h" onchange="onTfSelectionChange('bt')"> 4h</label>
-                    </div>
-                </div>
-            </div>
-            <div id="tr-params-bt" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
-                <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">TREND</div>
-                <input type="hidden" id="sl-ticks-bt" value="50">
-                <span id="sl-ticks-bt-val" style="display:none">50</span>
-                <div class="form-group">
-                    <label>RR RATIO <span id="rr-ratio-bt-val" style="color:var(--accent)">1:2</span></label>
-                    <select id="rr-ratio-bt" onchange="onRrChange('bt')">
-                        <option value="1">1:1</option><option value="2" selected>1:2</option>
-                        <option value="3">1:3</option><option value="4">1:4</option>
-                        <option value="5">1:5</option><option value="6">1:6</option>
-                        <option value="7">1:7</option><option value="8">1:8</option>
-                        <option value="9">1:9</option><option value="10">1:10</option>
-                    </select>
-                    <input type="hidden" id="tp-ticks-bt" value="100">
-                </div>
-                <div class="form-group">
-                    <label>TRAIL TP TRIGGER</label>
-                    <select id="trail-trigger-pct-bt" onchange="updateTrailBounds('bt')">
-                        <option value="0">OFF</option>
-                        <option value="0.30" selected>30%</option>
-                        <option value="0.50">50%</option>
-                        <option value="0.70">70%</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>
-                        TRAIL SL <span id="trail-sl-pct-bt-val" style="color:var(--accent)">+10% TP</span>
-                        <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">20t / $30.00</span>
-                    </label>
-                    <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
-                    <input type="hidden" id="trail-sl-ticks-bt" value="20">
-                </div>
-                <div class="form-group">
-                    <label>FULL TP LOCK</label>
-                    <select id="full-tp-lock-bt">
-                        <option value="0">OFF</option>
-                        <option value="1">1</option>
-                        <option value="2">2</option>
-                        <option value="3">3</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>SESSION LIMIT</label>
-                    <select id="tr-session-limit-bt">
-                        <option value="1" selected>ON</option>
-                        <option value="0">OFF</option>
-                    </select>
-                </div>
-            </div>
-            <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
-                <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
-                <div class="full-run-wrap">
-                    <button class="btn btn-full" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run machine learning combinations and rank results">MACHINE LEARNING</button>
-                    <button class="btn btn-full full-filter-btn" id="btn-full-filter" onclick="toggleFullFixedDropdown(event)" disabled title="Fixed Machine learning params">v</button>
-                    <div class="full-filter-panel" id="full-fixed-panel">
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-strategy" checked> STRATEGY</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-contract" checked> CONTRACT</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-size" checked> SIZE</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-tp"> TP</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-sl"> SL</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-trail-trigger"> TRAIL TRIGGER</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-trail"> TRAIL SL</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-full-tp-lock"> FULL TP LOCK</label>
-                    </div>
-                </div>
-            </div>
-            <!-- Machine Learning progress bar -->
-            <div id="full-progress-wrap" style="display:none;margin-top:7px;">
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-                    <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">COMBINATIONS</span>
-                    <span id="full-progress-text" style="font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text2);">0 / 0</span>
-                </div>
-                <div style="height:2px;background:rgba(255,255,255,0.07);border-radius:1px;overflow:hidden;">
-                    <div id="full-progress-bar" style="height:100%;width:0%;background:#fff;border-radius:1px;transition:width 0.25s linear;box-shadow:0 0 6px rgba(255,255,255,0.5);"></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Metrics -->
-        <div class="panel" id="metrics-panel" style="display:none;">
-            <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-                <span>PERFORMANCE</span>
-                <select id="perf-window" onchange="onPerfWindowChange()" title="Lookback window — recomputes all metrics over the selected period"
-                        style="background:#0d0f15;color:#9aa7bd;border:1px solid rgba(100,220,255,0.18);font-family:inherit;font-size:10px;padding:2px 6px;border-radius:3px;cursor:pointer;">
-                    <option value="0">ALL</option>
-                </select>
-            </div>
-            <div class="metrics-grid" id="metrics-grid"></div>
-        </div>
-
-        <!-- Live Monitor Panel (hidden by default) -->
-        <div id="live-panel" class="hidden">
-            <div class="panel">
-                <div class="panel-title">LIVE PARAMS</div>
-                <!-- Strategy Params -->
-                <div class="form-row" style="margin-top:8px;">
-                    <div class="form-group" style="flex:2;">
-                        <label>CONTRACT</label>
-                        <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live')">
-                            <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
-                            <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="flex:1;">
-                        <label>SIZE</label>
-                        <select id="size-live" onchange="updateTrailBounds('live')"></select>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:2">
-                        <label>PRESET</label>
-                        <select id="preset-live" onchange="loadPreset('live')">
-                            <option value="default">Default</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="flex:1;display:flex;align-items:flex-end;gap:4px;">
-                        <button class="btn btn-outline" onclick="savePreset('live')" style="padding:7px 6px;font-size:10px;">SAVE</button>
-                        <button class="btn btn-outline" onclick="deletePreset('live')" style="padding:7px 6px;font-size:10px;" title="Delete selected preset">DEL</button>
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:1;">
-                        <label>STRATEGY</label>
-                        <select id="strategy-live" onchange="onStrategyChange('live')">
-                            <option value="trend" selected>TREND</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="flex:1;">
-                        <label>AREA %</label>
-                        <select id="area-pct-live" onchange="onAreaConfigChange('live')">
-                            <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
-                            <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="flex:1;">
-                        <label>CONFIRM</label>
-                        <select id="confirm-bars-live">
-                            <option value="1">1</option><option value="2">2</option><option value="3">3</option>
-                            <option value="4">4</option><option value="5">5</option><option value="6">6</option>
-                            <option value="7" selected>7</option><option value="8">8</option><option value="9">9</option>
-                            <option value="10">10</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="form-row" id="overlap-tf-row-live">
-                    <div class="form-group" style="flex:1;">
-                        <label>TIMEFRAMES <span style="color:var(--text2)">(pick 1 = single; pick 2+ = overlap)</span></label>
-                        <div id="overlap-tf-live" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
-                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="5m" checked onchange="onTfSelectionChange('live')"> 5m</label>
-                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="15m" onchange="onTfSelectionChange('live')"> 15m</label>
-                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="30m" onchange="onTfSelectionChange('live')"> 30m</label>
-                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="1h" onchange="onTfSelectionChange('live')"> 1h</label>
-                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="4h" onchange="onTfSelectionChange('live')"> 4h</label>
-                        </div>
-                    </div>
-                </div>
-                <div id="tr-params-live" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
-                    <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">TREND</div>
-                    <input type="hidden" id="sl-ticks-live" value="50">
-                    <span id="sl-ticks-live-val" style="display:none">50</span>
-                    <div class="form-group">
-                        <label>RR RATIO <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
-                        <select id="rr-ratio-live" onchange="onRrChange('live')">
-                            <option value="1">1:1</option><option value="2" selected>1:2</option>
-                            <option value="3">1:3</option><option value="4">1:4</option>
-                            <option value="5">1:5</option><option value="6">1:6</option>
-                            <option value="7">1:7</option><option value="8">1:8</option>
-                            <option value="9">1:9</option><option value="10">1:10</option>
-                        </select>
-                        <input type="hidden" id="tp-ticks-live" value="100">
-                    </div>
-                    <div class="form-group">
-                        <label>TRAIL TP TRIGGER</label>
-                        <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
-                            <option value="0">OFF</option>
-                            <option value="0.30" selected>30%</option>
-                            <option value="0.50">50%</option>
-                            <option value="0.70">70%</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>
-                            TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+10% TP</span>
-                            <span id="trail-sl-ticks-live-val" style="color:var(--text2)">20t / $30.00</span>
-                        </label>
-                        <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
-                        <input type="hidden" id="trail-sl-ticks-live" value="20">
-                    </div>
-                    <div class="form-group">
-                        <label>FULL TP LOCK</label>
-                        <select id="full-tp-lock-live">
-                            <option value="0">OFF</option>
-                            <option value="1">1</option>
-                            <option value="2">2</option>
-                            <option value="3">3</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>SESSION LIMIT</label>
-                        <select id="tr-session-limit-live">
-                            <option value="1" selected>ON</option>
-                            <option value="0">OFF</option>
-                        </select>
-                    </div>
-                </div>
-            </div>
-            <div class="panel">
-                <div class="panel-title">ACCOUNT</div>
-                <select id="live-account-select" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;margin-bottom:10px;font-family:'IBM Plex Mono',monospace;font-size:11px;" onchange="onLiveAccountSwitch()">
-                    <option>-- NO ACCOUNT --</option>
-                </select>
-                <div id="live-account-info" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3);line-height:1.8;margin-bottom:10px;"></div>
-                <div style="display:flex;gap:6px;">
-                    <button class="btn btn-green" id="btn-go-live" onclick="goLive()" disabled style="flex:1;">GO LIVE</button>
-                    <button class="btn btn-amber" id="btn-stop-live" onclick="stopLive()" disabled style="flex:1;">STOP</button>
-                    <button class="btn btn-red" id="btn-flatten" onclick="flattenLive()" disabled style="flex:1;">FLATTEN</button>
-                </div>
-            </div>
-            <div class="panel">
-                <div class="panel-title">LIVE STATUS</div>
-                <div style="color:var(--text2);font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2.2;">
-                    <div style="display:flex;align-items:center;gap:8px;">
-                        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text3);" id="live-status-dot"></span>
-                        STATUS: <span id="live-status-text" style="color:var(--text3);letter-spacing:1px;">OFFLINE</span>
-                    </div>
-                    <div style="padding-left:14px;">PHASE: <span id="live-position-text" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">MODE: <span id="live-mode-text" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">MARKET: <span id="lv-market-session" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">DAILY PNL: <span id="live-pnl-text" style="color:var(--text3);">--</span></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Main Content -->
-    <div class="content">
-        <div id="chart-container">
-
-            <!-- Live Monitor Top Bar -->
-            <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'IBM Plex Mono',monospace;font-size:11px;">
-                <div style="display:flex;align-items:stretch;height:28px;">
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MARKET: <span id="lv-session" style="color:var(--amber);margin-left:6px;">--</span></div>
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">STRAT: <span id="lv-strategy" style="color:var(--cyan);margin-left:6px;">--</span></div>
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MODE: <span id="lv-mode" style="color:var(--green);margin-left:6px;">--</span></div>
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">PHASE: <span id="lv-phase-top" style="color:var(--text3);margin-left:6px;">--</span></div>
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">持倉: <span id="lv-position" style="color:var(--text2);margin-left:6px;">FLAT</span></div>
-                    <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:0 8px;">資金: <span id="lv-capital" style="color:var(--green);margin-left:6px;">--</span></div>
-                </div>
-                <!-- Zone levels row (always show when zone active) -->
-                <div id="lv-zone-row" style="display:none;height:22px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:16px;font-size:10px;letter-spacing:0.5px;">
-                    <span style="color:var(--text2);">ACTIVE ZONE</span>
-                    <span>VAH: <span id="lv-z-vah" style="color:var(--cyan);">--</span></span>
-                    <span>POC: <span id="lv-z-poc" style="color:var(--amber);font-weight:600;">--</span></span>
-                    <span>VAL: <span id="lv-z-val" style="color:var(--cyan);">--</span></span>
-                    <span style="color:var(--text2);">100%: <span id="lv-z-h100" style="color:var(--text3);">--</span> ~ <span id="lv-z-l100" style="color:var(--text3);">--</span></span>
-                    <span>ID: <span id="lv-z-id" style="color:var(--text3);">--</span></span>
-                </div>
-                <!-- Signal row (shown on confirmed break) -->
-                <div id="lv-signal-row" style="display:none;height:24px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:20px;font-size:10px;letter-spacing:0.5px;">
-                    <span id="lv-sig-direction" style="color:var(--green);font-weight:600;">--</span>
-                    <span>ENTRY: <span id="lv-sig-entry" style="color:var(--amber);">--</span></span>
-                    <span>SL: <span id="lv-sig-sl" style="color:var(--red);">--</span></span>
-                    <span>TP: <span id="lv-sig-tp" style="color:var(--green);">--</span></span>
-                    <span id="lv-sig-status" style="color:var(--text3);">PENDING</span>
-                </div>
-            </div>
-
-        </div>
-
-        <div class="bottom-panel" id="bottom-panel">
-            <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
-            <div class="bottom-tabs">
-                <div class="bottom-tab" data-btab="full">MACHINE LEARNING</div>
-                <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
-                <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
-                <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
-            </div>
-            <div class="bottom-content">
-                <div id="btab-full" class="hidden">
-                    <div id="full-config-caption" style="display:none;padding:6px 8px;font-size:10px;color:var(--text2);border-bottom:1px solid var(--border);font-family:'IBM Plex Mono',monospace;"></div>
-                    <div class="trade-table-wrap">
-                        <table id="full-table">
-                            <thead id="full-thead">
-                                <tr>
-                                    <th class="full-sort-th" data-col="method"   style="width:54px;" onclick="fullSortBy('method')">METHOD <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="tf"       style="width:96px;" onclick="fullSortBy('tf')" title="Timeframe combination">TFs <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="overlap"  style="width:40px;" onclick="fullSortBy('overlap')" title="Overlapping timeframes">OVL <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="rr"       style="width:42px;" onclick="fullSortBy('rr')" title="Reward:Risk">RR <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="contract" style="width:64px;" onclick="fullSortBy('contract')" title="Contract @ size">CON <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="trades"   style="width:44px;" onclick="fullSortBy('trades')">TRADES <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="win_rate" style="width:52px;" onclick="fullSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="pnl"      style="width:68px;" onclick="fullSortBy('pnl')">FINAL PNL <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="max_dd"   style="width:60px;" onclick="fullSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="best_day" style="width:60px;" onclick="fullSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="worst_day"style="width:60px;" onclick="fullSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="wk_std"   style="width:56px;" onclick="fullSortBy('wk_std')" title="Weekly PnL std-dev">WK STD <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="wk_cv"    style="width:52px;" onclick="fullSortBy('wk_cv')" title="Weekly PnL coefficient of variation">WK CV <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="pf"       style="width:48px;" onclick="fullSortBy('pf')" title="Profit Factor (gross gain / gross loss)">PF <span class="sa">↕</span></th>
-                                    <th class="full-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="fullSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
-                                    <th style="width:32px;"></th>
-                                </tr>
-                            </thead>
-                            <tbody id="full-tbody"></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div id="btab-trades">
-                    <div class="trade-table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th style="width:48px;">SYMBOL</th>
-                                    <th style="width:36px;">SIZE</th>
-                                    <th>ENTRY TIME</th>
-                                    <th>EXIT TIME</th>
-                                    <th>DURATION</th>
-                                    <th>ENTRY</th>
-                                    <th>EXIT</th>
-                                    <th>P&amp;L</th>
-                                    <th>COMMISSION</th>
-                                    <th>FEES</th>
-                                    <th>DIR</th>
-                                </tr>
-                            </thead>
-                            <tbody id="trades-tbody"></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div id="btab-execute" class="hidden">
-                    <div class="trade-table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>ID</th>
-                                    <th style="width:48px;">SYMBOL</th>
-                                    <th style="width:36px;">SIZE</th>
-                                    <th>ENTRY TIME</th>
-                                    <th>EXIT TIME</th>
-                                    <th>DURATION</th>
-                                    <th>ENTRY</th>
-                                    <th>EXIT</th>
-                                    <th>P&amp;L</th>
-                                    <th>COMMISSION</th>
-                                    <th>FEES</th>
-                                    <th>DIR</th>
-                                </tr>
-                            </thead>
-                            <tbody id="execute-tbody"></tbody>
-                        </table>
-                    </div>
-                </div>
-                <div id="btab-log" class="hidden">
-                    <div class="log" id="log-container"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<script>
 // ============================================
 // ancserTPX Frontend
 // ============================================
@@ -1465,6 +7,11 @@ const API = window.location.origin + '/api';
 // Far-past anchor for full-range fetches. The paginated backend walks back from
 // today to the contract's earliest bar; this just has to predate any NQ/MNQ data.
 const FULL_RANGE_START = '2008-01-01';
+// CONNECT (and auto-connect on boot) only loads this many days of recent history
+// so startup is fast (account list + chart + GO LIVE ready in ~1s). The full
+// multi-year range is fetched lazily on the first backtest / Machine Learning /
+// LEARN & LIVE click via _ensureBacktestData().
+const CONNECT_WARMUP_DAYS = 14;
 // Cap how many recent 1m bars get pulled into the chart. Full-range data can be
 // hundreds of thousands of bars; rendering them all blocks the main thread and
 // freezes the tab. Backtest / ML use the complete backend dataset regardless.
@@ -1539,8 +86,12 @@ function positionSideMeta(pos) {
     const raw = pos?.side ?? pos?.positionSide ?? pos?.position_side ?? pos?.Side;
     const text = String(raw ?? '').toLowerCase();
     const num = Number(raw);
-    const isLong = num === 0 || text === 'long' || text === 'buy';
-    const isShort = num === 1 || num === 2 || text === 'short' || text === 'sell';
+    // TopstepX / ProjectX position payload uses `type`: 1 = Long, 2 = Short.
+    const t = Number(pos?.type ?? pos?.Type ?? pos?.positionType);
+    let isLong = num === 0 || text === 'long' || text === 'buy';
+    let isShort = num === 1 || num === 2 || text === 'short' || text === 'sell';
+    if (t === 1) { isLong = true; isShort = false; }
+    else if (t === 2) { isShort = true; isLong = false; }
     return {
         label: isLong ? 'LONG' : (isShort ? 'SHORT' : String(raw ?? '?')),
         isLong: isLong,
@@ -1765,17 +316,32 @@ function setOverlapTfCombo(mode, combo) {
 }
 
 function normalizeStrategyName(value) {
-    return 'trend';
+    return String(value || '').trim().toLowerCase() === 'confluence' ? 'confluence' : 'trend';
 }
 
 function strategyIdPrefix(kind) {
     return '';
 }
 
+// ML (confluence) uses a completely different parameter set than TREND.
+// When ML is selected we hide every trend-only control — TREND box, AREA %,
+// CONFIRM, and the TIMEFRAMES picker — and reveal only the ML params actually
+// used by the confluence engine (min prob / rr / band / min distinct tf).
 function updateStrategyParamVisibility(mode) {
-    const trBox = document.getElementById('tr-params-' + mode);
-    if (trBox) trBox.style.display = 'block';
-    updateTrailBounds(mode);
+    const isML = normalizeStrategyName(
+        (document.getElementById('strategy-' + mode) || {}).value
+    ) === 'confluence';
+    const show = (id, on) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = on ? '' : 'none';
+    };
+    // trend-only controls — hidden in ML mode.
+    // AREA % / CONFIRM now live INSIDE tr-params, so they hide with it automatically.
+    show('tr-params-' + mode, !isML);
+    show('overlap-tf-row-' + mode, !isML);
+    // ML-only params — shown only in ML mode
+    show('ml-params-' + mode, isML);
+    if (!isML) updateTrailBounds(mode);
 }
 
 function onStrategyChange(mode) {
@@ -1854,6 +420,31 @@ async function toggleAllTimeframeZones() {
         log('All-TF zone draw failed: ' + e.message, 'error');
         if (btn) btn.textContent = 'SHOW ALL TF ZONES';
     }
+}
+
+// Read the ML (confluence) parameter block for a panel into a params object,
+// or null when the panel is not in ML mode. Base is always 1m (standardized).
+function collectConfluenceParams(mode) {
+    const stratEl = document.getElementById('strategy-' + mode);
+    if (normalizeStrategyName(stratEl && stratEl.value) !== 'confluence') return null;
+    const fv = (id, fb) => {
+        const el = document.getElementById(id);
+        const n = el ? parseFloat(el.value) : NaN;
+        return Number.isNaN(n) ? fb : n;
+    };
+    const iv = (id, fb) => {
+        const el = document.getElementById(id);
+        const n = el ? parseInt(el.value, 10) : NaN;
+        return Number.isNaN(n) ? fb : n;
+    };
+    return {
+        conf_band_ticks: fv('conf-band-' + mode, 8.0),
+        conf_min_distinct_tf: iv('conf-mintf-' + mode, 3),
+        conf_rr: fv('conf-rr-' + mode, 1.5),
+        conf_base_minutes: 1,
+        conf_min_prob: fv('conf-minprob-' + mode, 0.0),
+        conf_use_scorer: true,
+    };
 }
 
 function collectStrategyParams(mode) {
@@ -2000,6 +591,12 @@ function applyStrategyParams(mode, params) {
     onRrChange(mode);
 
     _set('confirm-bars-' + mode, String(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7));
+
+    // ML (confluence) params — restored when the preset uses the ML strategy.
+    _set('conf-minprob-' + mode, String(p.conf_min_prob != null ? p.conf_min_prob : 0));
+    _set('conf-rr-' + mode, (p.conf_rr != null ? Number(p.conf_rr) : 1.5).toFixed(1));
+    _set('conf-band-' + mode, String(parseInt(p.conf_band_ticks != null ? p.conf_band_ticks : 8, 10)));
+    _set('conf-mintf-' + mode, String(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 3));
 
     // Timeframe checkboxes: overlap → tf_combo; single → [area_timeframe].
     const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
@@ -2326,6 +923,8 @@ async function loadAccounts() {
                 liveSelect.value = practice.id;
             }
             document.getElementById('btn-go-live').disabled = false;
+            const learnBtn = document.getElementById('btn-learn-live');
+            if (learnBtn) learnBtn.disabled = false;
             onLiveAccountSwitch();
         }
 
@@ -2458,6 +1057,89 @@ async function refreshLiveZoneOverlay(stratParams) {
     }
 }
 
+// Shared LEARN flow: force this panel to ML (confluence) → load the FULL history
+// → retrain the explainable 1m scorer (same /confluence/train endpoint as the
+// CLI trainer) → run the panel-specific `afterFn` (goLive or runBacktest).
+// LEARN & LIVE and LEARN & BACKTEST are thin wrappers, so both share one code
+// path and therefore one identical, reproducible scorer.
+async function _learnScorer(opts) {
+    const { mode, btnId, siblingId, confirmMsg, contractInputId, afterLabel, afterFn,
+            requireAccount } = opts;
+    if (requireAccount && !liveAccount) { log('Select an account first', 'warn'); return; }
+    const btn = document.getElementById(btnId);
+    if (!btn || btn.disabled) return;
+    if (!confirm(confirmMsg)) return;
+
+    const origText = btn.textContent;
+    btn.disabled = true;
+    const sibling = siblingId ? document.getElementById(siblingId) : null;
+    if (sibling) sibling.disabled = true;
+
+    try {
+        // 1) Force this panel's strategy to ML (confluence) so it uses the scorer.
+        const stratSel = document.getElementById('strategy-' + mode);
+        if (stratSel) { stratSel.value = 'confluence'; updateStrategyParamVisibility(mode); }
+
+        // 2) Ensure the FULL history is loaded (the scorer learns from all of it).
+        btn.innerHTML = '<span class="spinner"></span> LOADING HISTORY...';
+        const today = new Date().toISOString().slice(0, 10);
+        const dataOk = await _ensureBacktestData(btn, FULL_RANGE_START, today);
+        if (!dataOk) throw new Error('歷史數據載入失敗');
+
+        // 3) Retrain the scorer on the loaded 1m history (matches CLI trainer).
+        btn.innerHTML = '<span class="spinner"></span> LEARNING...';
+        log('LEARN: 用完整歷史重新訓練 ML scorer (1m base)...', 'info');
+        const cp = collectConfluenceParams(mode) || {};
+        const resp = await fetch(API + '/confluence/train', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contract_id: (document.getElementById(contractInputId)?.value) || 'CON.F.US.MNQ.M26',
+                train_frac: 1.0,
+                band_ticks: cp.conf_band_ticks != null ? cp.conf_band_ticks : 8.0,
+                min_distinct_tf: cp.conf_min_distinct_tf != null ? cp.conf_min_distinct_tf : 3,
+                rr: cp.conf_rr != null ? cp.conf_rr : 1.5,
+            }),
+        });
+        if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || ('HTTP ' + resp.status)); }
+        const r = await resp.json();
+        const tw = (r.top_weights || []).map(w => w.name + '=' + w.weight).join(', ');
+        log('LEARN done: ' + r.n_samples + ' samples, win%=' + (r.win_rate * 100).toFixed(0)
+            + ', AUC=' + (r.train_auc != null ? r.train_auc.toFixed(3) : '?')
+            + ', TFs=' + (r.timeframes || []).join('/'), 'success');
+        if (tw) log('LEARN weights: ' + tw, 'info');
+
+        // 4) Run the panel-specific follow-up with the freshly trained scorer.
+        btn.innerHTML = '<span class="spinner"></span> ' + (afterLabel || 'RUNNING...');
+        if (sibling) sibling.disabled = false;   // let afterFn manage its own button
+        await afterFn();
+    } catch (e) {
+        log('LEARN failed: ' + e.message, 'error');
+        if (sibling) sibling.disabled = false;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
+    }
+}
+
+function learnAndBacktest() {
+    return _learnScorer({
+        mode: 'bt', btnId: 'btn-learn-bt', siblingId: 'btn-backtest',
+        contractInputId: 'contract-bt', requireAccount: false, afterLabel: 'BACKTESTING...',
+        confirmMsg: 'LEARN & BACKTEST 會先載入完整歷史並重新訓練 ML scorer (約需數十秒～數分鐘)，完成後立即用最新 scorer 回測。是否繼續？',
+        afterFn: () => runBacktest(),
+    });
+}
+
+function learnAndLive() {
+    return _learnScorer({
+        mode: 'live', btnId: 'btn-learn-live', siblingId: 'btn-go-live',
+        contractInputId: 'contract-live', requireAccount: true, afterLabel: 'GOING LIVE...',
+        confirmMsg: 'LEARN & LIVE 會先載入完整歷史並重新訓練 ML scorer (約需數十秒～數分鐘)，完成後立即用 ML 策略上線。是否繼續？',
+        afterFn: () => goLive(),
+    });
+}
+
 async function goLive() {
     if (!liveAccount) { log('Select an account first', 'warn'); return; }
 
@@ -2476,6 +1158,18 @@ async function goLive() {
     statusEl.textContent = '啟動中...';
     log('GO LIVE: account=' + liveAccount.name + ' (' + (liveAccount.is_practice ? 'practice' : 'FUNDED') + ')', 'info');
     const stratParams = collectStrategyParams('live');
+
+    // v0.19: ML (confluence, explainable) is selected via the STRATEGY dropdown.
+    // No shadow mode in live — practice account places real orders.
+    const confParams = collectConfluenceParams('live');
+    if (confParams) {
+        stratParams.strategy = 'confluence';
+        stratParams.conf_shadow = false;
+        Object.assign(stratParams, confParams);
+        log('ML CONFLUENCE: LIVE (places orders) base=1m minProb=' + stratParams.conf_min_prob
+            + ' rr=' + stratParams.conf_rr + ' band=' + stratParams.conf_band_ticks
+            + ' minTF=' + stratParams.conf_min_distinct_tf, 'info');
+    }
 
     // Switch the zone filter to LIVE and preselect the timeframe(s) being traded
     // (overlap combo, or the single area timeframe).
@@ -2832,6 +1526,26 @@ async function pollLiveStatus() {
             window._liveStrategyName = sn;
         }
 
+        // ── Top bar: ML (confluence) decision-basis banner ──
+        const confRow = document.getElementById('lv-confluence-row');
+        if (confRow) {
+            const sigs = st.confluence_signals || [];
+            if (st.confluence_mode && sigs.length) {
+                const last = sigs[sigs.length - 1];
+                const basis = last.basis || (
+                    (last.mode ? '[' + last.mode + '] ' : '') + (last.direction || '') + ' ' + (last.side || '')
+                    + ' entry=' + last.entry + ' sl=' + last.sl + ' tp=' + last.tp
+                    + ' prob=' + (last.prob != null ? last.prob.toFixed(2) : '?')
+                );
+                const tag = st.confluence_shadow ? 'SHADOW · ' : '';
+                const scorer = st.confluence_scorer ? (' · scorer=' + st.confluence_scorer) : '';
+                document.getElementById('lv-conf-basis').textContent = tag + basis + scorer;
+                confRow.style.display = 'flex';
+            } else {
+                confRow.style.display = 'none';
+            }
+        }
+
         // ── Top bar: Active zone levels (text) ──
         const zoneRow = document.getElementById('lv-zone-row');
         if (zoneRow && st.zones && st.zones.length > 0) {
@@ -2905,13 +1619,26 @@ async function pollLiveStatus() {
             }
         }
 
-        const modeText = (st.active_mode || st.strategy_mode || '--').toUpperCase();
+        // MODE = execution/sub-mode, kept distinct from STRAT (no duplication).
+        //   ML (confluence): 影子(不下單) vs 實盤  ← shadow gate
+        //   Trend: the active sub-mode, only when it differs from the strategy name
+        const isMLmode = (st.strategy_mode === 'confluence') || st.confluence_mode;
+        let modeText, modeColor;
+        if (isMLmode) {
+            modeText = st.confluence_shadow ? '影子(不下單)' : '實盤';
+            modeColor = st.confluence_shadow ? 'var(--amber)' : 'var(--green)';
+        } else {
+            const am = (st.active_mode || '').toUpperCase();
+            const sn = (st.strategy_mode || '').toUpperCase();
+            modeText = (am && am !== sn) ? am : '實盤';
+            modeColor = 'var(--green)';
+        }
         const modeTopEl = document.getElementById('lv-mode');
         const modePanelEl = document.getElementById('live-mode-text');
-        if (modeTopEl) modeTopEl.textContent = modeText;
+        if (modeTopEl) { modeTopEl.textContent = modeText; modeTopEl.style.color = modeColor; }
         if (modePanelEl) {
             modePanelEl.textContent = modeText;
-            modePanelEl.style.color = 'var(--green)';
+            modePanelEl.style.color = modeColor;
         }
 
         // ── Phase — both top bar and left panel ──
@@ -2922,6 +1649,12 @@ async function pollLiveStatus() {
             panelPhaseEl.textContent = phaseDisplayText;
             panelPhaseEl.style.color = st.tp_locked ? 'var(--amber)' : 'var(--text3)';
         }
+        // Status-line label adapts to the active strategy (ML 狀態 / TREND 狀態)
+        const statusLabelEl = document.getElementById('lv-status-label');
+        if (statusLabelEl) {
+            const isML = (st.strategy_mode === 'confluence') || st.confluence_mode;
+            statusLabelEl.textContent = isML ? 'ML 狀態' : 'TREND 狀態';
+        }
         const phaseTopEl = document.getElementById('lv-phase-top');
         if (phaseTopEl) {
             phaseTopEl.textContent = phaseDisplayText;
@@ -2931,6 +1664,44 @@ async function pollLiveStatus() {
             else if (/突破中|出界|break/i.test(phaseText)) phaseTopEl.style.color = 'var(--amber)';
             else if (/盤整|區間內/i.test(phaseText)) phaseTopEl.style.color = 'var(--cyan)';
             else phaseTopEl.style.color = 'var(--text3)';
+        }
+
+        // ── ML level-universe overlay (chart bottom-right) ──
+        // Vertical list of every recent zone per TF (4h, 4h-1, … 2h, 2h-1 …) with
+        // its confluence weight + signed distance to price. TFs in the chosen
+        // cluster are highlighted green so you see exactly what fed the decision.
+        const levelsPanel = document.getElementById('lv-levels-panel');
+        const levelsBody = document.getElementById('lv-levels-body');
+        if (levelsPanel && levelsBody) {
+            const isMLuniv = (st.strategy_mode === 'confluence') || st.confluence_mode;
+            const universe = st.confluence_universe || [];
+            if (isMLuniv && universe.length) {
+                const sigs = st.confluence_signals || [];
+                const lastSig = sigs.length ? sigs[sigs.length - 1] : null;
+                const clusterTFs = new Set((lastSig && lastSig.tfs) || []);
+                const maxW = Math.max.apply(null, universe.map(r => r.weight || 0)) || 1;
+                let html = '';
+                universe.forEach(r => {
+                    const inC = clusterTFs.has(r.tf);
+                    const wPct = Math.min(1, (r.weight || 0) / maxW);
+                    const wColor = inC ? 'var(--green)'
+                        : (wPct > 0.66 ? 'var(--cyan)' : (wPct > 0.33 ? 'var(--text2)' : 'var(--text3)'));
+                    const d = r.dist_ticks;
+                    const hasD = (d !== null && d !== undefined);
+                    const dStr = hasD ? ((d >= 0 ? '+' : '') + d + 't') : '--';
+                    const dColor = !hasD ? 'var(--text3)' : (Math.abs(d) <= 12 ? 'var(--amber)' : 'var(--text3)');
+                    html += '<div style="display:flex;justify-content:space-between;gap:8px;padding:1px 8px;'
+                        + (inC ? 'background:rgba(0,229,160,0.10);' : '') + '">'
+                        + '<span style="color:' + wColor + ';min-width:44px;font-weight:' + (inC ? '600' : '400') + ';">' + r.label + '</span>'
+                        + '<span style="color:var(--text2);min-width:50px;text-align:right;">權' + (r.weight != null ? r.weight.toFixed(1) : '--') + '</span>'
+                        + '<span style="color:' + dColor + ';min-width:50px;text-align:right;">' + dStr + '</span>'
+                        + '</div>';
+                });
+                levelsBody.innerHTML = html;
+                levelsPanel.style.display = 'block';
+            } else {
+                levelsPanel.style.display = 'none';
+            }
         }
 
         // ── Left panel: PnL ──
@@ -4052,10 +2823,12 @@ async function connectAPI() {
     setStatus('loading', 'CONNECTING...');
     log('Connecting to TopstepX API...', 'info');
 
-    // CONNECT loads the contract's FULL available history (paginated, newest→oldest
-    // until the TopstepX API runs out — ~60 days of retention).
+    // CONNECT loads only the recent warm-up window (CONNECT_WARMUP_DAYS) so the
+    // app is interactive immediately. The full multi-year range is pulled lazily
+    // on the first backtest / ML / LEARN & LIVE click (_ensureBacktestData).
     const _now = new Date();
-    const startDate = FULL_RANGE_START;
+    const startDate = new Date(_now.getTime() - CONNECT_WARMUP_DAYS * 86400000)
+        .toISOString().slice(0, 10);
     const endDate   = _now.toISOString().slice(0, 10);
 
     // If CONTRACT ID is blank (auto-detect), fall back to the CONTRACT dropdown so
@@ -4097,10 +2870,13 @@ async function connectAPI() {
         document.getElementById('conn-trigger').classList.add('connected');
         document.getElementById('data-count').value = data.candles_count + ' bars';
         document.getElementById('btn-backtest').disabled = false;
+        const learnBtBtn = document.getElementById('btn-learn-bt');
+        if (learnBtBtn) learnBtBtn.disabled = false;
         document.getElementById('btn-run-all').disabled = false;
         document.getElementById('btn-full-filter').disabled = false;
         _updateDataInfo(data.first, data.last, 'conn', data.candles_count);
-        // CONNECT already loaded the full range → mark it so backtest/ML skip re-fetch.
+        // CONNECT only loaded the recent warm-up window → record it so the first
+        // backtest / ML / LEARN sees the range mismatch and pulls the full history.
         _btDataRange = { start: startDate, end: endDate, contract: resolvedContract || '' };
 
         // Auto-save credentials to .env if user typed them
@@ -4121,6 +2897,10 @@ async function connectAPI() {
         log('Connected // Contract: ' + data.contract_id, 'success');
         if (data.contracts && data.contracts.length > 1) {
             log('Continuous contract: ' + data.contracts.map(contractLabelFromId).join(' + '), 'info');
+        }
+        if (data.continuous && data.continuous.roll_at) {
+            const adj = Number(data.continuous.price_adjustment || 0);
+            log('Roll adjusted @ ' + data.continuous.roll_at + ' | old contract offset ' + adj.toFixed(2), 'info');
         }
         log('Loaded ' + data.candles_count + ' bars (' + data.interval + ') from ' + data.first + ' to ' + data.last, 'success');
 
@@ -4243,6 +3023,12 @@ function applyDefaultChartView(chartData, zones) {
 
 function buildBacktestBody() {
     const params = collectStrategyParams('bt');
+    // v0.19: ML (confluence, explainable) backtest is selected via the STRATEGY dropdown.
+    const confParams = collectConfluenceParams('bt');
+    if (confParams) {
+        params.strategy = 'confluence';
+        Object.assign(params, confParams);
+    }
     return {
         initial_capital: 50000,
         ...params,
@@ -4331,6 +3117,10 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
         _updateDataInfo(data.first, data.last, 'bt', data.candles_count);
         if (data.contracts && data.contracts.length > 1) {
             log('Continuous contract: ' + data.contracts.map(contractLabelFromId).join(' + '), 'info');
+        }
+        if (data.continuous && data.continuous.roll_at) {
+            const adj = Number(data.continuous.price_adjustment || 0);
+            log('Roll adjusted @ ' + data.continuous.roll_at + ' | old contract offset ' + adj.toFixed(2), 'info');
         }
         log('Backtest data ready: ' + data.candles_count + ' bars' + (data.fetched_count != null ? ' (' + data.fetched_count + ' fetched)' : ''), 'success');
         // Refresh chart to show the full loaded range
@@ -5708,9 +4498,3 @@ function updateClock() {
     const now = new Date();
     document.getElementById('clock').textContent = now.toLocaleTimeString('en-US', {hour12:false});
 }
-</script>
-</body>
-</html>
-
-
-

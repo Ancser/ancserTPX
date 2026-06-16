@@ -752,11 +752,22 @@ class SessionZoneDetector:
 # area timeframe → bucket length in minutes
 AREA_TIMEFRAME_MINUTES = {
     "5m": 5,
+    "10m": 10,
     "15m": 15,
     "30m": 30,
     "1h": 60,
+    "2h": 120,
     "4h": 240,
 }
+
+
+def timeframes_for_base(base_minutes: int) -> tuple:
+    """Area timeframes strictly LARGER than the base candle (a TF == base would
+    be a 1-candle bucket → degenerate volume profile, so it is dropped).
+
+    Single source of truth shared by live / backtest / training so every path
+    uses an identical TF set (reproducibility)."""
+    return tuple(tf for tf, m in AREA_TIMEFRAME_MINUTES.items() if m > base_minutes)
 
 
 class ClockBucketZoneDetector:
@@ -777,12 +788,18 @@ class ClockBucketZoneDetector:
         value_area_pct: float = 0.80,
         tick_size: float = 0.25,
         max_recent: int = 10,
+        recalc_active_each_bar: bool = True,
     ):
         self.area_timeframe = area_timeframe if area_timeframe in AREA_TIMEFRAME_MINUTES else "5m"
         self.bucket_minutes = AREA_TIMEFRAME_MINUTES[self.area_timeframe]
         self.value_area_pct = value_area_pct
         self.tick_size = tick_size
         self.max_recent = max_recent
+        # When False, the in-progress (active) zone's VP is NOT recomputed every
+        # bar — only on bucket finalisation. Consumers that read only COMPLETED
+        # reference zones (e.g. the confluence backtester) set this False for a
+        # large speedup; live display keeps it True for an evolving active VP.
+        self.recalc_active_each_bar = recalc_active_each_bar
         self.vp_calc = VolumeProfileCalculator(tick_size, value_area_pct)
 
         self._active_zone: Optional[ConsolidationZone] = None
@@ -793,11 +810,13 @@ class ClockBucketZoneDetector:
     # ── bucket alignment ──
 
     def _bucket_start(self, ts: datetime) -> datetime:
-        if self.bucket_minutes >= 240:
-            aligned_hour = (ts.hour // 4) * 4
-            return ts.replace(hour=aligned_hour, minute=0, second=0, microsecond=0)
+        # Hour-multiple buckets (1h/2h/4h): align the hour to a multiple of the
+        # bucket size (e.g. 2h → 0/2/4/…; 4h → 0/4/8/…). Sub-hour buckets
+        # (5/10/15/30m) align the minute within the hour.
         if self.bucket_minutes >= 60:
-            return ts.replace(minute=0, second=0, microsecond=0)
+            hours = self.bucket_minutes // 60
+            aligned_hour = (ts.hour // hours) * hours
+            return ts.replace(hour=aligned_hour, minute=0, second=0, microsecond=0)
         aligned_min = (ts.minute // self.bucket_minutes) * self.bucket_minutes
         return ts.replace(minute=aligned_min, second=0, microsecond=0)
 
@@ -829,7 +848,8 @@ class ClockBucketZoneDetector:
             zone.high_100 = candle.high
         if candle.low < zone.low_100:
             zone.low_100 = candle.low
-        self._recalculate_vp(zone)
+        if self.recalc_active_each_bar:
+            self._recalculate_vp(zone)
         return None
 
     @property
@@ -922,6 +942,7 @@ class ClockBucketZoneDetector:
             zone.low_100 = vp.low_100
             zone.total_volume = vp.total_volume
             zone.profile = dict(vp.profile)
+            zone.va_bands = dict(vp.va_bands)
         except ValueError:
             pass
 

@@ -94,6 +94,9 @@ class VolumeProfileResult:
     total_volume: int               # 總成交量
     profile: Dict[float, int]       # {price_level: volume}
     value_area_pct: float = 0.80    # 使用的 VA 百分比
+    # Multi-band value areas for the confluence level universe:
+    # {pct: (vah, val)} with pct in {20,40,60,80,100}. 100% = full range.
+    va_bands: Dict[int, Tuple[float, float]] = field(default_factory=dict)
 
     @property
     def value_area_range(self) -> float:
@@ -137,6 +140,8 @@ class ConsolidationZone:
     parent_zone_id: Optional[str] = None   # 1m zone → parent 5m zone_id
     va_curve: List[dict] = field(default_factory=list)  # [{ts, vah, val}] per VP recalc
     profile: Dict[float, int] = field(default_factory=dict)  # VP bin histogram {price: volume}
+    # Multi-band value areas {pct: (vah, val)} for the confluence level universe.
+    va_bands: Dict[int, Tuple[float, float]] = field(default_factory=dict)
 
     def lowest_volume_price_between(self, a: float, b: float) -> Optional[float]:
         """Return the price bin with the lowest volume in the inclusive [min(a,b), max(a,b)]
@@ -262,6 +267,8 @@ class Trade:
     post_breakout_broke_trail_first: Optional[bool] = None
     post_breakout_broke_sl_first: Optional[bool] = None
     post_breakout_reached_tp: Optional[bool] = None
+    # Confluence research metadata: {mode, side, weight, tfs, labels, band_pct, wait_min}
+    meta: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_open(self) -> bool:
@@ -346,6 +353,18 @@ class StrategyParams:
     # SL/TP model (v0.18): SL = lowest-volume node between POC and VAH/VAL;
     # TP = entry ± rr_ratio × SL-distance. rr_ratio selectable 1..10. No fixed ticks.
     rr_ratio: int = 2                      # reward:risk multiple (1..10)
+    # --- v0.19: explainable multi-timeframe confluence (ML scorer) ---
+    # Activated when strategy == "confluence". The live engine then runs the
+    # SAME ConfluenceBacktester logic (per-TF detectors + trained scorer) so
+    # live == backtest. conf_shadow=True logs signals WITHOUT placing orders.
+    conf_band_ticks: float = 8.0           # level-cluster band width (ticks)
+    conf_min_distinct_tf: int = 3          # cluster needs >= this many timeframes
+    conf_rr: float = 1.5                   # reward:risk multiple for TP
+    conf_wait_minutes: int = 60            # one-shot limit-order fill timeout
+    conf_base_minutes: int = 1             # input candle resolution (standardized: 1m)
+    conf_min_prob: float = 0.0             # gate: skip signals below this win-prob (0=off)
+    conf_use_scorer: bool = True           # True=trained JSON, False=heuristic prior
+    conf_shadow: bool = False              # default LIVE — practice account places orders
     # --- Removed (hardcoded internally) ---
     # entry_mode: always "100RE" (VAH/VAL entry)
     # entry_timeout_minutes: hardcoded 10 min inside strategy

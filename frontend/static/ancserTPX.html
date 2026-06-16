@@ -1,0 +1,656 @@
+﻿<!--
+  ============================================================
+  文件: frontend/static/ancserTPX.html  (拆分自舊 index.html)
+        ├─ ancserTPX.css   (樣式)
+        └─ ancserTPX.js    (邏輯)
+  狀態: v0.19.0
+  功能 / Features:
+    1. Backtest, Machine Learning, Live Monitor 共用 completed 1m candle decision flow.
+    2. 策略固定為 trend。
+    3. Value Area 固定 80%，preset 名稱不再包含 area sweep。
+    4. Full TP Lock 取代舊 profit lock，達到 1/2/3 次完整 TP 後下一 session 前停止新單。
+    5. Chart overlay 標示 session boundary、VP zone、禁止交易時段紅色斜線。
+  ============================================================
+-->
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ancserTPX</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any">
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/ancserTPX.css">
+</head>
+<body>
+
+<div class="header">
+    <h1><span style="color:var(--amber);">ancser</span>TPX 
+        <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
+        1.0.3
+        </span></h1>
+    <div class="header-tabs">
+        <div class="tab active" data-tab="backtest">Backtest</div>
+        <div class="tab" data-tab="live">Live Monitor</div>
+    </div>
+    <div class="header-right">
+        <div class="account-switcher">
+            <span class="account-badge" id="account-badge">--</span>
+        </div>
+        <div class="conn-dropdown-wrap">
+            <div class="conn-trigger" id="conn-trigger" onclick="toggleConnDropdown()">
+                <span class="status-dot" id="api-status"></span>
+                <span id="api-status-text">DISCONNECTED</span>
+                <span class="conn-arrow">▼</span>
+            </div>
+            <div class="conn-panel" id="conn-panel">
+                <div class="form-group">
+                    <label>USERNAME</label>
+                    <input type="text" id="username" placeholder="your_username">
+                </div>
+                <div class="form-group">
+                    <label>API KEY</label>
+                    <input type="password" id="apikey" placeholder="your_api_key">
+                </div>
+                <div class="form-group">
+                    <label>CONTRACT</label>
+                    <select id="contract-preset" onchange="onContractPresetChange()">
+                        <option value="CON.F.US.MNQ.M26" selected>MNQ (Micro NQ — $2/pt)</option>
+                        <option value="CON.F.US.ENQ.M26">NQ (Mini NQ — $20/pt)</option>
+                        <option value="">CUSTOM…</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>CONTRACT ID</label>
+                    <input type="text" id="contract-id" placeholder="auto-detect" value="CON.F.US.MNQ.M26">
+                </div>
+                <!-- MERGE HISTORY removed: TopstepX API only serves ~60 days of
+                     1m bars, so chaining older quarterly contracts always returns
+                     0 rows. The merge_contracts plumbing stays dormant (defaults to
+                     0 via the null-safe lookups in connectAPI/_ensureBacktestData). -->
+                <!-- Date range removed: data always loads the contract's full available
+                     history (paginated). Hidden inputs keep legacy JS references valid. -->
+                <input type="hidden" id="start-date" value="">
+                <input type="hidden" id="end-date" value="">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>INTERVAL</label>
+                        <input type="text" value="1 MIN" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
+                    </div>
+                    <div class="form-group">
+                        <label>BARS</label>
+                        <input type="text" id="data-count" value="--" readonly style="background:var(--bg3);color:var(--text2);">
+                    </div>
+                </div>
+                <!-- Data range indicator — updated by connectAPI() and _ensureBacktestData() -->
+                <div id="data-range-info" style="display:none;margin:4px 0 0;padding:3px 6px;background:rgba(0,0,0,0.35);border-radius:2px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.8px;color:var(--text3);">—</div>
+                <button class="btn btn-primary" id="btn-connect" onclick="connectAPI()">CONNECT</button>
+            </div>
+        </div>
+        <div id="clock"></div>
+    </div>
+</div>
+
+<div class="main">
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <!-- Backtest Config (SessionTrendFollow only) -->
+        <div class="panel" id="backtest-config-panel">
+            <div class="panel-title">BACKTEST PARAMS</div>
+            <!-- Strategy Params -->
+            <div class="form-row" style="margin-top:8px;">
+                <div class="form-group" style="flex:2;">
+                    <label>CONTRACT</label>
+                    <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt')">
+                        <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
+                        <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>SIZE</label>
+                    <select id="size-bt" onchange="updateTrailBounds('bt')"></select>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:2">
+                    <label>PRESET</label>
+                    <select id="preset-bt" onchange="loadPreset('bt')">
+                        <option value="default">Default</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;display:flex;align-items:flex-end;gap:4px;">
+                    <button class="btn btn-outline" onclick="savePreset('bt')" style="padding:7px 6px;font-size:10px;">SAVE</button>
+                    <button class="btn btn-outline" onclick="deletePreset('bt')" style="padding:7px 6px;font-size:10px;" title="Delete selected preset">DEL</button>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="flex:1;">
+                    <label>STRATEGY</label>
+                    <select id="strategy-bt" onchange="onStrategyChange('bt')">
+                        <option value="trend" selected>TREND</option>
+                        <option value="confluence">ML (confluence)</option>
+                    </select>
+                </div>
+            </div>
+            <div id="ml-params-bt" style="display:none;border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+                <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">ML CONFLUENCE (v0.19 explainable)</div>
+                <input type="hidden" id="conf-base-bt" value="1">
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>MIN PROB</label>
+                        <select id="conf-minprob-bt">
+                            <option value="0" selected>OFF</option>
+                            <option value="0.50">0.50</option>
+                            <option value="0.55">0.55</option>
+                            <option value="0.60">0.60</option>
+                            <option value="0.65">0.65</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>RR</label>
+                        <select id="conf-rr-bt">
+                            <option value="1.0">1:1</option>
+                            <option value="1.5" selected>1:1.5</option>
+                            <option value="2.0">1:2</option>
+                            <option value="2.5">1:2.5</option>
+                            <option value="3.0">1:3</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>BAND (ticks)</label>
+                        <select id="conf-band-bt">
+                            <option value="4">4</option>
+                            <option value="6">6</option>
+                            <option value="8" selected>8</option>
+                            <option value="10">10</option>
+                            <option value="12">12</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>MIN DISTINCT TF</label>
+                        <select id="conf-mintf-bt">
+                            <option value="2">2</option>
+                            <option value="3" selected>3</option>
+                            <option value="4">4</option>
+                            <option value="5">5</option>
+                        </select>
+                    </div>
+                </div>
+                <div style="font-size:10px;color:var(--text2);line-height:1.6;">
+                    1m 基礎 · data/models 訓練 scorer · 與 console / live 同一引擎 (可解釋、可複刻)。
+                </div>
+            </div>
+            <div class="form-row" id="overlap-tf-row-bt">
+                <div class="form-group" style="flex:1;">
+                    <label>TIMEFRAMES <span style="color:var(--text2)">(pick 1 = single; pick 2+ = overlap)</span></label>
+                    <div id="overlap-tf-bt" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="5m" checked onchange="onTfSelectionChange('bt')"> 5m</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="15m" onchange="onTfSelectionChange('bt')"> 15m</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="30m" onchange="onTfSelectionChange('bt')"> 30m</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="1h" onchange="onTfSelectionChange('bt')"> 1h</label>
+                        <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-bt" value="4h" onchange="onTfSelectionChange('bt')"> 4h</label>
+                    </div>
+                </div>
+            </div>
+            <div id="tr-params-bt" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+                <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">TREND</div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>AREA %</label>
+                        <select id="area-pct-bt" onchange="onAreaConfigChange('bt')">
+                            <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
+                            <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>CONFIRM</label>
+                        <select id="confirm-bars-bt">
+                            <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                            <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+                            <option value="7" selected>7</option><option value="8">8</option><option value="9">9</option>
+                            <option value="10">10</option>
+                        </select>
+                    </div>
+                </div>
+                <input type="hidden" id="sl-ticks-bt" value="50">
+                <span id="sl-ticks-bt-val" style="display:none">50</span>
+                <div class="form-group">
+                    <label>RR RATIO <span id="rr-ratio-bt-val" style="color:var(--accent)">1:2</span></label>
+                    <select id="rr-ratio-bt" onchange="onRrChange('bt')">
+                        <option value="1">1:1</option><option value="2" selected>1:2</option>
+                        <option value="3">1:3</option><option value="4">1:4</option>
+                        <option value="5">1:5</option><option value="6">1:6</option>
+                        <option value="7">1:7</option><option value="8">1:8</option>
+                        <option value="9">1:9</option><option value="10">1:10</option>
+                    </select>
+                    <input type="hidden" id="tp-ticks-bt" value="100">
+                </div>
+                <div class="form-group">
+                    <label>TRAIL TP TRIGGER</label>
+                    <select id="trail-trigger-pct-bt" onchange="updateTrailBounds('bt')">
+                        <option value="0">OFF</option>
+                        <option value="0.30" selected>30%</option>
+                        <option value="0.50">50%</option>
+                        <option value="0.70">70%</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>
+                        TRAIL SL <span id="trail-sl-pct-bt-val" style="color:var(--accent)">+10% TP</span>
+                        <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">20t / $30.00</span>
+                    </label>
+                    <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
+                    <input type="hidden" id="trail-sl-ticks-bt" value="20">
+                </div>
+                <div class="form-group">
+                    <label>FULL TP LOCK</label>
+                    <select id="full-tp-lock-bt">
+                        <option value="0">OFF</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>SESSION LIMIT</label>
+                    <select id="tr-session-limit-bt">
+                        <option value="1" selected>ON</option>
+                        <option value="0">OFF</option>
+                    </select>
+                </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+                <button class="btn btn-learn" id="btn-learn-bt" onclick="learnAndBacktest()" disabled
+                        title="用完整歷史重新訓練 ML scorer (1m base)，然後立即用最新 scorer 回測">LEARN &amp; BACKTEST</button>
+                <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
+                <div class="full-run-wrap">
+                    <button class="btn btn-full" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run machine learning combinations and rank results">MACHINE LEARNING</button>
+                    <button class="btn btn-full full-filter-btn" id="btn-full-filter" onclick="toggleFullFixedDropdown(event)" disabled title="Fixed Machine learning params">v</button>
+                    <div class="full-filter-panel" id="full-fixed-panel">
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-strategy" checked> STRATEGY</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-contract" checked> CONTRACT</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-size" checked> SIZE</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-tp"> TP</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-sl"> SL</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-trail-trigger"> TRAIL TRIGGER</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-trail"> TRAIL SL</label>
+                        <label class="full-fix-row"><input type="checkbox" id="full-fix-full-tp-lock"> FULL TP LOCK</label>
+                    </div>
+                </div>
+            </div>
+            <!-- Machine Learning progress bar -->
+            <div id="full-progress-wrap" style="display:none;margin-top:7px;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                    <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">COMBINATIONS</span>
+                    <span id="full-progress-text" style="font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text2);">0 / 0</span>
+                </div>
+                <div style="height:2px;background:rgba(255,255,255,0.07);border-radius:1px;overflow:hidden;">
+                    <div id="full-progress-bar" style="height:100%;width:0%;background:#fff;border-radius:1px;transition:width 0.25s linear;box-shadow:0 0 6px rgba(255,255,255,0.5);"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Metrics -->
+        <div class="panel" id="metrics-panel" style="display:none;">
+            <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+                <span>PERFORMANCE</span>
+                <select id="perf-window" onchange="onPerfWindowChange()" title="Lookback window — recomputes all metrics over the selected period"
+                        style="background:#0d0f15;color:#9aa7bd;border:1px solid rgba(100,220,255,0.18);font-family:inherit;font-size:10px;padding:2px 6px;border-radius:3px;cursor:pointer;">
+                    <option value="0">ALL</option>
+                </select>
+            </div>
+            <div class="metrics-grid" id="metrics-grid"></div>
+        </div>
+
+        <!-- Live Monitor Panel (hidden by default) -->
+        <div id="live-panel" class="hidden">
+            <div class="panel">
+                <div class="panel-title">LIVE PARAMS</div>
+                <!-- Strategy Params -->
+                <div class="form-row" style="margin-top:8px;">
+                    <div class="form-group" style="flex:2;">
+                        <label>CONTRACT</label>
+                        <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live')">
+                            <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
+                            <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>SIZE</label>
+                        <select id="size-live" onchange="updateTrailBounds('live')"></select>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2">
+                        <label>PRESET</label>
+                        <select id="preset-live" onchange="loadPreset('live')">
+                            <option value="default">Default</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;display:flex;align-items:flex-end;gap:4px;">
+                        <button class="btn btn-outline" onclick="savePreset('live')" style="padding:7px 6px;font-size:10px;">SAVE</button>
+                        <button class="btn btn-outline" onclick="deletePreset('live')" style="padding:7px 6px;font-size:10px;" title="Delete selected preset">DEL</button>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>STRATEGY</label>
+                        <select id="strategy-live" onchange="onStrategyChange('live')">
+                            <option value="trend" selected>TREND</option>
+                            <option value="confluence">ML (confluence)</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="ml-params-live" style="display:none;border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+                    <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">ML CONFLUENCE (v0.19 explainable)</div>
+                    <input type="hidden" id="conf-base-live" value="1">
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>MIN PROB</label>
+                            <select id="conf-minprob-live">
+                                <option value="0" selected>OFF</option>
+                                <option value="0.50">0.50</option>
+                                <option value="0.55">0.55</option>
+                                <option value="0.60">0.60</option>
+                                <option value="0.65">0.65</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>RR</label>
+                            <select id="conf-rr-live">
+                                <option value="1.0">1:1</option>
+                                <option value="1.5" selected>1:1.5</option>
+                                <option value="2.0">1:2</option>
+                                <option value="2.5">1:2.5</option>
+                                <option value="3.0">1:3</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>BAND (ticks)</label>
+                            <select id="conf-band-live">
+                                <option value="4">4</option>
+                                <option value="6">6</option>
+                                <option value="8" selected>8</option>
+                                <option value="10">10</option>
+                                <option value="12">12</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>MIN DISTINCT TF</label>
+                            <select id="conf-mintf-live">
+                                <option value="2">2</option>
+                                <option value="3" selected>3</option>
+                                <option value="4">4</option>
+                                <option value="5">5</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="font-size:10px;color:var(--text2);line-height:1.6;">
+                        1m 基礎 · data/models 訓練 scorer · 實盤直接下單 (practice account)。可解釋、與回測一致。
+                    </div>
+                </div>
+                <div class="form-row" id="overlap-tf-row-live">
+                    <div class="form-group" style="flex:1;">
+                        <label>TIMEFRAMES <span style="color:var(--text2)">(pick 1 = single; pick 2+ = overlap)</span></label>
+                        <div id="overlap-tf-live" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="5m" checked onchange="onTfSelectionChange('live')"> 5m</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="15m" onchange="onTfSelectionChange('live')"> 15m</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="30m" onchange="onTfSelectionChange('live')"> 30m</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="1h" onchange="onTfSelectionChange('live')"> 1h</label>
+                            <label style="display:flex;align-items:center;gap:4px;font-size:11px;cursor:pointer;"><input type="checkbox" class="overlap-tf-chk-live" value="4h" onchange="onTfSelectionChange('live')"> 4h</label>
+                        </div>
+                    </div>
+                </div>
+                <div id="tr-params-live" style="border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+                    <div style="font-size:9px;letter-spacing:1px;color:var(--cyan);margin-bottom:4px;">TREND</div>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>AREA %</label>
+                            <select id="area-pct-live" onchange="onAreaConfigChange('live')">
+                                <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
+                                <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>CONFIRM</label>
+                            <select id="confirm-bars-live">
+                                <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                                <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+                                <option value="7" selected>7</option><option value="8">8</option><option value="9">9</option>
+                                <option value="10">10</option>
+                            </select>
+                        </div>
+                    </div>
+                    <input type="hidden" id="sl-ticks-live" value="50">
+                    <span id="sl-ticks-live-val" style="display:none">50</span>
+                    <div class="form-group">
+                        <label>RR RATIO <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
+                        <select id="rr-ratio-live" onchange="onRrChange('live')">
+                            <option value="1">1:1</option><option value="2" selected>1:2</option>
+                            <option value="3">1:3</option><option value="4">1:4</option>
+                            <option value="5">1:5</option><option value="6">1:6</option>
+                            <option value="7">1:7</option><option value="8">1:8</option>
+                            <option value="9">1:9</option><option value="10">1:10</option>
+                        </select>
+                        <input type="hidden" id="tp-ticks-live" value="100">
+                    </div>
+                    <div class="form-group">
+                        <label>TRAIL TP TRIGGER</label>
+                        <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
+                            <option value="0">OFF</option>
+                            <option value="0.30" selected>30%</option>
+                            <option value="0.50">50%</option>
+                            <option value="0.70">70%</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>
+                            TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+10% TP</span>
+                            <span id="trail-sl-ticks-live-val" style="color:var(--text2)">20t / $30.00</span>
+                        </label>
+                        <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
+                        <input type="hidden" id="trail-sl-ticks-live" value="20">
+                    </div>
+                    <div class="form-group">
+                        <label>FULL TP LOCK</label>
+                        <select id="full-tp-lock-live">
+                            <option value="0">OFF</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>SESSION LIMIT</label>
+                        <select id="tr-session-limit-live">
+                            <option value="1" selected>ON</option>
+                            <option value="0">OFF</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="panel-title">ACCOUNT</div>
+                <select id="live-account-select" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;margin-bottom:10px;font-family:'IBM Plex Mono',monospace;font-size:11px;" onchange="onLiveAccountSwitch()">
+                    <option>-- NO ACCOUNT --</option>
+                </select>
+                <div id="live-account-info" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3);line-height:1.8;margin-bottom:10px;"></div>
+                <button class="btn btn-learn" id="btn-learn-live" onclick="learnAndLive()" disabled
+                        style="width:100%;margin-bottom:6px;"
+                        title="用完整歷史重新訓練 ML scorer (1m base)，然後立即用 ML 策略上線">LEARN &amp; LIVE</button>
+                <div style="display:flex;gap:6px;">
+                    <button class="btn btn-green" id="btn-go-live" onclick="goLive()" disabled style="flex:1;">GO LIVE</button>
+                    <button class="btn btn-amber" id="btn-stop-live" onclick="stopLive()" disabled style="flex:1;">STOP</button>
+                    <button class="btn btn-red" id="btn-flatten" onclick="flattenLive()" disabled style="flex:1;">FLATTEN</button>
+                </div>
+            </div>
+            <div class="panel">
+                <div class="panel-title">LIVE STATUS</div>
+                <div style="color:var(--text2);font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2.2;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text3);" id="live-status-dot"></span>
+                        STATUS: <span id="live-status-text" style="color:var(--text3);letter-spacing:1px;">OFFLINE</span>
+                    </div>
+                    <div style="padding-left:14px;">PHASE: <span id="live-position-text" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">MODE: <span id="live-mode-text" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">MARKET: <span id="lv-market-session" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">DAILY PNL: <span id="live-pnl-text" style="color:var(--text3);">--</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="content">
+        <div id="chart-container">
+
+            <!-- Live Monitor Top Bar -->
+            <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'IBM Plex Mono',monospace;font-size:11px;">
+                <div style="display:flex;align-items:stretch;height:28px;">
+                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MARKET: <span id="lv-session" style="color:var(--amber);margin-left:6px;">--</span></div>
+                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">STRAT: <span id="lv-strategy" style="color:var(--cyan);margin-left:6px;">--</span></div>
+                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MODE: <span id="lv-mode" style="color:var(--green);margin-left:6px;">--</span></div>
+                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">持倉: <span id="lv-position" style="color:var(--text2);margin-left:6px;">FLAT</span></div>
+                    <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:0 8px;">資金: <span id="lv-capital" style="color:var(--green);margin-left:6px;">--</span></div>
+                </div>
+                <!-- Status line — its own row, adapts to ML (confluence) or Trend -->
+                <div style="display:flex;align-items:center;height:22px;border-top:1px solid var(--border);padding:0 12px;font-size:10px;letter-spacing:0.3px;">
+                    <span id="lv-status-label" style="color:var(--cyan);font-weight:600;margin-right:8px;white-space:nowrap;">狀態</span>
+                    <span id="lv-phase-top" style="color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span>
+                </div>
+                <!-- Zone levels row (always show when zone active) -->
+                <div id="lv-zone-row" style="display:none;height:22px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:16px;font-size:10px;letter-spacing:0.5px;">
+                    <span style="color:var(--text2);">ACTIVE ZONE</span>
+                    <span>VAH: <span id="lv-z-vah" style="color:var(--cyan);">--</span></span>
+                    <span>POC: <span id="lv-z-poc" style="color:var(--amber);font-weight:600;">--</span></span>
+                    <span>VAL: <span id="lv-z-val" style="color:var(--cyan);">--</span></span>
+                    <span style="color:var(--text2);">100%: <span id="lv-z-h100" style="color:var(--text3);">--</span> ~ <span id="lv-z-l100" style="color:var(--text3);">--</span></span>
+                    <span>ID: <span id="lv-z-id" style="color:var(--text3);">--</span></span>
+                </div>
+                <!-- Signal row (shown on confirmed break) -->
+                <div id="lv-signal-row" style="display:none;height:24px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:20px;font-size:10px;letter-spacing:0.5px;">
+                    <span id="lv-sig-direction" style="color:var(--green);font-weight:600;">--</span>
+                    <span>ENTRY: <span id="lv-sig-entry" style="color:var(--amber);">--</span></span>
+                    <span>SL: <span id="lv-sig-sl" style="color:var(--red);">--</span></span>
+                    <span>TP: <span id="lv-sig-tp" style="color:var(--green);">--</span></span>
+                    <span id="lv-sig-status" style="color:var(--text3);">PENDING</span>
+                </div>
+                <!-- ML decision-basis banner (confluence): why the order fired + params -->
+                <div id="lv-confluence-row" style="display:none;min-height:22px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:8px;font-size:10px;letter-spacing:0.3px;padding:2px 10px;">
+                    <span style="color:var(--cyan);font-weight:600;">ML 判斷依據</span>
+                    <span id="lv-conf-basis" style="color:var(--text2);font-family:'IBM Plex Mono',monospace;">--</span>
+                </div>
+            </div>
+
+            <!-- ML level-universe overlay: vertical list of recent zones per TF
+                 (4h, 4h-1, 4h-2, 2h, 2h-1 …) with weight + distance to price -->
+            <div id="lv-levels-panel" style="display:none;position:absolute;right:8px;bottom:8px;z-index:19;background:rgba(8,9,13,0.86);border:1px solid var(--border-h);border-radius:4px;backdrop-filter:blur(6px);font-family:'IBM Plex Mono',monospace;font-size:10px;max-height:62%;overflow-y:auto;min-width:208px;">
+                <div style="padding:4px 8px;border-bottom:1px solid var(--border);color:var(--cyan);font-weight:600;letter-spacing:0.5px;">匯流區間 · 權重 · 距現價</div>
+                <div id="lv-levels-body" style="padding:2px 0;"></div>
+            </div>
+
+        </div>
+
+        <div class="bottom-panel" id="bottom-panel">
+            <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
+            <div class="bottom-tabs">
+                <div class="bottom-tab" data-btab="full">MACHINE LEARNING</div>
+                <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
+                <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
+                <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
+            </div>
+            <div class="bottom-content">
+                <div id="btab-full" class="hidden">
+                    <div id="full-config-caption" style="display:none;padding:6px 8px;font-size:10px;color:var(--text2);border-bottom:1px solid var(--border);font-family:'IBM Plex Mono',monospace;"></div>
+                    <div class="trade-table-wrap">
+                        <table id="full-table">
+                            <thead id="full-thead">
+                                <tr>
+                                    <th class="full-sort-th" data-col="method"   style="width:54px;" onclick="fullSortBy('method')">METHOD <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="tf"       style="width:96px;" onclick="fullSortBy('tf')" title="Timeframe combination">TFs <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="overlap"  style="width:40px;" onclick="fullSortBy('overlap')" title="Overlapping timeframes">OVL <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="rr"       style="width:42px;" onclick="fullSortBy('rr')" title="Reward:Risk">RR <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="contract" style="width:64px;" onclick="fullSortBy('contract')" title="Contract @ size">CON <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="trades"   style="width:44px;" onclick="fullSortBy('trades')">TRADES <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="win_rate" style="width:52px;" onclick="fullSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="pnl"      style="width:68px;" onclick="fullSortBy('pnl')">FINAL PNL <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="max_dd"   style="width:60px;" onclick="fullSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="best_day" style="width:60px;" onclick="fullSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="worst_day"style="width:60px;" onclick="fullSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="wk_std"   style="width:56px;" onclick="fullSortBy('wk_std')" title="Weekly PnL std-dev">WK STD <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="wk_cv"    style="width:52px;" onclick="fullSortBy('wk_cv')" title="Weekly PnL coefficient of variation">WK CV <span class="sa">↕</span></th>
+                                    <th class="full-sort-th" data-col="pf"       style="width:48px;" onclick="fullSortBy('pf')" title="Profit Factor (gross gain / gross loss)">PF <span class="sa">↕</span></th>
+                                    <th class="full-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="fullSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
+                                    <th style="width:32px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="full-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div id="btab-trades">
+                    <div class="trade-table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th style="width:48px;">SYMBOL</th>
+                                    <th style="width:36px;">SIZE</th>
+                                    <th>ENTRY TIME</th>
+                                    <th>EXIT TIME</th>
+                                    <th>DURATION</th>
+                                    <th>ENTRY</th>
+                                    <th>EXIT</th>
+                                    <th>P&amp;L</th>
+                                    <th>COMMISSION</th>
+                                    <th>FEES</th>
+                                    <th>DIR</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trades-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div id="btab-execute" class="hidden">
+                    <div class="trade-table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th style="width:48px;">SYMBOL</th>
+                                    <th style="width:36px;">SIZE</th>
+                                    <th>ENTRY TIME</th>
+                                    <th>EXIT TIME</th>
+                                    <th>DURATION</th>
+                                    <th>ENTRY</th>
+                                    <th>EXIT</th>
+                                    <th>P&amp;L</th>
+                                    <th>COMMISSION</th>
+                                    <th>FEES</th>
+                                    <th>DIR</th>
+                                </tr>
+                            </thead>
+                            <tbody id="execute-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div id="btab-log" class="hidden">
+                    <div class="log" id="log-container"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/static/ancserTPX.js"></script>
+</body>
+</html>
+
+
+

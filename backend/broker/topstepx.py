@@ -125,6 +125,16 @@ def _third_friday(year: int, month: int):
     return fridays[2]
 
 
+def contract_roll_start(contract_id: str, roll_buffer_days: int = 8) -> Optional[datetime]:
+    """UTC midnight when history should roll away from this expiring contract."""
+    parsed = _parse_contract_expiry(contract_id)
+    if not parsed:
+        return None
+    year, month = parsed
+    roll_date = _third_friday(year, month) - timedelta(days=roll_buffer_days)
+    return datetime(roll_date.year, roll_date.month, roll_date.day, tzinfo=timezone.utc)
+
+
 class TopstepXClient:
     """TopstepX API 客戶端（REST + SignalR）"""
 

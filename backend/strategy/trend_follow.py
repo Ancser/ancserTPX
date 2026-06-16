@@ -407,6 +407,7 @@ class SessionTrendFollow:
     """
 
     TICK_SIZE = 0.25
+    MIN_STOP_TICKS = 4
 
     def __init__(self, params: Optional[StrategyParams] = None):
         p = params or StrategyParams()
@@ -601,6 +602,9 @@ class SessionTrendFollow:
                 sl = entry - fallback_pts
             else:
                 sl = node
+            min_sl = entry - self.MIN_STOP_TICKS * self.TICK_SIZE
+            if sl > min_sl:
+                sl = min_sl
             sl_dist = abs(entry - sl)
             tp = entry + sl_dist * self.RR_RATIO
             trade_dir = Direction.BUY
@@ -612,6 +616,9 @@ class SessionTrendFollow:
                 sl = entry + fallback_pts
             else:
                 sl = node
+            min_sl = entry + self.MIN_STOP_TICKS * self.TICK_SIZE
+            if sl < min_sl:
+                sl = min_sl
             sl_dist = abs(sl - entry)
             tp = entry - sl_dist * self.RR_RATIO
             trade_dir = Direction.SELL

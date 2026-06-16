@@ -86,6 +86,10 @@ class VolumeProfileCalculator:
 
         total_volume = sum(pv_map.values())
 
+        # Step 5: multi-band value areas (20/40/60/80/100%) for the confluence
+        # level universe. 100% is just the full range (no expansion needed).
+        va_bands = self._calculate_value_area_bands(pv_map, poc, high_100, low_100)
+
         return VolumeProfileResult(
             poc=poc,
             vah=vah,
@@ -95,7 +99,31 @@ class VolumeProfileCalculator:
             total_volume=total_volume,
             profile=pv_map,
             value_area_pct=self.value_area_pct,
+            va_bands=va_bands,
         )
+
+    # value-area percentages that make up the confluence level universe
+    VA_BAND_PCTS = (20, 40, 60, 80, 100)
+
+    def _calculate_value_area_bands(
+        self,
+        pv_map: Dict[float, int],
+        poc: float,
+        high_100: float,
+        low_100: float,
+    ) -> Dict[int, Tuple[float, float]]:
+        """Compute (VAH, VAL) for each band in VA_BAND_PCTS.
+
+        Returns {pct: (vah, val)} with integer pct keys. The 100% band is the
+        full price range; the rest reuse the standard POC-outward expansion.
+        """
+        bands: Dict[int, Tuple[float, float]] = {}
+        for pct in self.VA_BAND_PCTS:
+            if pct >= 100:
+                bands[pct] = (high_100, low_100)
+            else:
+                bands[pct] = self._calculate_value_area(pv_map, poc, pct / 100.0)
+        return bands
 
     def _build_price_volume_map(self, candles: List[Candle]) -> Dict[float, int]:
         """

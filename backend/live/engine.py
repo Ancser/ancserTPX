@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import time as time_mod
 from datetime import datetime, time, timedelta
@@ -47,6 +48,8 @@ class LiveTradingEngine:
 
     # 加州 12:45 PT = 15:45 ET = 14:45 CT = 19:45 UTC
     TRAIL_TICK_STEP = 5
+    MIN_STOP_BRACKET_TICKS = 4
+    MIN_TP_BRACKET_TICKS = 1
     AUTO_OCO_FAILSAFE_SECONDS = 5 * 60
     AUTO_OCO_RETRY_SECONDS = 15.0
     AUTO_OCO_SETTINGS_URL = "https://topstepx.com/settings?tab=risk-settings"
@@ -104,9 +107,34 @@ class LiveTradingEngine:
             max_recent=10,
             tf_combo=overlap_combo,
         )
-        # Only the trend strategy remains.
-        self.strategy_mode = "trend"
+        # Strategy mode: "trend" (default, 1.0.x) or "confluence" (v0.19 ML).
+        # The trend object is ALWAYS built so legacy state/helpers keep working;
+        # confluence only adds a parallel evaluator and diverges at signal time.
+        self.strategy_mode = (getattr(self.strategy_params, "strategy", "trend") or "trend").lower()
+        if self.strategy_mode != "confluence":
+            self.strategy_mode = "trend"
         self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+
+        # v0.19: explainable multi-timeframe confluence evaluator (shadow or live).
+        self.confluence = None
+        self._conf_shadow = bool(getattr(self.strategy_params, "conf_shadow", False))
+        self._conf_signals_log: List[Dict] = []
+        # explain payload (weights x features) of the confluence signal that is
+        # currently pending/active — carried through fill so each closed trade can
+        # persist a durable, replayable "why" alongside its outcome.
+        self._pending_conf_payload: Optional[Dict] = None
+        self._active_conf_payload: Optional[Dict] = None
+        if self.strategy_mode == "confluence":
+            from backend.live.confluence_live import ConfluenceLiveEvaluator
+            self.confluence = ConfluenceLiveEvaluator(
+                contract_id=contract_id,
+                band_ticks=float(getattr(self.strategy_params, "conf_band_ticks", 8.0)),
+                min_distinct_tf=int(getattr(self.strategy_params, "conf_min_distinct_tf", 3)),
+                rr=float(getattr(self.strategy_params, "conf_rr", 1.5)),
+                base_minutes=int(getattr(self.strategy_params, "conf_base_minutes", 1)),
+                min_prob=float(getattr(self.strategy_params, "conf_min_prob", 0.0)),
+                use_scorer=bool(getattr(self.strategy_params, "conf_use_scorer", True)),
+            )
         self.strategies = [self.strategy_mode]
 
         # Live state
@@ -175,6 +203,13 @@ class LiveTradingEngine:
         self._breakout_locks_file = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "data", "live_breakout_locks.json"
+        )
+        # Durable per-trade ledger: every closed position is appended here with
+        # its full explainable confluence payload (weights x features, prob,
+        # score, scorer version) + all params + outcome. Capped at 10k rows.
+        self._trades_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data", "trades.json"
         )
         # daily_capital.json removed — PnL now read directly from API
 
@@ -642,6 +677,119 @@ class LiveTradingEngine:
         except Exception as e:
             logger.warning(f"Failed to persist exit record: {e}")
 
+    def _persist_trade_record(
+        self,
+        exit_reason: str,
+        entry_time: Optional[datetime],
+        exit_time: datetime,
+        entry_price: Optional[float],
+        signal: Optional[TradeSignal],
+        conf_payload: Optional[Dict],
+        trail_triggered: bool,
+        status: str = "closed",
+    ):
+        """Append one fully-explainable order record to data/trades.json.
+
+        `status` captures the order's final disposition:
+          - "closed"    : filled then exited (won/exit_price from TP/SL)
+          - "cancelled" : placed as a LIMIT but never filled (price never touched),
+                          cancelled by timeout / pre-flatten / manual / shutdown.
+                          won = null, no exit_price — but the FULL "why" (weights x
+                          features) is still recorded, so unfilled signals are
+                          auditable too (為何下單、為何沒成交).
+
+        Each row carries the confluence weights/feature contributions, the scorer
+        version, all signal/config params, and the outcome — permanently replayable
+        and auditable (可解釋 + 可複刻), surviving restarts. Best-effort, capped at
+        10k rows. Trend-only orders store null confluence weights.
+        """
+        try:
+            filled = status == "closed"
+            won = (exit_reason == "tp") if filled else None
+            # exit price proxy = the bracket level that was hit (matches live_exits)
+            exit_price = None
+            if filled and signal is not None:
+                exit_price = signal.tp_price if won else signal.sl_price
+
+            scorer = getattr(self.confluence, "scorer", None) if self.confluence else None
+            cfg = getattr(self.confluence, "cfg", None) if self.confluence else None
+
+            record = {
+                "exit_time": exit_time.isoformat() if exit_time else None,
+                "entry_time": entry_time.isoformat() if entry_time else None,
+                "account_id": self.account_id,
+                "contract_id": self.contract_id,
+                "strategy": self.strategy_mode,
+                "status": status,
+                "direction": signal.direction.value if signal else None,
+                "size": self.contract_size,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "sl_price": signal.sl_price if signal else None,
+                "tp_price": signal.tp_price if signal else None,
+                "exit_reason": exit_reason,
+                "won": won,
+                "trail_triggered": trail_triggered,
+                "shadow": bool(self._conf_shadow),
+                # ── explainable confluence payload (None for trend trades) ──
+                "confluence": None,
+            }
+
+            if conf_payload:
+                record["confluence"] = {
+                    "mode": conf_payload.get("mode"),
+                    "side": conf_payload.get("side"),
+                    "prob": conf_payload.get("prob"),
+                    "score": conf_payload.get("score"),
+                    "cluster_weight": conf_payload.get("weight"),
+                    "tfs": conf_payload.get("tfs"),
+                    "largest_tf": conf_payload.get("largest_tf"),
+                    "labels": conf_payload.get("labels"),
+                    "reason": conf_payload.get("reason"),
+                    # full per-feature breakdown: (name, value, weight, contribution)
+                    "contributions": [
+                        {"feature": n, "value": v, "weight": w, "contribution": c}
+                        for (n, v, w, c) in conf_payload.get("explain", [])
+                    ],
+                }
+            if scorer is not None:
+                record["scorer"] = {
+                    "source": self.confluence.scorer_source,
+                    "bias": scorer.bias,
+                    "weights": dict(scorer.weights),
+                    "trained_at": scorer.meta.get("trained_at"),
+                    "train_auc": scorer.meta.get("train_auc"),
+                    "n_samples": scorer.meta.get("n_samples"),
+                }
+            if cfg is not None:
+                record["config"] = {
+                    "band_ticks": cfg.band_ticks,
+                    "min_distinct_tf": cfg.min_distinct_tf,
+                    "rr": cfg.rr,
+                    "base_minutes": self.confluence.base_minutes,
+                    "min_score": self.confluence.min_score,
+                }
+
+            existing: List[dict] = []
+            if os.path.exists(self._trades_file):
+                try:
+                    with open(self._trades_file, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                        if isinstance(loaded, list):
+                            existing = loaded
+                except Exception:
+                    existing = []
+
+            existing.append(record)
+            if len(existing) > 10000:
+                existing = existing[-10000:]
+
+            os.makedirs(os.path.dirname(self._trades_file), exist_ok=True)
+            with open(self._trades_file, "w", encoding="utf-8") as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.warning(f"Failed to persist trade record: {e}")
+
     def _read_json_list_or_dict(self, path: str):
         try:
             if os.path.exists(path):
@@ -1104,6 +1252,16 @@ class LiveTradingEngine:
             "phase": self._get_phase() if self._running else "引擎已停止",
             "trades": self._trades[-10:],
             "log": self._log[-20:],
+            # v0.19: explainable confluence telemetry (None unless in that mode)
+            "confluence_mode": self.strategy_mode == "confluence",
+            "confluence_shadow": self._conf_shadow if self.strategy_mode == "confluence" else None,
+            "confluence_scorer": (self.confluence.scorer_source if self.confluence else None),
+            "confluence_signals": self._conf_signals_log[-20:] if self.confluence else [],
+            # full explainable level universe (per-TF/recency zones + weight + distance)
+            "confluence_universe": (
+                self.confluence.level_universe(self._last_market_price)
+                if self.confluence else []
+            ),
         }
 
     def _get_zone_phase(self) -> str:
@@ -1234,10 +1392,55 @@ class LiveTradingEngine:
             return True
         return self._tf_breakout_summary()[4]
 
+    def _get_confluence_phase(self) -> str:
+        """ML (confluence) status line for the top-bar — every parameter in
+        Chinese. The trend breakout phase (縂突破…) is meaningless here, so ML
+        mode shows its own state: scorer, prob gate, how many timeframes have a
+        zone vs the requirement, band/RR, position state, and the latest signal.
+        """
+        c = self.confluence
+        if c is None:
+            return "ML 未初始化"
+        try:
+            have = len(c.zones_by_tf())
+        except Exception:
+            have = 0
+        total = len(c.timeframes)
+        need = c.cfg.min_distinct_tf
+        if c.min_score and c.min_score != 0.0:
+            thr = 1.0 / (1.0 + math.exp(-c.min_score))
+            thr_txt = f"勝率門檻≥{thr * 100:.0f}%"
+        else:
+            thr_txt = "勝率門檻 無"
+        parts = [
+            "ML匯流",
+            f"評分器 {c.scorer_source}",
+            thr_txt,
+            f"匯流區間 {have}/{total}(需≥{need})",
+            f"帶寬{c.cfg.band_ticks:g}刻度 RR{c.cfg.rr:g}",
+        ]
+        order = self._get_order_short()
+        if order != "無":
+            parts.append(order)
+        if self._conf_signals_log:
+            last = self._conf_signals_log[-1]
+            mode_cn = "逆勢" if last.get("mode") == "reversion" else "順勢"
+            dir_cn = "做多" if str(last.get("direction", "")).lower() in ("buy", "long") else "做空"
+            prob = last.get("prob")
+            tail = f"最近 {mode_cn}{dir_cn}"
+            if prob is not None:
+                tail += f" 勝率{prob * 100:.0f}%"
+            parts.append(tail)
+        return " ｜ ".join(parts)
+
     def _get_phase(self) -> str:
         """Per-timeframe breakout phase for the top-bar PHASE display, e.g.
         '5m:等待突破  15m:突破中↑(3/7分)  縂突破區間(1/2) 縂突破時長(3/7分)'.
+
+        ML (confluence) mode uses its own status line instead (no breakout phase).
         """
+        if self.strategy_mode == "confluence":
+            return self._get_confluence_phase()
         confirm = max(1, int(getattr(self.trend_follow, "CONFIRM_BARS", 1) or 1))
         tfs, breaking, total_count, _, _ = self._tf_breakout_summary()
         parts = []
@@ -1328,6 +1531,16 @@ class LiveTradingEngine:
             elif hasattr(self.trend_follow, 'warmup'):
                 self.trend_follow.warmup(c)
 
+        # v0.19: warm up confluence detectors on the SAME history so the first
+        # live bar already has full multi-timeframe zone context (live==backtest).
+        if self.confluence is not None:
+            self.confluence.warmup(historical_candles)
+            self._log_event(
+                f"[confluence] warm-up {len(historical_candles)} bars | "
+                f"TFs={self.confluence.timeframes} | scorer={self.confluence.scorer_source} | "
+                f"{'SHADOW (log-only)' if self._conf_shadow else 'LIVE (places orders)'}"
+            )
+
         self._candles_processed = len(historical_candles)
         self._all_candles = list(historical_candles)
         self._last_candle_time = historical_candles[-1].timestamp.isoformat() if historical_candles else None
@@ -1413,8 +1626,16 @@ class LiveTradingEngine:
                     self._log_event(f"取消掛單 #{self._pending_order_id} 失敗，保留 session-direction 鎖", "error")
             except Exception as e:
                 self._log_event(f"取消掛單失敗: {e}", "error")
+            if self._pending_signal:
+                self._persist_trade_record(
+                    exit_reason="cancelled", entry_time=self._entry_time,
+                    exit_time=datetime.utcnow(), entry_price=None,
+                    signal=self._pending_signal, conf_payload=self._pending_conf_payload,
+                    trail_triggered=False, status="cancelled",
+                )
             self._pending_order_id = None
             self._pending_signal = None
+            self._pending_conf_payload = None
 
         self._log_event("引擎已停止")
 
@@ -1724,6 +1945,8 @@ class LiveTradingEngine:
 
         # ── ALWAYS update zone detector first (even during flatten/limits) ──
         self.detector.update(candle)
+        if self.confluence is not None:
+            self.confluence.update(candle)
         self._append_history(candle)
         self._update_tf_breakout(candle)
 
@@ -1772,7 +1995,8 @@ class LiveTradingEngine:
         # Auto OCO protection is monitored before the candle gate; trailing still needs price.
         if self._open_position:
             self._position_age += 1   # track for display only
-            if self._last_market_price:
+            # Confluence trades keep their structural SL/TP (no trend trailing).
+            if self._last_market_price and self.strategy_mode != "confluence":
                 await self._check_trailing_sl_live()
             return
 
@@ -1798,6 +2022,11 @@ class LiveTradingEngine:
                 self._protection_synced = False
 
         if self._pending_order_id:
+            return
+
+        # ── v0.19: explainable confluence path (separate from the trend rule) ──
+        if self.strategy_mode == "confluence" and self.confluence is not None:
+            await self._evaluate_confluence(candle)
             return
 
         # ── Strategy evaluation ──
@@ -1849,6 +2078,81 @@ class LiveTradingEngine:
                 strat.notify_order_cancelled()
             return
 
+    async def _evaluate_confluence(self, candle: Candle):
+        """v0.19: evaluate the multi-timeframe confluence ML signal for this bar.
+
+        SHADOW (default): logs the explainable signal (entry/SL/TP/prob + the
+        top weighted feature contributions) and records it — places NO orders,
+        so we can verify live == backtest with zero risk. When conf_shadow is
+        False it places a one-shot LIMIT order through the SAME order path the
+        trend strategy uses (brackets + session-direction lock honoured).
+        """
+        if self._open_position or self._pending_order_id:
+            return
+        payload = self.confluence.explain(candle)
+        if not payload:
+            return
+        signal = self.confluence.evaluate(candle)
+        if signal is None:
+            return
+
+        # one-shot per zone(=largest TF) + direction, like the backtest session lock
+        if self._session_direction_is_locked(signal):
+            return
+
+        # ── Chinese decision basis (判斷依據) — clearly states which zones (per
+        # timeframe) formed the confluence, each zone's weight (各自的權重) and the
+        # total weight (縂權重), plus the scorer's top feature contributions. ──
+        _FEATURE_CN = {
+            "mode_is_reversion": "逆勢偏好", "mean_band_pct": "帶寬位置",
+            "side_is_vah": "VAH側", "n_distinct_tf": "TF數量",
+            "largest_tf_rank": "最大TF階", "n_levels": "層級數",
+            "total_weight": "匯流強度", "cluster_width_ticks": "簇寬",
+            "dist_to_price_ticks": "距現價", "risk_ticks": "風險刻度",
+        }
+        mode_cn = "逆勢" if payload["mode"] == "reversion" else "順勢"
+        dir_cn = "做多" if signal.direction == Direction.BUY else "做空"
+        side_cn = "VAH壓力" if payload["side"] == "VAH" else "VAL支撐"
+        tfw = payload.get("tf_weights") or []
+        tfw_str = " ".join(f"{d['tf']}(權{d['weight']:g})" for d in tfw) \
+            or "/".join(payload["tfs"])
+        top = payload.get("explain", [])[:3]
+        contribs = "、".join(
+            f"{_FEATURE_CN.get(n, n)}{c:+.2f}" for (n, _v, _w, c) in top
+        )
+        basis = (
+            f"判斷依據：{mode_cn}{dir_cn}（{side_cn}）"
+            f"｜匯流{len(payload['tfs'])}個區間 {tfw_str} 縂權重{payload['weight']:g}"
+            f"｜進場{payload['entry']} 止損{payload['sl']} 止盈{payload['tp']}"
+            f"｜勝率{payload['prob'] * 100:.0f}% 評分{payload['score']:+.2f}"
+            f"｜關鍵權重：{contribs}"
+            f"｜評分器 {self.confluence.scorer_source}"
+        )
+        self._log_event(("【SHADOW】" if self._conf_shadow else "") + basis)
+        # Stash the human-readable basis on the payload so the API/banner reuse it.
+        payload["basis"] = basis
+        payload["shadow"] = bool(self._conf_shadow)
+        self._conf_signals_log.append(payload)
+        if len(self._conf_signals_log) > 200:
+            self._conf_signals_log = self._conf_signals_log[-100:]
+
+        if self._conf_shadow:
+            return  # log-only: prove live==backtest before risking real orders
+
+        placed = await self._place_order(signal)
+        if placed:
+            # carry the explainable payload through to the trade ledger on exit
+            self._pending_conf_payload = payload
+            self._mark_session_direction_locked(signal)
+            self._log_event(
+                f"ORDER PLACED on confluence: {signal.direction.value} {payload['side']} "
+                f"@ {payload['entry']} (prob={payload['prob']:.2f}, score={payload['score']:+.2f})"
+            )
+
+    def get_confluence_signals(self) -> List[Dict]:
+        """Recent explainable confluence signals (for the live chart / API)."""
+        return list(self._conf_signals_log)
+
 
     # ── Order Management ──────────────────────────────────
 
@@ -1857,14 +2161,36 @@ class LiveTradingEngine:
         """Round price to nearest NQ tick (0.25)."""
         return round(round(price / TICK_SIZE) * TICK_SIZE, 2)
 
+    def _normalize_entry_protection(self, signal: TradeSignal) -> List[str]:
+        """Keep entry brackets valid for TopstepX before sending an order."""
+        fixes: List[str] = []
+        entry = signal.entry_price
+
+        sl_ticks = int(round((signal.sl_price - entry) / self.tick_size))
+        tp_ticks = int(round((signal.tp_price - entry) / self.tick_size))
+
+        if signal.direction == Direction.BUY:
+            fixed_sl_ticks = min(sl_ticks, -self.MIN_STOP_BRACKET_TICKS)
+            fixed_tp_ticks = max(tp_ticks, self.MIN_TP_BRACKET_TICKS)
+        else:
+            fixed_sl_ticks = max(sl_ticks, self.MIN_STOP_BRACKET_TICKS)
+            fixed_tp_ticks = min(tp_ticks, -self.MIN_TP_BRACKET_TICKS)
+
+        if fixed_sl_ticks != sl_ticks:
+            old = signal.sl_price
+            signal.sl_price = self._round_to_tick(entry + fixed_sl_ticks * self.tick_size)
+            fixes.append(f"SL {old:.2f}->{signal.sl_price:.2f} ({sl_ticks}t->{fixed_sl_ticks}t)")
+        if fixed_tp_ticks != tp_ticks:
+            old = signal.tp_price
+            signal.tp_price = self._round_to_tick(entry + fixed_tp_ticks * self.tick_size)
+            fixes.append(f"TP {old:.2f}->{signal.tp_price:.2f} ({tp_ticks}t->{fixed_tp_ticks}t)")
+
+        return fixes
+
     def _entry_brackets_for_signal(self, signal: TradeSignal) -> tuple[Dict[str, int], Dict[str, int]]:
         """Build ProjectX bracket payload using signed offsets from the entry price."""
         sl_ticks = int(round((signal.sl_price - signal.entry_price) / self.tick_size))
         tp_ticks = int(round((signal.tp_price - signal.entry_price) / self.tick_size))
-        if sl_ticks == 0:
-            sl_ticks = -1 if signal.direction == Direction.BUY else 1
-        if tp_ticks == 0:
-            tp_ticks = 1 if signal.direction == Direction.BUY else -1
         return (
             {"ticks": sl_ticks, "type": 4},  # Stop Market
             {"ticks": tp_ticks, "type": 1},  # Limit
@@ -1883,6 +2209,9 @@ class LiveTradingEngine:
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
+        protection_fixes = self._normalize_entry_protection(signal)
+        if protection_fixes:
+            self._log_event("[BRACKET FIX] " + " | ".join(protection_fixes), "warn")
 
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "買" if signal.direction == Direction.BUY else "賣"
@@ -1966,6 +2295,9 @@ class LiveTradingEngine:
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
+        protection_fixes = self._normalize_entry_protection(signal)
+        if protection_fixes:
+            self._log_event("[BRACKET FIX] " + " | ".join(protection_fixes), "warn")
 
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "買" if signal.direction == Direction.BUY else "賣"
@@ -2124,9 +2456,22 @@ class LiveTradingEngine:
             self.trend_follow.notify_order_cancelled()
             if release_breakout_lock:
                 self._release_breakout_lock(self._pending_signal)
+            # Record the unfilled order (placed but price never touched) with its
+            # full explainable payload — so cancelled signals are auditable too.
+            self._persist_trade_record(
+                exit_reason="cancelled",
+                entry_time=self._entry_time,
+                exit_time=datetime.utcnow(),
+                entry_price=None,
+                signal=self._pending_signal,
+                conf_payload=self._pending_conf_payload,
+                trail_triggered=False,
+                status="cancelled",
+            )
 
         self._pending_order_id = None
         self._pending_signal = None
+        self._pending_conf_payload = None
         self._pending_age = 0
 
     async def _check_pending_fill(self) -> bool:
@@ -2241,6 +2586,8 @@ class LiveTradingEngine:
 
                 # Save signal for SL/TP retry, then clear pending state
                 self._active_signal = self._pending_signal  # keep for SL/TP reference
+                self._active_conf_payload = self._pending_conf_payload  # carry the "why"
+                self._pending_conf_payload = None
                 self._entry_time = datetime.utcnow()
                 self._force_exit_reason = None
                 self._pending_order_id = None
@@ -2314,6 +2661,7 @@ class LiveTradingEngine:
                 # Snapshot for persistence before we clear active_signal.
                 _sig_for_log = self._active_signal
                 _entry_t = self._entry_time
+                _conf_payload = self._active_conf_payload
 
                 self._log_event(
                     f"持倉已平 ({exit_reason.upper()} 觸發){pnl_info}"
@@ -2338,6 +2686,7 @@ class LiveTradingEngine:
                 self._tp_order_id = None
                 self._fill_price = None
                 self._active_signal = None
+                self._active_conf_payload = None
                 self._protection_synced = False
                 self._entry_time = None
                 self._position_open_ts = 0.0
@@ -2382,6 +2731,18 @@ class LiveTradingEngine:
                     direction=_sig_for_log.direction.value if _sig_for_log else None,
                     trail_triggered=self._trail_sl_triggered,
                     zone_id=_sig_for_log.zone_id if _sig_for_log else None,
+                )
+
+                # Durable explainable trade ledger (data/trades.json):
+                # weights x features + scorer version + all params + outcome.
+                self._persist_trade_record(
+                    exit_reason=exit_reason,
+                    entry_time=_entry_t,
+                    exit_time=exit_time_dt,
+                    entry_price=entry_fill,
+                    signal=_sig_for_log,
+                    conf_payload=_conf_payload,
+                    trail_triggered=self._trail_sl_triggered,
                 )
 
                 # Notify strategy with actual exit reason
@@ -2439,6 +2800,8 @@ class LiveTradingEngine:
         if self._candles_processed % 5 == 0:
             self._save_zones()
         self.detector.update(candle)
+        if self.confluence is not None:
+            self.confluence.update(candle)
         self._append_history(candle)
         self._update_tf_breakout(candle)
         if hasattr(self.trend_follow, "observe"):

@@ -16,8 +16,9 @@ import csv
 import json
 import logging
 import math
+import asyncio
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
@@ -25,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from backend.db.models import (
     BacktestConfig, BarUnit, Candle, StrategyParams,
-    get_point_value, get_contract_label,
+    get_point_value, get_contract_label, get_tick_size,
     get_commission_rt, get_fees_rt, _extract_symbol,
 )
 from backend.backtest.engine import BacktestEngine
@@ -251,10 +252,20 @@ def _strategy_leg_params(req, prefix: str) -> dict:
 
 
 def _build_strategy_params_from_request(req, contract_size: int) -> StrategyParams:
-    strategy = _normalize_strategy_name(getattr(req, "strategy", "trend"))
+    # v0.19: "confluence" selects the explainable ML engine; anything else is trend.
+    strategy = ("confluence" if str(getattr(req, "strategy", "trend") or "").strip().lower()
+                == "confluence" else _normalize_strategy_name(getattr(req, "strategy", "trend")))
     tr = _strategy_leg_params(req, "tr")
     return StrategyParams(
         strategy=strategy,
+        conf_band_ticks=float(getattr(req, "conf_band_ticks", 8.0) or 8.0),
+        conf_min_distinct_tf=int(getattr(req, "conf_min_distinct_tf", 3) or 3),
+        conf_rr=float(getattr(req, "conf_rr", 1.5) or 1.5),
+        conf_wait_minutes=int(getattr(req, "conf_wait_minutes", 60) or 60),
+        conf_base_minutes=int(getattr(req, "conf_base_minutes", 1) or 1),
+        conf_min_prob=float(getattr(req, "conf_min_prob", 0.0) or 0.0),
+        conf_use_scorer=bool(getattr(req, "conf_use_scorer", True)),
+        conf_shadow=bool(getattr(req, "conf_shadow", False)),
         tp_ticks=tr["tp_ticks"],
         sl_ticks=tr["sl_ticks"],
         trail_sl_ticks=tr["trail_sl_ticks"],
@@ -289,18 +300,115 @@ _live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
 _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
 ML_DISPLAY_LIMIT = 200
 
+def _candle_time(c: Candle) -> datetime:
+    ts = c.timestamp
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def _candle_key(c: Candle) -> str:
+    return _candle_time(c).isoformat()
+
+
+def _dedupe_candles(candles: List[Candle]) -> List[Candle]:
+    """Deduplicate candles by timestamp, preserving later list entries on overlap."""
+    by_ts: Dict[str, Candle] = {}
+    for c in candles:
+        by_ts[_candle_key(c)] = c
+    return sorted(by_ts.values(), key=_candle_time)
+
+
+def _shift_candle(c: Candle, offset: float) -> Candle:
+    if abs(offset) < 1e-9:
+        return c
+    return Candle(
+        timestamp=c.timestamp,
+        open=c.open + offset,
+        high=c.high + offset,
+        low=c.low + offset,
+        close=c.close + offset,
+        volume=c.volume,
+        symbol=c.symbol,
+        interval=c.interval,
+    )
+
+
+def _build_continuous_candles(
+    contract_batches: Dict[str, List[Candle]],
+    fetch_contracts: List[str],
+    roll_at: Optional[datetime],
+) -> Tuple[List[Candle], Dict[str, Any]]:
+    """Back-adjust previous contract history and splice it at the rollover date.
+
+    The current front-month is the price anchor. Older candles are shifted by the
+    close-to-close difference at the nearest shared timestamp around roll_at.
+    """
+    raw = []
+    for cid in fetch_contracts:
+        raw.extend(contract_batches.get(cid, []))
+
+    meta: Dict[str, Any] = {
+        "roll_at": roll_at.isoformat() if roll_at else None,
+        "price_adjustment": 0.0,
+        "adjusted_contract": None,
+        "anchor_time": None,
+    }
+    if len(fetch_contracts) < 2 or not roll_at:
+        return _dedupe_candles(raw), meta
+
+    prev_id = fetch_contracts[-2]
+    current_id = fetch_contracts[-1]
+    prev_bars = sorted(contract_batches.get(prev_id, []), key=_candle_time)
+    current_bars = sorted(contract_batches.get(current_id, []), key=_candle_time)
+    if not prev_bars or not current_bars:
+        return _dedupe_candles(raw), meta
+
+    prev_by_ts = {_candle_key(c): c for c in prev_bars}
+    current_by_ts = {_candle_key(c): c for c in current_bars}
+    common_keys = sorted(set(prev_by_ts).intersection(current_by_ts), key=lambda k: _candle_time(prev_by_ts[k]))
+    roll_ts = roll_at.astimezone(timezone.utc) if roll_at.tzinfo else roll_at.replace(tzinfo=timezone.utc)
+
+    anchor_key = None
+    if common_keys:
+        after_roll = [k for k in common_keys if _candle_time(prev_by_ts[k]) >= roll_ts]
+        anchor_key = after_roll[0] if after_roll else common_keys[-1]
+
+    adjustment = 0.0
+    if anchor_key:
+        prev_anchor = prev_by_ts[anchor_key]
+        current_anchor = current_by_ts[anchor_key]
+        adjustment = current_anchor.close - prev_anchor.close
+        meta.update({
+            "price_adjustment": adjustment,
+            "adjusted_contract": prev_id,
+            "anchor_time": _candle_time(prev_anchor).isoformat(),
+        })
+
+    adjusted_prev = [
+        _shift_candle(c, adjustment)
+        for c in prev_bars
+        if _candle_time(c) < roll_ts
+    ]
+    current_after_roll = [
+        c for c in current_bars
+        if _candle_time(c) >= roll_ts
+    ]
+
+    # If the requested range is entirely before/after the roll date, one side may
+    # be empty. That is expected; the active side still becomes the continuous set.
+    return _dedupe_candles(adjusted_prev + current_after_roll), meta
+
+
 def _upsert_historical_candles(candles: List[Candle]) -> None:
     """Merge candles by timestamp so forming-bar snapshots get replaced."""
     global _historical_candles
     if not candles:
         return
-    def _key(c: Candle):
-        ts = c.timestamp
-        return ts.isoformat() if ts.tzinfo else ts.replace(tzinfo=None).isoformat()
-    by_ts = {_key(c): c for c in _historical_candles}
+    by_ts = {_candle_key(c): c for c in _historical_candles}
     for c in candles:
-        by_ts[_key(c)] = c
-    _historical_candles = sorted(by_ts.values(), key=lambda c: c.timestamp.isoformat())
+        by_ts[_candle_key(c)] = c
+    _historical_candles = sorted(by_ts.values(), key=_candle_time)
 
 async def _refresh_recent_historical_candles(contract_id: str, limit: int = 240) -> None:
     """Refresh recent 1m bars before simulation so backtest uses final OHLC."""
@@ -354,6 +462,15 @@ class BacktestRequest(BaseModel):
     # overlapping VAH/VAL of the timeframes in tf_combo (reproduces an ML overlap row).
     method: str = "single"
     tf_combo: Optional[List[str]] = None
+    # v0.19: confluence (explainable ML scorer) backtest. When strategy=="confluence"
+    # the multi-timeframe weighted-level engine is used instead of the trend engine.
+    conf_band_ticks: float = 8.0          # level-cluster band width (ticks)
+    conf_min_distinct_tf: int = 3         # cluster needs >= this many timeframes
+    conf_rr: float = 1.5                  # reward:risk multiple for TP
+    conf_wait_minutes: int = 60           # one-shot limit-order fill timeout
+    conf_base_minutes: int = 1            # input candle resolution (1 or 5)
+    conf_min_prob: float = 0.0            # gate: skip signals below this win-prob (0=off)
+    conf_use_scorer: bool = True          # True=trained JSON, False=heuristic prior
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -804,7 +921,7 @@ async def fetch_historical(req: FetchHistoricalRequest):
     """
     global _historical_candles
 
-    from backend.broker.topstepx import TopstepXClient
+    from backend.broker.topstepx import TopstepXClient, contract_roll_start
 
     # .env fallback
     username = req.username or _env("TOPSTEPX_USERNAME")
@@ -866,7 +983,7 @@ async def fetch_historical(req: FetchHistoricalRequest):
             except Exception as e:
                 logger.warning(f"Previous-contract resolve skipped: {e}")
 
-        candles: List[Candle] = []
+        contract_batches: Dict[str, List[Candle]] = {}
         contract_counts: Dict[str, int] = {}
         for cid in fetch_contracts:
             batch = await client.get_historical_bars_paginated(
@@ -876,20 +993,25 @@ async def fetch_historical(req: FetchHistoricalRequest):
                 start_time=req.start_time,
                 end_time=req.end_time,
             )
+            contract_batches[cid] = batch
             contract_counts[cid] = len(batch)
-            candles.extend(batch)
 
-        by_ts = {}
-        # Later contracts overwrite overlapping timestamps so the current front
-        # month wins across the roll overlap.
-        for c in sorted(candles, key=lambda c: c.timestamp):
-            by_ts[c.timestamp.isoformat()] = c
-        candles = sorted(by_ts.values(), key=lambda c: c.timestamp)
+        roll_at = contract_roll_start(fetch_contracts[0]) if len(fetch_contracts) > 1 else None
+        candles, continuous_meta = _build_continuous_candles(contract_batches, fetch_contracts, roll_at)
+        if len(fetch_contracts) > 1:
+            logger.info(
+                "Continuous contract adjusted: %s -> %s roll_at=%s anchor=%s offset=%.2f",
+                fetch_contracts[0],
+                fetch_contracts[-1],
+                continuous_meta.get("roll_at"),
+                continuous_meta.get("anchor_time"),
+                continuous_meta.get("price_adjustment", 0.0),
+            )
 
         if req.append:
             _upsert_historical_candles(candles)
         else:
-            _historical_candles = sorted(candles, key=lambda c: c.timestamp)
+            _historical_candles = sorted(candles, key=_candle_time)
 
         stored = _historical_candles
 
@@ -898,6 +1020,7 @@ async def fetch_historical(req: FetchHistoricalRequest):
             "contract_id": contract_id,
             "contracts": fetch_contracts,
             "contract_counts": contract_counts,
+            "continuous": continuous_meta,
             "candles_count": len(stored),
             "fetched_count": len(candles),
             "interval": f"{req.unit_number}{'m' if req.unit == 2 else 's'}",
@@ -927,6 +1050,223 @@ async def aggregate_data():
     }
 
 
+def _confluence_scorer_path() -> Path:
+    # canonical path lives in confluence_scorer.py (single source of truth)
+    from backend.strategy.confluence_scorer import default_scorer_path
+    return default_scorer_path()
+
+
+def _run_confluence_backtest(req: BacktestRequest) -> BacktestResponse:
+    """v0.19: explainable multi-timeframe confluence backtest.
+
+    Uses the SAME ConfluenceBacktester + trained ConfluenceScorer that the
+    research scripts and (soon) the live engine use, so the web result is
+    reproducible and identical to console. Read-only: never touches the trend
+    backtest path."""
+    import math
+    from backend.strategy.consolidation import timeframes_for_base
+    from backend.strategy.confluence import ConfluenceConfig, MAX_RECENCY_DEPTH
+    from backend.strategy.confluence_scorer import ConfluenceScorer
+    from backend.backtest.confluence_backtest import (
+        ConfluenceBacktester, ConfluenceBacktestConfig, build_zone_timeline,
+    )
+
+    candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+    contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
+    tick = get_tick_size(req.contract_id)
+    base = max(1, int(req.conf_base_minutes or 1))
+    timeframes = timeframes_for_base(base)
+
+    # scorer: trained JSON if present & requested, else the interpretable prior
+    scorer = ConfluenceScorer.load_or_heuristic(use_scorer=req.conf_use_scorer)
+
+    # probability gate -> raw logit (score) threshold
+    min_score = 0.0
+    if req.conf_min_prob and 0.0 < req.conf_min_prob < 1.0:
+        min_score = math.log(req.conf_min_prob / (1.0 - req.conf_min_prob))
+
+    sig_cfg = ConfluenceConfig(
+        band_ticks=req.conf_band_ticks,
+        min_distinct_tf=req.conf_min_distinct_tf,
+        rr=req.conf_rr,
+    )
+    sig_cfg.direction_mode = "auto"
+    sig_cfg.tick_size = tick
+    run_cfg = ConfluenceBacktestConfig(
+        wait_minutes=req.conf_wait_minutes, min_score=min_score,
+        base_minutes=base, timeframes=timeframes,
+        one_trade_per_session_direction=req.one_trade_per_session_direction,
+    )
+    bt_cfg = BacktestConfig(
+        initial_capital=req.initial_capital,
+        symbol=_extract_symbol(req.contract_id),
+        commission_rt=get_commission_rt(req.contract_id),
+        fees_rt=get_fees_rt(req.contract_id),
+    )
+
+    timeline = build_zone_timeline(candles, timeframes, tick, MAX_RECENCY_DEPTH)
+    bt = ConfluenceBacktester(
+        signal_cfg=sig_cfg, run_cfg=run_cfg, contract_id=req.contract_id,
+        contract_size=contract_size, bt_config=bt_cfg, scorer=scorer,
+    )
+    result = bt.run(candles, zones_timeline=timeline)
+    _backtest_results.append(result)
+
+    symbol_label = "/" + bt_cfg.symbol
+    trades_resp = []
+    for t in result.trades:
+        meta = t.meta or {}
+        trades_resp.append(TradeResponse(
+            trade_id=t.trade_id,
+            strategy="confluence",
+            symbol=symbol_label,
+            size=t.contracts,
+            direction=t.direction.value if t.direction else "",
+            entry_price=t.entry_price,
+            entry_time=t.entry_time.isoformat() if t.entry_time else "",
+            exit_price=t.exit_price,
+            exit_time=t.exit_time.isoformat() if t.exit_time else None,
+            sl_price=t.sl_price,
+            tp_price=t.tp_price,
+            original_sl_price=getattr(t, "original_sl_price", None) or t.sl_price,
+            original_tp_price=getattr(t, "original_tp_price", None) or t.tp_price,
+            pnl=t.pnl,
+            commission=t.commission,
+            fees=t.fees,
+            exit_reason=t.exit_reason.value if t.exit_reason else None,
+            zone_id=t.zone_id,
+            zone_source=getattr(t, "zone_source", "confluence"),
+            vol_ratio=getattr(t, "vol_ratio", 0.0),
+            is_big_trend=getattr(t, "is_big_trend", False),
+        ))
+
+    m = result.metrics
+    metrics_resp = MetricsResponse(
+        total_trades=m.total_trades, wins=m.wins, losses=m.losses,
+        win_rate=m.win_rate, avg_win=m.avg_win, avg_loss=m.avg_loss,
+        avg_rr_ratio=m.avg_rr_ratio, expectancy=m.expectancy,
+        max_drawdown=m.max_drawdown, max_drawdown_pct=m.max_drawdown_pct,
+        calmar_ratio=m.calmar_ratio, profit_factor=m.profit_factor,
+        max_consecutive_losses=m.max_consecutive_losses, total_pnl=m.total_pnl,
+        total_gain=getattr(m, "total_gain", 0.0), total_loss=getattr(m, "total_loss", 0.0),
+        daily_pnl=m.daily_pnl or {},
+        weekly_stats=_weekly_stats(m.daily_pnl or {}),
+        trend_follow=None,
+    )
+
+    # equity curve from realised pnl at each exit (confluence result has none)
+    equity = []
+    cap = req.initial_capital
+    if candles:
+        equity.append([candles[0].timestamp.timestamp() * 1000, cap])
+    for t in sorted(result.trades, key=lambda x: (x.exit_time or x.entry_time)):
+        cap += (t.pnl or 0.0)
+        ts = (t.exit_time or t.entry_time)
+        if ts:
+            equity.append([ts.timestamp() * 1000, round(cap, 2)])
+
+    return BacktestResponse(
+        metrics=metrics_resp, trades=trades_resp, zones=[], equity_curve=equity,
+    )
+
+
+class ConfluenceTrainRequest(BaseModel):
+    """Retrain the explainable confluence scorer on the loaded 1m history."""
+    contract_id: str = "CON.F.US.MNQ.M26"
+    train_frac: float = 1.0      # 1.0 = learn from ALL loaded data (for going live)
+    stride: int = 5
+    wait_min: int = 60
+    horizon_min: int = 1440
+    band_ticks: float = 8.0
+    min_distinct_tf: int = 3
+    rr: float = 1.5
+
+
+def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dict:
+    """Blocking trainer (run in a threadpool). Standardized on 1m base — fits a
+    logistic scorer on forward-scan labels and writes confluence_scorer.json.
+    Reuses the SAME collect()/fit_scorer() as scripts/train_confluence.py so the
+    web result is identical to the CLI trainer."""
+    from datetime import datetime as _dt
+
+    from backend.strategy.confluence import ConfluenceConfig, MAX_RECENCY_DEPTH
+    from backend.strategy.confluence_scorer import ConfluenceScorer
+    from backend.strategy.consolidation import timeframes_for_base
+    from backend.backtest.confluence_backtest import build_zone_timeline
+    from scripts.train_confluence import collect, fit_scorer
+
+    base = 1  # standardized base
+    timeframes = timeframes_for_base(base)
+    tick = get_tick_size(req.contract_id)
+    wait_bars = max(1, round(req.wait_min / base))
+    horizon_bars = max(1, round(req.horizon_min / base))
+
+    frac = min(1.0, max(0.1, req.train_frac))
+    split = int(len(candles) * frac)
+    train = candles[:split] if frac < 1.0 else candles
+    if len(train) < (wait_bars + horizon_bars + 50):
+        raise ValueError(f"歷史數據太少 ({len(train)} bars)，請先載入完整歷史再學習。")
+
+    cfg = ConfluenceConfig(band_ticks=req.band_ticks, min_distinct_tf=req.min_distinct_tf, rr=req.rr)
+    cfg.direction_mode = "auto"
+    cfg.tick_size = tick
+
+    timeline = build_zone_timeline(train, timeframes, tick, MAX_RECENCY_DEPTH)
+    X, y, modes = collect(train, timeline, cfg, req.stride, wait_bars, horizon_bars)
+    if len(y) < 50:
+        raise ValueError(f"可標記樣本太少 ({len(y)})，降低 stride/min_distinct_tf 或載入更多數據。")
+
+    weights, b_raw, auc, acc = fit_scorer(X, y, C=1.0)
+
+    scorer = ConfluenceScorer(
+        weights=weights, bias=float(b_raw),
+        meta={
+            "kind": "logistic", "trained": True,
+            "trained_at": _dt.now().isoformat(timespec="seconds"),
+            "contract": req.contract_id, "base_min": base,
+            "timeframes": list(timeframes),
+            "train_frac": frac, "n_samples": int(len(y)),
+            "train_win_rate": float(y.mean()), "train_auc": auc,
+            "source": "web_learn_and_live",
+            "cfg": {"band_ticks": req.band_ticks, "min_distinct_tf": req.min_distinct_tf,
+                    "rr": req.rr, "wait_min": req.wait_min, "horizon_min": req.horizon_min},
+        },
+    )
+    out = _confluence_scorer_path()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    scorer.save(out)
+
+    top = sorted(weights, key=lambda k: abs(weights[k]), reverse=True)[:5]
+    return {
+        "success": True,
+        "n_bars": len(train),
+        "n_samples": int(len(y)),
+        "win_rate": float(y.mean()),
+        "train_auc": auc,
+        "train_acc": acc,
+        "timeframes": list(timeframes),
+        "top_weights": [{"name": n, "weight": round(weights[n], 4)} for n in top],
+        "saved_to": str(out),
+    }
+
+
+@router.post("/confluence/train")
+async def confluence_train(req: ConfluenceTrainRequest):
+    """Retrain the explainable confluence scorer (1m base) on the loaded history.
+
+    Powers the LEARN & LIVE button: the frontend loads the full range first,
+    then calls this; on success it starts the live ML engine, which reloads the
+    freshly written confluence_scorer.json. CPU-heavy fit runs off the event loop.
+    """
+    if not _historical_candles:
+        raise HTTPException(status_code=400, detail="請先拉取歷史數據再學習")
+    candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+    try:
+        return await asyncio.to_thread(_train_confluence_scorer_sync, candles, req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/backtest/run", response_model=BacktestResponse)
 async def run_backtest(req: BacktestRequest):
     """
@@ -944,6 +1284,11 @@ async def run_backtest(req: BacktestRequest):
             status_code=400,
             detail="請先通過 /api/data/fetch-historical 拉取數據"
         )
+
+    # v0.19: explainable confluence engine (separate, read-only path)
+    if str(req.strategy or "").strip().lower() == "confluence":
+        await _refresh_recent_historical_candles(req.contract_id)
+        return _run_confluence_backtest(req)
 
     await _refresh_recent_historical_candles(req.contract_id)
 
@@ -2189,6 +2534,16 @@ class LiveStartRequest(BaseModel):
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
     breakout_confirm_bars: int = 7
+    # v0.19: explainable confluence (ML scorer) live mode. Set strategy="confluence".
+    # conf_shadow defaults False — live places real orders (practice account).
+    conf_band_ticks: float = 8.0
+    conf_min_distinct_tf: int = 3
+    conf_rr: float = 1.5
+    conf_wait_minutes: int = 60
+    conf_base_minutes: int = 1
+    conf_min_prob: float = 0.0
+    conf_use_scorer: bool = True
+    conf_shadow: bool = False
 
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
