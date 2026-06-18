@@ -6,7 +6,7 @@
 #   - FastAPI REST routes for config, historical candles, backtest, machine learning,
 #     live engine, presets, and trade history.
 #   - Machine Learning uses /backtest/ml-run|full-results|full-progress.
-#   - Presets use the trend strategy and full_tp_lock.
+#   - Presets preserve both trend and confluence strategy parameters.
 #   - Value Area is locked to 80%; live/latest-candle routes use completed 1m bars.
 # ============================================================
 
@@ -17,9 +17,10 @@ import json
 import logging
 import math
 import asyncio
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -203,12 +204,21 @@ def _normalize_value_area_pct(value) -> float:
 
 
 def _normalize_rr_ratio(value, default: int = 2) -> int:
-    """Reward:risk multiple, selectable 1..10."""
+    """Reward:risk multiple, selectable 1..6."""
     try:
         rr = int(round(float(value)))
     except (TypeError, ValueError):
         return default
-    return max(1, min(10, rr))
+    return max(1, min(6, rr))
+
+
+def _normalize_conf_rr(value, default: float = 1.0) -> float:
+    """Fixed confluence RR uses whole-number steps from 1 through 6."""
+    try:
+        rr = int(round(float(value)))
+    except (TypeError, ValueError):
+        rr = int(default)
+    return float(max(1, min(6, rr)))
 
 
 def _strategy_leg_params(req, prefix: str) -> dict:
@@ -268,38 +278,27 @@ def _conf_ev_floor_opt(val):
 
 
 def _conf_rr_grid_opt(val):
-    """Normalise the variable-RR grid. None/empty → None (fixed RR). Accepts a
-    list or a comma string of RRs; returns a sorted tuple of positive floats."""
-    if not val:
-        return None
-    if isinstance(val, str):
-        parts = [p for p in val.split(",") if p.strip()]
-    else:
-        parts = list(val)
-    try:
-        rrs = sorted({float(p) for p in parts if float(p) > 0})
-    except (TypeError, ValueError):
-        return None
-    return rrs or None
+    """Variable RR is retired; production always uses a fixed RR."""
+    return None
 
 
 def _build_strategy_params_from_request(req, contract_size: int) -> StrategyParams:
     # v0.19: "confluence" selects the explainable ML engine; anything else is trend.
-    strategy = ("confluence" if str(getattr(req, "strategy", "trend") or "").strip().lower()
-                == "confluence" else _normalize_strategy_name(getattr(req, "strategy", "trend")))
+    strategy = ("confluence" if str(getattr(req, "strategy", "confluence") or "").strip().lower()
+                == "confluence" else _normalize_strategy_name(getattr(req, "strategy", "confluence")))
     tr = _strategy_leg_params(req, "tr")
     return StrategyParams(
         strategy=strategy,
-        conf_band_ticks=float(getattr(req, "conf_band_ticks", 8.0) or 8.0),
-        conf_min_distinct_tf=int(getattr(req, "conf_min_distinct_tf", 3) or 3),
-        conf_rr=float(getattr(req, "conf_rr", 1.5) or 1.5),
+        conf_band_ticks=float(getattr(req, "conf_band_ticks", 4.0) or 4.0),
+        conf_min_distinct_tf=int(getattr(req, "conf_min_distinct_tf", 2) or 2),
+        conf_rr=_normalize_conf_rr(getattr(req, "conf_rr", 3.0), 3.0),
         conf_wait_minutes=int(getattr(req, "conf_wait_minutes", 60) or 60),
         conf_base_minutes=int(getattr(req, "conf_base_minutes", 1) or 1),
         conf_min_prob=float(getattr(req, "conf_min_prob", 0.0) or 0.0),
         conf_ev_floor=_conf_ev_floor_opt(getattr(req, "conf_ev_floor", None)),
-        conf_rr_grid=_conf_rr_grid_opt(getattr(req, "conf_rr_grid", None)),
+        conf_rr_grid=None,
         conf_use_scorer=bool(getattr(req, "conf_use_scorer", True)),
-        conf_enable_breakout=bool(getattr(req, "conf_enable_breakout", True)),
+        conf_enable_breakout=bool(getattr(req, "conf_enable_breakout", False)),
         conf_trail_trigger_pct=float(getattr(req, "conf_trail_trigger_pct", 0.0) or 0.0),
         conf_trail_lock_pct=float(getattr(req, "conf_trail_lock_pct", 0.0) or 0.0),
         conf_full_tp_lock=int(getattr(req, "conf_full_tp_lock", 0) or 0),
@@ -470,7 +469,7 @@ async def _refresh_recent_historical_candles(contract_id: str, limit: int = 240)
 class BacktestRequest(BaseModel):
     initial_capital: float = 50000.0
     # Strategy params
-    strategy: str = "trend"
+    strategy: str = "confluence"
     tp_ticks: int = 200
     sl_ticks: int = 50
     trail_sl_ticks: int = 10
@@ -487,7 +486,7 @@ class BacktestRequest(BaseModel):
     candle_seconds: int = 60
     value_area_pct: float = 0.80
     area_timeframe: str = "5m"
-    rr_ratio: int = 2                     # reward:risk multiple (1..10)
+    rr_ratio: int = 2                     # reward:risk multiple (1..6)
     # Contract & sizing (defaults to 3× Micro NQ)
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
@@ -503,16 +502,16 @@ class BacktestRequest(BaseModel):
     tf_combo: Optional[List[str]] = None
     # v0.19: confluence (explainable ML scorer) backtest. When strategy=="confluence"
     # the multi-timeframe weighted-level engine is used instead of the trend engine.
-    conf_band_ticks: float = 8.0          # level-cluster band width (ticks)
-    conf_min_distinct_tf: int = 3         # cluster needs >= this many timeframes
-    conf_rr: float = 1.5                  # reward:risk multiple for TP
+    conf_band_ticks: float = 4.0          # level-cluster band width (ticks)
+    conf_min_distinct_tf: int = 2         # cluster needs >= this many timeframes
+    conf_rr: float = Field(default=3.0, ge=1.0, le=6.0)
     conf_wait_minutes: int = 60           # one-shot limit-order fill timeout
     conf_base_minutes: int = 1            # input candle resolution (1 or 5)
     conf_min_prob: float = 0.0            # gate: skip signals below this win-prob (0=off)
     conf_ev_floor: Optional[float] = None # EV-priority gate: keep EV>=floor (None=win-prob gate; 0=every +EV)
-    conf_rr_grid: Optional[List[float]] = None  # variable-RR grid (None=fixed conf_rr); needs EV scorer
+    conf_rr_grid: Optional[List[float]] = None
     conf_use_scorer: bool = True          # True=trained JSON, False=heuristic prior
-    conf_enable_breakout: bool = True     # include breakout-retrace candidate (False=momentum+reversion only)
+    conf_enable_breakout: bool = False    # include breakout-retrace candidate (False=momentum+reversion only)
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
     conf_trail_trigger_pct: float = 0.0   # 0 = trailing OFF; else fraction of entry→TP distance that fires break-even
     conf_trail_lock_pct: float = 0.0      # locked SL as fraction of TP distance on trigger (0=pure break-even)
@@ -855,6 +854,65 @@ def _zone_to_dict(z, fallback_tf: str) -> dict:
     return zd
 
 
+_chart_zone_cache: dict = {}
+_chart_zone_cache_lock = threading.Lock()
+
+
+def _chart_candle_signature(candle: Candle) -> tuple:
+    return (
+        candle.timestamp,
+        candle.open,
+        candle.high,
+        candle.low,
+        candle.close,
+        candle.volume,
+    )
+
+
+def _detect_zones_sync(candles, timeframes, value_area_pct: float) -> List[dict]:
+    """Build or incrementally advance chart-zone detectors off the event loop."""
+    from backend.strategy.consolidation import build_zone_detector
+
+    zone_list = []
+    with _chart_zone_cache_lock:
+        for tf in timeframes:
+            key = (tf, float(value_area_pct))
+            entry = _chart_zone_cache.get(key)
+            count = int(entry["count"]) if entry else 0
+            can_extend = bool(
+                entry
+                and len(candles) >= count
+                and (count == 0 or (
+                    candles[0].timestamp == entry["first_timestamp"]
+                    and _chart_candle_signature(candles[count - 1]) == entry["last_signature"]
+                ))
+            )
+
+            if can_extend:
+                detector = entry["detector"]
+                start = count
+            else:
+                detector = build_zone_detector(
+                    area_timeframe=tf,
+                    value_area_pct=value_area_pct,
+                )
+                start = 0
+
+            for candle in candles[start:]:
+                detector.update(candle)
+
+            serialized = [_zone_to_dict(z, tf) for z in detector.get_all_zones()]
+            _chart_zone_cache[key] = {
+                "detector": detector,
+                "count": len(candles),
+                "first_timestamp": candles[0].timestamp if candles else None,
+                "last_signature": _chart_candle_signature(candles[-1]) if candles else None,
+                "zones": serialized,
+            }
+            zone_list.extend(serialized)
+    return zone_list
+
+
 @router.post("/data/detect-zones")
 async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
     """Run zone detection on stored candles — returns zones with VP profiles.
@@ -863,8 +921,6 @@ async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
     (5m/15m/30m/1h/4h) and the zones are returned together, each tagged with
     its own ``timeframe`` so the chart can overlay all VAH/VAL/POC at once.
     """
-    from backend.strategy.consolidation import build_zone_detector
-
     value_area_pct = _normalize_value_area_pct(req.value_area_pct)
     # During a live session, prefer the engine's rolling candle history (warm-up +
     # live) so the chart's multi-timeframe zone filter reflects the freshest bars.
@@ -889,13 +945,12 @@ async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
     sorted_candles = sorted(base_candles, key=lambda c: c.timestamp)
 
     if getattr(req, "all_timeframes", False):
-        zone_list = []
-        for tf in ML_TIMEFRAMES:
-            detector = build_zone_detector(area_timeframe=tf, value_area_pct=value_area_pct)
-            for c in sorted_candles:
-                detector.update(c)
-            for z in detector.get_all_zones():
-                zone_list.append(_zone_to_dict(z, tf))
+        zone_list = await asyncio.to_thread(
+            _detect_zones_sync,
+            sorted_candles,
+            ML_TIMEFRAMES,
+            value_area_pct,
+        )
         return {
             "zones": zone_list,
             "count": len(zone_list),
@@ -904,14 +959,12 @@ async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
         }
 
     area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "5m"))
-    detector = build_zone_detector(
-        area_timeframe=area_timeframe,
-        value_area_pct=value_area_pct,
+    zone_list = await asyncio.to_thread(
+        _detect_zones_sync,
+        sorted_candles,
+        (area_timeframe,),
+        value_area_pct,
     )
-    for c in sorted_candles:
-        detector.update(c)
-
-    zone_list = [_zone_to_dict(z, area_timeframe) for z in detector.get_all_zones()]
     return {"zones": zone_list, "count": len(zone_list), "area_timeframe": area_timeframe}
 
 
@@ -1190,7 +1243,7 @@ def _confluence_scorer_path() -> Path:
 _conf_timeline_cache: dict = {}
 
 
-def _get_conf_timeline(candles, timeframes, tick, depth, base):
+def _get_conf_timeline(candles, timeframes, tick, depth, base, progress_callback=None):
     from backend.backtest.confluence_backtest import build_zone_timeline
     key = (
         len(candles),
@@ -1201,11 +1254,19 @@ def _get_conf_timeline(candles, timeframes, tick, depth, base):
     entry = _conf_timeline_cache.get("entry")
     if entry and entry[0] == key:
         logger.info(f"[Confluence] reusing cached zone timeline ({len(candles)} candles) — skipped rebuild")
+        if progress_callback:
+            progress_callback(
+                "reusing zone timeline", len(candles), len(candles),
+                "cached detector timeline",
+            )
         return entry[1]
     import time as _t
     _t0 = _t.perf_counter()
     logger.info(f"[Confluence] building zone timeline over {len(candles)} candles…")
-    timeline = build_zone_timeline(candles, timeframes, tick, depth)
+    timeline = build_zone_timeline(
+        candles, timeframes, tick, depth,
+        progress_callback=progress_callback,
+    )
     logger.info(f"[Confluence] zone timeline built in {_t.perf_counter() - _t0:.1f}s")
     _conf_timeline_cache["entry"] = (key, timeline)
     return timeline
@@ -1221,6 +1282,32 @@ def _get_conf_timeline(candles, timeframes, tick, depth, base):
 # only re-pickled into the child when the data actually changed.
 _bt_executor = None              # lazily-created ProcessPoolExecutor
 _bt_last_candle_key = None       # last candle key the worker already has
+_BT_PROGRESS_FILE = Path(__file__).resolve().parents[2] / "data" / "backtest_progress.json"
+_bt_progress_state = {
+    "status": "idle", "stage": "", "current": 0, "total": 0,
+    "detail": "", "updated_at": 0.0,
+}
+
+
+def _update_bt_progress(stage: str, current: int = 0, total: int = 0,
+                        detail: str = "", status: str = "running") -> None:
+    global _bt_progress_state
+    state = {
+        "status": status,
+        "stage": stage,
+        "current": int(current),
+        "total": int(total),
+        "detail": detail,
+        "updated_at": datetime.now(timezone.utc).timestamp(),
+    }
+    _bt_progress_state = state
+    try:
+        _BT_PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _BT_PROGRESS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        tmp.replace(_BT_PROGRESS_FILE)
+    except Exception:
+        pass
 
 
 def _bt_candle_key(candles):
@@ -1252,18 +1339,36 @@ async def _run_confluence_backtest_proc(req: BacktestRequest) -> BacktestRespons
 
     ckey = _bt_candle_key(candles)
     send_candles = candles if ckey != _bt_last_candle_key else None
+    progress = str(_BT_PROGRESS_FILE)
+    _update_bt_progress(
+        "queued", 0, len(candles),
+        f"{len(candles)} candles, {'new data' if send_candles is not None else 'cached data'}",
+    )
+    logger.info(f"[Confluence] single backtest started over {len(candles)} candles")
 
     try:
         from backend.backtest import confluence_worker
         loop = asyncio.get_running_loop()
         out = await loop.run_in_executor(
-            _get_bt_executor(), confluence_worker.run_job, ckey, send_candles, params,
+            _get_bt_executor(), confluence_worker.run_job, ckey, send_candles, params, progress,
         )
         _bt_last_candle_key = ckey
     except Exception as e:
         logger.warning(f"[Confluence] backtest process failed ({e}); falling back to in-thread run")
         _bt_last_candle_key = None  # worker state unknown → resend candles next time
-        return await asyncio.to_thread(_run_confluence_backtest, req)
+        _update_bt_progress("fallback", 0, len(candles), str(e))
+        try:
+            return await asyncio.to_thread(
+                _run_confluence_backtest, req,
+                lambda stage, current, total, detail="": _update_bt_progress(
+                    stage, current, total, detail,
+                ),
+            )
+        except Exception as fallback_error:
+            _update_bt_progress(
+                "failed", 0, len(candles), str(fallback_error), status="error",
+            )
+            raise
 
     m = out["metrics"]
     metrics_resp = MetricsResponse(
@@ -1283,10 +1388,15 @@ async def _run_confluence_backtest_proc(req: BacktestRequest) -> BacktestRespons
         metrics=metrics_resp, trades=trades_resp, zones=[], equity_curve=out["equity"],
     )
     _backtest_results.append(resp)
+    _update_bt_progress(
+        "complete", len(candles), len(candles),
+        f"{len(trades_resp)} trades", status="complete",
+    )
+    logger.info(f"[Confluence] single backtest complete ({len(trades_resp)} trades)")
     return resp
 
 
-def _run_confluence_backtest(req: BacktestRequest) -> BacktestResponse:
+def _run_confluence_backtest(req: BacktestRequest, progress_callback=None) -> BacktestResponse:
     """v0.19: explainable multi-timeframe confluence backtest.
 
     Uses the SAME ConfluenceBacktester + trained ConfluenceScorer that the
@@ -1307,12 +1417,8 @@ def _run_confluence_backtest(req: BacktestRequest) -> BacktestResponse:
     base = max(1, int(req.conf_base_minutes or 1))
     timeframes = timeframes_for_base(base)
 
-    # variable-RR grid (None = fixed conf_rr) — also selects the EV scorer.
-    rr_grid = _conf_rr_grid_opt(getattr(req, "conf_rr_grid", None))
-    # scorer: EV (variable-RR) model when RR optimisation is on and present,
-    # else trained fixed-RR JSON, else the interpretable prior. Same chooser as
-    # the live engine, so live == backtest.
-    scorer = resolve_scorer(req.conf_use_scorer, rr_grid)
+    rr_grid = None
+    scorer = resolve_scorer(req.conf_use_scorer, None)
 
     # probability gate -> raw logit (score) threshold
     min_score = 0.0
@@ -1328,9 +1434,8 @@ def _run_confluence_backtest(req: BacktestRequest) -> BacktestResponse:
     sig_cfg.tick_size = tick
     # EV-priority gate (option C): when set, supersedes the win-prob gate above.
     sig_cfg.ev_floor = req.conf_ev_floor
-    # variable-RR: pick the EV-maximising RR per candidate.
-    sig_cfg.rr_grid = tuple(rr_grid) if rr_grid else None
-    sig_cfg.enable_breakout = bool(getattr(req, "conf_enable_breakout", True))
+    sig_cfg.rr_grid = None
+    sig_cfg.enable_breakout = bool(getattr(req, "conf_enable_breakout", False))
     run_cfg = ConfluenceBacktestConfig(
         wait_minutes=req.conf_wait_minutes, min_score=min_score,
         base_minutes=base, timeframes=timeframes,
@@ -1347,12 +1452,19 @@ def _run_confluence_backtest(req: BacktestRequest) -> BacktestResponse:
         fees_rt=get_fees_rt(req.contract_id),
     )
 
-    timeline = _get_conf_timeline(candles, timeframes, tick, MAX_RECENCY_DEPTH, base)
+    timeline = _get_conf_timeline(
+        candles, timeframes, tick, MAX_RECENCY_DEPTH, base,
+        progress_callback=progress_callback,
+    )
     bt = ConfluenceBacktester(
         signal_cfg=sig_cfg, run_cfg=run_cfg, contract_id=req.contract_id,
         contract_size=contract_size, bt_config=bt_cfg, scorer=scorer,
     )
-    result = bt.run(candles, zones_timeline=timeline)
+    result = bt.run(
+        candles,
+        zones_timeline=timeline,
+        progress_callback=progress_callback,
+    )
     _backtest_results.append(result)
 
     symbol_label = "/" + bt_cfg.symbol
@@ -1413,11 +1525,6 @@ def _run_confluence_backtest(req: BacktestRequest) -> BacktestResponse:
     )
 
 
-# Default variable-RR grid the EV model is always trained on (option B), so the
-# user can flip to 變動 RR in live/backtest without re-learning.
-DEFAULT_EV_RR_GRID = [1.0, 1.5, 2.0, 2.5, 3.0]
-
-
 class ConfluenceTrainRequest(BaseModel):
     """Retrain the explainable confluence scorer on the loaded 1m history."""
     contract_id: str = "CON.F.US.MNQ.M26"
@@ -1425,60 +1532,10 @@ class ConfluenceTrainRequest(BaseModel):
     stride: int = 5
     wait_min: int = 60
     horizon_min: int = 1440
-    band_ticks: float = 8.0
-    min_distinct_tf: int = 3
-    rr: float = 1.5
-    rr_grid: Optional[List[float]] = None   # when set, ALSO train the variable-RR EV model
-
-
-def _train_confluence_ev_sync(train, req, timeframes, tick, wait_bars, horizon_bars, rr_grid) -> dict:
-    """Train the variable-RR (EV) scorer on the same split and save it to
-    confluence_scorer_ev.json. Reuses the CLI multi-RR labeler/fitter so the web
-    EV model is identical to `python -m scripts.train_confluence_ev`."""
-    from datetime import datetime as _dt
-    import numpy as np
-
-    from backend.strategy.confluence import ConfluenceConfig, MAX_RECENCY_DEPTH
-    from backend.strategy.confluence_scorer import ConfluenceScorer, default_ev_scorer_path
-    from backend.backtest.confluence_backtest import build_zone_timeline
-    from scripts.train_confluence_ev import collect as collect_ev
-    from scripts.train_confluence import evaluate_and_meta
-
-    cfg = ConfluenceConfig(band_ticks=req.band_ticks, min_distinct_tf=req.min_distinct_tf, rr=rr_grid[0])
-    cfg.direction_mode = "auto"
-    cfg.tick_size = tick
-    timeline = build_zone_timeline(train, timeframes, tick, MAX_RECENCY_DEPTH)
-    X, y, meta, starts, ends = collect_ev(train, timeline, cfg, tuple(rr_grid),
-                                          req.stride, wait_bars, horizon_bars)
-    if len(y) < 50:
-        raise ValueError(f"EV 模型可標記樣本太少 ({len(y)})。")
-    weights, b_raw, info = evaluate_and_meta(
-        X, y, starts, ends, n_bars=len(train), embargo=wait_bars + horizon_bars)
-    scorer = ConfluenceScorer(
-        weights=weights, bias=float(b_raw),
-        meta={
-            "kind": "logistic_ev", "trained": True, "multi_rr": True,
-            "rr_grid": list(rr_grid),
-            "trained_at": _dt.now().isoformat(timespec="seconds"),
-            "data_start": train[0].timestamp.isoformat() if train else None,
-            "data_end": train[-1].timestamp.isoformat() if train else None,
-            "contract": req.contract_id, "base_min": 1, "timeframes": list(timeframes),
-            "n_samples": int(len(y)), "train_win_rate": float(y.mean()),
-            "train_auc": info["auc"], "train_brier": info["brier"], "C": info["C"],
-            "oos_auc": info["oos_auc"], "oos_brier": info["oos_brier"],
-            "oos_folds": info["oos_folds"], "dropped_features": info["dropped_features"],
-            "std_weights": info["std_weights"],
-            "source": "web_learn", "cfg": {"band_ticks": req.band_ticks,
-            "min_distinct_tf": req.min_distinct_tf, "rr_grid": list(rr_grid),
-            "wait_min": req.wait_min, "horizon_min": req.horizon_min},
-        },
-    )
-    out = default_ev_scorer_path()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    scorer.save(out)
-    return {"n_samples": int(len(y)), "win_rate": float(y.mean()),
-            "train_auc": info["auc"], "oos_auc": info["oos_auc"],
-            "saved_to": str(out), "rr_grid": list(rr_grid)}
+    band_ticks: float = 4.0
+    min_distinct_tf: int = 2
+    rr: float = Field(default=3.0, ge=1.0, le=6.0)
+    enable_breakout: bool = False
 
 
 def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dict:
@@ -1510,6 +1567,7 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
     cfg = ConfluenceConfig(band_ticks=req.band_ticks, min_distinct_tf=req.min_distinct_tf, rr=req.rr)
     cfg.direction_mode = "auto"
     cfg.tick_size = tick
+    cfg.enable_breakout = bool(req.enable_breakout)
 
     timeline = build_zone_timeline(train, timeframes, tick, MAX_RECENCY_DEPTH)
     X, y, modes, starts, ends = collect(train, timeline, cfg, req.stride, wait_bars, horizon_bars)
@@ -1542,7 +1600,8 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
             "sklearn_hygiene": "drop-constant+ts-cv+uniqueness+walkforward",
             "source": "web_learn_and_live",
             "cfg": {"band_ticks": req.band_ticks, "min_distinct_tf": req.min_distinct_tf,
-                    "rr": req.rr, "wait_min": req.wait_min, "horizon_min": req.horizon_min},
+                    "rr": req.rr, "wait_min": req.wait_min, "horizon_min": req.horizon_min,
+                    "enable_breakout": bool(req.enable_breakout)},
         },
     )
     out = _confluence_scorer_path()
@@ -1551,7 +1610,7 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
 
     sw = info["std_weights"]
     top = sorted(sw, key=lambda k: abs(sw[k]), reverse=True)[:5]
-    result = {
+    return {
         "success": True,
         "n_bars": len(train),
         "n_samples": int(len(y)),
@@ -1565,19 +1624,6 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
                          "raw": round(weights[n], 6)} for n in top],
         "saved_to": str(out),
     }
-
-    # ALWAYS train the EV (multi-RR) model on the SAME split so the user can
-    # switch to 變動 RR anytime WITHOUT re-learning. Honor the panel's grid if
-    # one is selected, else learn the full default grid. EV failure (e.g. too
-    # few labelable samples) must NOT fail the whole LEARN — the fixed model is
-    # already saved — so report it softly.
-    rr_grid = _conf_rr_grid_opt(getattr(req, "rr_grid", None)) or DEFAULT_EV_RR_GRID
-    try:
-        result["ev_model"] = _train_confluence_ev_sync(
-            train, req, timeframes, tick, wait_bars, horizon_bars, rr_grid)
-    except Exception as e:  # noqa: BLE001 - keep fixed-model LEARN successful
-        result["ev_model_error"] = str(e)
-    return result
 
 
 @router.post("/confluence/train")
@@ -1599,11 +1645,9 @@ async def confluence_train(req: ConfluenceTrainRequest):
 
 @router.get("/confluence/scorer")
 async def confluence_scorer_info():
-    """Return the full saved scorer(s) — meta + raw-space weights — for the
-    LEARN RESULT panel. Reads the on-disk JSON the last LEARN wrote (fixed-RR +
-    variable-RR EV model), so the UI shows exactly what live/backtest will use."""
+    """Return the single saved production scorer for the LEARN RESULT panel."""
     import json
-    from backend.strategy.confluence_scorer import default_scorer_path, default_ev_scorer_path
+    from backend.strategy.confluence_scorer import default_scorer_path
 
     def _load(p):
         try:
@@ -1622,68 +1666,44 @@ async def confluence_scorer_info():
 
     return {
         "fixed": _load(default_scorer_path()),
-        "ev": _load(default_ev_scorer_path()),
+        "ev": None,
     }
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# MODEL REGISTRY — the pre-trained grid (RR × BAND × MIN_DISTINCT_TF × BREAKOUT)
-# Mirrors scripts/train_model_grid.py so the web MODEL dropdown can list EVERY
-# combo (trained → selectable, missing → "(untrain)"), ACTIVATE one (copy its
-# weights to the canonical scorer so backtest/live use it) or RETRAIN one.
-# ════════════════════════════════════════════════════════════════════════════
-_GRID_RR = (1.0, 2.0, 3.0)
-_GRID_BAND = (4.0, 6.0, 8.0, 10.0, 12.0)
-_GRID_TF = (2, 3, 4, 5)
-_GRID_BRK = (True, False)
-
-
-def _grid_dir() -> Path:
-    from backend.strategy.confluence_scorer import default_scorer_path
-    return default_scorer_path().parent / "grid"
-
-
-def _grid_model_name(rr, band, tf, brk) -> str:
-    """Canonical registry stem — MUST match scripts/train_model_grid.model_name."""
-    return f"rr{int(round(rr))}_b{int(round(band))}_tf{tf}_{'brk' if brk else 'nobrk'}"
 
 
 @router.get("/confluence/models")
 async def confluence_models():
-    """List the full model-registry grid for the MODEL dropdown. Every combo is
-    returned; `trained` reflects whether data/models/grid/<name>.json exists on
-    disk (authoritative — independent of any partial manifest)."""
-    import json as _json
-    gdir = _grid_dir()
+    """Return every immutable model version plus the currently active id."""
+    from backend.strategy.confluence_scorer import list_model_versions
+
+    versions, active_model = list_model_versions()
     models = []
-    for rr in _GRID_RR:
-        for band in _GRID_BAND:
-            for tf in _GRID_TF:
-                for brk in _GRID_BRK:
-                    name = _grid_model_name(rr, band, tf, brk)
-                    p = gdir / f"{name}.json"
-                    rec = {"name": name, "rr": rr, "band": band,
-                           "min_distinct_tf": tf, "breakout": brk,
-                           "trained": p.exists()}
-                    if p.exists():
-                        try:
-                            meta = _json.loads(p.read_text(encoding="utf-8")).get("meta", {})
-                            rec.update(
-                                n_samples=meta.get("n_samples"),
-                                train_auc=meta.get("train_auc"),
-                                oos_auc=meta.get("oos_auc"),
-                                win_rate=meta.get("train_win_rate"),
-                                loss_weight=meta.get("loss_weight", 1.0),
-                                trained_at=meta.get("trained_at"),
-                            )
-                        except Exception:  # noqa: BLE001 — a corrupt file still lists
-                            pass
-                    models.append(rec)
-    return {"grid": {"rr": list(_GRID_RR), "band": list(_GRID_BAND),
-                     "min_distinct_tf": list(_GRID_TF), "breakout": list(_GRID_BRK)},
-            "n_models": len(models),
-            "trained": sum(1 for m in models if m["trained"]),
-            "models": models}
+    for path, scorer in versions:
+        meta = scorer.meta
+        cfg = meta.get("cfg") or {}
+        models.append({
+            "name": str(meta.get("model_id") or path.stem),
+            "rr": float(cfg.get("rr", 3.0)),
+            "band": float(cfg.get("band_ticks", 4.0)),
+            "min_distinct_tf": int(cfg.get("min_distinct_tf", 2)),
+            "breakout": bool(cfg.get("enable_breakout", False)),
+            "trained": bool(meta.get("trained", True)),
+            "trainer": meta.get("trainer", "codex"),
+            "description": meta.get("description", ""),
+            "n_samples": meta.get("n_samples"),
+            "train_auc": meta.get("train_auc"),
+            "oos_auc": meta.get("oos_auc"),
+            "win_rate": meta.get("train_win_rate"),
+            "loss_weight": meta.get("loss_weight", 1.0),
+            "trained_at": meta.get("trained_at"),
+            "active": str(meta.get("model_id") or path.stem) == active_model,
+        })
+    return {
+        "grid": None,
+        "n_models": len(models),
+        "trained": len(models),
+        "active_model": active_model,
+        "models": models,
+    }
 
 
 class ModelActivateRequest(BaseModel):
@@ -1692,48 +1712,51 @@ class ModelActivateRequest(BaseModel):
 
 @router.post("/confluence/models/activate")
 async def confluence_model_activate(req: ModelActivateRequest):
-    """Activate a pre-trained grid model: copy its JSON onto the canonical
-    confluence_scorer.json so backtest/live load it, and return its cfg so the UI
-    can mirror band / min_distinct_tf / rr / breakout into the MODEL panel."""
-    import json as _json
-    import shutil
-    from backend.strategy.confluence_scorer import default_scorer_path
+    """Activate a registry version for both backtest and live."""
+    from backend.strategy.confluence_scorer import (
+        activate_model_version, default_scorer_path,
+    )
 
-    src = _grid_dir() / f"{req.name}.json"
-    if not src.exists():
-        raise HTTPException(status_code=404, detail=f"模型未訓練 (untrain): {req.name}")
-    dst = default_scorer_path()
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, dst)
-    meta = _json.loads(src.read_text(encoding="utf-8")).get("meta", {})
-    return {"success": True, "name": req.name, "activated_to": str(dst),
-            "cfg": meta.get("cfg", {}), "meta": meta}
+    try:
+        source, meta = activate_model_version(req.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Model not found: {req.name}") from exc
+    return {
+        "success": True,
+        "name": req.name,
+        "source": str(source),
+        "activated_to": str(default_scorer_path()),
+        "cfg": meta.get("cfg", {}),
+        "meta": meta,
+    }
 
 
 class ModelRetrainRequest(BaseModel):
-    """Retrain ONE registry model on the loaded history (cost-sensitive capable)."""
-    name: str
-    rr: float
-    band_ticks: float
-    min_distinct_tf: int
+    """Train a new immutable model version and optionally activate it."""
+    trainer: Literal["codex", "claude"] = "codex"
+    description: str = Field(
+        default="RR3 Band4 MinTF2 retrain", min_length=3, max_length=120,
+    )
+    rr: float = Field(default=3.0, ge=1.0, le=6.0)
+    band_ticks: float = 4.0
+    min_distinct_tf: int = 2
     enable_breakout: bool = False
     loss_weight: float = 1.0      # >1 = loss-averse: higher PF / lower maxDD / fewer trades
     stride: int = 5
     wait_min: int = 60
     horizon_min: int = 1440
     contract_id: str = "CON.F.US.MNQ.M26"
-    activate: bool = True          # also copy to confluence_scorer.json on success
+    activate: bool = True
 
 
-def _retrain_grid_model_sync(candles, req: "ModelRetrainRequest") -> dict:
-    """Blocking single-model retrain (run off the event loop). Reuses the SAME
-    collect()/evaluate_and_meta() as the CLI/grid trainers so the web-trained
-    model is identical to a grid-trained one — plus the cost-sensitive loss_weight."""
+def _retrain_model_sync(candles, req: "ModelRetrainRequest") -> dict:
+    """Blocking training job that appends one immutable scorer version."""
     from datetime import datetime as _dt
-    import shutil
 
     from backend.strategy.confluence import ConfluenceConfig, MAX_RECENCY_DEPTH
-    from backend.strategy.confluence_scorer import ConfluenceScorer, default_scorer_path
+    from backend.strategy.confluence_scorer import ConfluenceScorer, save_model_version
     from backend.strategy.consolidation import timeframes_for_base
     from backend.backtest.confluence_backtest import build_zone_timeline
     from scripts.train_confluence import collect, evaluate_and_meta
@@ -1765,7 +1788,7 @@ def _retrain_grid_model_sync(candles, req: "ModelRetrainRequest") -> dict:
     scorer = ConfluenceScorer(
         weights=weights, bias=float(b_raw),
         meta={
-            "kind": "logistic", "trained": True, "grid_model": req.name,
+            "kind": "logistic", "trained": True,
             "trained_at": _dt.now().isoformat(timespec="seconds"),
             "contract": req.contract_id, "base_min": base,
             "timeframes": list(timeframes), "n_samples": int(len(y)),
@@ -1782,16 +1805,19 @@ def _retrain_grid_model_sync(candles, req: "ModelRetrainRequest") -> dict:
                     "loss_weight": req.loss_weight},
         },
     )
-    out = _grid_dir() / f"{req.name}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    scorer.save(out)
-    if req.activate:
-        shutil.copyfile(out, default_scorer_path())
+    model_id, out = save_model_version(
+        scorer,
+        req.trainer,
+        req.description,
+        activate=req.activate,
+    )
 
     sw = info["std_weights"]
     top = sorted(sw, key=lambda k: abs(sw[k]), reverse=True)[:5]
     return {
-        "success": True, "name": req.name, "activated": bool(req.activate),
+        "success": True, "name": model_id, "model_id": model_id,
+        "trainer": req.trainer, "description": scorer.meta["description"],
+        "activated": bool(req.activate),
         "n_samples": int(len(y)), "win_rate": float(y.mean()),
         "train_auc": info["auc"], "oos_auc": info["oos_auc"],
         "oos_brier": info["oos_brier"], "loss_weight": req.loss_weight,
@@ -1802,13 +1828,12 @@ def _retrain_grid_model_sync(candles, req: "ModelRetrainRequest") -> dict:
 
 @router.post("/confluence/models/retrain")
 async def confluence_model_retrain(req: ModelRetrainRequest):
-    """Retrain ONE registry model (CPU-heavy fit off the event loop). On success
-    the model JSON is written to data/models/grid/ and (by default) activated."""
+    """Train and append a new model version."""
     if not _historical_candles:
         raise HTTPException(status_code=400, detail="請先拉取歷史數據再訓練")
     candles = sorted(_historical_candles, key=lambda c: c.timestamp)
     try:
-        return await asyncio.to_thread(_retrain_grid_model_sync, candles, req)
+        return await asyncio.to_thread(_retrain_model_sync, candles, req)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -2619,7 +2644,7 @@ class MLRunRequest(BaseModel):
     candle_seconds: int = 60
     value_area_pct: float = 0.80
     area_timeframe: str = "5m"
-    rr_ratio: int = 2                     # default RR; ML sweeps 1..10
+    rr_ratio: int = 2                     # default RR; ML sweeps 1..6
     initial_capital: float = 50000.0
     start_date: str = ""
     end_date: str = ""
@@ -2761,14 +2786,14 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
 # ── ML multi-timeframe overlap sweep helpers (v0.18) ──────────────────────
 
 ML_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h")
-ML_RR_VALUES = tuple(range(1, 11))   # 1:1 .. 1:10
+ML_RR_VALUES = tuple(range(1, 7))   # 1:1 .. 1:6
 
 
 # ── COMBINATION (confluence Model+Style sweep) grid ───────────────────
-# 5 × 2 × 4 × 3 × 2 = 240 runs. Structural MODEL knobs (band / min-distinct-tf /
+# 6 × 2 × 4 × 3 × 2 = 288 runs. Structural MODEL knobs (band / min-distinct-tf /
 # min-prob / ev-floor / timeframes / trail-lock) are HELD at the panel values;
 # only the suspects that move win-rate/edge are swept.
-CONF_COMBO_RR = (1.0, 1.5, 2.0, 2.5, 3.0)
+CONF_COMBO_RR = tuple(float(rr) for rr in range(1, 7))
 CONF_COMBO_BREAKOUT = (True, False)
 CONF_COMBO_TRAIL_TRIGGER = (0.0, 0.30, 0.50, 0.70)
 CONF_COMBO_FULL_TP_LOCK = (0, 1, 2)
@@ -3030,7 +3055,7 @@ def _run_conf_combo(candles, timeline, scorer, tick, base_minutes, timeframes,
 
 @router.post("/backtest/conf-combo-run")
 async def conf_combo_run(req: ConfComboRunRequest):
-    """COMBINATION: sweep the confluence Model+Style grid (240 runs) and rank.
+    """COMBINATION: sweep the confluence Model+Style grid (288 runs) and rank.
 
     Build the zone timeline ONCE (depends only on timeframes/tick), then reuse it
     across every combo. Structural MODEL knobs (band / min-distinct-tf / min-prob
@@ -3377,6 +3402,17 @@ async def get_ml_progress():
     return dict(_ml_progress)
 
 
+@router.get("/backtest/progress")
+async def get_backtest_progress():
+    """Return progress for the currently running single confluence backtest."""
+    try:
+        if _BT_PROGRESS_FILE.exists():
+            return json.loads(_BT_PROGRESS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return dict(_bt_progress_state)
+
+
 # ============================================================
 
 # 即時交易 (Live Trading)
@@ -3391,13 +3427,13 @@ class LiveStartRequest(BaseModel):
     contract_size: int = 3
     value_area_pct: float = 0.80
     area_timeframe: str = "5m"
-    rr_ratio: int = 2                     # reward:risk multiple (1..10)
+    rr_ratio: int = 2                     # reward:risk multiple (1..6)
     # v0.18: "single" = one area timeframe; "overlap" = enter at the AVERAGE
     # overlapping VAH/VAL of the timeframes in tf_combo (mirrors backtest/ML).
     method: str = "single"
     tf_combo: Optional[List[str]] = None
     # Strategy params
-    strategy: str = "trend"
+    strategy: str = "confluence"
     tp_ticks: int = 200
     sl_ticks: int = 50
     trail_sl_ticks: int = 10
@@ -3420,16 +3456,16 @@ class LiveStartRequest(BaseModel):
     breakout_confirm_bars: int = 7
     # v0.19: explainable confluence (ML scorer) live mode. Set strategy="confluence".
     # conf_shadow defaults False — live places real orders (practice account).
-    conf_band_ticks: float = 8.0
-    conf_min_distinct_tf: int = 3
-    conf_rr: float = 1.5
+    conf_band_ticks: float = 4.0
+    conf_min_distinct_tf: int = 2
+    conf_rr: float = Field(default=3.0, ge=1.0, le=6.0)
     conf_wait_minutes: int = 60
     conf_base_minutes: int = 1
     conf_min_prob: float = 0.0
     conf_ev_floor: Optional[float] = None
     conf_rr_grid: Optional[List[float]] = None
     conf_use_scorer: bool = True
-    conf_enable_breakout: bool = True
+    conf_enable_breakout: bool = False
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
     conf_trail_trigger_pct: float = 0.0
     conf_trail_lock_pct: float = 0.0
@@ -4001,9 +4037,9 @@ _PRESETS_FILE = os.path.join(
     "data", "presets.json"
 )
 
-_DEFAULT_PRESET_NAME = "TR MNQx3 50/200 TRIG30 TRAILTP5% TPLOCKOFF"
+_DEFAULT_PRESET_NAME = "ML CONFLUENCE MNQx3 DEFAULT"
 _DEFAULT_PRESET_PARAMS = {
-    "strategy": "trend",
+    "strategy": "confluence",
     "tp_ticks": 200,
     "sl_ticks": 50,
     "trail_sl_ticks": 10,
@@ -4026,6 +4062,21 @@ _DEFAULT_PRESET_PARAMS = {
     "value_area_pct": 0.80,
     "area_timeframe": "5m",
     "skip_zone_stability": False,
+    "conf_band_ticks": 4.0,
+    "conf_min_distinct_tf": 2,
+    "conf_rr": 3.0,
+    "conf_wait_minutes": 60,
+    "conf_base_minutes": 1,
+    "conf_min_prob": 0.0,
+    "conf_ev_floor": None,
+    "conf_rr_grid": None,
+    "conf_use_scorer": True,
+    "conf_enable_breakout": False,
+    "conf_trail_trigger_pct": 0.0,
+    "conf_trail_lock_pct": 0.0,
+    "conf_full_tp_lock": 0,
+    "conf_session_limit": True,
+    "conf_shadow": False,
 }
 
 _BUILTIN_PRESETS = {}
@@ -4047,8 +4098,9 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        if strategy != "trend":
-            params["strategy"] = "trend"
+        normalized_strategy = "confluence" if strategy == "confluence" else "trend"
+        if params.get("strategy") != normalized_strategy:
+            params["strategy"] = normalized_strategy
             changed = True
         if params.get("value_area_pct") != 0.80:
             params["value_area_pct"] = 0.80
@@ -4059,7 +4111,9 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         changed = True
 
     for key in ("last_used_bt", "last_used_live"):
-        if key not in data or data.get(key) not in presets:
+        if key not in data or (
+            data.get(key) != "default" and data.get(key) not in presets
+        ):
             data[key] = next(iter(presets))
             changed = True
 

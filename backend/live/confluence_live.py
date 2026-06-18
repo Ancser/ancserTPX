@@ -60,16 +60,16 @@ class ConfluenceLiveEvaluator:
     def __init__(
         self,
         contract_id: str,
-        band_ticks: float = 8.0,
-        min_distinct_tf: int = 3,
-        rr: float = 1.5,
+        band_ticks: float = 4.0,
+        min_distinct_tf: int = 2,
+        rr: float = 3.0,
         base_minutes: int = 1,
         min_prob: float = 0.0,
         ev_floor: Optional[float] = None,
         rr_grid: Optional[List[float]] = None,
         use_scorer: bool = True,
         scorer_path: Optional[str] = None,
-        enable_breakout: bool = True,
+        enable_breakout: bool = False,
     ):
         self.contract_id = contract_id
         self.tick_size = get_tick_size(contract_id)
@@ -88,9 +88,7 @@ class ConfluenceLiveEvaluator:
         # EV-priority gate (option C): when set, admit positive-EV setups
         # instead of the raw win-prob threshold. None = legacy prob gate.
         self.cfg.ev_floor = ev_floor
-        # Variable-RR (option C phase 2): when a grid is given, each candidate
-        # picks the EV-maximising RR. Requires a multi-RR-trained scorer.
-        self.cfg.rr_grid = tuple(rr_grid) if rr_grid else None
+        self.cfg.rr_grid = None
         self.cfg.enable_breakout = bool(enable_breakout)
         self.modes = self.cfg.auto_modes()
 
@@ -99,10 +97,7 @@ class ConfluenceLiveEvaluator:
         if min_prob and 0.0 < min_prob < 1.0:
             self.min_score = math.log(min_prob / (1.0 - min_prob))
 
-        # scorer: EV (variable-RR) model when RR optimisation is on and present,
-        # else trained fixed-RR JSON, else interpretable prior. Same chooser as
-        # the backtester so live == backtest.
-        self.scorer = resolve_scorer(use_scorer, self.cfg.rr_grid, scorer_path)
+        self.scorer = resolve_scorer(use_scorer, None, scorer_path)
         self.scorer_source = self.scorer.source_name()
 
         # one detector per timeframe — same params as ConfluenceBacktester

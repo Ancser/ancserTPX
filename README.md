@@ -25,14 +25,14 @@ Two zone methods:
 
 - **Entry**: after `CONFIRM` consecutive 1-minute closes fully outside the Value Area (default **7**), arm a limit order at the value-area edge — **VAH** for an upside breakout, **VAL** for a downside breakout. The limit order is valid for **1 candle (1 minute)**; if unfilled it is cancelled and re-evaluated against the latest VAH / VAL.
 - **Stop Loss**: the **lowest-volume price node** inside the value area (POC→VAH for longs, POC→VAL for shorts); falls back to a fixed tick distance if no valid node exists.
-- **Take Profit**: `RR × |entry − SL|`, where the reward-to-risk ratio **RR** is selectable from **1:1 to 1:10**.
+- **Take Profit**: `RR × |entry − SL|`, where the reward-to-risk ratio **RR** is selectable from **1:1 to 1:6**.
 - **Trail SL**: once price reaches the configured trigger %, the stop is moved up to lock in profit.
 - **Flatten**: all positions are closed daily at **12:45 PM PT**.
 
 ### Backtest & Machine Learning
 
 - **Backtest** runs the chosen settings over the full loaded history (~60 days, the TopstepX data-retention limit), reports performance metrics, and writes a per-trade CSV under `data/backtest/`.
-- **Machine Learning** sweeps every timeframe combination (single + overlap of 5m / 15m / 30m / 1h / 4h = 31) × every RR (1:1 … 1:10) = **310 combinations**, then ranks them by **Calmar ratio** (Profit Factor, max drawdown and weekly variation are also reported). `AREA %` and `CONFIRM` are held fixed across the sweep; STRATEGY / METHOD / AREA TF do not affect the sweep.
+- **Machine Learning** sweeps every timeframe combination (single + overlap of 5m / 15m / 30m / 1h / 4h = 31) × every RR (1:1 … 1:6) = **186 combinations**, then ranks them by **Calmar ratio** (Profit Factor, max drawdown and weekly variation are also reported). `AREA %` and `CONFIRM` are held fixed across the sweep; STRATEGY / METHOD / AREA TF do not affect the sweep.
 
 ### Trading sessions
 
@@ -75,14 +75,14 @@ ancserTPX/
 ├── frontend/static/
 │   ├── ancserTPX.html             # Single-page app
 │   ├── ancserTPX.css              # Dark theme + reusable classes
-│   └── ancserTPX.js               # UI logic, chart, presets, model grid
+│   └── ancserTPX.js               # UI logic, chart, presets, LATEST model
 ├── data/
 │   ├── store/                     # Persistent 1m candle accumulator (.pkl)
-│   ├── models/grid/               # 120 pre-trained ML models
+│   ├── models/confluence_scorer.json # single LATEST production model
 │   └── presets.json               # User presets
 └── scripts/
     ├── accumulate_history.py      # CLI: grow the persistent candle store
-    └── train_model_grid.py        # CLI: train all 120 grid models
+    └── train_confluence.py        # CLI: retrain the single LATEST model
 ```
 
 ### Backtest process model
@@ -99,9 +99,9 @@ Historical 1-minute candles are persisted to `data/store/MNQ_accumulated_1m.pkl`
 
 The store survives server restarts, so subsequent launches need only a few hundred bars of incremental data instead of the full 60-day re-download.
 
-### ML model grid
+### ML production model
 
-120 interpretable logistic-regression models: RR(1, 1.5, 2) × Band(4, 6, 8, 10, 12) × MinTF(2, 3, 4, 5) × Breakout(on, off). Each model is a JSON file with raw-feature-space weights, ensuring strict live == backtest == train parity.
+The system keeps one interpretable logistic-regression model at `data/models/confluence_scorer.json`. Retraining replaces this canonical LATEST model, ensuring live == backtest == train parity without stale model selection.
 
 ### Session timing
 

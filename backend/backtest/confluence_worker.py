@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import logging
 import math
+import json
 import sys
 import time as _time
+from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -47,7 +49,32 @@ def _ensure_logging() -> None:
         root.setLevel(logging.INFO)
 
 
-def _get_timeline(candles, timeframes, tick, depth):
+def _set_progress(progress, stage: str, current: int, total: int,
+                  detail: str = "", status: str = "running") -> None:
+    if progress is None:
+        return
+    state = {
+        "status": status,
+        "stage": stage,
+        "current": int(current),
+        "total": int(total),
+        "detail": detail,
+        "updated_at": _time.time(),
+    }
+    try:
+        if hasattr(progress, "update"):
+            progress.update(state)
+            return
+        path = Path(str(progress))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        pass
+
+
+def _get_timeline(candles, timeframes, tick, depth, progress=None):
     """Reuse the cached zone timeline when the candle set is unchanged."""
     from backend.backtest.confluence_backtest import build_zone_timeline
     key = (len(candles),
@@ -56,14 +83,23 @@ def _get_timeline(candles, timeframes, tick, depth):
            tuple(timeframes), float(tick), int(depth))
     if _W["tkey"] == key and _W["timeline"] is not None:
         logger.info(f"[BTWorker] reusing cached zone timeline ({len(candles)} candles) — skipped rebuild")
+        _set_progress(
+            progress, "reusing zone timeline", len(candles), len(candles),
+            "cached detector timeline",
+        )
         return _W["timeline"]
-    timeline = build_zone_timeline(candles, timeframes, tick, depth)
+    timeline = build_zone_timeline(
+        candles, timeframes, tick, depth,
+        progress_callback=lambda stage, current, total, detail="": _set_progress(
+            progress, stage, current, total, detail,
+        ),
+    )
     _W["tkey"] = key
     _W["timeline"] = timeline
     return timeline
 
 
-def run_job(ckey, candles_or_none, params: dict) -> dict:
+def run_job(ckey, candles_or_none, params: dict, progress=None) -> dict:
     """Entry point invoked in the child process.
 
     ``candles_or_none`` is the full sorted candle list ONLY when the caller
@@ -73,6 +109,7 @@ def run_job(ckey, candles_or_none, params: dict) -> dict:
     BacktestResponse."""
     _ensure_logging()
     _t0 = _time.perf_counter()
+    _set_progress(progress, "preparing worker", 0, 0, "loading candles and model")
 
     if candles_or_none is not None:
         _W["ckey"] = ckey
@@ -112,13 +149,13 @@ def run_job(ckey, candles_or_none, params: dict) -> dict:
     sig_cfg = ConfluenceConfig(
         band_ticks=p["conf_band_ticks"],
         min_distinct_tf=p["conf_min_distinct_tf"],
-        rr=p["conf_rr"],
+        rr=float(p.get("conf_rr", 3.0) or 3.0),
     )
     sig_cfg.direction_mode = "auto"
     sig_cfg.tick_size = tick
     sig_cfg.ev_floor = p.get("conf_ev_floor")
     sig_cfg.rr_grid = tuple(rr_grid) if rr_grid else None
-    sig_cfg.enable_breakout = bool(p.get("conf_enable_breakout", True))
+    sig_cfg.enable_breakout = bool(p.get("conf_enable_breakout", False))
 
     run_cfg = ConfluenceBacktestConfig(
         wait_minutes=p["conf_wait_minutes"], min_score=min_score,
@@ -135,12 +172,19 @@ def run_job(ckey, candles_or_none, params: dict) -> dict:
         fees_rt=get_fees_rt(contract_id),
     )
 
-    timeline = _get_timeline(candles, timeframes, tick, MAX_RECENCY_DEPTH)
+    timeline = _get_timeline(candles, timeframes, tick, MAX_RECENCY_DEPTH, progress)
     bt = ConfluenceBacktester(
         signal_cfg=sig_cfg, run_cfg=run_cfg, contract_id=contract_id,
         contract_size=contract_size, bt_config=bt_cfg, scorer=scorer,
     )
-    result = bt.run(candles, zones_timeline=timeline)
+    result = bt.run(
+        candles,
+        zones_timeline=timeline,
+        progress_callback=lambda stage, current, total, detail="": _set_progress(
+            progress, stage, current, total, detail,
+        ),
+    )
+    _set_progress(progress, "finalizing metrics", len(candles), len(candles), "building response")
 
     symbol_label = "/" + bt_cfg.symbol
     trades = []
@@ -193,4 +237,9 @@ def run_job(ckey, candles_or_none, params: dict) -> dict:
 
     logger.info(f"[BTWorker] backtest done in {_time.perf_counter() - _t0:.1f}s "
                 f"({len(trades)} trades)")
+    _set_progress(
+        progress, "complete", len(candles), len(candles),
+        f"{len(trades)} trades in {_time.perf_counter() - _t0:.1f}s",
+        status="complete",
+    )
     return {"metrics": metrics, "trades": trades, "equity": equity}

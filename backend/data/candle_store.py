@@ -34,9 +34,11 @@ import json
 import logging
 import pickle
 import time as _time
-from datetime import datetime, timedelta, timezone
+import calendar
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from backend.db.models import Candle
 
@@ -46,18 +48,18 @@ ROOT = Path(__file__).resolve().parents[2]           # project root
 STORE_DIR = ROOT / "data" / "store"
 
 # ── Expected gap patterns (NOT missing data) ──────────────────────────────
-# CME Equity Index futures: daily maintenance 22:00–23:00 UTC (17:00–18:00 CT
-# = 15:00–16:00 PT summer / 14:00–15:00 PT winter).  Weekend: Fri ~22:00 UTC
-# to Sun ~23:00 UTC.  US holidays: similar to weekend, variable duration.
+# CME Equity Index futures: daily maintenance 16:00–17:00 America/Chicago.
+# That is 21:00–22:00 UTC during US daylight time and 22:00–23:00 UTC during
+# standard time. Stored 1m bars therefore commonly jump 20:59→22:00 UTC in
+# summer or 21:59→23:00 UTC in winter.
 #
 # We use GENEROUS windows so DST shifts / early-close days / holidays don't
 # trigger false gap alerts.  Any interior gap that does NOT match these
 # patterns is flagged as potential wifi-drop damage.
 
-_DAILY_GAP_EARLIEST_UTC_HOUR = 21   # gap could start as early as 21:30
-_DAILY_GAP_LATEST_UTC_HOUR   = 23   # gap could end as late as 23:30
 _MAX_DAILY_GAP_MIN = 100            # anything ≤100 min within the window → daily
 _MIN_WEEKEND_GAP_HOURS = 36         # anything ≥36h spanning a Sat → weekend/holiday
+_CT = ZoneInfo("America/Chicago")
 
 # CME session boundary: bars stop appearing around 22:00 UTC and resume ~23:00
 # UTC.  A "complete trading day" ends just before the maintenance gap.
@@ -70,6 +72,50 @@ def _as_utc(ts: datetime) -> datetime:
     if ts.tzinfo is None:
         return ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(timezone.utc)
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    weeks = calendar.monthcalendar(year, month)
+    days = [week[weekday] for week in weeks if week[weekday]]
+    return date(year, month, days[n - 1])
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    weeks = calendar.monthcalendar(year, month)
+    days = [week[weekday] for week in weeks if week[weekday]]
+    return date(year, month, days[-1])
+
+
+def _observed_fixed_holiday(year: int, month: int, day: int) -> date:
+    actual = date(year, month, day)
+    if actual.weekday() == 5:  # Saturday -> Friday
+        return actual - timedelta(days=1)
+    if actual.weekday() == 6:  # Sunday -> Monday
+        return actual + timedelta(days=1)
+    return actual
+
+
+def _is_us_futures_holiday(day: date) -> bool:
+    """Common CME equity-index holiday/early-close dates.
+
+    This is intentionally narrow: it prevents known holiday closes from being
+    treated as wifi loss without suppressing an arbitrary multi-hour weekday
+    hole that should still be recovered.
+    """
+    y = day.year
+    holidays = {
+        _observed_fixed_holiday(y, 1, 1),       # New Year
+        _nth_weekday(y, 1, calendar.MONDAY, 3), # MLK Day
+        _nth_weekday(y, 2, calendar.MONDAY, 3), # Presidents Day
+        _last_weekday(y, 5, calendar.MONDAY),   # Memorial Day
+        _observed_fixed_holiday(y, 6, 19),      # Juneteenth
+        _observed_fixed_holiday(y, 7, 4),       # Independence Day
+        _nth_weekday(y, 9, calendar.MONDAY, 1), # Labor Day
+        _nth_weekday(y, 11, calendar.THURSDAY, 4), # Thanksgiving
+        _observed_fixed_holiday(y, 12, 25),     # Christmas
+        _observed_fixed_holiday(y + 1, 1, 1),   # next New Year observed on Dec 31
+    }
+    return day in holidays
 
 
 def _store_path(symbol: str = "MNQ", base: int = 1) -> Path:
@@ -143,12 +189,26 @@ def is_expected_gap(gap_start: datetime, gap_end: datetime) -> bool:
         # Long gap but no Saturday → likely a holiday; still expected
         return True
 
-    # Daily maintenance: ≤100 min and gap starts in the 21–23 UTC window
+    gs_ct = gs.astimezone(_CT)
+    ge_ct = ge.astimezone(_CT)
+
+    # Holiday early close: equity-index futures commonly stop around noon CT
+    # and reopen for the next trade date at 17:00 CT. Only accept this pattern
+    # on a calculated US holiday so normal weekday data loss remains visible.
+    if (
+        dur_min <= 8 * 60
+        and ge_ct.hour == 17
+        and gs_ct.date() == ge_ct.date()
+        and _is_us_futures_holiday(gs_ct.date())
+    ):
+        return True
+
+    # Daily maintenance. Gap endpoints are timestamps of the last bar before
+    # the halt and first bar after it, so test the first missing minute rather
+    # than ``gs.hour`` (20:59 UTC is a valid summer endpoint).
     if dur_min <= _MAX_DAILY_GAP_MIN:
-        if _DAILY_GAP_EARLIEST_UTC_HOUR <= gs.hour <= _DAILY_GAP_LATEST_UTC_HOUR:
-            return True
-        # Edge case: gap straddles midnight UTC (e.g. 23:50 → 00:05)
-        if gs.hour == 23 and ge.hour <= 1:
+        missing_start_ct = (gs + timedelta(minutes=1)).astimezone(_CT)
+        if missing_start_ct.hour == 16 and ge_ct.hour == 17:
             return True
 
     return False

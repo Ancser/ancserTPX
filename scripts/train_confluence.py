@@ -49,7 +49,7 @@ from backend.strategy.confluence import (
 from backend.strategy.confluence_features import (
     FEATURE_NAMES, features_to_vector, CONTEXT_WINDOW,
 )
-from backend.strategy.confluence_scorer import ConfluenceScorer
+from backend.strategy.confluence_scorer import ConfluenceScorer, save_model_version
 from backend.backtest.confluence_backtest import build_zone_timeline
 from scripts.confluence_common import (
     CONTRACT_ID, MODEL_DIR, resolve_candles, timeframes_for_base,
@@ -224,14 +224,20 @@ def main():
     ap.add_argument("--stride", type=int, default=5, help="sample a candidate every N bars")
     ap.add_argument("--wait", type=int, default=60, help="limit-fill timeout in MINUTES")
     ap.add_argument("--horizon", type=int, default=1440, help="SL/TP resolve window in MINUTES")
-    ap.add_argument("--band", type=float, default=8.0)
-    ap.add_argument("--mdt", type=int, default=3)
-    ap.add_argument("--rr", type=float, default=1.5)
+    ap.add_argument("--band", type=float, default=4.0)
+    ap.add_argument("--mdt", type=int, default=2)
+    ap.add_argument("--rr", type=float, default=3.0)
     ap.add_argument("--C", type=float, default=0.0,
                     help="inverse L2 strength; 0 = pick by time-series CV (recommended)")
     ap.add_argument("--loss-weight", type=float, default=1.0,
                     help="cost-sensitive loss aversion: >1 up-weights LOSS samples "
                          "→ higher PF / lower maxDD / fewer trades. 1.0 = baseline.")
+    ap.add_argument("--trainer", choices=("codex", "claude"), default="codex",
+                    help="assistant responsible for this training run")
+    ap.add_argument("--description", default="",
+                    help="one-line model description used in the version name")
+    ap.add_argument("--enable-breakout", action="store_true",
+                    help="include breakout-retrace candidates (default: off)")
     args = ap.parse_args()
 
     base = max(1, args.base_min)
@@ -251,6 +257,7 @@ def main():
     cfg = ConfluenceConfig(band_ticks=args.band, min_distinct_tf=args.mdt, rr=args.rr)
     cfg.direction_mode = "auto"
     cfg.tick_size = tick
+    cfg.enable_breakout = bool(args.enable_breakout)
 
     print("[zones] building train-split timeline...", flush=True)
     tl = build_zone_timeline(train, timeframes, tick, MAX_RECENCY_DEPTH)
@@ -297,13 +304,20 @@ def main():
             "loss_weight": args.loss_weight,
             "cfg": {"band_ticks": args.band, "min_distinct_tf": args.mdt,
                     "rr": args.rr, "wait_min": args.wait, "horizon_min": args.horizon,
-                    "loss_weight": args.loss_weight},
+                    "loss_weight": args.loss_weight,
+                    "enable_breakout": bool(args.enable_breakout)},
         },
     )
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    out = MODEL_DIR / "confluence_scorer.json"
-    scorer.save(out)
-    print(f"\n[out] {out}", flush=True)
+    description = args.description.strip() or (
+        f"RR{args.rr:g} Band{args.band:g} MinTF{args.mdt} command-line training"
+    )
+    model_id, out = save_model_version(
+        scorer, args.trainer, description, activate=True,
+        active_path=MODEL_DIR / "confluence_scorer.json",
+    )
+    print(f"\n[model] {model_id}", flush=True)
+    print(f"[version] {out}", flush=True)
+    print(f"[active] {MODEL_DIR / 'confluence_scorer.json'}", flush=True)
 
 
 if __name__ == "__main__":

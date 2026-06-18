@@ -44,6 +44,7 @@ from backend.strategy.confluence import (
 )
 from backend.strategy.confluence_features import CONTEXT_WINDOW
 from backend.backtest.metrics import MetricsCalculator
+from backend.backtest.intrabar import resolve_same_bar_exit
 
 
 # wait-timeout values the optimizer sweeps (minutes == 1m candles)
@@ -55,6 +56,7 @@ def build_zone_timeline(
     timeframes,
     tick_size: float,
     max_recency_depth: int,
+    progress_callback=None,
 ) -> List[Dict[str, list]]:
     """Feed the 1m stream through one detector per TF ONCE and return a
     per-candle ``zones_by_tf`` timeline (index-aligned to the SORTED candles).
@@ -87,6 +89,8 @@ def build_zone_timeline(
         f"[ZoneTimeline] start: {total} candles × {len(detectors)} TF "
         f"({','.join(detectors.keys())})"
     )
+    if progress_callback:
+        progress_callback("building zone timeline", 0, total, "starting detectors")
     for i, candle in enumerate(candles):
         for det in detectors.values():
             det.update(candle)
@@ -95,7 +99,7 @@ def build_zone_timeline(
             snapshot = snapshot_zones_by_tf(detectors, depth)
             last_counts = counts
         timeline.append(snapshot)
-        if (i + 1) % _step == 0:
+        if (i + 1) % _step == 0 or i + 1 == total:
             el = _time.perf_counter() - _t0
             rate = (i + 1) / el if el > 0 else 0
             eta = (total - (i + 1)) / rate if rate > 0 else 0
@@ -103,6 +107,11 @@ def build_zone_timeline(
                 f"[ZoneTimeline] {i + 1}/{total} ({100 * (i + 1) // total}%) "
                 f"· {el:.0f}s elapsed · {rate:.0f} bars/s · ETA {eta:.0f}s"
             )
+            if progress_callback:
+                progress_callback(
+                    "building zone timeline", i + 1, total,
+                    f"{rate:.0f} bars/s, ETA {eta:.0f}s",
+                )
     logger.info(
         f"[ZoneTimeline] done: {total} candles in {_time.perf_counter() - _t0:.1f}s"
     )
@@ -202,6 +211,7 @@ class ConfluenceBacktester:
         self,
         candles_1m: List[Candle],
         zones_timeline: Optional[List[Dict[str, list]]] = None,
+        progress_callback=None,
     ) -> "ConfluenceBacktestResult":
         """Run the backtest.
 
@@ -217,8 +227,16 @@ class ConfluenceBacktester:
         total = len(candles)
         wait = self.run_cfg.wait_bars  # minute-accurate timeout in input candles
         edge_guard = wait + 2  # no new entries this close to data end
+        progress_step = max(1000, total // 100) if total else 1
+        if progress_callback:
+            progress_callback("replaying strategy", 0, total, "starting simulation")
 
         for i, candle in enumerate(candles):
+            if progress_callback and ((i + 1) % progress_step == 0 or i + 1 == total):
+                progress_callback(
+                    "replaying strategy", i + 1, total,
+                    f"{len(self._trades)} closed trades",
+                )
             # 1) feed every timeframe detector (skipped when a timeline is given)
             if zones_timeline is None:
                 for det in self.detectors.values():
@@ -344,13 +362,6 @@ class ConfluenceBacktester:
         pos = self._open
         if not pos:
             return
-        # STYLE: one-time break-even/trail using this bar's close as the market.
-        if self.style.trail_enabled:
-            from backend.strategy.exit_policy import maybe_trail_sl
-            new_sl, self._trail_triggered = maybe_trail_sl(
-                pos.direction, pos.entry_price, pos.tp_price, pos.sl_price,
-                self._trail_triggered, candle.close, self.style)
-            pos.sl_price = new_sl
         if pos.direction == Direction.BUY:
             hit_sl = candle.low <= pos.sl_price
             hit_tp = candle.high >= pos.tp_price
@@ -361,17 +372,23 @@ class ConfluenceBacktester:
         # once trail has latched, an SL hit is a profit-locked TRAIL exit
         sl_reason = ExitReason.TRAIL_SL if self._trail_triggered else ExitReason.SL
         if hit_sl and hit_tp:
-            # ambiguous — use open proximity to infer which hit first
-            dist_sl = abs(candle.open - pos.sl_price)
-            dist_tp = abs(candle.open - pos.tp_price)
-            if dist_sl <= dist_tp:
-                self._exit(candle, pos.tp_price, ExitReason.TP)
-            else:
+            if resolve_same_bar_exit(candle.open, pos.sl_price, pos.tp_price) == "sl":
                 self._exit(candle, pos.sl_price, sl_reason)
+            else:
+                self._exit(candle, pos.tp_price, ExitReason.TP)
         elif hit_sl:
             self._exit(candle, pos.sl_price, sl_reason)
         elif hit_tp:
             self._exit(candle, pos.tp_price, ExitReason.TP)
+        elif self.style.trail_enabled:
+            # A close-based trail can only be applied after this bar survives
+            # the pre-existing SL/TP. Applying it before exit checks lets the
+            # close rewrite the same bar's earlier path.
+            from backend.strategy.exit_policy import maybe_trail_sl
+            new_sl, self._trail_triggered = maybe_trail_sl(
+                pos.direction, pos.entry_price, pos.tp_price, pos.sl_price,
+                self._trail_triggered, candle.close, self.style)
+            pos.sl_price = new_sl
 
     def _exit(self, candle: Candle, exit_price: float, reason: ExitReason):
         pos = self._open

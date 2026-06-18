@@ -29,7 +29,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        1.0.4
+        1.0.5
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -118,8 +118,8 @@
                 <div class="form-group" style="flex:1;">
                     <label>STRATEGY</label>
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
-                        <option value="trend" selected>TREND</option>
-                        <option value="confluence">ML (confluence)</option>
+                        <option value="trend">TREND</option>
+                        <option value="confluence" selected>ML (confluence)</option>
                     </select>
                 </div>
             </div>
@@ -128,8 +128,21 @@
                 <input type="hidden" id="conf-base-bt" value="1">
                 <input type="hidden" id="conf-breakout-bt" value="0">
                 <div class="form-group">
-                    <label>MODEL <span class="lbl-hint">(預訓練網格 · 選即套用)</span></label>
-                    <select id="conf-model-bt" onchange="onModelSelect('bt')"><option value="">— 自訂 / 載入中… —</option></select>
+                    <label>MODEL <span class="lbl-hint">(版本庫 · 選擇即啟用)</span></label>
+                    <select id="conf-model-bt" onchange="onModelSelect('bt')"><option value="">models loading…</option></select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:0 0 100px;">
+                        <label>TRAINER</label>
+                        <select id="conf-trainer-bt">
+                            <option value="codex" selected>CODEX</option>
+                            <option value="claude">CLAUDE</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>NEW MODEL DESCRIPTION</label>
+                        <input id="conf-description-bt" type="text" maxlength="120" placeholder="一句描述，例如 tighter SL wall">
+                    </div>
                 </div>
                 <div class="action-row">
                     <select id="conf-lossweight-bt" title="Loss aversion: >1 = 更高 PF / 更低 maxDD / 更少單">
@@ -166,42 +179,28 @@
                     <div class="form-group" style="flex:1;">
                         <label>BAND (ticks)</label>
                         <select id="conf-band-bt">
-                            <option value="4">4</option>
-                            <option value="6">6</option>
-                            <option value="8" selected>8</option>
-                            <option value="10">10</option>
-                            <option value="12">12</option>
+                            <option value="4" selected>4</option>
                         </select>
                     </div>
                     <div class="form-group" style="flex:1;">
                         <label>MIN DISTINCT TF</label>
                         <select id="conf-mintf-bt">
-                            <option value="2">2</option>
-                            <option value="3" selected>3</option>
-                            <option value="4">4</option>
-                            <option value="5">5</option>
+                            <option value="2" selected>2</option>
                         </select>
                     </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
-                        <label>RR <span class="lbl-hint">(固定 / 變動 EV挑選)</span></label>
+                        <label>RR <span class="lbl-hint">(固定 1–6)</span></label>
                         <div style="display:flex;gap:6px;">
-                            <select id="conf-rrmode-bt" style="flex:1;" onchange="onRrModeChange('bt')">
-                                <option value="fixed" selected>固定</option>
-                                <option value="grid">變動</option>
-                            </select>
+                            <input type="hidden" id="conf-rrmode-bt" value="fixed">
                             <select id="conf-rr-bt" style="flex:1.3;">
                                 <option value="1.0">1:1</option>
-                                <option value="1.5" selected>1:1.5</option>
                                 <option value="2.0">1:2</option>
-                                <option value="2.5">1:2.5</option>
-                                <option value="3.0">1:3</option>
-                            </select>
-                            <select id="conf-rrgrid-bt" style="flex:1.3;display:none;">
-                                <option value="1.0,1.5,2.0,2.5,3.0" selected>1.0~3.0 (EV最佳)</option>
-                                <option value="1.0,1.5,2.0">1.0~2.0</option>
-                                <option value="1.5,2.0,2.5,3.0">1.5~3.0</option>
+                                <option value="3.0" selected>1:3</option>
+                                <option value="4.0">1:4</option>
+                                <option value="5.0">1:5</option>
+                                <option value="6.0">1:6</option>
                             </select>
                         </div>
                     </div>
@@ -279,8 +278,6 @@
                         <option value="1">1:1</option><option value="2" selected>1:2</option>
                         <option value="3">1:3</option><option value="4">1:4</option>
                         <option value="5">1:5</option><option value="6">1:6</option>
-                        <option value="7">1:7</option><option value="8">1:8</option>
-                        <option value="9">1:9</option><option value="10">1:10</option>
                     </select>
                     <input type="hidden" id="tp-ticks-bt" value="100">
                 </div>
@@ -311,6 +308,15 @@
                 <button class="btn btn-learn" id="btn-learn-bt" onclick="learnAndBacktest()" disabled
                         title="用完整歷史重新訓練 ML scorer (1m base)，然後立即用最新 scorer 回測">LEARN &amp; BACKTEST</button>
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
+                <div id="backtest-progress-wrap" style="display:none;margin-top:1px;">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                        <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">BACKTEST</span>
+                        <span id="backtest-progress-text" style="font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text2);">preparing</span>
+                    </div>
+                    <div style="height:2px;background:rgba(255,255,255,0.07);border-radius:1px;overflow:hidden;">
+                        <div id="backtest-progress-bar" style="height:100%;width:0%;background:var(--green);border-radius:1px;transition:width 0.25s linear;box-shadow:0 0 6px rgba(0,229,160,0.5);"></div>
+                    </div>
+                </div>
                 <div class="full-run-wrap">
                     <button class="btn btn-full" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run all parameter combinations and rank results">COMBINATION</button>
                     <button class="btn btn-full full-filter-btn" id="btn-full-filter" onclick="toggleFullFixedDropdown(event)" disabled title="Fixed combination params">v</button>
@@ -372,8 +378,8 @@
                     <div class="form-group" style="flex:1;">
                         <label>STRATEGY</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
-                            <option value="trend" selected>TREND</option>
-                            <option value="confluence">ML (confluence)</option>
+                            <option value="trend">TREND</option>
+                            <option value="confluence" selected>ML (confluence)</option>
                         </select>
                     </div>
                 </div>
@@ -382,8 +388,21 @@
                     <input type="hidden" id="conf-base-live" value="1">
                     <input type="hidden" id="conf-breakout-live" value="0">
                     <div class="form-group">
-                        <label>MODEL <span class="lbl-hint">(預訓練網格 · 選即套用)</span></label>
-                        <select id="conf-model-live" onchange="onModelSelect('live')"><option value="">— 自訂 / 載入中… —</option></select>
+                        <label>MODEL <span class="lbl-hint">(版本庫 · 選擇即啟用)</span></label>
+                        <select id="conf-model-live" onchange="onModelSelect('live')"><option value="">models loading…</option></select>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:0 0 100px;">
+                            <label>TRAINER</label>
+                            <select id="conf-trainer-live">
+                                <option value="codex" selected>CODEX</option>
+                                <option value="claude">CLAUDE</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>NEW MODEL DESCRIPTION</label>
+                            <input id="conf-description-live" type="text" maxlength="120" placeholder="一句描述，例如 tighter SL wall">
+                        </div>
                     </div>
                     <div class="action-row">
                         <select id="conf-lossweight-live" title="Loss aversion: >1 = 更高 PF / 更低 maxDD / 更少單">
@@ -420,42 +439,28 @@
                         <div class="form-group" style="flex:1;">
                             <label>BAND (ticks)</label>
                             <select id="conf-band-live">
-                                <option value="4">4</option>
-                                <option value="6">6</option>
-                                <option value="8" selected>8</option>
-                                <option value="10">10</option>
-                                <option value="12">12</option>
+                                <option value="4" selected>4</option>
                             </select>
                         </div>
                         <div class="form-group" style="flex:1;">
                             <label>MIN DISTINCT TF</label>
                             <select id="conf-mintf-live">
-                                <option value="2">2</option>
-                                <option value="3" selected>3</option>
-                                <option value="4">4</option>
-                                <option value="5">5</option>
+                                <option value="2" selected>2</option>
                             </select>
                         </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group" style="flex:1;">
-                            <label>RR <span class="lbl-hint">(固定 / 變動 EV挑選)</span></label>
+                            <label>RR <span class="lbl-hint">(固定 1–6)</span></label>
                             <div style="display:flex;gap:6px;">
-                                <select id="conf-rrmode-live" style="flex:1;" onchange="onRrModeChange('live')">
-                                    <option value="fixed" selected>固定</option>
-                                    <option value="grid">變動</option>
-                                </select>
+                                <input type="hidden" id="conf-rrmode-live" value="fixed">
                                 <select id="conf-rr-live" style="flex:1.3;">
                                     <option value="1.0">1:1</option>
-                                    <option value="1.5" selected>1:1.5</option>
                                     <option value="2.0">1:2</option>
-                                    <option value="2.5">1:2.5</option>
-                                    <option value="3.0">1:3</option>
-                                </select>
-                                <select id="conf-rrgrid-live" style="flex:1.3;display:none;">
-                                    <option value="1.0,1.5,2.0,2.5,3.0" selected>1.0~3.0 (EV最佳)</option>
-                                    <option value="1.0,1.5,2.0">1.0~2.0</option>
-                                    <option value="1.5,2.0,2.5,3.0">1.5~3.0</option>
+                                    <option value="3.0" selected>1:3</option>
+                                    <option value="4.0">1:4</option>
+                                    <option value="5.0">1:5</option>
+                                    <option value="6.0">1:6</option>
                                 </select>
                             </div>
                         </div>
@@ -533,8 +538,6 @@
                             <option value="1">1:1</option><option value="2" selected>1:2</option>
                             <option value="3">1:3</option><option value="4">1:4</option>
                             <option value="5">1:5</option><option value="6">1:6</option>
-                            <option value="7">1:7</option><option value="8">1:8</option>
-                            <option value="9">1:9</option><option value="10">1:10</option>
                         </select>
                         <input type="hidden" id="tp-ticks-live" value="100">
                     </div>

@@ -25,14 +25,14 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 
 - **Entry**：當連續 `CONFIRM` 根 1 分鐘 K 線完全站在 Value Area 之外（預設 **7**），在 value-area 邊緣掛限價單——向上突破掛在 **VAH**，向下突破掛在 **VAL**。限價單只存活 **1 根 K 線（1 分鐘）**；若未成交即取消，並依最新的 VAH / VAL 重新評估。
 - **Stop Loss**：value area 內的**最低成交量價格節點**（多單取 POC→VAH 之間，空單取 POC→VAL 之間）；若找不到有效節點，退回固定 tick 距離。
-- **Take Profit**：`RR × |entry − SL|`，盈虧比 **RR** 可選 **1:1 到 1:10**。
+- **Take Profit**：`RR × |entry − SL|`，盈虧比 **RR** 可選 **1:1 到 1:6**。
 - **Trail SL**：價格達到設定的觸發 % 後，將停損上移以鎖住獲利。
 - **Flatten**：每日美西時間 **12:45 PM** 強制平倉。
 
 ### 回測與機器學習
 
 - **回測**：以目前設定跑完整載入的歷史資料（約 60 天，TopstepX 資料保留上限），輸出績效指標，並在 `data/backtest/` 下寫出逐筆交易 CSV。
-- **機器學習**：掃描所有時間框架組合（single + 5m / 15m / 30m / 1h / 4h 的 overlap = 31 種）× 所有 RR（1:1 … 1:10）= **310 組**，再依 **Calmar ratio** 排名（同時報告 Profit Factor、最大回撤與週變異）。掃描期間 `AREA %` 與 `CONFIRM` 固定不變；STRATEGY / METHOD / AREA TF 不影響掃描。
+- **機器學習**：掃描所有時間框架組合（single + 5m / 15m / 30m / 1h / 4h 的 overlap = 31 種）× 所有 RR（1:1 … 1:6）= **186 組**，再依 **Calmar ratio** 排名（同時報告 Profit Factor、最大回撤與週變異）。掃描期間 `AREA %` 與 `CONFIRM` 固定不變；STRATEGY / METHOD / AREA TF 不影響掃描。
 
 ### 市場時段
 
@@ -75,14 +75,14 @@ ancserTPX/
 ├── frontend/static/
 │   ├── ancserTPX.html             # 單頁應用（回測 + 即時兩個分頁）
 │   ├── ancserTPX.css              # 暗色主題 + 可重用 CSS 類別
-│   └── ancserTPX.js               # UI 邏輯、圖表、preset、模型網格
+│   └── ancserTPX.js               # UI 邏輯、圖表、preset、LATEST 模型
 ├── data/
 │   ├── store/                     # 持久 1m K 線累積器（.pkl）
-│   ├── models/grid/               # 120 個預訓練 ML 模型
+│   ├── models/confluence_scorer.json # 唯一 LATEST production 模型
 │   └── presets.json               # 使用者 preset
 └── scripts/
     ├── accumulate_history.py      # CLI：擴充持久 K 線庫
-    └── train_model_grid.py        # CLI：訓練全部 120 個網格模型
+    └── train_confluence.py        # CLI：重訓唯一 LATEST 模型
 ```
 
 ### 回測進程模型
@@ -99,9 +99,9 @@ Web 回測在**獨立子進程**（`ProcessPoolExecutor`）中運行，擁有自
 
 庫在伺服器重啟後依然存在，後續啟動只需幾百根增量 bar，而不是整段 60 天重新下載。
 
-### ML 模型網格
+### ML production 模型
 
-120 個可解釋的邏輯回歸模型：RR(1, 1.5, 2) × Band(4, 6, 8, 10, 12) × MinTF(2, 3, 4, 5) × Breakout(開, 關)。每個模型是一份 JSON，包含原始特徵空間的權重，確保 live == 回測 == 訓練 的嚴格一致性。
+系統只保留一個可解釋邏輯回歸模型：`data/models/confluence_scorer.json`。重訓會直接取代這個 LATEST canonical 模型，避免誤選舊模型，並維持 live == 回測 == 訓練。
 
 ### 市場時段
 

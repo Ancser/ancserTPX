@@ -139,15 +139,15 @@ class LiveTradingEngine:
             from backend.live.confluence_live import ConfluenceLiveEvaluator
             self.confluence = ConfluenceLiveEvaluator(
                 contract_id=contract_id,
-                band_ticks=float(getattr(self.strategy_params, "conf_band_ticks", 8.0)),
-                min_distinct_tf=int(getattr(self.strategy_params, "conf_min_distinct_tf", 3)),
-                rr=float(getattr(self.strategy_params, "conf_rr", 1.5)),
+                band_ticks=float(getattr(self.strategy_params, "conf_band_ticks", 4.0)),
+                min_distinct_tf=int(getattr(self.strategy_params, "conf_min_distinct_tf", 2)),
+                rr=float(getattr(self.strategy_params, "conf_rr", 3.0)),
                 base_minutes=int(getattr(self.strategy_params, "conf_base_minutes", 1)),
                 min_prob=float(getattr(self.strategy_params, "conf_min_prob", 0.0)),
                 ev_floor=_conf_ev_floor(getattr(self.strategy_params, "conf_ev_floor", None)),
-                rr_grid=getattr(self.strategy_params, "conf_rr_grid", None),
+                rr_grid=None,
                 use_scorer=bool(getattr(self.strategy_params, "conf_use_scorer", True)),
-                enable_breakout=bool(getattr(self.strategy_params, "conf_enable_breakout", True)),
+                enable_breakout=bool(getattr(self.strategy_params, "conf_enable_breakout", False)),
             )
         self.strategies = [self.strategy_mode]
 

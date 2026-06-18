@@ -34,9 +34,9 @@ TRAIL_TICK_STEP = 5
 # Keep in sync with backend.api.routes.ML_TIMEFRAMES so terminal honours the
 # same area-timeframe / overlap selections the web UI saves into presets.
 ML_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h")
-DEFAULT_PRESET_NAME = "TR MNQx3 50/200 TRIG30 TRAILTP5% TPLOCKOFF"
+DEFAULT_PRESET_NAME = "ML CONFLUENCE MNQx3 DEFAULT"
 DEFAULT_PRESET_PARAMS = {
-    "strategy": "trend",
+    "strategy": "confluence",
     "tp_ticks": 200,
     "sl_ticks": 50,
     "trail_sl_ticks": 10,
@@ -63,6 +63,21 @@ DEFAULT_PRESET_PARAMS = {
     "rr_ratio": 2,
     "breakout_confirm_bars": 7,
     "skip_zone_stability": False,
+    "conf_band_ticks": 4.0,
+    "conf_min_distinct_tf": 2,
+    "conf_rr": 3.0,
+    "conf_wait_minutes": 60,
+    "conf_base_minutes": 1,
+    "conf_min_prob": 0.0,
+    "conf_ev_floor": None,
+    "conf_rr_grid": None,
+    "conf_use_scorer": True,
+    "conf_enable_breakout": False,
+    "conf_trail_trigger_pct": 0.0,
+    "conf_trail_lock_pct": 0.0,
+    "conf_full_tp_lock": 0,
+    "conf_session_limit": True,
+    "conf_shadow": False,
 }
 BUILTIN_PRESETS = {}
 
@@ -132,8 +147,7 @@ def _load_presets_file() -> dict:
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        if strategy != "trend":
-            params["strategy"] = "trend"
+        params["strategy"] = "confluence" if strategy == "confluence" else "trend"
         allowed_keys = {
             "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
             "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
@@ -143,6 +157,12 @@ def _load_presets_file() -> dict:
             "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
             "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
             "tr_one_trade_per_session",
+            "conf_band_ticks", "conf_min_distinct_tf", "conf_rr",
+            "conf_wait_minutes", "conf_base_minutes", "conf_min_prob",
+            "conf_ev_floor", "conf_rr_grid", "conf_use_scorer",
+            "conf_enable_breakout", "conf_trail_trigger_pct",
+            "conf_trail_lock_pct", "conf_full_tp_lock",
+            "conf_session_limit", "conf_shadow",
         }
         for key in list(params.keys()):
             if key not in allowed_keys:
@@ -157,9 +177,9 @@ def _load_presets_file() -> dict:
             del presets[name]
     if not presets:
         presets[DEFAULT_PRESET_NAME] = dict(DEFAULT_PRESET_PARAMS)
-    if data.get("last_used_bt") not in presets:
+    if data.get("last_used_bt") != "default" and data.get("last_used_bt") not in presets:
         data["last_used_bt"] = next(iter(presets))
-    if data.get("last_used_live") not in presets:
+    if data.get("last_used_live") != "default" and data.get("last_used_live") not in presets:
         data["last_used_live"] = next(iter(presets))
     data["fixed_presets"] = []
     return data
@@ -276,6 +296,8 @@ def _load_default_preset() -> tuple[str, Dict[str, Any], str]:
     ]
     for source, candidate in candidates:
         name = str(candidate or "").strip()
+        if name == "default":
+            return "default", dict(DEFAULT_PRESET_PARAMS), source
         params = presets.get(name)
         if name and isinstance(params, dict):
             merged = dict(DEFAULT_PRESET_PARAMS)
@@ -349,7 +371,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         rr_ratio = int(preset.get("rr_ratio", DEFAULT_PRESET_PARAMS["rr_ratio"]) or 2)
     except (TypeError, ValueError):
         rr_ratio = 2
-    rr_ratio = max(1, min(10, rr_ratio))
+    rr_ratio = max(1, min(6, rr_ratio))
     try:
         confirm_bars = int(preset.get("breakout_confirm_bars", DEFAULT_PRESET_PARAMS["breakout_confirm_bars"]) or 7)
     except (TypeError, ValueError):
@@ -357,7 +379,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
     confirm_bars = max(1, min(10, confirm_bars))
 
     # v0.19: confluence (explainable ML) mode — driven by preset["strategy"].
-    strategy_mode = str(preset.get("strategy") or "trend").lower()
+    strategy_mode = str(preset.get("strategy") or "confluence").lower()
     if strategy_mode != "confluence":
         strategy_mode = "trend"
 
@@ -372,6 +394,15 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
             return int(preset.get(key, default))
         except (TypeError, ValueError):
             return default
+
+    def _conf_optional_float(key):
+        value = preset.get(key)
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     return StrategyParams(
         strategy=strategy_mode,
@@ -399,13 +430,20 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         tr_one_trade_per_session=bool(preset.get("tr_one_trade_per_session", True)),
         skip_zone_stability=False,
         # v0.19 confluence config (used only when strategy == "confluence")
-        conf_band_ticks=_conf_float("conf_band_ticks", 8.0),
-        conf_min_distinct_tf=_conf_int("conf_min_distinct_tf", 3),
-        conf_rr=_conf_float("conf_rr", 1.5),
+        conf_band_ticks=_conf_float("conf_band_ticks", 4.0),
+        conf_min_distinct_tf=_conf_int("conf_min_distinct_tf", 2),
+        conf_rr=float(max(1, min(6, round(_conf_float("conf_rr", 3.0))))),
         conf_wait_minutes=_conf_int("conf_wait_minutes", 60),
         conf_base_minutes=_conf_int("conf_base_minutes", 1),
         conf_min_prob=_conf_float("conf_min_prob", 0.0),
+        conf_ev_floor=_conf_optional_float("conf_ev_floor"),
+        conf_rr_grid=None,
         conf_use_scorer=bool(preset.get("conf_use_scorer", True)),
+        conf_enable_breakout=bool(preset.get("conf_enable_breakout", False)),
+        conf_trail_trigger_pct=_conf_float("conf_trail_trigger_pct", 0.0),
+        conf_trail_lock_pct=_conf_float("conf_trail_lock_pct", 0.0),
+        conf_full_tp_lock=_conf_int("conf_full_tp_lock", 0),
+        conf_session_limit=bool(preset.get("conf_session_limit", True)),
         conf_shadow=bool(preset.get("conf_shadow", False)),
     )
 

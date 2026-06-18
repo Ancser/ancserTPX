@@ -2,9 +2,8 @@
 # 文件: scripts/confluence_label.py
 # 狀態: v0.21.0 (explainable confluence — shared labeler + ML hygiene)
 # 用途: 單一真相來源的「前向掃描標註器」與統計衛生工具，供
-#       fixed-RR / variable-RR 兩個訓練器、web /confluence/train 端點共用。
+#       fixed-RR trainer 與 web /confluence/train 端點共用。
 #   ← scripts/train_confluence.py      (fixed-RR collect)
-#   ← scripts/train_confluence_ev.py   (variable-RR collect)
 #   ← backend/api/routes.py            (web learn)
 # ============================================================
 """Forward-scan labeling and sample-hygiene helpers shared by every confluence
@@ -30,6 +29,7 @@ from typing import Callable, Dict, List, Sequence, Tuple
 import numpy as np
 
 from backend.db.models import Direction
+from backend.backtest.intrabar import resolve_same_bar_exit
 
 
 # ── 1. unified forward-scan labeler ─────────────────────────────────────────
@@ -43,8 +43,8 @@ def simulate_outcomes(candles, i, direction, entry, sl, risk, rr_grid,
         end_idx = bar index at which that rr resolved (for overlap/embargo).
     Unfilled (no limit fill within `wait` bars) -> {} (caller drops it).
 
-    Both SL and TP on the same bar resolve by nearer-to-open (the single
-    tie-break rule, previously duplicated in three places).
+    Both SL and TP on the same bar resolve by the shared nearer-to-open rule;
+    exact ties are conservatively labelled SL.
     """
     n = len(candles)
     buy = direction == Direction.BUY
@@ -72,7 +72,8 @@ def simulate_outcomes(candles, i, direction, entry, sl, risk, rr_grid,
                 continue
             tp_hit = (c.high >= tp[rr]) if buy else (c.low <= tp[rr])
             if tp_hit and sl_hit:
-                out[rr] = (1 if abs(c.open - tp[rr]) <= abs(c.open - sl) else 0, m)
+                first = resolve_same_bar_exit(c.open, sl, tp[rr])
+                out[rr] = (1 if first == "tp" else 0, m)
             elif tp_hit:
                 out[rr] = (1, m)
             elif sl_hit:

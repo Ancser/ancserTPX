@@ -314,10 +314,10 @@ class BreakoutAnalysis:
 class StrategyParams:
     """Strategy parameters / 策略參數.
 
-    Only the trend strategy remains. Value Area is locked to 80% so live and
-    backtest use the same zone width.
+    Supports the legacy trend strategy and the explainable confluence scorer.
+    Value Area is locked to 80% so live and backtest use the same zone width.
     """
-    strategy: str = "trend"
+    strategy: str = "confluence"
     tp_ticks: int = 200                  # 50-200 tick
     sl_ticks: int = 50                   # 50-200 tick
     trail_sl_ticks: int = 10            # 0..TP ticks from entry after trail triggers
@@ -351,22 +351,22 @@ class StrategyParams:
     method: str = "single"                 # "single" | "overlap"
     tf_combo: List[str] = field(default_factory=list)  # overlap timeframes, e.g. ["5m","15m"]
     # SL/TP model (v0.18): SL = lowest-volume node between POC and VAH/VAL;
-    # TP = entry ± rr_ratio × SL-distance. rr_ratio selectable 1..10. No fixed ticks.
-    rr_ratio: int = 2                      # reward:risk multiple (1..10)
+    # TP = entry ± rr_ratio × SL-distance. rr_ratio selectable 1..6. No fixed ticks.
+    rr_ratio: int = 2                      # reward:risk multiple (1..6)
     # --- v0.19: explainable multi-timeframe confluence (ML scorer) ---
     # Activated when strategy == "confluence". The live engine then runs the
     # SAME ConfluenceBacktester logic (per-TF detectors + trained scorer) so
     # live == backtest. conf_shadow=True logs signals WITHOUT placing orders.
-    conf_band_ticks: float = 8.0           # level-cluster band width (ticks)
-    conf_min_distinct_tf: int = 3          # cluster needs >= this many timeframes
-    conf_rr: float = 1.5                   # reward:risk multiple for TP
+    conf_band_ticks: float = 4.0           # level-cluster band width (ticks)
+    conf_min_distinct_tf: int = 2          # cluster needs >= this many timeframes
+    conf_rr: float = 3.0                   # fixed-RR production model
     conf_wait_minutes: int = 60            # one-shot limit-order fill timeout
     conf_base_minutes: int = 1             # input candle resolution (standardized: 1m)
     conf_min_prob: float = 0.0             # gate: skip signals below this win-prob (0=off)
     conf_ev_floor: Optional[float] = None  # EV-priority gate: keep signals with EV>=floor (None=use win-prob gate; 0=every +EV)
-    conf_rr_grid: Optional[List[float]] = None  # variable-RR: pick EV-max RR per signal (None=fixed conf_rr); needs EV scorer
+    conf_rr_grid: Optional[List[float]] = None
     conf_use_scorer: bool = True           # True=trained JSON, False=heuristic prior
-    conf_enable_breakout: bool = True      # include breakout-retrace candidate (False=momentum+reversion only)
+    conf_enable_breakout: bool = False     # include breakout-retrace candidate (False=momentum+reversion only)
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
     conf_trail_trigger_pct: float = 0.0    # 0 = trailing OFF; else fraction of entry→TP distance that fires break-even
     conf_trail_lock_pct: float = 0.0       # locked SL as fraction of TP distance on trigger (0=pure break-even)

@@ -108,11 +108,11 @@ class Level:
 class ConfluenceConfig:
     """Search-tunable parameters. The optimizer sweeps these; the 'fixed' run
     uses the defaults."""
-    band_ticks: float = 8.0            # cluster proximity (optimizer-searched)
+    band_ticks: float = 4.0            # cluster proximity (validated production default)
     tick_size: float = 0.25
-    min_distinct_tf: int = 3           # >= 3 distinct timeframes form a cluster
+    min_distinct_tf: int = 2           # >= 2 distinct timeframes form a cluster
     direction_mode: str = "momentum"   # "momentum" | "reversion" (both tested)
-    rr: float = 2.0                    # fixed reward:risk
+    rr: float = 3.0                    # canonical production model uses fixed RR3
     # EV gate (option C). When ev_floor is not None, signals are kept only if
     # expected value per unit risk (prob*rr - (1-prob)) >= ev_floor, INSTEAD of
     # the raw win-prob/score gate. ev_floor=0.0 trades every positive-EV setup
@@ -136,10 +136,10 @@ class ConfluenceConfig:
     # ("半空中"). "centroid" = legacy weighted/simple average (cluster.price).
     # Geometry-affecting → models trained under one value must run under the same.
     entry_mode: str = "edge"
-    # v0.23 breakout-retrace candidate (see _breakout_geometry). Default ON to
-    # preserve current behaviour; the optimizer / panel can disable it to A/B
-    # whether breakout trades (low win-rate, high volume) help or hurt.
-    enable_breakout: bool = True
+    # v0.23 breakout-retrace candidate (see _breakout_geometry). Default OFF:
+    # production uses momentum + reversion only. Optimizers can still enable it
+    # explicitly for controlled A/B tests.
+    enable_breakout: bool = False
     bands: Tuple[int, ...] = VA_BAND_PCTS
 
     def auto_modes(self) -> Tuple[str, ...]:
@@ -411,7 +411,7 @@ def evaluate_confluence_scored(
     current_price: float,
     cfg: ConfluenceConfig,
     scorer,
-    modes: Tuple[str, ...] = ("momentum", "reversion", "breakout"),
+    modes: Optional[Tuple[str, ...]] = None,
     recent_candles: Optional[list] = None,
 ) -> List[ConfluenceSignal]:
     """Explainable, per-step evaluation.
@@ -427,6 +427,8 @@ def evaluate_confluence_scored(
     same-length window (see confluence_features.CONTEXT_WINDOW) to stay in
     lock-step; omitting it makes those features neutral (pre-context behaviour).
     """
+    if modes is None:
+        modes = cfg.auto_modes()
     levels = extract_levels(zones_by_tf, cfg)
     if not levels:
         return []

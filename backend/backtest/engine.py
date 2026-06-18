@@ -26,6 +26,7 @@ from backend.db.models import (
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.trend_follow import SessionTrendFollow
+from backend.backtest.intrabar import resolve_same_bar_exit
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class BacktestEngine:
                  zone_timeline: Optional[List[dict]] = None,
                  record_equity: bool = True):
         # record_equity=False skips the per-candle equity curve. Machine-learning
-        # grid runs (310 combos × up to 32 parallel workers) don't use the equity
+        # grid runs (186 combos × up to 32 parallel workers) don't use the equity
         # curve — metrics come from trades — and on full-range data (hundreds of
         # thousands of 1m bars) the per-candle list is the dominant RAM hog.
         self._record_equity = record_equity
@@ -404,11 +405,9 @@ class BacktestEngine:
     def _check_exit(self, candle: Candle):
         """Check SL/TP exit with open-price heuristic for same-candle ambiguity.
 
-        When a single candle hits BOTH SL and TP, we use the open price
-        to infer which was hit first:
-          - Open closer to SL → price likely moved away from SL first → TP hit first
-          - Open closer to TP → price likely moved away from TP first → SL hit first
-        When only one side is hit, there's no ambiguity.
+        The level nearest to the open is treated as first. Exact ties resolve
+        conservatively to SL. The ML labeler and confluence backtester use the
+        same shared rule.
         """
         pos = self._open_position
         if not pos:
@@ -418,15 +417,10 @@ class BacktestEngine:
             hit_sl = candle.low <= pos.sl_price
             hit_tp = candle.high >= pos.tp_price
             if hit_sl and hit_tp:
-                # Ambiguous — use open to decide
-                dist_sl = abs(candle.open - pos.sl_price)
-                dist_tp = abs(candle.open - pos.tp_price)
-                if dist_sl <= dist_tp:
-                    # Open near SL → likely went up first → TP hit first
-                    self._execute_exit(candle, pos.tp_price, ExitReason.TP)
-                else:
-                    # Open near TP → likely went down first → SL hit first
+                if resolve_same_bar_exit(candle.open, pos.sl_price, pos.tp_price) == "sl":
                     self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
+                else:
+                    self._execute_exit(candle, pos.tp_price, ExitReason.TP)
             elif hit_sl:
                 self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
             elif hit_tp:
@@ -435,12 +429,10 @@ class BacktestEngine:
             hit_sl = candle.high >= pos.sl_price
             hit_tp = candle.low <= pos.tp_price
             if hit_sl and hit_tp:
-                dist_sl = abs(candle.open - pos.sl_price)
-                dist_tp = abs(candle.open - pos.tp_price)
-                if dist_sl <= dist_tp:
-                    self._execute_exit(candle, pos.tp_price, ExitReason.TP)
-                else:
+                if resolve_same_bar_exit(candle.open, pos.sl_price, pos.tp_price) == "sl":
                     self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
+                else:
+                    self._execute_exit(candle, pos.tp_price, ExitReason.TP)
             elif hit_sl:
                 self._execute_exit(candle, pos.sl_price, self._stop_exit_reason())
             elif hit_tp:
@@ -597,9 +589,8 @@ class BacktestEngine:
         """Advance each active post-breakout tracker with this candle's range.
 
         Updates MFE/MAE and detects which level (trail / sl / tp) is crossed
-        first. When a candle straddles multiple levels, the open-distance
-        heuristic (open closer to high vs low) decides which extreme came
-        first — same heuristic _check_exit uses for SL/TP ambiguity.
+        first. When a candle straddles adverse and favorable levels, the shared
+        nearest-to-open rule decides which level came first.
         """
         if not self._breakout_trackers:
             return
@@ -645,17 +636,10 @@ class BacktestEngine:
                 hit_sl = candle.low <= sl_p
                 hit_tp = candle.high >= tp_p
                 hit_trail = candle.low <= trail_p   # adverse retrace through trail-SL level
-                # Heuristic: if open is closer to high, low likely came first (adverse first).
-                open_to_high = candle.high - candle.open
-                open_to_low  = candle.open - candle.low
-                adverse_first = open_to_high <= open_to_low
             else:
                 hit_sl = candle.high >= sl_p
                 hit_tp = candle.low <= tp_p
                 hit_trail = candle.high >= trail_p
-                open_to_high = candle.high - candle.open
-                open_to_low  = candle.open - candle.low
-                adverse_first = open_to_low <= open_to_high
 
             if hit_sl:
                 tr["ever_hit_sl"] = True
@@ -678,6 +662,10 @@ class BacktestEngine:
                 events_fav = ["tp"] if hit_tp else []
 
                 if events_adverse and events_fav:
+                    adverse_price = sl_p if hit_sl else trail_p
+                    adverse_first = (
+                        resolve_same_bar_exit(candle.open, adverse_price, tp_p) == "sl"
+                    )
                     tr["first_event"] = events_adverse[0] if adverse_first else events_fav[0]
                 elif events_adverse:
                     tr["first_event"] = events_adverse[0]

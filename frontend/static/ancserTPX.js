@@ -32,7 +32,7 @@ let valLine = null;
 // -- Strategy Params & Presets ----------------------
 
 const DEFAULT_STRATEGY_PARAMS = {
-    strategy: 'trend',
+    strategy: 'confluence',
     tp_ticks: 200,
     sl_ticks: 50,
     trail_sl_ticks: 10,
@@ -58,6 +58,20 @@ const DEFAULT_STRATEGY_PARAMS = {
     tr_one_trade_per_session: true,
     // Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: false,
+    conf_band_ticks: 4,
+    conf_min_distinct_tf: 2,
+    conf_rr: 3.0,
+    conf_wait_minutes: 60,
+    conf_base_minutes: 1,
+    conf_min_prob: 0,
+    conf_ev_floor: null,
+    conf_rr_grid: null,
+    conf_use_scorer: true,
+    conf_enable_breakout: false,
+    conf_trail_trigger_pct: 0,
+    conf_trail_lock_pct: 0,
+    conf_full_tp_lock: 0,
+    conf_session_limit: true,
 };
 
 const MNQ_SIZE_CHOICES = [1, 3, 5, 10];
@@ -479,13 +493,13 @@ function collectConfluenceParams(mode) {
     const rrModeEl = document.getElementById('conf-rrmode-' + mode);
     const rrMode = rrModeEl ? rrModeEl.value : 'fixed';
     return {
-        conf_band_ticks: fv('conf-band-' + mode, 8.0),
-        conf_min_distinct_tf: iv('conf-mintf-' + mode, 3),
-        conf_rr: fv('conf-rr-' + mode, 1.5),
+        conf_band_ticks: fv('conf-band-' + mode, 4.0),
+        conf_min_distinct_tf: iv('conf-mintf-' + mode, 2),
+        conf_rr: Math.max(1, Math.min(6, Math.round(fv('conf-rr-' + mode, 3.0)))),
         conf_base_minutes: 1,
         conf_min_prob: fv('conf-minprob-' + mode, 0.0),
         conf_ev_floor: ovf('conf-evfloor-' + mode),
-        conf_rr_grid: rrMode === 'grid' ? rgv('conf-rrgrid-' + mode) : null,
+        conf_rr_grid: null,
         conf_use_scorer: true,
         conf_enable_breakout: (function () {
             // BREAKOUT control removed from the UI (sweep showed it's redundant at
@@ -556,7 +570,7 @@ function collectStrategyParams(mode) {
     const tfCombo = method === 'overlap' ? tfs : [];
     const areaTimeframe = tfs[0];
     return {
-        strategy: 'trend',
+        strategy: strategy,
         method: method,
         tf_combo: tfCombo,
         tp_ticks: primary.tp_ticks,
@@ -577,7 +591,7 @@ function collectStrategyParams(mode) {
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
         value_area_pct: _float('area-pct-' + mode, 0.80),
         area_timeframe: areaTimeframe,
-        rr_ratio: Math.max(1, Math.min(10, _int('rr-ratio-' + mode, 2))),
+        rr_ratio: Math.max(1, Math.min(6, _int('rr-ratio-' + mode, 2))),
         full_tp_lock: primary.full_tp_lock,
         one_trade_per_session_direction: true,
         tr_one_trade_per_session: _int('tr-session-limit-' + mode, 1) === 1,
@@ -643,7 +657,7 @@ function applyStrategyParams(mode, params) {
 
     writeLeg('tr');
 
-    const rrVal = Math.max(1, Math.min(10, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
+    const rrVal = Math.max(1, Math.min(6, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
     _set('rr-ratio-' + mode, String(rrVal));
     onRrChange(mode);
 
@@ -651,15 +665,13 @@ function applyStrategyParams(mode, params) {
 
     // ML (confluence) params — restored when the preset uses the ML strategy.
     _set('conf-minprob-' + mode, String(p.conf_min_prob != null ? p.conf_min_prob : 0));
-    _set('conf-rr-' + mode, (p.conf_rr != null ? Number(p.conf_rr) : 1.5).toFixed(1));
-    _set('conf-band-' + mode, String(parseInt(p.conf_band_ticks != null ? p.conf_band_ticks : 8, 10)));
-    _set('conf-mintf-' + mode, String(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 3));
+    _set('conf-rr-' + mode, (p.conf_rr != null ? Number(p.conf_rr) : 3.0).toFixed(1));
+    _set('conf-band-' + mode, String(parseInt(p.conf_band_ticks != null ? p.conf_band_ticks : 4, 10)));
+    _set('conf-mintf-' + mode, String(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2));
     _set('conf-evfloor-' + mode, (p.conf_ev_floor == null ? '' : String(p.conf_ev_floor)));
     // RR mode: a saved grid => variable mode; otherwise fixed. Format the grid
     // with one decimal so it matches the <option> values (e.g. "1.0,1.5,...").
-    const hasGrid = Array.isArray(p.conf_rr_grid) && p.conf_rr_grid.length;
-    if (hasGrid) _set('conf-rrgrid-' + mode, p.conf_rr_grid.map(x => Number(x).toFixed(1)).join(','));
-    _set('conf-rrmode-' + mode, hasGrid ? 'grid' : 'fixed');
+    _set('conf-rrmode-' + mode, 'fixed');
     _set('conf-breakout-' + mode, (p.conf_enable_breakout === false) ? '0' : '1');
     // STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original.
     // OFF option value is "0" (not "0.00"); only non-zero needs the 2-decimal form.
@@ -708,7 +720,7 @@ function isFixedPreset(name) {
 function buildPresetName(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
     const vaPct = Math.round((p.value_area_pct != null ? Number(p.value_area_pct) : 0.80) * 100);
-    const rr = Math.max(1, Math.min(10, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
+    const rr = Math.max(1, Math.min(6, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
     const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
     const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
     const tfs = (method === 'overlap' && tfCombo.length >= 2)
@@ -720,6 +732,13 @@ function buildPresetName(params) {
         p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id,
         p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
     );
+    if (normalizeStrategyName(p.strategy) === 'confluence') {
+        const rrLabel = 'RR1:' + Number(p.conf_rr != null ? p.conf_rr : 3.0);
+        return 'ML ' + rrLabel +
+            ' B' + Number(p.conf_band_ticks != null ? p.conf_band_ticks : 4) +
+            ' TF' + Number(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2) +
+            ' ' + contractLabel + '@' + contractSize;
+    }
     // Naming: TR{VA%} {tf/tf/...} RR1:{rr} C{confirm} {contract}@{size}
     //   → e.g. "TR80 5m/1h/4h RR1:3 C7 MNQ@3"
     return 'TR' + vaPct +
@@ -739,6 +758,8 @@ async function fetchPresets() {
 
 async function savePreset(mode) {
     const params = collectStrategyParams(mode);
+    const confParams = collectConfluenceParams(mode);
+    if (confParams) Object.assign(params, confParams, { strategy: 'confluence' });
     const name = prompt('Preset name:', buildPresetName(params));
     if (!name || !name.trim()) return;
     try {
@@ -841,12 +862,16 @@ async function initPresets() {
         btSel.value = lastBt;
         if (lastBt !== 'default' && _presetsCache.presets[lastBt]) {
             applyStrategyParams('bt', _presetsCache.presets[lastBt]);
+        } else {
+            applyStrategyParams('bt', DEFAULT_STRATEGY_PARAMS);
         }
     }
     if (liveSel) {
         liveSel.value = lastLive;
         if (lastLive !== 'default' && _presetsCache.presets[lastLive]) {
             applyStrategyParams('live', _presetsCache.presets[lastLive]);
+        } else {
+            applyStrategyParams('live', DEFAULT_STRATEGY_PARAMS);
         }
     }
 }
@@ -873,24 +898,19 @@ document.addEventListener('DOMContentLoaded', () => { _syncTrailTriggerBtn('bt')
 document.addEventListener('DOMContentLoaded', initPresets);
 
 // ════════════════════════════════════════════════════════════════════════
-// MODEL REGISTRY — pre-trained grid dropdown (RR × BAND × MIN_DISTINCT_TF ×
-// BREAKOUT). Lists EVERY combo; a trained one is selectable (selecting it
-// ACTIVATES its weights + mirrors band/tf/rr/breakout into the MODEL panel so
-// backtest/live enumerate identically), a missing one shows "(untrain)" and is
-// built by RETRAIN. RETRAIN re-fits one combo with the chosen cost-sensitive
-// loss weight (>1 = loss-averse → higher PF / lower maxDD / fewer trades).
+// Immutable model registry. Training appends a version; selecting one copies it
+// to the canonical active scorer shared by backtest and live.
 // ════════════════════════════════════════════════════════════════════════
 let _modelRegistry = [];   // cached list from GET /confluence/models
+let _activeModelName = '';
 
 function _fmtModelLabel(m) {
-    // compact so the closed <select> shows the whole label (no right-side clipping):
-    //   "b8·3TF·R1 ✓0.79"  (trained)   /   "b8·3TF·R1 ·—"  (untrain)
-    const brk = m.breakout ? '+brk' : '';
-    const head = `b${Math.round(m.band)}·${m.min_distinct_tf}TF·R${Math.round(m.rr)}${brk}`;
-    if (!m.trained) return head + ' ·—';
-    const oos = (m.oos_auc != null) ? ` ✓${Number(m.oos_auc).toFixed(2)}` : ' ✓';
-    const lw = (m.loss_weight && Number(m.loss_weight) !== 1) ? ` LW${m.loss_weight}×` : '';
-    return `${head}${oos}${lw}`;
+    const day = String(m.trained_at || m.name || '').slice(0, 10).replace(/-/g, '');
+    const trainer = String(m.trainer || 'codex').toUpperCase();
+    const active = m.active ? '● ' : '';
+    const desc = m.description ? ` · ${m.description}` : '';
+    const oos = (m.oos_auc != null) ? ` · AUC ${Number(m.oos_auc).toFixed(2)}` : '';
+    return `${active}${day} · ${trainer} · RR${Number(m.rr).toFixed(0)}${desc}${oos}`;
 }
 
 async function loadModelRegistry() {
@@ -899,23 +919,35 @@ async function loadModelRegistry() {
         if (!resp.ok) return;
         const data = await resp.json();
         _modelRegistry = data.models || [];
+        _activeModelName = data.active_model || '';
         ['bt', 'live'].forEach(_populateModelSelect);
-    } catch (e) { /* registry optional — the MODEL panel still works manually */ }
+    } catch (e) { /* registry is optional; manual model parameters still work */ }
 }
 
 function _populateModelSelect(mode) {
     const sel = document.getElementById('conf-model-' + mode);
     if (!sel) return;
-    const prev = sel.value;
-    const trained = _modelRegistry.filter(m => m.trained).length;
-    let html = `<option value="">— 自訂 (${trained}/${_modelRegistry.length} 已訓練) —</option>`;
-    _modelRegistry.forEach(m => {
-        html += `<option value="${m.name}" data-rr="${m.rr}" data-band="${m.band}"`
-              + ` data-tf="${m.min_distinct_tf}" data-brk="${m.breakout ? 1 : 0}"`
-              + ` data-trained="${m.trained ? 1 : 0}">${_fmtModelLabel(m)}</option>`;
+    sel.innerHTML = '';
+    if (!_modelRegistry.length) {
+        const option = new Option('NO TRAINED MODELS', '');
+        option.disabled = true;
+        option.selected = true;
+        sel.add(option);
+        return;
+    }
+    _modelRegistry.forEach((m) => {
+        const option = new Option(_fmtModelLabel(m), m.name);
+        option.dataset.rr = m.rr;
+        option.dataset.band = m.band;
+        option.dataset.tf = m.min_distinct_tf;
+        option.dataset.brk = m.breakout ? '1' : '0';
+        option.dataset.trained = m.trained ? '1' : '0';
+        sel.add(option);
     });
-    sel.innerHTML = html;
-    if (prev) sel.value = prev;
+    const activeExists = _modelRegistry.some(m => m.name === _activeModelName);
+    sel.value = activeExists ? _activeModelName : _modelRegistry[0].name;
+    const m = _modelRegistry.find(model => model.name === sel.value) || _modelRegistry[0];
+    _applyModelCombo(mode, m.rr, m.band, m.min_distinct_tf, m.breakout);
 }
 
 // Mirror a combo's params into the MODEL panel fields (shared by select+retrain).
@@ -933,54 +965,61 @@ async function onModelSelect(mode) {
     const sel = document.getElementById('conf-model-' + mode);
     if (!sel || !sel.value) return;
     const opt = sel.options[sel.selectedIndex];
+    const name = sel.value;
     const rr = Number(opt.dataset.rr), band = Number(opt.dataset.band);
     const tf = Number(opt.dataset.tf), brk = opt.dataset.brk === '1';
     _applyModelCombo(mode, rr, band, tf, brk);
     if (opt.dataset.trained !== '1') {
-        log(`模型 ${sel.value} 未訓練 (untrain) — 按 RETRAIN 以建立`, 'warn');
+        log('此模型尚未訓練', 'warn');
         return;
     }
     try {
         const resp = await fetch(API + '/confluence/models/activate', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: sel.value }),
+            body: JSON.stringify({ name }),
         });
         const data = await resp.json().catch(() => ({}));
-        if (resp.ok && data.success) log(`已套用模型 ${sel.value} (band ${Math.round(band)} · ${tf}TF · RR ${Math.round(rr)}:1)`, 'success');
-        else log('套用模型失敗: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
-    } catch (e) { log('套用模型失敗: ' + e, 'error'); }
+        if (resp.ok && data.success) {
+            _activeModelName = name;
+            await loadModelRegistry();
+            log(`已啟用 ${name} (band ${Math.round(band)} · ${tf}TF · RR 1:${Math.round(rr)})`, 'success');
+        } else {
+            log('啟用模型失敗: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
+        }
+    } catch (e) { log('啟用模型失敗: ' + e, 'error'); }
 }
 
 async function retrainModel(mode) {
     const sel = document.getElementById('conf-model-' + mode);
-    let name, rr, band, tf, brk;
-    if (sel && sel.value) {
-        const opt = sel.options[sel.selectedIndex];
-        name = sel.value;
-        rr = Number(opt.dataset.rr); band = Number(opt.dataset.band);
-        tf = Number(opt.dataset.tf); brk = opt.dataset.brk === '1';
-    } else {  // no model picked → use the current panel params
-        rr = parseFloat((document.getElementById('conf-rr-' + mode) || {}).value || '1');
-        band = parseInt((document.getElementById('conf-band-' + mode) || {}).value || '8', 10);
-        tf = parseInt((document.getElementById('conf-mintf-' + mode) || {}).value || '3', 10);
-        brk = ((document.getElementById('conf-breakout-' + mode) || {}).value === '1');
-        name = `rr${Math.round(rr)}_b${Math.round(band)}_tf${tf}_${brk ? 'brk' : 'nobrk'}`;
-    }
+    const trainer = String((document.getElementById('conf-trainer-' + mode) || {}).value || 'codex');
+    const descriptionEl = document.getElementById('conf-description-' + mode);
+    const description = String((descriptionEl || {}).value || '').trim();
+    const rr = parseFloat((document.getElementById('conf-rr-' + mode) || {}).value || '3');
+    const band = parseInt((document.getElementById('conf-band-' + mode) || {}).value || '4', 10);
+    const tf = parseInt((document.getElementById('conf-mintf-' + mode) || {}).value || '2', 10);
+    const brk = false;
     const lw = parseFloat((document.getElementById('conf-lossweight-' + mode) || {}).value || '1');
-    if (!confirm(`重新訓練模型 ${name}\nloss weight = ${lw}×${lw > 1 ? ' (loss-averse → 更高 PF / 更低 DD / 更少單)' : ''}\n需已載入歷史數據，約 30–60 秒。`)) return;
-    log(`訓練中 ${name} (LW ${lw}×)…`, 'info');
+    if (description.length < 3) {
+        log('請先填寫至少 3 個字的一句模型描述', 'warn');
+        if (descriptionEl) descriptionEl.focus();
+        return;
+    }
+    if (!confirm(`新增模型版本\ntrainer = ${trainer.toUpperCase()}\ndescription = ${description}\nloss weight = ${lw}×\n需已載入歷史數據，訓練可能需要一段時間。`)) return;
+    log(`訓練新版本中 · ${trainer.toUpperCase()} · ${description}…`, 'info');
     try {
         const resp = await fetch(API + '/confluence/models/retrain', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, rr, band_ticks: band, min_distinct_tf: tf,
-                                   enable_breakout: brk, loss_weight: lw, activate: true }),
+            body: JSON.stringify({ trainer, description, rr, band_ticks: band,
+                                   min_distinct_tf: tf, enable_breakout: brk,
+                                   loss_weight: lw, activate: true }),
         });
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data.success) {
-            log(`✓ ${name} 訓練完成 — n=${data.n_samples} win=${(data.win_rate * 100).toFixed(0)}% `
-                + `oos=${Number(data.oos_auc).toFixed(2)} LW${lw}× · 已套用`, 'success');
+            log(`✓ ${data.name} 訓練完成 · n=${data.n_samples} win=${(data.win_rate * 100).toFixed(0)}% `
+                + `oos=${Number(data.oos_auc).toFixed(2)} LW${lw}× · 已啟用`, 'success');
             await loadModelRegistry();
-            if (sel) { sel.value = name; }
+            if (sel) sel.value = data.name;
+            if (descriptionEl) descriptionEl.value = '';
         } else {
             log('訓練失敗: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
         }
@@ -1067,7 +1106,7 @@ function decorateParamHelpDots() {
         'preset': '載入或保存目前所有參數設定。\nLoad or save the current parameter set.',
         // ── ML CONFLUENCE ──
         'conf-minprob': 'ML 機率門檻：只在 scorer 預測勝率 ≥ 此值時進場。OFF = 不過濾機率（仍受 EV FLOOR 影響）。\nML win-probability gate: enter only when the scorer\u2019s predicted win-rate \u2265 this value.',
-        'conf-rrmode': 'RR 模式：固定 = 用單一盈虧比 (右側 1:1~1:3)；變動 = 從範圍中每筆訊號自動挑 EV 最高的 RR（需 EV 模型，LEARN 已自動訓練）。盈虧平衡勝率 = 1/(1+RR)：RR1.5→40%、RR2→33%、RR3→25%。\nRR mode: fixed = single reward:risk; variable = pick the max-EV RR per signal from the range (uses the EV model).',
+        'conf-rrmode': '固定盈虧比，可選 1:1 到 1:6。LATEST production scorer 使用 RR3 訓練。\nFixed reward:risk from 1:1 to 1:6. The LATEST production scorer is trained at RR3.',
         'conf-band': '匯聚帶寬 (ticks)：不同時間框的水平位落在此範圍內視為同一匯聚區。越大 → 越容易匯聚、訊號越多。\nConfluence band (ticks): levels from different TFs within this range merge into one zone.',
         'conf-mintf': '最少不同時間框數：一個匯聚區至少需這麼多個不同 TF 的水平位才算有效訊號。越大 → 越嚴格、訊號越少。\nMin distinct timeframes required for a valid confluence zone.',
         'conf-evfloor': '期望值門檻，優先於 MIN PROB。EV = prob×RR − (1−prob)。開啓後依 EV 由高到低排序並篩選；≥0 = 接受所有正期望值訊號。\nExpected-value gate (overrides MIN PROB). EV = prob×RR − (1−prob); signals ranked & filtered by EV.',
@@ -1403,11 +1442,10 @@ async function _learnScorer(opts) {
             body: JSON.stringify({
                 contract_id: (document.getElementById(contractInputId)?.value) || 'CON.F.US.MNQ.M26',
                 train_frac: 1.0,
-                band_ticks: cp.conf_band_ticks != null ? cp.conf_band_ticks : 8.0,
-                min_distinct_tf: cp.conf_min_distinct_tf != null ? cp.conf_min_distinct_tf : 3,
-                rr: cp.conf_rr != null ? cp.conf_rr : 1.5,
-                // v0.20: when 變動 RR is selected, also train the EV (multi-RR) model.
-                rr_grid: (Array.isArray(cp.conf_rr_grid) && cp.conf_rr_grid.length) ? cp.conf_rr_grid : null,
+                band_ticks: cp.conf_band_ticks != null ? cp.conf_band_ticks : 4.0,
+                min_distinct_tf: cp.conf_min_distinct_tf != null ? cp.conf_min_distinct_tf : 2,
+                rr: cp.conf_rr != null ? cp.conf_rr : 3.0,
+                enable_breakout: cp.conf_enable_breakout === true,
             }),
         });
         if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || ('HTTP ' + resp.status)); }
@@ -1417,15 +1455,6 @@ async function _learnScorer(opts) {
             + ', AUC=' + (r.train_auc != null ? r.train_auc.toFixed(3) : '?')
             + ', TFs=' + (r.timeframes || []).join('/'), 'success');
         if (tw) log('LEARN weights: ' + tw, 'info');
-        if (r.ev_model) {
-            const ev = r.ev_model;
-            log('LEARN EV model (變動RR, 全RR可用): ' + ev.n_samples + ' samples (候選×RR), win%='
-                + (ev.win_rate * 100).toFixed(0)
-                + ', AUC=' + (ev.train_auc != null ? ev.train_auc.toFixed(3) : '?')
-                + ', rrGrid=' + (ev.rr_grid || []).join('/'), 'success');
-        } else if (r.ev_model_error) {
-            log('LEARN EV model 跳過: ' + r.ev_model_error + ' (固定模型已訓練完成)', 'warn');
-        }
         loadLearnResult();  // refresh the LEARN RESULT panel with the new model
 
         // 4) Run the panel-specific follow-up with the freshly trained scorer.
@@ -2645,7 +2674,13 @@ function onZoneFilterChange() {
 async function refreshTfZones(force) {
     const now = Date.now();
     if (_tfZonesFetching) return;
-    if (!force && now - _tfZonesLastFetch < 15000) { renderTfZones(); return; }
+    if (!force && now - _tfZonesLastFetch < 15000) {
+        // A recent request may legitimately return no zones (for example
+        // before historical data is loaded). Do not bounce back into
+        // renderTfZones(), which would immediately call this function again.
+        if (_tfAllZones && _tfAllZones.length > 0) renderTfZones();
+        return;
+    }
     _tfZonesFetching = true;
     try {
         const resp = await fetch(API + '/data/detect-zones', {
@@ -2730,7 +2765,15 @@ function renderTfZones() {
 
     const tfs = _zoneFilter.tfs;
     if (!tfs || tfs.size === 0) return;
-    if (!_tfAllZones || _tfAllZones.length === 0) { if (!_tfZonesFetching) refreshTfZones(); return; }
+    if (!_tfAllZones || _tfAllZones.length === 0) {
+        // Retry only after the throttle window. refreshTfZones() renders once
+        // in its finally block, so an immediate retry here would recurse when
+        // the response contains an empty zone list.
+        if (!_tfZonesFetching && Date.now() - _tfZonesLastFetch >= 15000) {
+            refreshTfZones();
+        }
+        return;
+    }
 
     // Combined view (no filter): every completed reference zone is drawn as a
     // "backtest" line at 80% opacity, and the most-recent completed zone per TF
@@ -3515,9 +3558,66 @@ async function fetchFullData() {
     }
 }
 
+let _backtestProgressInterval = null;
+let _lastBacktestProgressStage = '';
+
+function _startBacktestProgress() {
+    const wrap = document.getElementById('backtest-progress-wrap');
+    const bar = document.getElementById('backtest-progress-bar');
+    const text = document.getElementById('backtest-progress-text');
+    if (wrap) wrap.style.display = 'block';
+    if (bar) {
+        bar.style.width = '0%';
+        bar.style.background = 'var(--green)';
+    }
+    if (text) text.textContent = 'preparing';
+    _lastBacktestProgressStage = '';
+
+    const poll = async () => {
+        try {
+            const resp = await fetch(API + '/backtest/progress');
+            if (!resp.ok) return;
+            const d = await resp.json();
+            const stage = d.stage || 'preparing';
+            const current = Number(d.current) || 0;
+            const total = Number(d.total) || 0;
+            const detail = d.detail ? ' — ' + d.detail : '';
+            if (text) {
+                text.textContent = stage + (total > 0 ? ' ' + current + ' / ' + total : '') + detail;
+            }
+            if (bar) {
+                bar.style.width = (total > 0 ? Math.min(100, current / total * 100) : 0).toFixed(1) + '%';
+            }
+            if (stage !== _lastBacktestProgressStage && stage !== 'complete') {
+                _lastBacktestProgressStage = stage;
+                log('Backtest: ' + stage + detail, d.status === 'error' ? 'error' : 'info');
+            }
+        } catch(e) { /* non-blocking progress poll */ }
+    };
+    poll();
+    _backtestProgressInterval = setInterval(poll, 500);
+}
+
+function _stopBacktestProgress(success) {
+    if (_backtestProgressInterval) {
+        clearInterval(_backtestProgressInterval);
+        _backtestProgressInterval = null;
+    }
+    const wrap = document.getElementById('backtest-progress-wrap');
+    const bar = document.getElementById('backtest-progress-bar');
+    const text = document.getElementById('backtest-progress-text');
+    if (bar) {
+        bar.style.width = success ? '100%' : bar.style.width;
+        if (!success) bar.style.background = 'var(--red)';
+    }
+    if (text) text.textContent = success ? 'complete' : 'failed';
+    setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, success ? 1200 : 3500);
+}
+
 async function runBacktest() {
     const btn = document.getElementById('btn-backtest');
     btn.disabled = true;
+    let succeeded = false;
 
     // Lazy-load full date range before running
     const dataOk = await _ensureBacktestData(btn);
@@ -3525,6 +3625,7 @@ async function runBacktest() {
 
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
     log('Running backtest...', 'info');
+    _startBacktestProgress();
 
     try {
         const resp = await fetch(API + '/backtest/run', {
@@ -3552,10 +3653,12 @@ async function runBacktest() {
         renderTrades(backtestData.trades);
         if (!document.getElementById('btab-pnl').classList.contains('hidden')) renderPnlCurve();
         await refreshTradeHistoryForCurrentAccount(true);
+        succeeded = true;
 
     } catch(e) {
         log('Backtest failed: ' + e.message, 'error');
     } finally {
+        _stopBacktestProgress(succeeded);
         btn.disabled = false;
         btn.textContent = 'EXECUTE BACKTEST';
     }
@@ -3782,7 +3885,7 @@ async function runAllCombinations() {
 
     const params = collectStrategyParams('bt');
     // v0.24: when STRATEGY = ML (confluence), COMBINATION sweeps the Model+Style
-    // grid (240 runs) via /backtest/conf-combo-run; otherwise it sweeps TREND
+    // grid (288 runs) via /backtest/conf-combo-run; otherwise it sweeps TREND
     // timeframe×RR via /backtest/ml-run. Both share the progress bar + table.
     const confParams = collectConfluenceParams('bt');
     const isConf = !!confParams;
@@ -3861,7 +3964,7 @@ function _renderMlConfigCaption(params, fixedParams, startDate, endDate, data) {
     const trig = (p.trail_trigger_pct && p.trail_enabled !== false) ? Math.round(p.trail_trigger_pct * 100) + '%' : 'OFF';
     const total = data && data.total_combinations ? data.total_combinations : '';
     const parts = [
-        'SWEEP: 31 TF combos × RR 1:1–1:10' + (total ? ' = ' + total + ' runs' : ''),
+        'SWEEP: 31 TF combos × RR 1:1–1:6' + (total ? ' = ' + total + ' runs' : ''),
         'CONTRACT ' + contractLabel + '@' + size,
         'AREA% ' + areaPct,
         'CONFIRM ' + confirm + ' bars',
@@ -4980,9 +5083,7 @@ async function loadLearnResult() {
         const resp = await fetch(API + '/confluence/scorer');
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
-        body.innerHTML =
-            _renderScorerCard('固定 RR 模型 (confluence_scorer.json)', data.fixed) +
-            _renderScorerCard('變動 RR / EV 模型 (confluence_scorer_ev.json)', data.ev);
+        body.innerHTML = _renderScorerCard('LATEST production model', data.fixed);
         if (hint) hint.textContent = '';
     } catch (e) {
         body.innerHTML = '<div style="color:var(--red);">讀取失敗: ' + e.message + '</div>';
