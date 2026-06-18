@@ -48,6 +48,73 @@ Sessions are used for flatten timing and per-session trade limits:
 
 ---
 
+## Architecture
+
+### Project structure
+
+```
+ancserTPX/
+├── backend/
+│   ├── api/routes.py              # FastAPI router — all endpoints
+│   ├── backtest/
+│   │   ├── confluence_backtest.py  # ConfluenceBacktester + zone timeline builder
+│   │   ├── confluence_worker.py    # Child-process backtest runner (own GIL)
+│   │   ├── engine.py              # Trend backtest engine
+│   │   └── metrics.py             # Shared metrics calculator
+│   ├── broker/topstepx.py         # TopstepX API client (auth, bars, orders, websocket)
+│   ├── data/
+│   │   └── candle_store.py        # Persistent candle accumulator + gap detection
+│   ├── db/models.py               # Candle, Trade, contract specs
+│   ├── live/engine.py             # Live trading engine
+│   └── strategy/
+│       ├── confluence.py           # Multi-TF weighted confluence signal engine
+│       ├── confluence_scorer.py    # Logistic regression scorer (explainable ML)
+│       ├── consolidation.py        # ClockBucketZoneDetector, penta-session
+│       ├── exit_policy.py          # Trail trigger / lock / full-TP-lock
+│       └── trend_follow.py         # Trend strategy
+├── frontend/static/
+│   ├── ancserTPX.html             # Single-page app
+│   ├── ancserTPX.css              # Dark theme + reusable classes
+│   └── ancserTPX.js               # UI logic, chart, presets, model grid
+├── data/
+│   ├── store/                     # Persistent 1m candle accumulator (.pkl)
+│   ├── models/grid/               # 120 pre-trained ML models
+│   └── presets.json               # User presets
+└── scripts/
+    ├── accumulate_history.py      # CLI: grow the persistent candle store
+    └── train_model_grid.py        # CLI: train all 120 grid models
+```
+
+### Backtest process model
+
+Web backtests run in a **dedicated child process** (`ProcessPoolExecutor`) with its own GIL, so the web server stays fully responsive during computation. The child process caches the candle set and zone timeline internally — repeated runs on the same data with different model / RR / band / trail parameters skip the slow detector pass entirely.
+
+### Data persistence
+
+Historical 1-minute candles are persisted to `data/store/MNQ_accumulated_1m.pkl` — an append-only store that never truncates. On fetch:
+1. Load from local store (instant, no API call)
+2. Incremental API fetch (only the tail since last stored bar)
+3. Merge + auto gap-detection + recovery of wifi-dropped bars
+4. Save back to store
+
+The store survives server restarts, so subsequent launches need only a few hundred bars of incremental data instead of the full 60-day re-download.
+
+### ML model grid
+
+120 interpretable logistic-regression models: RR(1, 1.5, 2) × Band(4, 6, 8, 10, 12) × MinTF(2, 3, 4, 5) × Breakout(on, off). Each model is a JSON file with raw-feature-space weights, ensuring strict live == backtest == train parity.
+
+### Session timing
+
+| Event | ET | UTC | PT (summer) |
+|---|---|---|---|
+| New session (ASIA start) | 6:00 PM | 22:00 | 3:00 PM |
+| Daily maintenance gap | 5:00–6:00 PM | 22:00–23:00 | 3:00–4:00 PM |
+| RTH open | 9:30 AM | 13:30 | 6:30 AM |
+| Bot flatten | 3:45 PM | 19:45 | 12:45 PM |
+| AH end | ~5:59 PM | ~21:59 | ~2:59 PM |
+
+---
+
 ## Before You Start
 
 ### 1. ProjectX API Setup

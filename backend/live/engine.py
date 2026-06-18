@@ -42,6 +42,17 @@ _CT = ZoneInfo("America/Chicago")
 _UTC_TZ = ZoneInfo("UTC")
 
 
+def _conf_ev_floor(val) -> Optional[float]:
+    """Normalise the configured EV gate floor. Blank / None / non-numeric →
+    None (legacy win-prob gate). A number (incl. 0.0) → EV-priority gate at
+    that floor (0.0 = every positive-EV setup)."""
+    if val is None or val == "":
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
 
 class LiveTradingEngine:
     """即時交易引擎 — Session 模式 (1m K 線, 晚盤 overnight zone)"""
@@ -133,7 +144,10 @@ class LiveTradingEngine:
                 rr=float(getattr(self.strategy_params, "conf_rr", 1.5)),
                 base_minutes=int(getattr(self.strategy_params, "conf_base_minutes", 1)),
                 min_prob=float(getattr(self.strategy_params, "conf_min_prob", 0.0)),
+                ev_floor=_conf_ev_floor(getattr(self.strategy_params, "conf_ev_floor", None)),
+                rr_grid=getattr(self.strategy_params, "conf_rr_grid", None),
                 use_scorer=bool(getattr(self.strategy_params, "conf_use_scorer", True)),
+                enable_breakout=bool(getattr(self.strategy_params, "conf_enable_breakout", True)),
             )
         self.strategies = [self.strategy_mode]
 
@@ -768,6 +782,9 @@ class LiveTradingEngine:
                     "rr": cfg.rr,
                     "base_minutes": self.confluence.base_minutes,
                     "min_score": self.confluence.min_score,
+                    "ev_floor": getattr(cfg, "ev_floor", None),
+                    "gate": ("ev" if getattr(cfg, "ev_floor", None) is not None else "prob"),
+                    "rr_grid": (list(cfg.rr_grid) if getattr(cfg, "rr_grid", None) else None),
                 }
 
             existing: List[dict] = []
@@ -1262,6 +1279,11 @@ class LiveTradingEngine:
                 self.confluence.level_universe(self._last_market_price)
                 if self.confluence else []
             ),
+            # best scorer candidate IGNORING the admission gate, so the chart can
+            # draw what the model is weighing in real time (faded when not admitted)
+            "confluence_candidate": (
+                self.confluence.top_candidate() if self.confluence else None
+            ),
         }
 
     def _get_zone_phase(self) -> str:
@@ -1407,17 +1429,25 @@ class LiveTradingEngine:
             have = 0
         total = len(c.timeframes)
         need = c.cfg.min_distinct_tf
-        if c.min_score and c.min_score != 0.0:
+        ev_floor = getattr(c.cfg, "ev_floor", None)
+        if ev_floor is not None:
+            # EV-priority gate active: breakeven prob = 1/(1+RR).
+            be = 1.0 / (1.0 + c.cfg.rr)
+            thr_txt = f"EV門檻≥{ev_floor:+.2f}(盈虧平衡勝率{be * 100:.0f}%)"
+        elif c.min_score and c.min_score != 0.0:
             thr = 1.0 / (1.0 + math.exp(-c.min_score))
             thr_txt = f"勝率門檻≥{thr * 100:.0f}%"
         else:
             thr_txt = "勝率門檻 無"
+        rr_grid = getattr(c.cfg, "rr_grid", None)
+        rr_txt = (f"RR {'/'.join(f'{r:g}' for r in rr_grid)} (EV挑選)"
+                  if rr_grid else f"RR{c.cfg.rr:g}")
         parts = [
             "ML匯流",
             f"評分器 {c.scorer_source}",
             thr_txt,
             f"匯流區間 {have}/{total}(需≥{need})",
-            f"帶寬{c.cfg.band_ticks:g}刻度 RR{c.cfg.rr:g}",
+            f"帶寬{c.cfg.band_ticks:g}刻度 {rr_txt}",
         ]
         order = self._get_order_short()
         if order != "無":
@@ -2109,6 +2139,7 @@ class LiveTradingEngine:
             "largest_tf_rank": "最大TF階", "n_levels": "層級數",
             "total_weight": "匯流強度", "cluster_width_ticks": "簇寬",
             "dist_to_price_ticks": "距現價", "risk_ticks": "風險刻度",
+            "rel_dist_to_price": "相對距離(R)", "rr": "盈虧比",
         }
         mode_cn = "逆勢" if payload["mode"] == "reversion" else "順勢"
         dir_cn = "做多" if signal.direction == Direction.BUY else "做空"
@@ -2124,7 +2155,7 @@ class LiveTradingEngine:
             f"判斷依據：{mode_cn}{dir_cn}（{side_cn}）"
             f"｜匯流{len(payload['tfs'])}個區間 {tfw_str} 縂權重{payload['weight']:g}"
             f"｜進場{payload['entry']} 止損{payload['sl']} 止盈{payload['tp']}"
-            f"｜勝率{payload['prob'] * 100:.0f}% 評分{payload['score']:+.2f}"
+            f"｜勝率{payload['prob'] * 100:.0f}% 評分{payload['score']:+.2f} EV{payload.get('ev', 0.0):+.2f}"
             f"｜關鍵權重：{contribs}"
             f"｜評分器 {self.confluence.scorer_source}"
         )

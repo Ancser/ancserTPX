@@ -42,102 +42,173 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backend.db.models import get_tick_size, Direction
+from backend.db.models import get_tick_size
 from backend.strategy.confluence import (
     ConfluenceConfig, MAX_RECENCY_DEPTH, evaluate_confluence_scored,
 )
-from backend.strategy.confluence_features import FEATURE_NAMES, features_to_vector
+from backend.strategy.confluence_features import (
+    FEATURE_NAMES, features_to_vector, CONTEXT_WINDOW,
+)
 from backend.strategy.confluence_scorer import ConfluenceScorer
 from backend.backtest.confluence_backtest import build_zone_timeline
 from scripts.confluence_common import (
     CONTRACT_ID, MODEL_DIR, resolve_candles, timeframes_for_base,
 )
+from scripts.confluence_label import (
+    simulate_outcomes, uniqueness_weights, walk_forward_oos,
+)
 
-
-def _simulate(candles, i, sig, wait, horizon):
-    """Independent one-shot outcome for a candidate built at close of bar i.
-    Returns 1 (TP), 0 (SL), or None (unfilled / unresolved)."""
-    n = len(candles)
-    entry, sl, tp = sig.entry_price, sig.sl_price, sig.tp_price
-    buy = sig.direction == Direction.BUY
-    # 1) fill within wait bars (start next bar)
-    k = None
-    for j in range(i + 1, min(i + 1 + wait, n)):
-        c = candles[j]
-        if (c.low <= entry) if buy else (c.high >= entry):
-            k = j
-            break
-    if k is None:
-        return None
-    # entry bar: SL-only can trigger
-    ck = candles[k]
-    if (ck.low <= sl) if buy else (ck.high >= sl):
-        return 0
-    # 2) scan for SL/TP
-    for m in range(k + 1, min(k + 1 + horizon, n)):
-        c = candles[m]
-        if buy:
-            hit_sl, hit_tp = c.low <= sl, c.high >= tp
-        else:
-            hit_sl, hit_tp = c.high >= sl, c.low <= tp
-        if hit_sl and hit_tp:
-            # ambiguous bar: nearer-to-open resolves first
-            return 1 if abs(c.open - tp) <= abs(c.open - sl) else 0
-        if hit_tp:
-            return 1
-        if hit_sl:
-            return 0
-    return None
+STD_TOL = 1e-8       # below this a feature is treated as constant (no signal)
+RANDOM_STATE = 42    # pinned for reproducibility
 
 
 def collect(candles, timeline, cfg, stride, wait, horizon):
+    """Forward-scan labels for fixed-RR training. Returns
+    (X, y, modes, starts, ends): starts/ends are the bar indices bounding each
+    sample's outcome window, used for uniqueness weighting + embargoed OOS."""
     heuristic = ConfluenceScorer.heuristic()
-    X, y, meta = [], [], []
+    rr_grid = (cfg.rr,)
+    X, y, modes, starts, ends = [], [], [], [], []
     n = len(candles)
     edge = wait + horizon + 2
     for i in range(0, n - edge, stride):
         snap = timeline[i]
         if len(snap) < cfg.min_distinct_tf:
             continue
-        sigs = evaluate_confluence_scored(snap, candles[i].close, cfg, heuristic)
+        recent = candles[max(0, i - CONTEXT_WINDOW + 1):i + 1]
+        sigs = evaluate_confluence_scored(snap, candles[i].close, cfg, heuristic,
+                                          recent_candles=recent)
         for sig in sigs:
-            label = _simulate(candles, i, sig, wait, horizon)
-            if label is None:
+            risk = abs(sig.entry_price - sig.sl_price)
+            if risk <= 0:
                 continue
+            res = simulate_outcomes(candles, i, sig.direction, sig.entry_price,
+                                    sig.sl_price, risk, rr_grid, wait, horizon)
+            got = res.get(cfg.rr)
+            if got is None:
+                continue
+            label, end_idx = got
             X.append(features_to_vector(sig.features))
             y.append(label)
-            meta.append(sig.direction_mode)
-    return np.array(X, dtype=float), np.array(y, dtype=int), meta
+            modes.append(sig.direction_mode)
+            starts.append(i)
+            ends.append(end_idx)
+    return (np.array(X, dtype=float), np.array(y, dtype=int), modes,
+            np.array(starts, dtype=int), np.array(ends, dtype=int))
 
 
-def fold_standardization(coef, intercept, mean, std):
-    """z=(x-mean)/std ; logit=intercept+coef·z  ->  raw weights on x."""
-    std = np.where(std == 0, 1.0, std)
-    w_raw = coef / std
-    b_raw = float(intercept - np.sum(coef * mean / std))
-    return w_raw, b_raw
+def _fit_logistic(Xz, y, C, sample_weight):
+    """L2 logistic fit on standardised features. C=None → pick C by
+    time-series CV on Brier (proper calibration), pinned random_state."""
+    from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
+    from sklearn.model_selection import TimeSeriesSplit
+
+    distinct = len(set(np.asarray(y).tolist())) > 1
+    if C is None and distinct and len(y) >= 5 * 40:
+        clf = LogisticRegressionCV(
+            Cs=np.logspace(-3, 2, 10), cv=TimeSeriesSplit(n_splits=5),
+            scoring="neg_brier_score", class_weight="balanced",
+            max_iter=5000, random_state=RANDOM_STATE,
+        )
+    else:
+        clf = LogisticRegression(C=(C or 1.0), class_weight="balanced",
+                                 max_iter=5000, random_state=RANDOM_STATE)
+    clf.fit(Xz, y, sample_weight=sample_weight)
+    return clf
 
 
-def fit_scorer(X, y, C: float = 1.0):
-    """Standardize → L2 logistic fit → fold standardization back to raw-space
-    weights. Returns (weights_dict, bias, auc, acc).
+def fit_scorer(X, y, C=None, sample_weight=None):
+    """Standardize → drop constant features → L2 logistic fit → fold
+    standardization back to RAW-space weights. Returns (weights, bias, info).
 
-    Single source of truth shared by the CLI trainer (main) and the web
-    /confluence/train endpoint, so both produce an identical, reproducible
-    scorer from the same (X, y)."""
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import roc_auc_score, accuracy_score
+    Constant (≈zero-variance) features are excluded BEFORE fitting and forced to
+    weight 0: folding them would divide by ~0 and explode the weight (this is the
+    bug that gave the fixed-RR `rr` feature a weight of 141). `info` carries
+    train auc/acc/brier, the chosen C and which features were dropped.
 
+    Single source of truth shared by the CLI trainers and the web
+    /confluence/train endpoint, so all paths produce an identical scorer."""
+    from sklearn.metrics import roc_auc_score, accuracy_score, brier_score_loss
+
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=int)
     mean, std = X.mean(axis=0), X.std(axis=0)
-    Xz = (X - mean) / np.where(std == 0, 1.0, std)
-    clf = LogisticRegression(C=C, class_weight="balanced", max_iter=2000)
-    clf.fit(Xz, y)
+    usable = std > STD_TOL
+    Xz = (X[:, usable] - mean[usable]) / std[usable]
+
+    clf = _fit_logistic(Xz, y, C, sample_weight)
     p = clf.predict_proba(Xz)[:, 1]
-    auc = float(roc_auc_score(y, p)) if len(set(y)) > 1 else float("nan")
+    distinct = len(set(y.tolist())) > 1
+    auc = float(roc_auc_score(y, p)) if distinct else float("nan")
     acc = float(accuracy_score(y, (p >= 0.5).astype(int)))
-    w_raw, b_raw = fold_standardization(clf.coef_[0], clf.intercept_[0], mean, std)
+    brier = float(brier_score_loss(y, p)) if distinct else float("nan")
+
+    coef_full = np.zeros(X.shape[1])
+    coef_full[usable] = clf.coef_[0]
+    w_raw = np.where(usable, coef_full / np.where(usable, std, 1.0), 0.0)
+    b_raw = float(clf.intercept_[0] - np.sum(clf.coef_[0] * mean[usable] / std[usable]))
     weights = {name: float(w_raw[i]) for i, name in enumerate(FEATURE_NAMES)}
-    return weights, float(b_raw), auc, acc
+    # STANDARDIZED weights = raw_weight * feature_std = the model's coef on the
+    # z-scored feature. Each is the log-odds shift per 1 SD of that feature, so
+    # magnitudes ARE comparable across features (raw weights are NOT, because each
+    # feature has a different scale). For human reading only — inference still
+    # uses raw `weights`, so live==backtest parity is untouched.
+    std_weights = {name: float(coef_full[i]) for i, name in enumerate(FEATURE_NAMES)}
+    info = {
+        "auc": auc, "acc": acc, "brier": brier,
+        "C": float(getattr(clf, "C_", [C or 1.0])[0]),
+        "n_features_used": int(usable.sum()),
+        "dropped_features": [FEATURE_NAMES[i] for i in range(len(FEATURE_NAMES))
+                             if not usable[i]],
+        "std_weights": std_weights,
+    }
+    return weights, b_raw, info
+
+
+def make_oos_fit(C):
+    """Predictor factory for walk_forward_oos: standardise + drop constants on
+    the TRAIN fold only (no leakage), fit, return a proba(Xte) closure."""
+    def fit_fn(Xtr, ytr):
+        Xtr = np.asarray(Xtr, dtype=float)
+        mean, std = Xtr.mean(axis=0), Xtr.std(axis=0)
+        usable = std > STD_TOL
+        clf = _fit_logistic((Xtr[:, usable] - mean[usable]) / std[usable],
+                            np.asarray(ytr, dtype=int), C, None)
+
+        def proba(Xte):
+            Xte = np.asarray(Xte, dtype=float)
+            return clf.predict_proba((Xte[:, usable] - mean[usable]) / std[usable])[:, 1]
+        return proba
+    return fit_fn
+
+
+def evaluate_and_meta(X, y, starts, ends, n_bars, embargo, C=None, loss_weight=1.0):
+    """Fit the production scorer with uniqueness weighting AND compute an honest
+    embargoed walk-forward OOS estimate. Returns (weights, bias, info) where
+    info also holds oos_auc / oos_brier / oos_folds. Shared by CLI + web so the
+    shipped model ALWAYS carries an out-of-sample number, even at train_frac=1.
+
+    COST-SENSITIVE (loss_weight): in fixed-RR training every win pays +rr·risk and
+    every loss costs −1·risk, so the economic asymmetry is fully captured by the
+    LABEL. ``loss_weight`` ≥ 1 multiplies the fit weight of every LOSS sample (on
+    top of the base ``class_weight='balanced'`` and uniqueness weights), making the
+    model work harder to push losers' probability down. The downstream effect is
+    fewer losers admitted at any probability/EV threshold → higher PF, lower maxDD
+    and smaller total loss, at the cost of fewer trades (lower gross $). loss_weight
+    == 1.0 reproduces the previous behaviour EXACTLY. This only changes the TRAINED
+    weights — inference is still a plain raw-space dot product, so live==backtest
+    parity is untouched."""
+    w = np.asarray(uniqueness_weights(starts, ends, n_bars), dtype=float)
+    if loss_weight and loss_weight != 1.0:
+        ya = np.asarray(y, dtype=int)
+        w = w * np.where(ya == 0, float(loss_weight), 1.0)
+    weights, bias, info = fit_scorer(X, y, C=C, sample_weight=w)
+    oos = walk_forward_oos(X, y, starts, ends, make_oos_fit(info["C"]),
+                           n_splits=5, embargo=embargo)
+    info.update(oos)
+    info["mean_uniqueness"] = float(np.mean(w)) if len(w) else float("nan")
+    info["loss_weight"] = float(loss_weight)
+    return weights, bias, info
 
 
 def main():
@@ -156,7 +227,11 @@ def main():
     ap.add_argument("--band", type=float, default=8.0)
     ap.add_argument("--mdt", type=int, default=3)
     ap.add_argument("--rr", type=float, default=1.5)
-    ap.add_argument("--C", type=float, default=1.0, help="inverse L2 strength")
+    ap.add_argument("--C", type=float, default=0.0,
+                    help="inverse L2 strength; 0 = pick by time-series CV (recommended)")
+    ap.add_argument("--loss-weight", type=float, default=1.0,
+                    help="cost-sensitive loss aversion: >1 up-weights LOSS samples "
+                         "→ higher PF / lower maxDD / fewer trades. 1.0 = baseline.")
     args = ap.parse_args()
 
     base = max(1, args.base_min)
@@ -180,19 +255,29 @@ def main():
     print("[zones] building train-split timeline...", flush=True)
     tl = build_zone_timeline(train, timeframes, tick, MAX_RECENCY_DEPTH)
     print("[collect] forward-scan labeling...", flush=True)
-    X, y, modes = collect(train, tl, cfg, args.stride, wait_bars, horizon_bars)
+    X, y, modes, starts, ends = collect(train, tl, cfg, args.stride, wait_bars, horizon_bars)
     if len(y) < 50:
         raise SystemExit(f"Too few labeled samples ({len(y)}). Lower --stride or --mdt.")
     print(f"[data] {len(y)} samples | win rate {y.mean():.1%} | "
           f"reversion {sum(1 for m in modes if m=='reversion')}/{len(modes)}", flush=True)
 
-    weights, b_raw, auc, acc = fit_scorer(X, y, C=args.C)
-    print(f"[fit] train AUC={auc:.3f} acc={acc:.3f}", flush=True)
+    weights, b_raw, info = evaluate_and_meta(
+        X, y, starts, ends, n_bars=len(train),
+        embargo=wait_bars + horizon_bars, C=(args.C or None),
+        loss_weight=args.loss_weight)
+    print(f"[fit] train AUC={info['auc']:.3f} acc={info['acc']:.3f} "
+          f"brier={info['brier']:.3f} C={info['C']:.4g} "
+          f"loss_weight={args.loss_weight:g}", flush=True)
+    print(f"[oos]  walk-forward AUC={info['oos_auc']:.3f} "
+          f"brier={info['oos_brier']:.3f} folds={info['oos_folds']}", flush=True)
+    if info["dropped_features"]:
+        print(f"[drop] constant features (weight=0): {info['dropped_features']}", flush=True)
 
-    print("\n[weights] (raw-space, sorted by |coef|):", flush=True)
-    for name in sorted(weights, key=lambda k: abs(weights[k]), reverse=True):
-        print(f"   {name:22s} {weights[name]:+.4f}", flush=True)
-    print(f"   {'(bias)':22s} {b_raw:+.4f}", flush=True)
+    sw = info["std_weights"]
+    print("\n[weights] (normalized = log-odds per 1 SD, sorted by importance):", flush=True)
+    for name in sorted(sw, key=lambda k: abs(sw[k]), reverse=True):
+        print(f"   {name:22s} norm={sw[name]:+.4f}   raw={weights[name]:+.4g}", flush=True)
+    print(f"   {'(bias)':22s}              raw={b_raw:+.4f}", flush=True)
 
     scorer = ConfluenceScorer(
         weights=weights, bias=b_raw,
@@ -202,9 +287,17 @@ def main():
             "contract": args.contract, "days": args.days, "base_min": base,
             "timeframes": list(timeframes),
             "train_frac": args.train_frac, "n_samples": int(len(y)),
-            "train_win_rate": float(y.mean()), "train_auc": float(auc),
+            "train_win_rate": float(y.mean()), "train_auc": info["auc"],
+            "train_brier": info["brier"], "C": info["C"],
+            "oos_auc": info["oos_auc"], "oos_brier": info["oos_brier"],
+            "oos_folds": info["oos_folds"], "mean_uniqueness": info["mean_uniqueness"],
+            "dropped_features": info["dropped_features"],
+            "std_weights": info["std_weights"],
+            "sklearn_hygiene": "drop-constant+ts-cv+uniqueness+walkforward",
+            "loss_weight": args.loss_weight,
             "cfg": {"band_ticks": args.band, "min_distinct_tf": args.mdt,
-                    "rr": args.rr, "wait_min": args.wait, "horizon_min": args.horizon},
+                    "rr": args.rr, "wait_min": args.wait, "horizon_min": args.horizon,
+                    "loss_weight": args.loss_weight},
         },
     )
     MODEL_DIR.mkdir(parents=True, exist_ok=True)

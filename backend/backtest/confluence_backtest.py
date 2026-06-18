@@ -23,9 +23,13 @@ made the trend backtest over-estimate live fills.
 
 from __future__ import annotations
 
+import logging
+import time as _time
 import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from backend.db.models import (
     Candle, Trade, Direction, ExitReason, StrategyType, BacktestConfig,
@@ -35,9 +39,10 @@ from backend.strategy.consolidation import (
     ClockBucketZoneDetector, AREA_TIMEFRAME_MINUTES,
 )
 from backend.strategy.confluence import (
-    ConfluenceConfig, evaluate_confluence, evaluate_confluence_scored,
-    ConfluenceSignal,
+    ConfluenceConfig, evaluate_confluence, evaluate_confluence_scored, gate_signals,
+    ConfluenceSignal, snapshot_zones_by_tf,
 )
+from backend.strategy.confluence_features import CONTEXT_WINDOW
 from backend.backtest.metrics import MetricsCalculator
 
 
@@ -75,18 +80,32 @@ def build_zone_timeline(
     timeline: List[Dict[str, list]] = []
     last_counts = None
     snapshot: Dict[str, list] = {}
-    for candle in candles:
+    total = len(candles)
+    _t0 = _time.perf_counter()
+    _step = max(5000, total // 10)  # ~10 heartbeats over the run
+    logger.info(
+        f"[ZoneTimeline] start: {total} candles × {len(detectors)} TF "
+        f"({','.join(detectors.keys())})"
+    )
+    for i, candle in enumerate(candles):
         for det in detectors.values():
             det.update(candle)
         counts = tuple(len(det.get_completed_zones()) for det in detectors.values())
         if counts != last_counts:
-            snapshot = {}
-            for tf, det in detectors.items():
-                zs = det.get_recent_zones(depth)
-                if zs:
-                    snapshot[tf] = zs
+            snapshot = snapshot_zones_by_tf(detectors, depth)
             last_counts = counts
         timeline.append(snapshot)
+        if (i + 1) % _step == 0:
+            el = _time.perf_counter() - _t0
+            rate = (i + 1) / el if el > 0 else 0
+            eta = (total - (i + 1)) / rate if rate > 0 else 0
+            logger.info(
+                f"[ZoneTimeline] {i + 1}/{total} ({100 * (i + 1) // total}%) "
+                f"· {el:.0f}s elapsed · {rate:.0f} bars/s · ETA {eta:.0f}s"
+            )
+    logger.info(
+        f"[ZoneTimeline] done: {total} candles in {_time.perf_counter() - _t0:.1f}s"
+    )
     return timeline
 
 
@@ -98,6 +117,11 @@ class ConfluenceBacktestConfig:
     timeframes: tuple = tuple(AREA_TIMEFRAME_MINUTES.keys())
     min_score: float = 0.0                 # scorer gate: skip signals below this
     base_minutes: int = 1                  # minutes per input candle (1m or 5m base)
+    # ── STYLE (v0.24 exit-policy): all default to a no-op so an all-OFF Style
+    # reproduces the original behaviour. See backend/strategy/exit_policy.py. ──
+    trail_trigger_pct: float = 0.0         # 0 = trailing OFF
+    trail_lock_pct: float = 0.0            # locked SL as fraction of TP distance on trigger
+    full_tp_lock: int = 0                  # 0 = OFF; stop new entries after N full-TP exits/session
 
     @property
     def wait_bars(self) -> int:
@@ -122,7 +146,7 @@ class ConfluenceBacktester:
         # highest-scoring action above min_score is taken (per-step auto-select).
         self.scorer = scorer
         if signal_cfg.direction_mode == "auto":
-            self.modes = ("momentum", "reversion")
+            self.modes = signal_cfg.auto_modes()
         else:
             self.modes = (signal_cfg.direction_mode,)
         self.contract_id = contract_id
@@ -144,6 +168,15 @@ class ConfluenceBacktester:
             for tf in self.run_cfg.timeframes
         }
 
+        # STYLE exit-policy (v0.24): shared helper so live == backtest.
+        from backend.strategy.exit_policy import ConfluenceExitStyle
+        self.style = ConfluenceExitStyle(
+            trail_trigger_pct=float(getattr(self.run_cfg, "trail_trigger_pct", 0.0) or 0.0),
+            trail_lock_pct=float(getattr(self.run_cfg, "trail_lock_pct", 0.0) or 0.0),
+            full_tp_lock=int(getattr(self.run_cfg, "full_tp_lock", 0) or 0),
+            session_limit=bool(self.run_cfg.one_trade_per_session_direction),
+        )
+
         # state
         self._capital = self.bt.initial_capital
         self._trades: List[Trade] = []
@@ -151,17 +184,13 @@ class ConfluenceBacktester:
         self._pending: Optional[ConfluenceSignal] = None
         self._pending_age: int = 0
         self._session_dir_used: set = set()
+        self._trail_triggered: bool = False          # per-open-position latch
+        self._session_tp_count: Dict[str, int] = {}  # full_tp_lock: TP exits per session
 
     # ── helpers ──
 
     def _zones_by_tf(self) -> Dict[str, list]:
-        depth = self.signal_cfg.max_recency_depth + 1
-        out = {}
-        for tf, det in self.detectors.items():
-            zs = det.get_recent_zones(depth)
-            if zs:
-                out[tf] = zs
-        return out
+        return snapshot_zones_by_tf(self.detectors, self.signal_cfg.max_recency_depth + 1)
 
     @staticmethod
     def _session_key(ts) -> str:
@@ -215,21 +244,29 @@ class ConfluenceBacktester:
             if i >= total - edge_guard:
                 continue
             snap = zones_timeline[i] if zones_timeline is not None else None
-            self._maybe_open(candle, snap)
+            recent = candles[max(0, i - CONTEXT_WINDOW + 1):i + 1]
+            self._maybe_open(candle, snap, recent)
 
         return self._finalize()
 
-    def _maybe_open(self, candle: Candle, zones_by_tf: Optional[Dict[str, list]] = None):
+    def _maybe_open(self, candle: Candle, zones_by_tf: Optional[Dict[str, list]] = None,
+                    recent_candles: Optional[List[Candle]] = None):
         if zones_by_tf is None:
             zones_by_tf = self._zones_by_tf()
         if len(zones_by_tf) < self.signal_cfg.min_distinct_tf:
             return
+        # full_tp_lock: stop opening new trades once this session hit N full TPs
+        if self.style.full_tp_lock > 0:
+            if self._session_tp_count.get(self._session_key(candle.timestamp), 0) >= self.style.full_tp_lock:
+                return
         if self.scorer is not None:
-            # explainable path: score both modes, gate by min_score, take best
+            # explainable path: score both modes, gate (EV-priority if cfg.ev_floor
+            # is set, else win-prob/score), take best. Same helper as live engine.
             signals = evaluate_confluence_scored(
                 zones_by_tf, candle.close, self.signal_cfg, self.scorer, modes=self.modes,
+                recent_candles=recent_candles,
             )
-            signals = [s for s in signals if s.score >= self.run_cfg.min_score]
+            signals = gate_signals(signals, self.signal_cfg, self.run_cfg.min_score)
         else:
             signals = evaluate_confluence(zones_by_tf, candle.close, self.signal_cfg)
             # best = strongest confluence by summed weight
@@ -261,6 +298,7 @@ class ConfluenceBacktester:
         return True
 
     def _open_trade(self, sig: ConfluenceSignal, candle: Candle):
+        self._trail_triggered = False   # reset STYLE trail latch for the new position
         cl = sig.cluster
         self._open = Trade(
             trade_id=f"C{uuid.uuid4().hex[:8]}",
@@ -306,6 +344,13 @@ class ConfluenceBacktester:
         pos = self._open
         if not pos:
             return
+        # STYLE: one-time break-even/trail using this bar's close as the market.
+        if self.style.trail_enabled:
+            from backend.strategy.exit_policy import maybe_trail_sl
+            new_sl, self._trail_triggered = maybe_trail_sl(
+                pos.direction, pos.entry_price, pos.tp_price, pos.sl_price,
+                self._trail_triggered, candle.close, self.style)
+            pos.sl_price = new_sl
         if pos.direction == Direction.BUY:
             hit_sl = candle.low <= pos.sl_price
             hit_tp = candle.high >= pos.tp_price
@@ -313,6 +358,8 @@ class ConfluenceBacktester:
             hit_sl = candle.high >= pos.sl_price
             hit_tp = candle.low <= pos.tp_price
 
+        # once trail has latched, an SL hit is a profit-locked TRAIL exit
+        sl_reason = ExitReason.TRAIL_SL if self._trail_triggered else ExitReason.SL
         if hit_sl and hit_tp:
             # ambiguous — use open proximity to infer which hit first
             dist_sl = abs(candle.open - pos.sl_price)
@@ -320,9 +367,9 @@ class ConfluenceBacktester:
             if dist_sl <= dist_tp:
                 self._exit(candle, pos.tp_price, ExitReason.TP)
             else:
-                self._exit(candle, pos.sl_price, ExitReason.SL)
+                self._exit(candle, pos.sl_price, sl_reason)
         elif hit_sl:
-            self._exit(candle, pos.sl_price, ExitReason.SL)
+            self._exit(candle, pos.sl_price, sl_reason)
         elif hit_tp:
             self._exit(candle, pos.tp_price, ExitReason.TP)
 
@@ -344,6 +391,10 @@ class ConfluenceBacktester:
         self._capital += pos.pnl
         self._trades.append(pos)
         self._open = None
+        # full_tp_lock: tally FULL-TP exits in this session (trail exits don't count)
+        if reason == ExitReason.TP and self.style.full_tp_lock > 0:
+            k = self._session_key(candle.timestamp)
+            self._session_tp_count[k] = self._session_tp_count.get(k, 0) + 1
 
     def _finalize(self) -> "ConfluenceBacktestResult":
         metrics = MetricsCalculator().calculate_all(self._trades, self.bt.initial_capital)

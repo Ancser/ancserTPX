@@ -363,13 +363,16 @@ class StrategyParams:
     conf_wait_minutes: int = 60            # one-shot limit-order fill timeout
     conf_base_minutes: int = 1             # input candle resolution (standardized: 1m)
     conf_min_prob: float = 0.0             # gate: skip signals below this win-prob (0=off)
+    conf_ev_floor: Optional[float] = None  # EV-priority gate: keep signals with EV>=floor (None=use win-prob gate; 0=every +EV)
+    conf_rr_grid: Optional[List[float]] = None  # variable-RR: pick EV-max RR per signal (None=fixed conf_rr); needs EV scorer
     conf_use_scorer: bool = True           # True=trained JSON, False=heuristic prior
+    conf_enable_breakout: bool = True      # include breakout-retrace candidate (False=momentum+reversion only)
+    # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
+    conf_trail_trigger_pct: float = 0.0    # 0 = trailing OFF; else fraction of entry→TP distance that fires break-even
+    conf_trail_lock_pct: float = 0.0       # locked SL as fraction of TP distance on trigger (0=pure break-even)
+    conf_full_tp_lock: int = 0             # 0 = OFF; stop new entries after N full-TP exits/session
+    conf_session_limit: bool = True        # one trade per session+direction (existing rule)
     conf_shadow: bool = False              # default LIVE — practice account places orders
-    # --- Removed (hardcoded internally) ---
-    # entry_mode: always "100RE" (VAH/VAL entry)
-    # entry_timeout_minutes: hardcoded 10 min inside strategy
-    # tp_timeout_minutes / tp_timeout_action: removed
-    # use_trail_sl: always True (forced)
 
 
 # ── 回測 ──────────────────────────────────────────────

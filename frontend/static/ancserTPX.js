@@ -341,7 +341,29 @@ function updateStrategyParamVisibility(mode) {
     show('overlap-tf-row-' + mode, !isML);
     // ML-only params — shown only in ML mode
     show('ml-params-' + mode, isML);
+    if (isML) onRrModeChange(mode);
     if (!isML) updateTrailBounds(mode);
+}
+
+// Chart legend collapse/expand.
+function toggleChartLegend() {
+    const body = document.getElementById('chart-legend-body');
+    const tog = document.getElementById('chart-legend-toggle');
+    if (!body) return;
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? '' : 'none';
+    if (tog) tog.textContent = hidden ? '▾' : '▸';
+}
+
+// RR mode toggle: "固定" shows the single-RR select; "變動" shows the RR-grid
+// (range) select and hides the fixed one. Only one is ever visible.
+function onRrModeChange(mode) {
+    const sel = document.getElementById('conf-rrmode-' + mode);
+    const isGrid = !!(sel && sel.value === 'grid');
+    const rrEl = document.getElementById('conf-rr-' + mode);
+    const gridEl = document.getElementById('conf-rrgrid-' + mode);
+    if (rrEl) rrEl.style.display = isGrid ? 'none' : '';
+    if (gridEl) gridEl.style.display = isGrid ? '' : 'none';
 }
 
 function onStrategyChange(mode) {
@@ -437,13 +459,48 @@ function collectConfluenceParams(mode) {
         const n = el ? parseInt(el.value, 10) : NaN;
         return Number.isNaN(n) ? fb : n;
     };
+    // EV-priority gate floor: blank input => null (legacy win-prob gate); a
+    // number (incl. 0) => admit setups with EV>=floor.
+    const ovf = (id) => {
+        const el = document.getElementById(id);
+        if (!el || el.value === '' || el.value == null) return null;
+        const n = parseFloat(el.value);
+        return Number.isNaN(n) ? null : n;
+    };
+    // Variable-RR grid: "1.0,1.5,2.0" => [1,1.5,2]; blank => null (fixed RR).
+    const rgv = (id) => {
+        const el = document.getElementById(id);
+        if (!el || !el.value) return null;
+        const arr = el.value.split(',').map(s => parseFloat(s)).filter(n => !Number.isNaN(n) && n > 0);
+        return arr.length ? arr : null;
+    };
+    // RR mode: "fixed" => single conf_rr; "grid" => variable RR (EV picks best
+    // per signal). Only emit conf_rr_grid when the mode is "grid".
+    const rrModeEl = document.getElementById('conf-rrmode-' + mode);
+    const rrMode = rrModeEl ? rrModeEl.value : 'fixed';
     return {
         conf_band_ticks: fv('conf-band-' + mode, 8.0),
         conf_min_distinct_tf: iv('conf-mintf-' + mode, 3),
         conf_rr: fv('conf-rr-' + mode, 1.5),
         conf_base_minutes: 1,
         conf_min_prob: fv('conf-minprob-' + mode, 0.0),
+        conf_ev_floor: ovf('conf-evfloor-' + mode),
+        conf_rr_grid: rrMode === 'grid' ? rgv('conf-rrgrid-' + mode) : null,
         conf_use_scorer: true,
+        conf_enable_breakout: (function () {
+            // BREAKOUT control removed from the UI (sweep showed it's redundant at
+            // the optimal RR). Default OFF → momentum+reversion only.
+            const el = document.getElementById('conf-breakout-' + mode);
+            return el ? el.value === '1' : false;
+        })(),
+        // STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original.
+        conf_trail_trigger_pct: fv('conf-trail-trigger-' + mode, 0.0),
+        conf_trail_lock_pct: fv('conf-trail-lock-' + mode, 0.0),
+        conf_full_tp_lock: iv('conf-fulltplock-' + mode, 0),
+        conf_session_limit: (function () {
+            const el = document.getElementById('conf-session-limit-' + mode);
+            return el ? el.value === '1' : true;
+        })(),
     };
 }
 
@@ -597,6 +654,22 @@ function applyStrategyParams(mode, params) {
     _set('conf-rr-' + mode, (p.conf_rr != null ? Number(p.conf_rr) : 1.5).toFixed(1));
     _set('conf-band-' + mode, String(parseInt(p.conf_band_ticks != null ? p.conf_band_ticks : 8, 10)));
     _set('conf-mintf-' + mode, String(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 3));
+    _set('conf-evfloor-' + mode, (p.conf_ev_floor == null ? '' : String(p.conf_ev_floor)));
+    // RR mode: a saved grid => variable mode; otherwise fixed. Format the grid
+    // with one decimal so it matches the <option> values (e.g. "1.0,1.5,...").
+    const hasGrid = Array.isArray(p.conf_rr_grid) && p.conf_rr_grid.length;
+    if (hasGrid) _set('conf-rrgrid-' + mode, p.conf_rr_grid.map(x => Number(x).toFixed(1)).join(','));
+    _set('conf-rrmode-' + mode, hasGrid ? 'grid' : 'fixed');
+    _set('conf-breakout-' + mode, (p.conf_enable_breakout === false) ? '0' : '1');
+    // STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original.
+    // OFF option value is "0" (not "0.00"); only non-zero needs the 2-decimal form.
+    const _pct = (v) => { const n = Number(v) || 0; return n === 0 ? '0' : n.toFixed(2); };
+    _set('conf-trail-trigger-' + mode, _pct(p.conf_trail_trigger_pct));
+    _syncTrailTriggerBtn(mode);
+    _set('conf-trail-lock-' + mode, _pct(p.conf_trail_lock_pct));
+    _set('conf-fulltplock-' + mode, String(parseInt(p.conf_full_tp_lock != null ? p.conf_full_tp_lock : 0, 10)));
+    _set('conf-session-limit-' + mode, (p.conf_session_limit === false) ? '0' : '1');
+    onRrModeChange(mode);
 
     // Timeframe checkboxes: overlap → tf_combo; single → [area_timeframe].
     const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
@@ -778,7 +851,143 @@ async function initPresets() {
     }
 }
 
+// TRAIL TP TRIGGER is a binary OFF/5% toggle button backed by a hidden input
+// (id conf-trail-trigger-<mode>) so the backend payload reads exactly as before.
+function _syncTrailTriggerBtn(mode) {
+    const inp = document.getElementById('conf-trail-trigger-' + mode);
+    const btn = document.getElementById('conf-trail-trigger-btn-' + mode);
+    if (!inp || !btn) return;
+    const on = (parseFloat(inp.value) || 0) > 0;
+    btn.textContent = on ? '50%' : 'OFF';
+    btn.classList.toggle('on', on);
+}
+function toggleTrailTrigger(mode) {
+    const inp = document.getElementById('conf-trail-trigger-' + mode);
+    if (!inp) return;
+    const on = (parseFloat(inp.value) || 0) > 0;
+    inp.value = on ? '0' : '0.5';
+    _syncTrailTriggerBtn(mode);
+}
+document.addEventListener('DOMContentLoaded', () => { _syncTrailTriggerBtn('bt'); _syncTrailTriggerBtn('live'); });
+
 document.addEventListener('DOMContentLoaded', initPresets);
+
+// ════════════════════════════════════════════════════════════════════════
+// MODEL REGISTRY — pre-trained grid dropdown (RR × BAND × MIN_DISTINCT_TF ×
+// BREAKOUT). Lists EVERY combo; a trained one is selectable (selecting it
+// ACTIVATES its weights + mirrors band/tf/rr/breakout into the MODEL panel so
+// backtest/live enumerate identically), a missing one shows "(untrain)" and is
+// built by RETRAIN. RETRAIN re-fits one combo with the chosen cost-sensitive
+// loss weight (>1 = loss-averse → higher PF / lower maxDD / fewer trades).
+// ════════════════════════════════════════════════════════════════════════
+let _modelRegistry = [];   // cached list from GET /confluence/models
+
+function _fmtModelLabel(m) {
+    // compact so the closed <select> shows the whole label (no right-side clipping):
+    //   "b8·3TF·R1 ✓0.79"  (trained)   /   "b8·3TF·R1 ·—"  (untrain)
+    const brk = m.breakout ? '+brk' : '';
+    const head = `b${Math.round(m.band)}·${m.min_distinct_tf}TF·R${Math.round(m.rr)}${brk}`;
+    if (!m.trained) return head + ' ·—';
+    const oos = (m.oos_auc != null) ? ` ✓${Number(m.oos_auc).toFixed(2)}` : ' ✓';
+    const lw = (m.loss_weight && Number(m.loss_weight) !== 1) ? ` LW${m.loss_weight}×` : '';
+    return `${head}${oos}${lw}`;
+}
+
+async function loadModelRegistry() {
+    try {
+        const resp = await fetch(API + '/confluence/models');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        _modelRegistry = data.models || [];
+        ['bt', 'live'].forEach(_populateModelSelect);
+    } catch (e) { /* registry optional — the MODEL panel still works manually */ }
+}
+
+function _populateModelSelect(mode) {
+    const sel = document.getElementById('conf-model-' + mode);
+    if (!sel) return;
+    const prev = sel.value;
+    const trained = _modelRegistry.filter(m => m.trained).length;
+    let html = `<option value="">— 自訂 (${trained}/${_modelRegistry.length} 已訓練) —</option>`;
+    _modelRegistry.forEach(m => {
+        html += `<option value="${m.name}" data-rr="${m.rr}" data-band="${m.band}"`
+              + ` data-tf="${m.min_distinct_tf}" data-brk="${m.breakout ? 1 : 0}"`
+              + ` data-trained="${m.trained ? 1 : 0}">${_fmtModelLabel(m)}</option>`;
+    });
+    sel.innerHTML = html;
+    if (prev) sel.value = prev;
+}
+
+// Mirror a combo's params into the MODEL panel fields (shared by select+retrain).
+function _applyModelCombo(mode, rr, band, tf, brk) {
+    const _set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    _set('conf-band-' + mode, String(Math.round(band)));
+    _set('conf-mintf-' + mode, String(tf));
+    _set('conf-rrmode-' + mode, 'fixed');
+    _set('conf-rr-' + mode, Number(rr).toFixed(1));
+    _set('conf-breakout-' + mode, brk ? '1' : '0');
+    if (typeof onRrModeChange === 'function') onRrModeChange(mode);
+}
+
+async function onModelSelect(mode) {
+    const sel = document.getElementById('conf-model-' + mode);
+    if (!sel || !sel.value) return;
+    const opt = sel.options[sel.selectedIndex];
+    const rr = Number(opt.dataset.rr), band = Number(opt.dataset.band);
+    const tf = Number(opt.dataset.tf), brk = opt.dataset.brk === '1';
+    _applyModelCombo(mode, rr, band, tf, brk);
+    if (opt.dataset.trained !== '1') {
+        log(`模型 ${sel.value} 未訓練 (untrain) — 按 RETRAIN 以建立`, 'warn');
+        return;
+    }
+    try {
+        const resp = await fetch(API + '/confluence/models/activate', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: sel.value }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.success) log(`已套用模型 ${sel.value} (band ${Math.round(band)} · ${tf}TF · RR ${Math.round(rr)}:1)`, 'success');
+        else log('套用模型失敗: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
+    } catch (e) { log('套用模型失敗: ' + e, 'error'); }
+}
+
+async function retrainModel(mode) {
+    const sel = document.getElementById('conf-model-' + mode);
+    let name, rr, band, tf, brk;
+    if (sel && sel.value) {
+        const opt = sel.options[sel.selectedIndex];
+        name = sel.value;
+        rr = Number(opt.dataset.rr); band = Number(opt.dataset.band);
+        tf = Number(opt.dataset.tf); brk = opt.dataset.brk === '1';
+    } else {  // no model picked → use the current panel params
+        rr = parseFloat((document.getElementById('conf-rr-' + mode) || {}).value || '1');
+        band = parseInt((document.getElementById('conf-band-' + mode) || {}).value || '8', 10);
+        tf = parseInt((document.getElementById('conf-mintf-' + mode) || {}).value || '3', 10);
+        brk = ((document.getElementById('conf-breakout-' + mode) || {}).value === '1');
+        name = `rr${Math.round(rr)}_b${Math.round(band)}_tf${tf}_${brk ? 'brk' : 'nobrk'}`;
+    }
+    const lw = parseFloat((document.getElementById('conf-lossweight-' + mode) || {}).value || '1');
+    if (!confirm(`重新訓練模型 ${name}\nloss weight = ${lw}×${lw > 1 ? ' (loss-averse → 更高 PF / 更低 DD / 更少單)' : ''}\n需已載入歷史數據，約 30–60 秒。`)) return;
+    log(`訓練中 ${name} (LW ${lw}×)…`, 'info');
+    try {
+        const resp = await fetch(API + '/confluence/models/retrain', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, rr, band_ticks: band, min_distinct_tf: tf,
+                                   enable_breakout: brk, loss_weight: lw, activate: true }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.success) {
+            log(`✓ ${name} 訓練完成 — n=${data.n_samples} win=${(data.win_rate * 100).toFixed(0)}% `
+                + `oos=${Number(data.oos_auc).toFixed(2)} LW${lw}× · 已套用`, 'success');
+            await loadModelRegistry();
+            if (sel) { sel.value = name; }
+        } else {
+            log('訓練失敗: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
+        }
+    } catch (e) { log('訓練失敗: ' + e, 'error'); }
+}
+
+document.addEventListener('DOMContentLoaded', loadModelRegistry);
 
 // -- Connection Dropdown ----------------------------
 
@@ -798,10 +1007,106 @@ document.addEventListener('click', (e) => {
     }
 });
 
+// -- Param help dots + hover tooltips (restored from 0.15.5, + ML) --
+
+function addHelpDot(label, tip) {
+    if (!label || !tip || label.querySelector('.help-dot')) return;
+    const dot = document.createElement('span');
+    dot.className = 'help-dot';
+    dot.textContent = '?';
+    dot.setAttribute('data-tip', tip);
+    dot.addEventListener('mouseenter', () => showHelpTooltip(dot));
+    dot.addEventListener('mouseleave', hideHelpTooltip);
+    label.appendChild(dot);
+}
+
+function getHelpTooltip() {
+    let tip = document.getElementById('global-help-tooltip');
+    if (!tip) {
+        tip = document.createElement('div');
+        tip.id = 'global-help-tooltip';
+        tip.className = 'help-tooltip';
+        document.body.appendChild(tip);
+    }
+    return tip;
+}
+
+function showHelpTooltip(dot) {
+    const text = dot ? dot.getAttribute('data-tip') : '';
+    if (!text) return;
+    const tip = getHelpTooltip();
+    tip.textContent = text;
+    tip.style.visibility = 'hidden';
+    tip.classList.add('open');
+    const rect = dot.getBoundingClientRect();
+    const pad = 10;
+    const tipW = tip.offsetWidth;
+    const tipH = tip.offsetHeight;
+    const top = Math.max(pad, Math.min(
+        rect.top + rect.height / 2 - tipH / 2,
+        window.innerHeight - tipH - pad));
+    const left = Math.max(pad, Math.min(
+        rect.right + pad,
+        window.innerWidth - tipW - pad));
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+    tip.style.visibility = 'visible';
+}
+
+function hideHelpTooltip() {
+    const tip = document.getElementById('global-help-tooltip');
+    if (tip) tip.classList.remove('open');
+}
+
+function decorateParamHelpDots() {
+    // Applied to BOTH backtest (-bt) and live (-live) panels.
+    const shared = {
+        'strategy': '策略邏輯：TREND = 區間突破趨勢單；ML (confluence) = 可解釋的多時間框水平匯聚機器學習評分。\nStrategy: TREND (range-breakout) or ML confluence (explainable multi-TF level scorer).',
+        'contract': '交易 / 回測使用的期貨合約，例 CON.F.US.MNQ.M26。\nFutures contract used for data & orders.',
+        'size': '每筆交易的合約口數。\nNumber of contracts per trade.',
+        'preset': '載入或保存目前所有參數設定。\nLoad or save the current parameter set.',
+        // ── ML CONFLUENCE ──
+        'conf-minprob': 'ML 機率門檻：只在 scorer 預測勝率 ≥ 此值時進場。OFF = 不過濾機率（仍受 EV FLOOR 影響）。\nML win-probability gate: enter only when the scorer\u2019s predicted win-rate \u2265 this value.',
+        'conf-rrmode': 'RR 模式：固定 = 用單一盈虧比 (右側 1:1~1:3)；變動 = 從範圍中每筆訊號自動挑 EV 最高的 RR（需 EV 模型，LEARN 已自動訓練）。盈虧平衡勝率 = 1/(1+RR)：RR1.5→40%、RR2→33%、RR3→25%。\nRR mode: fixed = single reward:risk; variable = pick the max-EV RR per signal from the range (uses the EV model).',
+        'conf-band': '匯聚帶寬 (ticks)：不同時間框的水平位落在此範圍內視為同一匯聚區。越大 → 越容易匯聚、訊號越多。\nConfluence band (ticks): levels from different TFs within this range merge into one zone.',
+        'conf-mintf': '最少不同時間框數：一個匯聚區至少需這麼多個不同 TF 的水平位才算有效訊號。越大 → 越嚴格、訊號越少。\nMin distinct timeframes required for a valid confluence zone.',
+        'conf-evfloor': '期望值門檻，優先於 MIN PROB。EV = prob×RR − (1−prob)。開啓後依 EV 由高到低排序並篩選；≥0 = 接受所有正期望值訊號。\nExpected-value gate (overrides MIN PROB). EV = prob×RR − (1−prob); signals ranked & filtered by EV.',
+        'overlap-tf': '參與匯聚的時間框。選 1 個 = 單一框；選 2+ = 跨框重疊匯聚。框越多 → 匯聚位越具共識。\nTimeframes feeding the confluence. 1 = single TF; 2+ = multi-TF overlap.',
+        // ── TREND ──
+        'area-pct': 'TREND：區間判定的面積比例門檻，越高越嚴格。\nTREND: range-area threshold for breakout detection; higher = stricter.',
+        'confirm-bars': 'TREND：突破後需連續確認的 K 線數，越多越保守。\nTREND: confirmation bars required after a breakout; more = more conservative.',
+        'rr-ratio': 'TREND：止盈與止損的比例 (TP:SL)。\nTREND: take-profit to stop-loss ratio.',
+        'trail-trigger-pct': '價格到達 TP 的此百分比後開始移動止損 (移動保護)。OFF = 不移動。\nMoves the stop once price reaches this percent of TP. OFF = disabled.',
+        'trail-sl-pct': '觸發後止損要移到的位置（相對入場 / TP）。\nWhere the stop moves to after the trigger, relative to entry/TP.',
+        'full-tp-lock': '日內達到此獲利目標後鎖定、不再開新倉 (0 = OFF)。\nBlocks new entries after this daily profit target is reached.',
+        'tr-session-limit': '限制交易時段（僅在主要時段進場）。\nRestricts entries to the main trading session.',
+    };
+    const standalone = {
+        'username': 'Topstep / ProjectX 登入郵箱。\nTopstep login email.',
+        'apikey': 'ProjectX API 金鑰。\nProjectX API key.',
+        'contract-preset': '快速填入 contractId。\nShortcut that fills the contractId.',
+        'contract-id': '期貨合約 ID，例 CON.F.US.MNQ.M26。\nFutures contract ID.',
+        'start-date': '歷史資料開始日期。\nStart date for historical data.',
+        'end-date': '歷史資料結束日期。\nEnd date for historical data.',
+        'data-count': '目前載入的 1 分鐘 K 線數量。\nLoaded 1-minute candle count.',
+    };
+    const apply = (id, tip) => {
+        const el = document.getElementById(id);
+        const group = el ? el.closest('.form-group') : null;
+        addHelpDot(group ? group.querySelector('label') : null, tip);
+    };
+    Object.entries(shared).forEach(([base, tip]) => {
+        apply(base + '-bt', tip);
+        apply(base + '-live', tip);
+    });
+    Object.entries(standalone).forEach(([id, tip]) => apply(id, tip));
+}
+
 // -- Init ------------------------------------------
 
 document.addEventListener('DOMContentLoaded', () => {
     initChart();
+    decorateParamHelpDots();
     checkHealth();
     loadEnvConfig();
     loadFullBacktestResults();
@@ -859,10 +1164,12 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
             t.classList.add('active');
             const tab = t.dataset.btab;
-            ['full','trades','execute','log'].forEach(id => {
+            ['full','trades','execute','learn','pnl','log'].forEach(id => {
                 document.getElementById('btab-' + id).classList.toggle('hidden', id !== tab);
             });
             if (tab === 'log') scrollSystemLogToBottom();
+            if (tab === 'learn') loadLearnResult();
+            if (tab === 'pnl') renderPnlCurve();
         };
     });
 });
@@ -1081,13 +1388,13 @@ async function _learnScorer(opts) {
         if (stratSel) { stratSel.value = 'confluence'; updateStrategyParamVisibility(mode); }
 
         // 2) Ensure the FULL history is loaded (the scorer learns from all of it).
-        btn.innerHTML = '<span class="spinner"></span> LOADING HISTORY...';
+        btn.innerHTML = '<span class="spinner"><span></span><span></span><span></span><span></span></span> LOADING HISTORY...';
         const today = new Date().toISOString().slice(0, 10);
         const dataOk = await _ensureBacktestData(btn, FULL_RANGE_START, today);
         if (!dataOk) throw new Error('歷史數據載入失敗');
 
         // 3) Retrain the scorer on the loaded 1m history (matches CLI trainer).
-        btn.innerHTML = '<span class="spinner"></span> LEARNING...';
+        btn.innerHTML = '<span class="spinner"><span></span><span></span><span></span><span></span></span> LEARNING...';
         log('LEARN: 用完整歷史重新訓練 ML scorer (1m base)...', 'info');
         const cp = collectConfluenceParams(mode) || {};
         const resp = await fetch(API + '/confluence/train', {
@@ -1099,6 +1406,8 @@ async function _learnScorer(opts) {
                 band_ticks: cp.conf_band_ticks != null ? cp.conf_band_ticks : 8.0,
                 min_distinct_tf: cp.conf_min_distinct_tf != null ? cp.conf_min_distinct_tf : 3,
                 rr: cp.conf_rr != null ? cp.conf_rr : 1.5,
+                // v0.20: when 變動 RR is selected, also train the EV (multi-RR) model.
+                rr_grid: (Array.isArray(cp.conf_rr_grid) && cp.conf_rr_grid.length) ? cp.conf_rr_grid : null,
             }),
         });
         if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || ('HTTP ' + resp.status)); }
@@ -1108,9 +1417,19 @@ async function _learnScorer(opts) {
             + ', AUC=' + (r.train_auc != null ? r.train_auc.toFixed(3) : '?')
             + ', TFs=' + (r.timeframes || []).join('/'), 'success');
         if (tw) log('LEARN weights: ' + tw, 'info');
+        if (r.ev_model) {
+            const ev = r.ev_model;
+            log('LEARN EV model (變動RR, 全RR可用): ' + ev.n_samples + ' samples (候選×RR), win%='
+                + (ev.win_rate * 100).toFixed(0)
+                + ', AUC=' + (ev.train_auc != null ? ev.train_auc.toFixed(3) : '?')
+                + ', rrGrid=' + (ev.rr_grid || []).join('/'), 'success');
+        } else if (r.ev_model_error) {
+            log('LEARN EV model 跳過: ' + r.ev_model_error + ' (固定模型已訓練完成)', 'warn');
+        }
+        loadLearnResult();  // refresh the LEARN RESULT panel with the new model
 
         // 4) Run the panel-specific follow-up with the freshly trained scorer.
-        btn.innerHTML = '<span class="spinner"></span> ' + (afterLabel || 'RUNNING...');
+        btn.innerHTML = '<span class="spinner"><span></span><span></span><span></span><span></span></span> ' + (afterLabel || 'RUNNING...');
         if (sibling) sibling.disabled = false;   // let afterFn manage its own button
         await afterFn();
     } catch (e) {
@@ -1166,8 +1485,14 @@ async function goLive() {
         stratParams.strategy = 'confluence';
         stratParams.conf_shadow = false;
         Object.assign(stratParams, confParams);
-        log('ML CONFLUENCE: LIVE (places orders) base=1m minProb=' + stratParams.conf_min_prob
-            + ' rr=' + stratParams.conf_rr + ' band=' + stratParams.conf_band_ticks
+        const gateTxt = (stratParams.conf_ev_floor != null)
+            ? ('EV≥' + stratParams.conf_ev_floor + ' (EV優先)')
+            : ('minProb=' + stratParams.conf_min_prob);
+        const rrTxt = (Array.isArray(stratParams.conf_rr_grid) && stratParams.conf_rr_grid.length)
+            ? ('rrGrid=' + stratParams.conf_rr_grid.join('/') + ' (EV挑選)')
+            : ('rr=' + stratParams.conf_rr);
+        log('ML CONFLUENCE: LIVE (places orders) base=1m ' + gateTxt
+            + ' ' + rrTxt + ' band=' + stratParams.conf_band_ticks
             + ' minTF=' + stratParams.conf_min_distinct_tf, 'info');
     }
 
@@ -1738,6 +2063,8 @@ async function pollLiveStatus() {
                 sigStatus.style.color = 'var(--text3)';
             }
 
+            // An admitted signal is showing — clear any faded candidate preview.
+            removeCandidateLines();
             // Draw TP/SL price lines on chart
             if (candleSeries) {
                 if (window._liveTpLine) { try { candleSeries.removePriceLine(window._liveTpLine); } catch(e){} }
@@ -1761,10 +2088,39 @@ async function pollLiveStatus() {
             }
         } else {
             sigRow.style.display = 'none';
-            // Remove lines when no signal
+            // Remove admitted-signal lines when no signal
             if (window._liveTpLine) { try { candleSeries.removePriceLine(window._liveTpLine); } catch(e){} window._liveTpLine = null; }
             if (window._liveSlLine) { try { candleSeries.removePriceLine(window._liveSlLine); } catch(e){} window._liveSlLine = null; }
             if (window._liveEntryLine) { try { candleSeries.removePriceLine(window._liveEntryLine); } catch(e){} window._liveEntryLine = null; }
+            // ── No admitted trade: draw the scorer's BEST candidate (faded), so
+            // the chart keeps updating in real time and you can see the model's
+            // current entry/SL/TP + win-prob track the freshest zones. ──
+            const cand = st.confluence_candidate;
+            removeCandidateLines();  // clear last poll's preview before redrawing
+            if (candleSeries && cand && !st.position && !st.pending_order_id
+                && typeof cand.entry === 'number') {
+                const cIsLong = String(cand.direction || '').toLowerCase() === 'buy';
+                const probPct = ((cand.prob || 0) * 100).toFixed(0);
+                const tag = (cIsLong ? '候選BUY' : '候選SELL') + ' ' + probPct + '%'
+                    + ' EV' + ((cand.ev >= 0 ? '+' : '') + (cand.ev || 0).toFixed(2));
+                window._candEntryLine = candleSeries.createPriceLine({
+                    price: cand.entry, color: '#8a8f9a', lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
+                    title: tag,
+                });
+                window._candTpLine = candleSeries.createPriceLine({
+                    price: cand.tp, color: 'rgba(0,229,160,0.45)', lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
+                    title: 'TP? ' + (cand.tp || 0).toFixed(2),
+                });
+                window._candSlLine = candleSeries.createPriceLine({
+                    price: cand.sl, color: 'rgba(255,64,96,0.45)', lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
+                    title: 'SL? ' + (cand.sl || 0).toFixed(2),
+                });
+            } else {
+                removeCandidateLines();
+            }
         }
 
         // ── Redraw zones from live status ──
@@ -2349,8 +2705,11 @@ function _drawZoneLines(ctx, z, tf, lw, color, op, W, H, rightX, priceToY, tX) {
     ctx.font = '9px "IBM Plex Mono", monospace';
     ctx.textAlign = 'left';
     const lx = Math.max(2, x0 + 4);
-    if (yVAH >= 0 && yVAH <= H) ctx.fillText(tf, lx, yVAH - 3);
-    else if (yPOC >= 0 && yPOC <= H) ctx.fillText(tf, lx, yPOC - 3);
+    // Clamp the label baseline inside the chart so a zone near the top/bottom
+    // edge doesn't paint its TF tag off-canvas (fixes labels "出界").
+    const clampY = (y) => Math.min(Math.max(y, 9), H - 2);
+    if (yVAH >= 0 && yVAH <= H) ctx.fillText(tf, lx, clampY(yVAH - 3));
+    else if (yPOC >= 0 && yPOC <= H) ctx.fillText(tf, lx, clampY(yPOC - 3));
 }
 
 // Render the selected-timeframe zones onto the VP overlay canvas.
@@ -2819,7 +3178,7 @@ async function connectAPI() {
     const apikey = document.getElementById('apikey').value.trim();
     const contractId = document.getElementById('contract-id').value.trim();
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> CONNECTING...';
+    btn.innerHTML = '<span class="spinner"><span></span><span></span><span></span><span></span></span> CONNECTING...';
     setStatus('loading', 'CONNECTING...');
     log('Connecting to TopstepX API...', 'info');
 
@@ -3060,15 +3419,19 @@ let _btDataRange = null;  // { start, end, contract } once loaded for backtest
 function _profitLockBoundaryISO(dateStr) {
     const parts = String(dateStr || '').split('-').map(Number);
     if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return dateStr + 'T00:00:00Z';
-    // Follow Topstep/CME trading-day boundary: California 3pm.
-    return new Date(parts[0], parts[1] - 1, parts[2], 15, 0, 0, 0).toISOString();
+    // Follow Topstep/CME trading-day boundary: California 3:15pm (a ~1h
+    // maintenance gap follows, so the prior trading day is complete by then).
+    return new Date(parts[0], parts[1] - 1, parts[2], 15, 15, 0, 0).toISOString();
 }
 
-async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
+async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
     // overrideStart / overrideEnd let callers use a fixed window.
     // instead of the date pickers. Falls back to date pickers when omitted.
+    // force=true → re-pull the WHOLE range even if already loaded (used by the
+    // FETCH FULL DATA button to recover candles dropped by a wifi disconnect).
     const startDate = overrideStart || document.getElementById('start-date').value;
     const endDate   = overrideEnd   || document.getElementById('end-date').value;
+    if (force) _btDataRange = null;
     const username   = document.getElementById('username').value.trim();
     const apikey     = document.getElementById('apikey').value.trim();
     // Fall back to the CONTRACT dropdown when the ID box is blank (auto-detect),
@@ -3088,7 +3451,7 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
     let appendFetch = false;
     if (sameContract && _btDataRange.start === startDate && _btDataRange.end < endDate) {
         fetchStartTime = _profitLockBoundaryISO(_btDataRange.end);
-        fetchLabel = _btDataRange.end + ' 15:00 PT';
+        fetchLabel = _btDataRange.end + ' 15:15 PT';
         appendFetch = true;
     }
 
@@ -3099,7 +3462,8 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
         start_time: fetchStartTime,
         end_time:   endDate   + 'T23:59:59Z',
         append: appendFetch,
-        continuous_contract: true };
+        continuous_contract: true,
+        force_full: !!force };
     if (username)    body.username    = username;
     if (apikey)      body.api_key     = apikey;
     if (contractId)  body.contract_id = contractId;
@@ -3122,13 +3486,32 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd) {
             const adj = Number(data.continuous.price_adjustment || 0);
             log('Roll adjusted @ ' + data.continuous.roll_at + ' | old contract offset ' + adj.toFixed(2), 'info');
         }
-        log('Backtest data ready: ' + data.candles_count + ' bars' + (data.fetched_count != null ? ' (' + data.fetched_count + ' fetched)' : ''), 'success');
+        const storeTag = data.from_store ? ' [local store + incremental]' : '';
+        log('Backtest data ready: ' + data.candles_count + ' bars' + (data.fetched_count != null ? ' (' + data.fetched_count + ' fetched)' : '') + storeTag, 'success');
         // Refresh chart to show the full loaded range
         await fetchAndShowChart('1m');
         return true;
     } catch(e) {
         log('Data fetch failed: ' + e.message, 'error');
         return false;
+    }
+}
+
+// FETCH FULL DATA button — force a complete re-pull of the whole range. Use
+// this when a wifi drop left holes in the data (incremental sync only adds the
+// tail, so it never backfills an interior gap; a full re-pull does).
+async function fetchFullData() {
+    const btn = document.getElementById('btn-fetch-full');
+    if (!btn || btn.disabled) return;
+    const orig = btn.textContent;
+    btn.disabled = true;
+    log('Force-fetching FULL data range (recovering any missing candles)...', 'info');
+    try {
+        await _ensureBacktestData(btn, FULL_RANGE_START,
+            document.getElementById('end-date').value, true);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
     }
 }
 
@@ -3167,6 +3550,7 @@ async function runBacktest() {
         renderChart(backtestData);
         renderMetrics(backtestData.metrics, backtestData.trades);
         renderTrades(backtestData.trades);
+        if (!document.getElementById('btab-pnl').classList.contains('hidden')) renderPnlCurve();
         await refreshTradeHistoryForCurrentAccount(true);
 
     } catch(e) {
@@ -3273,7 +3657,7 @@ async function loadFullBacktestResults() {
         if (!results.length) return;
         _fullResults = results;
         renderFullResults(_fullResults);
-        log('Loaded Machine learning top ' + _fullResults.length + ' by ' + _fullSortCol + ' ' + _fullSortDir, 'info');
+        log('Loaded Combination top ' + _fullResults.length + ' by ' + _fullSortCol + ' ' + _fullSortDir, 'info');
     } catch(e) {
         // Non-blocking: the table simply stays empty until the next run.
     }
@@ -3379,7 +3763,7 @@ async function runAllCombinations() {
     if (!dataOk) {
         btn.disabled = false;
         if (filterBtn) filterBtn.disabled = false;
-        btn.textContent = 'MACHINE LEARNING';
+        btn.textContent = 'COMBINATION';
         return;
     }
 
@@ -3388,7 +3772,7 @@ async function runAllCombinations() {
     // Switch to Machine learning tab so user can watch
     document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
     document.querySelector('[data-btab="full"]').classList.add('active');
-    ['full','trades','execute','log'].forEach(id => {
+    ['full','trades','execute','learn','pnl','log'].forEach(id => {
         document.getElementById('btab-' + id).classList.toggle('hidden', id !== 'full');
     });
 
@@ -3397,25 +3781,31 @@ async function runAllCombinations() {
     _startFullProgress();
 
     const params = collectStrategyParams('bt');
+    // v0.24: when STRATEGY = ML (confluence), COMBINATION sweeps the Model+Style
+    // grid (240 runs) via /backtest/conf-combo-run; otherwise it sweeps TREND
+    // timeframe×RR via /backtest/ml-run. Both share the progress bar + table.
+    const confParams = collectConfluenceParams('bt');
+    const isConf = !!confParams;
     let success = false;
     try {
         const startDate = document.getElementById('start-date').value;
         const endDate   = document.getElementById('end-date').value;
         const capital   = 50000;
 
-        const resp = await fetch(API + '/backtest/ml-run', {
+        const endpoint = isConf ? '/backtest/conf-combo-run' : '/backtest/ml-run';
+        const body = isConf
+            ? { ...params, ...confParams, strategy: 'confluence',
+                initial_capital: capital, start_date: startDate, end_date: endDate }
+            : { ...params,
+                strategy: fixedParams.includes('strategy') ? params.strategy : 'all',
+                one_trade_per_session_direction: true, skip_zone_stability: false,
+                initial_capital: capital, start_date: startDate, end_date: endDate,
+                fixed_params: fixedParams };
+
+        const resp = await fetch(API + endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                ...params,
-                strategy: fixedParams.includes('strategy') ? params.strategy : 'all',
-                one_trade_per_session_direction: true,
-                skip_zone_stability: false,
-                initial_capital: capital,
-                start_date: startDate,
-                end_date: endDate,
-                fixed_params: fixedParams,
-            }),
+            body: JSON.stringify(body),
         });
 
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -3424,18 +3814,18 @@ async function runAllCombinations() {
         renderFullResults(_fullResults);
         _renderMlConfigCaption(params, fixedParams, startDate, endDate, data);
         // status row removed — result count logged below
-        log('Machine learning complete: showing top ' + _fullResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
+        log('Combination complete: showing top ' + _fullResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
         if (data.artifact && data.artifact.json) {
-            log('Machine learning AI file: ' + data.artifact.json, 'info');
+            log('Combination AI file: ' + data.artifact.json, 'info');
         }
         success = true;
     } catch(e) {
-        log('Machine learning failed: ' + e.message, 'error');
+        log('Combination failed: ' + e.message, 'error');
     } finally {
         _stopFullProgress(success);
         btn.disabled = false;
         if (filterBtn) filterBtn.disabled = false;
-        btn.textContent = 'MACHINE LEARNING';
+        btn.textContent = 'COMBINATION';
     }
 }
 
@@ -3444,6 +3834,23 @@ async function runAllCombinations() {
 function _renderMlConfigCaption(params, fixedParams, startDate, endDate, data) {
     const el = document.getElementById('full-config-caption');
     if (!el) return;
+    // Confluence COMBINATION sweep: describe the Model+Style grid + held knobs.
+    if (data && data.held_constant) {
+        const h = data.held_constant;
+        const total = data.total_combinations ? data.total_combinations + ' runs' : '';
+        const parts = [
+            'COMBINATION: RR×Breakout×TrailTrig×FullTPLock×Session' + (total ? ' = ' + total : ''),
+            'HELD: BAND ' + h.band_ticks + ' · MIN-TF ' + h.min_distinct_tf +
+                ' · MIN-PROB ' + h.min_prob + ' · TRAIL-LOCK ' + Math.round((h.trail_lock_pct || 0) * 100) + '%',
+            'TFs ' + (Array.isArray(h.timeframes) ? h.timeframes.join('+') : '') + ' · ' + (h.contract || ''),
+            'RANGE ' + (h.range || ((startDate || '?') + ' → ' + (endDate || '?'))),
+        ];
+        el.innerHTML = parts.map(s =>
+            '<span style="display:inline-block;margin-right:14px;">' + s + '</span>'
+        ).join('');
+        el.style.display = 'block';
+        return;
+    }
     const p = params || {};
     const contractLabel = contractLabelFromId(p.contract_id || 'CON.F.US.MNQ.M26');
     const size = normalizeContractSize(p.contract_id, p.contract_size != null ? p.contract_size : 3);
@@ -3774,6 +4181,15 @@ function stopOverlaySync() {
 }
 
 // ── Utility: ISO time string → lightweight-charts UTC seconds ──
+// Remove the faded "best candidate" preview lines (scorer's current pick that
+// has NOT cleared the admission gate). Safe to call when none exist.
+function removeCandidateLines() {
+    if (typeof candleSeries === 'undefined' || !candleSeries) return;
+    ['_candEntryLine', '_candTpLine', '_candSlLine'].forEach(k => {
+        if (window[k]) { try { candleSeries.removePriceLine(window[k]); } catch(e){} window[k] = null; }
+    });
+}
+
 function isoToChartTime(iso) {
     let s = iso;
     if (!s.endsWith('Z') && !s.includes('+') && !s.includes('-', 10)) s += 'Z';
@@ -4492,6 +4908,245 @@ function log(msg, type) {
     _lastLogType = type;
     _lastLogCount = 1;
     scrollSystemLogToBottom();
+}
+
+// ── LEARN RESULT panel ─────────────────────────────
+// Fetches the on-disk scorer(s) the last LEARN wrote and renders meta + full
+// raw-space weights, so the user sees exactly what live/backtest will use.
+function _fmtTs(s) {
+    if (!s) return '--';
+    try { return new Date(s).toLocaleString('en-US', { hour12: false }); }
+    catch (e) { return s; }
+}
+
+function _renderScorerCard(title, model) {
+    if (!model) return '<div style="margin-bottom:14px;color:var(--text3);">' + title + ': （尚未訓練）</div>';
+    if (model.error) return '<div style="margin-bottom:14px;color:var(--red);">' + title + ' 讀取失敗: ' + model.error + '</div>';
+    const m = model.meta || {};
+    const dropped = m.dropped_features || [];
+    const top = model.weights || [];
+    const rrIsTop = top.length && top[0].name === 'rr';
+    const warn = rrIsTop
+        ? '<div style="color:var(--red);font-weight:600;margin:4px 0;">⚠ rr 是最大權重 → 模型異常（server 可能用到舊程式碼，請重啟後重新 LEARN）</div>'
+        : '';
+    const kv = (label, val, cls) =>
+        '<span style="margin-right:14px;">' + label + ': <b style="color:' + (cls || 'var(--text1)') + ';">' + val + '</b></span>';
+
+    let meta = '<div style="margin:4px 0 6px;line-height:1.7;">';
+    meta += kv('訓練時間', _fmtTs(m.trained_at));
+    meta += kv('來源', m.source || '--');
+    meta += '<br>';
+    meta += kv('數據時間段', _fmtTs(m.data_start) + ' → ' + _fmtTs(m.data_end));
+    meta += '<br>';
+    meta += kv('樣本', (m.n_samples != null ? m.n_samples.toLocaleString() : '--'));
+    meta += kv('勝率', (m.train_win_rate != null ? (m.train_win_rate * 100).toFixed(1) + '%' : '--'));
+    meta += kv('train AUC', (m.train_auc != null ? m.train_auc.toFixed(3) : '--'));
+    meta += kv('OOS AUC', (m.oos_auc != null ? m.oos_auc.toFixed(3) : '--'), 'var(--cyan)');
+    meta += kv('OOS Brier', (m.oos_brier != null ? m.oos_brier.toFixed(3) : '--'));
+    meta += kv('C', (m.C != null ? (+m.C).toFixed(3) : '--'));
+    meta += '<br>';
+    meta += kv('RR', (m.rr_grid ? ('grid ' + m.rr_grid.join('/')) : (m.cfg && m.cfg.rr != null ? m.cfg.rr : '--')));
+    meta += kv('TFs', (m.timeframes || []).join('/'));
+    meta += kv('dropped', dropped.length ? dropped.join(', ') : '無', dropped.length ? 'var(--amber)' : 'var(--text3)');
+    meta += '</div>';
+
+    let rows = '';
+    for (const w of top) {
+        const pos = w.weight >= 0;
+        const isRr = w.name === 'rr';
+        rows += '<tr style="' + (isRr && rrIsTop ? 'background:rgba(255,80,80,0.12);' : '') + '">'
+            + '<td style="padding:2px 10px 2px 0;color:var(--text2);">' + w.name + '</td>'
+            + '<td style="padding:2px 0;text-align:right;font-weight:600;color:' + (pos ? 'var(--green)' : 'var(--red)') + ';">'
+            + (pos ? '+' : '') + w.weight.toFixed(4) + '</td></tr>';
+    }
+    const biasRow = '<tr><td style="padding:2px 10px 2px 0;color:var(--text3);">(bias)</td>'
+        + '<td style="padding:2px 0;text-align:right;color:var(--text3);">'
+        + (model.bias != null ? (model.bias >= 0 ? '+' : '') + (+model.bias).toFixed(4) : '--') + '</td></tr>';
+
+    return '<div style="margin-bottom:18px;">'
+        + '<div style="color:var(--cyan);font-weight:600;margin-bottom:2px;">' + title + '</div>'
+        + warn + meta
+        + '<table style="border-collapse:collapse;min-width:240px;">' + rows + biasRow + '</table>'
+        + '<div style="color:var(--text3);font-size:10px;margin-top:4px;">' + (model.path || '') + '</div>'
+        + '</div>';
+}
+
+async function loadLearnResult() {
+    const body = document.getElementById('learn-result-body');
+    const hint = document.getElementById('learn-result-hint');
+    if (!body) return;
+    if (hint) hint.textContent = '載入中…';
+    try {
+        const resp = await fetch(API + '/confluence/scorer');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        body.innerHTML =
+            _renderScorerCard('固定 RR 模型 (confluence_scorer.json)', data.fixed) +
+            _renderScorerCard('變動 RR / EV 模型 (confluence_scorer_ev.json)', data.ev);
+        if (hint) hint.textContent = '';
+    } catch (e) {
+        body.innerHTML = '<div style="color:var(--red);">讀取失敗: ' + e.message + '</div>';
+        if (hint) hint.textContent = '';
+    }
+}
+
+// ── PNL CURVE tab: cumulative equity + Topstep $2K trailing-DD line ──
+// The DD line starts $2000 below break-even and trails UP only as each day's
+// settled PnL sets a new equity high ("increase as income settles every day"),
+// then LOCKS at break-even (0) once it has climbed from -2000 to 0 — i.e. once
+// cumulative profit reaches +$2000. Mirrors Topstep's EOD trailing drawdown.
+function renderPnlCurve() {
+    const host = document.getElementById('pnl-curve-body');
+    const hint = document.getElementById('pnl-curve-hint');
+    if (!host) return;
+
+    const css = getComputedStyle(document.documentElement);
+    const pick = (name, fb) => (css.getPropertyValue(name).trim() || fb);
+    const C = {
+        green: pick('--green', '#00e5a0'), red: pick('--red', '#ff4060'),
+        cyan:  pick('--cyan', '#64dcff'),  amber: pick('--amber', '#ffa726'),
+        text2: pick('--text2', '#556178'), text3: pick('--text3', '#3a4560'),
+        border: 'rgba(100,220,255,0.10)',
+    };
+
+    const trades = (backtestData && backtestData.trades) ? backtestData.trades.slice() : [];
+    const done = trades.filter(t => t.pnl != null && (t.exit_time || t.entry_time));
+
+    const content = host.closest('.bottom-content');
+    const headerH = 30;
+    const W = Math.max(320, host.clientWidth || (content ? content.clientWidth : 600));
+    const H = Math.max(220, (content ? content.clientHeight : 300) - headerH - 6);
+    host.style.height = H + 'px';
+
+    let canvas = document.getElementById('pnl-curve-canvas');
+    if (!canvas) {
+        canvas = document.createElement('canvas');
+        canvas.id = 'pnl-curve-canvas';
+        canvas.style.cssText = 'display:block;width:100%;height:100%;';
+        host.appendChild(canvas);
+    }
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    if (!done.length) {
+        ctx.fillStyle = C.text2;
+        ctx.font = '12px "IBM Plex Mono", monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('尚無回測成交 — 先跑一次 BACKTEST', W / 2, H / 2);
+        if (hint) hint.textContent = '';
+        return;
+    }
+
+    done.sort((a, b) => new Date(a.exit_time || a.entry_time) - new Date(b.exit_time || b.entry_time));
+
+    const DD = 2000;
+    let cum = 0;
+    const pts = done.map(t => {
+        cum += (t.pnl || 0);
+        return { cum, day: String(t.exit_time || t.entry_time).slice(0, 10) };
+    });
+
+    // End-of-day settled equity (last cum of each day)
+    const eod = {};
+    pts.forEach(p => { eod[p.day] = p.cum; });
+    const days = Object.keys(eod).sort();
+
+    // Threshold IN FORCE during each day = min(0, peak(EOD of EARLIER days) - DD).
+    // Today's settle only lifts the line for tomorrow → the step is end-of-day.
+    const thrDay = {};
+    let prevPeak = 0;
+    days.forEach(d => { thrDay[d] = Math.min(0, prevPeak - DD); prevPeak = Math.max(prevPeak, eod[d]); });
+    const finalThr = Math.min(0, prevPeak - DD);
+    const locked = finalThr >= 0;                 // climbed -2000 → 0, line frozen
+    const thrAt = pts.map(p => thrDay[p.day]);
+
+    // First time settled equity touches the line in force = account blown
+    let breachIdx = -1;
+    for (let i = 0; i < pts.length; i++) { if (pts[i].cum <= thrAt[i]) { breachIdx = i; break; } }
+
+    let lo = -DD, hi = DD * 0.25;
+    for (const p of pts) { if (p.cum < lo) lo = p.cum; if (p.cum > hi) hi = p.cum; }
+    for (const v of thrAt) { if (v < lo) lo = v; }
+    const vpad = (hi - lo) * 0.08 || 100; lo -= vpad; hi += vpad;
+
+    const padL = 58, padR = 12, padT = 16, padB = 26;
+    const plotW = W - padL - padR, plotH = H - padT - padB, n = pts.length;
+    const x = i => padL + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+    const y = v => padT + (1 - (v - lo) / (hi - lo)) * plotH;
+
+    ctx.font = '10px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    for (let g = 0; g <= 5; g++) {
+        const v = lo + (hi - lo) * g / 5, yy = y(v);
+        ctx.strokeStyle = C.border; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke();
+        ctx.fillStyle = C.text3; ctx.fillText('$' + Math.round(v), padL - 6, yy);
+    }
+
+    ctx.strokeStyle = C.text2; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(padL, y(0)); ctx.lineTo(W - padR, y(0)); ctx.stroke();
+    ctx.setLineDash([]);
+
+    // x-axis date labels at first trade of selected days
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillStyle = C.text3;
+    const firstIdx = {};
+    pts.forEach((p, i) => { if (firstIdx[p.day] === undefined) firstIdx[p.day] = i; });
+    const every = Math.max(1, Math.ceil(days.length / 8));
+    days.forEach((d, di) => { if (di % every === 0) ctx.fillText(d.slice(5), x(firstIdx[d]), H - padB + 6); });
+
+    // danger band under the stepped threshold
+    ctx.globalAlpha = 0.06; ctx.fillStyle = C.red;
+    ctx.beginPath(); ctx.moveTo(x(0), y(thrAt[0]));
+    for (let i = 1; i < n; i++) { ctx.lineTo(x(i), y(thrAt[i - 1])); ctx.lineTo(x(i), y(thrAt[i])); }
+    ctx.lineTo(x(n - 1), y(lo)); ctx.lineTo(x(0), y(lo)); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // stepped trailing-DD line (amber while trailing, green once locked)
+    ctx.lineWidth = 1.5; ctx.strokeStyle = locked ? C.green : C.amber;
+    ctx.beginPath(); ctx.moveTo(x(0), y(thrAt[0]));
+    for (let i = 1; i < n; i++) { ctx.lineTo(x(i), y(thrAt[i - 1])); ctx.lineTo(x(i), y(thrAt[i])); }
+    ctx.stroke();
+
+    // equity curve
+    ctx.lineWidth = 1.8; ctx.strokeStyle = C.cyan; ctx.beginPath();
+    pts.forEach((p, i) => { const xi = x(i), yi = y(p.cum); i ? ctx.lineTo(xi, yi) : ctx.moveTo(xi, yi); });
+    ctx.stroke();
+
+    const last = pts[n - 1];
+    ctx.fillStyle = last.cum >= 0 ? C.green : C.red;
+    ctx.beginPath(); ctx.arc(x(n - 1), y(last.cum), 3, 0, Math.PI * 2); ctx.fill();
+
+    if (breachIdx >= 0) {
+        ctx.strokeStyle = C.red; ctx.lineWidth = 1; ctx.setLineDash([2, 2]);
+        ctx.beginPath(); ctx.moveTo(x(breachIdx), padT); ctx.lineTo(x(breachIdx), H - padB); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = C.red; ctx.beginPath(); ctx.arc(x(breachIdx), y(pts[breachIdx].cum), 4, 0, Math.PI * 2); ctx.fill();
+        ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+        ctx.fillText('BLOWN', x(breachIdx) + 4, padT + 2);
+    }
+
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillStyle = C.cyan; ctx.fillText('— equity', padL + 4, padT + 2);
+    ctx.fillStyle = locked ? C.green : C.amber;
+    ctx.fillText(locked ? '— $2K DD (locked)' : '— $2K trailing DD', padL + 66, padT + 2);
+
+    if (hint) {
+        let peak = 0, maxDDfp = 0;
+        pts.forEach(p => { peak = Math.max(peak, p.cum); maxDDfp = Math.max(maxDDfp, peak - p.cum); });
+        hint.textContent = [
+            'final $' + Math.round(last.cum), 'peak $' + Math.round(peak),
+            'maxDD(峰) $' + Math.round(maxDDfp),
+            (breachIdx >= 0 ? '⚠ 觸及 $2K 線 (爆帳)' : '未觸及 $2K 線'),
+            (locked ? 'DD線已鎖定 break-even' : 'DD線在 -$' + Math.round(-finalThr)),
+        ].join('  ·  ');
+        hint.style.color = breachIdx >= 0 ? C.red : C.text3;
+    }
 }
 
 function updateClock() {

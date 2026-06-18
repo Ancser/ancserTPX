@@ -41,9 +41,13 @@ from backend.strategy.consolidation import (
     ClockBucketZoneDetector, timeframes_for_base,
 )
 from backend.strategy.confluence import (
-    ConfluenceConfig, MAX_RECENCY_DEPTH, evaluate_confluence_scored,
+    ConfluenceConfig, MAX_RECENCY_DEPTH, evaluate_confluence_scored, gate_signals,
+    snapshot_zones_by_tf,
 )
-from backend.strategy.confluence_scorer import ConfluenceScorer, default_scorer_path
+from backend.strategy.confluence_scorer import (
+    ConfluenceScorer, default_scorer_path, resolve_scorer,
+)
+from backend.strategy.confluence_features import CONTEXT_WINDOW
 
 
 # Backwards-compatible alias — canonical path now lives in confluence_scorer.py.
@@ -61,8 +65,11 @@ class ConfluenceLiveEvaluator:
         rr: float = 1.5,
         base_minutes: int = 1,
         min_prob: float = 0.0,
+        ev_floor: Optional[float] = None,
+        rr_grid: Optional[List[float]] = None,
         use_scorer: bool = True,
         scorer_path: Optional[str] = None,
+        enable_breakout: bool = True,
     ):
         self.contract_id = contract_id
         self.tick_size = get_tick_size(contract_id)
@@ -78,15 +85,24 @@ class ConfluenceLiveEvaluator:
         )
         self.cfg.direction_mode = "auto"
         self.cfg.tick_size = self.tick_size
-        self.modes = ("momentum", "reversion")
+        # EV-priority gate (option C): when set, admit positive-EV setups
+        # instead of the raw win-prob threshold. None = legacy prob gate.
+        self.cfg.ev_floor = ev_floor
+        # Variable-RR (option C phase 2): when a grid is given, each candidate
+        # picks the EV-maximising RR. Requires a multi-RR-trained scorer.
+        self.cfg.rr_grid = tuple(rr_grid) if rr_grid else None
+        self.cfg.enable_breakout = bool(enable_breakout)
+        self.modes = self.cfg.auto_modes()
 
         # probability gate -> raw logit (score) threshold
         self.min_score = 0.0
         if min_prob and 0.0 < min_prob < 1.0:
             self.min_score = math.log(min_prob / (1.0 - min_prob))
 
-        # scorer: trained JSON if present & requested, else interpretable prior
-        self.scorer = ConfluenceScorer.load_or_heuristic(scorer_path, use_scorer)
+        # scorer: EV (variable-RR) model when RR optimisation is on and present,
+        # else trained fixed-RR JSON, else interpretable prior. Same chooser as
+        # the backtester so live == backtest.
+        self.scorer = resolve_scorer(use_scorer, self.cfg.rr_grid, scorer_path)
         self.scorer_source = self.scorer.source_name()
 
         # one detector per timeframe — same params as ConfluenceBacktester
@@ -101,6 +117,9 @@ class ConfluenceLiveEvaluator:
             for tf in self.timeframes
         }
         self._warmed = False
+        # trailing raw-candle window for the v0.22 context features (atr_R /
+        # trend_R). Same window the backtester / trainers feed → live==backtest.
+        self._recent: List[Candle] = []
 
     # ── feeding ──────────────────────────────────────────
 
@@ -108,6 +127,9 @@ class ConfluenceLiveEvaluator:
         """Feed one completed candle to every timeframe detector."""
         for det in self.detectors.values():
             det.update(candle)
+        self._recent.append(candle)
+        if len(self._recent) > CONTEXT_WINDOW:
+            self._recent = self._recent[-CONTEXT_WINDOW:]
 
     def warmup(self, candles: List[Candle]) -> None:
         """Replay historical candles through the detectors before going live."""
@@ -118,13 +140,7 @@ class ConfluenceLiveEvaluator:
     # ── snapshot ─────────────────────────────────────────
 
     def zones_by_tf(self) -> Dict[str, list]:
-        depth = self.cfg.max_recency_depth + 1
-        out: Dict[str, list] = {}
-        for tf, det in self.detectors.items():
-            zs = det.get_recent_zones(depth)
-            if zs:
-                out[tf] = zs
-        return out
+        return snapshot_zones_by_tf(self.detectors, self.cfg.max_recency_depth + 1)
 
     def level_universe(self, current_price: Optional[float]) -> List[dict]:
         """Every recent completed zone per timeframe (4h, 4h-1, 4h-2, … 2h, 2h-1,
@@ -188,11 +204,12 @@ class ConfluenceLiveEvaluator:
             return None
         signals = evaluate_confluence_scored(
             zbt, candle.close, self.cfg, self.scorer, modes=self.modes,
+            recent_candles=self._recent,
         )
-        signals = [s for s in signals if s.score >= self.min_score]
+        signals = gate_signals(signals, self.cfg, self.min_score)
         if not signals:
             return None
-        sig = signals[0]  # already sorted by score desc
+        sig = signals[0]  # already sorted by EV desc
         cl = sig.cluster
         return TradeSignal(
             strategy=StrategyType.TREND_FOLLOW,
@@ -207,6 +224,34 @@ class ConfluenceLiveEvaluator:
             order_type="limit",
         )
 
+    def top_candidate(self) -> Optional[dict]:
+        """Best scorer candidate at the LAST fed bar, IGNORING the admission gate.
+
+        Lets the live chart show what the model is currently considering (drawn
+        faded) even when nothing clears ``min_score`` / the EV floor — so the user
+        can watch the weights track new zones in real time instead of a frozen
+        chart. Returns the same explainable payload as ``explain`` plus
+        ``admitted`` (whether this candidate would actually be traded). Identical
+        scoring path to ``evaluate``/``explain`` → still live == backtest.
+        """
+        if not self._recent:
+            return None
+        candle = self._recent[-1]
+        zbt = self.zones_by_tf()
+        if len(zbt) < self.cfg.min_distinct_tf:
+            return None
+        signals = evaluate_confluence_scored(
+            zbt, candle.close, self.cfg, self.scorer, modes=self.modes,
+            recent_candles=self._recent,
+        )
+        if not signals:
+            return None
+        sig = signals[0]  # un-gated, already sorted by EV desc
+        admitted = bool(gate_signals([sig], self.cfg, self.min_score))
+        payload = self._signal_payload(sig, candle)
+        payload["admitted"] = admitted
+        return payload
+
     def explain(self, candle: Candle) -> Optional[dict]:
         """Full explainable payload for the current best signal (for logging /
         the live chart): direction, prices, score, probability, per-feature
@@ -216,11 +261,16 @@ class ConfluenceLiveEvaluator:
             return None
         signals = evaluate_confluence_scored(
             zbt, candle.close, self.cfg, self.scorer, modes=self.modes,
+            recent_candles=self._recent,
         )
-        signals = [s for s in signals if s.score >= self.min_score]
+        signals = gate_signals(signals, self.cfg, self.min_score)
         if not signals:
             return None
-        sig = signals[0]
+        return self._signal_payload(signals[0], candle)
+
+    def _signal_payload(self, sig, candle: Candle) -> dict:
+        """Build the explainable payload for one scored signal (shared by
+        ``explain`` and ``top_candidate`` so both render identically)."""
         cl = sig.cluster
         # per-timeframe weight contribution within the cluster (各自的權重),
         # sorted small->large TF; sum == cl.total_weight (縂權重).
@@ -243,6 +293,7 @@ class ConfluenceLiveEvaluator:
             "tp": round(sig.tp_price, 2),
             "score": round(sig.score, 4),
             "prob": round(sig.prob, 4),
+            "ev": round(sig.ev, 4),
             "weight": round(cl.total_weight, 2),
             "tfs": cl.distinct_tfs,
             "tf_weights": tf_weights,

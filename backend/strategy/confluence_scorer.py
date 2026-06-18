@@ -36,6 +36,25 @@ def default_scorer_path() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "models" / "confluence_scorer.json"
 
 
+def default_ev_scorer_path() -> Path:
+    """Variable-RR (EV) scorer location: <repo>/data/models/confluence_scorer_ev.json,
+    written by scripts/train_confluence_ev.py and used when RR optimisation is on."""
+    return Path(__file__).resolve().parents[2] / "data" / "models" / "confluence_scorer_ev.json"
+
+
+def resolve_scorer(use_scorer: bool, rr_grid=None, scorer_path=None) -> "ConfluenceScorer":
+    """Pick the right scorer for the run, shared by live + backtest so both load
+    the SAME model: explicit path wins; else the EV scorer when RR optimisation
+    is requested and it exists; else the fixed-RR scorer; else the heuristic."""
+    if scorer_path:
+        return ConfluenceScorer.load_or_heuristic(scorer_path, use_scorer)
+    if rr_grid:
+        ev = default_ev_scorer_path()
+        if use_scorer and ev.exists():
+            return ConfluenceScorer.load(ev)
+    return ConfluenceScorer.load_or_heuristic(None, use_scorer)
+
+
 @dataclass
 class ConfluenceScorer:
     weights: Dict[str, float] = field(default_factory=dict)
@@ -103,7 +122,11 @@ class ConfluenceScorer:
 
     def source_name(self) -> str:
         """Short label for UI/logs: the trained file's stem, or 'heuristic'."""
-        return "heuristic" if not self.meta.get("trained") else "confluence_scorer.json"
+        if not self.meta.get("trained"):
+            return "heuristic"
+        if self.meta.get("multi_rr"):
+            return "confluence_scorer_ev.json (變動RR)"
+        return "confluence_scorer.json"
 
     # ── default (untrained) heuristic ──
 
@@ -124,6 +147,8 @@ class ConfluenceScorer:
                 "side_is_vah": 0.0,
                 "mode_is_reversion": 0.8,   # 60d study: fading the wall won
                 "mean_band_pct": 0.0,
+                "rel_dist_to_price": -0.10,  # nearer entry (in R units) preferred
+                "rr": -0.30,                 # higher RR → lower win prob (prior)
             },
             bias=0.0,
             meta={"kind": "heuristic", "trained": False},

@@ -48,6 +48,73 @@ ancserTPX 是一套運行於 **TopstepX（ProjectX API）** 的 NQ（Nasdaq 100 
 
 ---
 
+## 架構
+
+### 專案結構
+
+```
+ancserTPX/
+├── backend/
+│   ├── api/routes.py              # FastAPI 路由 — 所有端點
+│   ├── backtest/
+│   │   ├── confluence_backtest.py  # 匯流回測器 + zone timeline 建構
+│   │   ├── confluence_worker.py    # 獨立子進程回測運行器（自己的 GIL）
+│   │   ├── engine.py              # Trend 回測引擎
+│   │   └── metrics.py             # 共用績效計算器
+│   ├── broker/topstepx.py         # TopstepX API 客戶端（認證、K 線、下單、websocket）
+│   ├── data/
+│   │   └── candle_store.py        # 持久 K 線累積器 + 缺 K 檢測
+│   ├── db/models.py               # Candle、Trade、合約規格
+│   ├── live/engine.py             # 即時交易引擎
+│   └── strategy/
+│       ├── confluence.py           # 多時間框加權匯流訊號引擎
+│       ├── confluence_scorer.py    # 邏輯回歸評分器（可解釋 ML）
+│       ├── consolidation.py        # ClockBucketZoneDetector、五時段架構
+│       ├── exit_policy.py          # 移動停損觸發 / 鎖利 / Full-TP-Lock
+│       └── trend_follow.py         # Trend 策略
+├── frontend/static/
+│   ├── ancserTPX.html             # 單頁應用（回測 + 即時兩個分頁）
+│   ├── ancserTPX.css              # 暗色主題 + 可重用 CSS 類別
+│   └── ancserTPX.js               # UI 邏輯、圖表、preset、模型網格
+├── data/
+│   ├── store/                     # 持久 1m K 線累積器（.pkl）
+│   ├── models/grid/               # 120 個預訓練 ML 模型
+│   └── presets.json               # 使用者 preset
+└── scripts/
+    ├── accumulate_history.py      # CLI：擴充持久 K 線庫
+    └── train_model_grid.py        # CLI：訓練全部 120 個網格模型
+```
+
+### 回測進程模型
+
+Web 回測在**獨立子進程**（`ProcessPoolExecutor`）中運行，擁有自己的 GIL，因此運算期間 Web 伺服器保持完全回應（fetch 資料 / live / 圖表都不會卡住）。子進程內部快取 K 線集和 zone timeline——同一份資料用不同模型 / RR / band / trail 參數重跑時，會跳過最慢的偵測器建構步驟。
+
+### 資料持久化
+
+歷史 1 分鐘 K 線持久化到 `data/store/MNQ_accumulated_1m.pkl` —— 一個只增不減的累積庫。fetch 時：
+1. 從本地庫載入（瞬間，無 API 呼叫）
+2. 增量 API 抓取（只拉最後一根 bar 之後的尾巴）
+3. 合併 + 自動缺 K 檢測 + 補回 wifi 斷線遺失的 bar
+4. 存回庫
+
+庫在伺服器重啟後依然存在，後續啟動只需幾百根增量 bar，而不是整段 60 天重新下載。
+
+### ML 模型網格
+
+120 個可解釋的邏輯回歸模型：RR(1, 1.5, 2) × Band(4, 6, 8, 10, 12) × MinTF(2, 3, 4, 5) × Breakout(開, 關)。每個模型是一份 JSON，包含原始特徵空間的權重，確保 live == 回測 == 訓練 的嚴格一致性。
+
+### 市場時段
+
+| 事件 | 美東 ET | UTC | 加州 PT（夏令） |
+|---|---|---|---|
+| 新交易日（亞盤開始）| 6:00 PM | 22:00 | 3:00 PM |
+| 每日維護 gap | 5:00–6:00 PM | 22:00–23:00 | 3:00–4:00 PM |
+| RTH 開盤 | 9:30 AM | 13:30 | 6:30 AM |
+| Bot 平倉 | 3:45 PM | 19:45 | 12:45 PM |
+| AH 結束 | ~5:59 PM | ~21:59 | ~2:59 PM |
+
+---
+
 ## 安裝前準備
 
 ### 1. ProjectX API 設定
