@@ -72,6 +72,11 @@ FEATURE_NAMES: tuple = (
     "is_breakout",            # 1 = breakout-retrace setup, 0 = momentum/reversion.
 )
 
+DEAD_FEATURES: frozenset = frozenset({
+    "n_levels", "side_is_vah", "largest_tf_rank", "cluster_width_ticks",
+    "n_distinct_tf",
+})
+
 _TF_RANK = {tf: i for i, tf in enumerate(AREA_TIMEFRAME_MINUTES.keys())}
 
 # Context windows (bars). Both trainers, the backtester and the live engine feed

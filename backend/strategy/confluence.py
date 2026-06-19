@@ -140,6 +140,7 @@ class ConfluenceConfig:
     # production uses momentum + reversion only. Optimizers can still enable it
     # explicitly for controlled A/B tests.
     enable_breakout: bool = False
+    max_risk_ticks: Optional[int] = None
     bands: Tuple[int, ...] = VA_BAND_PCTS
 
     def auto_modes(self) -> Tuple[str, ...]:
@@ -532,7 +533,10 @@ def _breakout_geometry(cluster, current_price, zones_by_tf, cfg, recent_candles)
     if sl is None:
         return None
     risk = abs(entry - sl)
-    if risk < MIN_RISK_TICKS * cfg.tick_size:
+    risk_ticks = risk / cfg.tick_size
+    if risk_ticks < MIN_RISK_TICKS:
+        return None
+    if cfg.max_risk_ticks and risk_ticks > cfg.max_risk_ticks:
         return None
     if direction == Direction.BUY and sl >= entry:
         return None
@@ -558,9 +562,10 @@ def _signal_geometry(cluster, current_price, zones_by_tf, mode, cfg, recent_cand
     if sl is None:
         return None
     risk = abs(entry - sl)
-    # Reject sub-minimum risk: SL essentially on the entry. Both a live hazard
-    # and a training poison (collapses the `rr` feature to ~0).
-    if risk < MIN_RISK_TICKS * cfg.tick_size:
+    risk_ticks = risk / cfg.tick_size
+    if risk_ticks < MIN_RISK_TICKS:
+        return None
+    if cfg.max_risk_ticks and risk_ticks > cfg.max_risk_ticks:
         return None
     if direction == Direction.BUY and sl >= entry:
         return None

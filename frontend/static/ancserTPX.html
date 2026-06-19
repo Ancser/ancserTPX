@@ -123,6 +123,16 @@
                     </select>
                 </div>
             </div>
+            <div class="form-group">
+                <label>PRESET</label>
+                <select id="preset-bt" onchange="loadPreset('bt')">
+                    <option value="default">Default</option>
+                </select>
+            </div>
+            <div class="action-row">
+                <button class="btn btn-outline btn-mini" onclick="savePreset('bt')">SAVE</button>
+                <button class="btn btn-outline btn-mini" onclick="deletePreset('bt')" title="Delete selected preset">DEL</button>
+            </div>
             <div id="ml-params-bt" style="display:none;margin-top:12px;">
                 <div class="panel-title" style="margin-top:0;">MODEL</div>
                 <input type="hidden" id="conf-base-bt" value="1">
@@ -130,19 +140,6 @@
                 <div class="form-group">
                     <label>MODEL <span class="lbl-hint">(版本庫 · 選擇即啟用)</span></label>
                     <select id="conf-model-bt" onchange="onModelSelect('bt')"><option value="">models loading…</option></select>
-                </div>
-                <div class="form-row">
-                    <div class="form-group" style="flex:0 0 100px;">
-                        <label>TRAINER</label>
-                        <select id="conf-trainer-bt">
-                            <option value="codex" selected>CODEX</option>
-                            <option value="claude">CLAUDE</option>
-                        </select>
-                    </div>
-                    <div class="form-group" style="flex:1;">
-                        <label>NEW MODEL DESCRIPTION</label>
-                        <input id="conf-description-bt" type="text" maxlength="120" placeholder="一句描述，例如 tighter SL wall">
-                    </div>
                 </div>
                 <div class="action-row">
                     <select id="conf-lossweight-bt" title="Loss aversion: >1 = 更高 PF / 更低 maxDD / 更少單">
@@ -157,11 +154,11 @@
                     <div class="form-group" style="flex:1;">
                         <label>MIN PROB</label>
                         <select id="conf-minprob-bt">
-                            <option value="0" selected>OFF</option>
+                            <option value="0">OFF</option>
                             <option value="0.50">0.50</option>
                             <option value="0.55">0.55</option>
                             <option value="0.60">0.60</option>
-                            <option value="0.65">0.65</option>
+                            <option value="0.65" selected>0.65</option>
                         </select>
                     </div>
                     <div class="form-group" style="flex:1;">
@@ -195,9 +192,9 @@
                         <div style="display:flex;gap:6px;">
                             <input type="hidden" id="conf-rrmode-bt" value="fixed">
                             <select id="conf-rr-bt" style="flex:1.3;">
-                                <option value="1.0">1:1</option>
+                                <option value="1.0" selected>1:1</option>
                                 <option value="2.0">1:2</option>
-                                <option value="3.0" selected>1:3</option>
+                                <option value="3.0">1:3</option>
                                 <option value="4.0">1:4</option>
                                 <option value="5.0">1:5</option>
                                 <option value="6.0">1:6</option>
@@ -205,12 +202,13 @@
                         </div>
                     </div>
                 </div>
+                <input type="hidden" id="conf-maxrisk-bt" value="0">
                 <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
                 <!-- TRAIL SL fixed: on trigger, move SL to +5% of TP (lock small positive). Only the trigger toggle is exposed. -->
                 <input type="hidden" id="conf-trail-lock-bt" value="0.05">
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
-                        <label>TRAIL TP TRIGGER <span class="lbl-hint">(達 50% TP 觸發 · SL 移至 +5%)</span></label>
+                        <label>TRAIL TP TRIGGER</label>
                         <input type="hidden" id="conf-trail-trigger-bt" value="0.5">
                         <button type="button" class="toggle-field on" id="conf-trail-trigger-btn-bt" onclick="toggleTrailTrigger('bt')">50%</button>
                     </div>
@@ -223,22 +221,12 @@
                     </div>
                 </div>
                 <div style="font-size:10px;color:var(--text2);line-height:1.6;">
-                    1m 基礎 · data/models 訓練 scorer · 與 console / live 同一引擎 (可解釋、可複刻)。<br>
-                    EV FLOOR = 期望值門檻 (prob×RR−(1−prob))，開啓後依 EV 優先排序與篩選；盈虧平衡勝率=1/(1+RR)。
+                    PARAMS: 1m base · wait 60m · B4 · 2TF · RR1 · minProb 0.65 · EV off · maxRisk off · breakout off.<br>
+                    RISK: trail 50% → SL +5% TP · session limit ON · size follows top selector.
                 </div>
             </div>
             <div id="tr-params-bt" style="margin-top:12px;">
                 <div class="panel-title" style="margin-top:0;">MODEL</div>
-                <div class="form-group">
-                    <label>PRESET</label>
-                    <select id="preset-bt" onchange="loadPreset('bt')">
-                        <option value="default">Default</option>
-                    </select>
-                </div>
-                <div class="action-row">
-                    <button class="btn btn-outline btn-mini" onclick="savePreset('bt')">SAVE</button>
-                    <button class="btn btn-outline btn-mini" onclick="deletePreset('bt')" title="Delete selected preset">DEL</button>
-                </div>
                 <div class="form-row" id="overlap-tf-row-bt">
                     <div class="form-group" style="flex:1;">
                         <label>TIMEFRAMES <span class="lbl-hint">(pick 1 = single; pick 2+ = overlap)</span></label>
@@ -383,6 +371,16 @@
                         </select>
                     </div>
                 </div>
+                <div class="form-group">
+                    <label>PRESET</label>
+                    <select id="preset-live" onchange="loadPreset('live')">
+                        <option value="default">Default</option>
+                    </select>
+                </div>
+                <div class="action-row">
+                    <button class="btn btn-outline btn-mini" onclick="savePreset('live')">SAVE</button>
+                    <button class="btn btn-outline btn-mini" onclick="deletePreset('live')" title="Delete selected preset">DEL</button>
+                </div>
                 <div id="ml-params-live" style="display:none;margin-top:12px;">
                     <div class="panel-title" style="margin-top:0;">MODEL</div>
                     <input type="hidden" id="conf-base-live" value="1">
@@ -390,19 +388,6 @@
                     <div class="form-group">
                         <label>MODEL <span class="lbl-hint">(版本庫 · 選擇即啟用)</span></label>
                         <select id="conf-model-live" onchange="onModelSelect('live')"><option value="">models loading…</option></select>
-                    </div>
-                    <div class="form-row">
-                        <div class="form-group" style="flex:0 0 100px;">
-                            <label>TRAINER</label>
-                            <select id="conf-trainer-live">
-                                <option value="codex" selected>CODEX</option>
-                                <option value="claude">CLAUDE</option>
-                            </select>
-                        </div>
-                        <div class="form-group" style="flex:1;">
-                            <label>NEW MODEL DESCRIPTION</label>
-                            <input id="conf-description-live" type="text" maxlength="120" placeholder="一句描述，例如 tighter SL wall">
-                        </div>
                     </div>
                     <div class="action-row">
                         <select id="conf-lossweight-live" title="Loss aversion: >1 = 更高 PF / 更低 maxDD / 更少單">
@@ -417,11 +402,11 @@
                         <div class="form-group" style="flex:1;">
                             <label>MIN PROB</label>
                             <select id="conf-minprob-live">
-                                <option value="0" selected>OFF</option>
+                                <option value="0">OFF</option>
                                 <option value="0.50">0.50</option>
                                 <option value="0.55">0.55</option>
                                 <option value="0.60">0.60</option>
-                                <option value="0.65">0.65</option>
+                                <option value="0.65" selected>0.65</option>
                             </select>
                         </div>
                         <div class="form-group" style="flex:1;">
@@ -455,9 +440,9 @@
                             <div style="display:flex;gap:6px;">
                                 <input type="hidden" id="conf-rrmode-live" value="fixed">
                                 <select id="conf-rr-live" style="flex:1.3;">
-                                    <option value="1.0">1:1</option>
+                                    <option value="1.0" selected>1:1</option>
                                     <option value="2.0">1:2</option>
-                                    <option value="3.0" selected>1:3</option>
+                                    <option value="3.0">1:3</option>
                                     <option value="4.0">1:4</option>
                                     <option value="5.0">1:5</option>
                                     <option value="6.0">1:6</option>
@@ -465,12 +450,13 @@
                             </div>
                         </div>
                     </div>
+                    <input type="hidden" id="conf-maxrisk-live" value="0">
                     <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
                     <!-- TRAIL SL fixed: on trigger, move SL to +5% of TP (lock small positive). Only the trigger toggle is exposed. -->
                     <input type="hidden" id="conf-trail-lock-live" value="0.05">
                     <div class="form-row">
                         <div class="form-group" style="flex:1;">
-                            <label>TRAIL TP TRIGGER <span class="lbl-hint">(達 50% TP 觸發 · SL 移至 +5%)</span></label>
+                            <label>TRAIL TP TRIGGER</label>
                             <input type="hidden" id="conf-trail-trigger-live" value="0.5">
                             <button type="button" class="toggle-field on" id="conf-trail-trigger-btn-live" onclick="toggleTrailTrigger('live')">50%</button>
                         </div>
@@ -483,22 +469,12 @@
                         </div>
                     </div>
                     <div style="font-size:10px;color:var(--text2);line-height:1.6;">
-                        1m 基礎 · data/models 訓練 scorer · 實盤直接下單 (practice account)。可解釋、與回測一致。<br>
-                        EV FLOOR = 期望值門檻，開啓後依 EV 優先排序與篩選 (勝率·RR 綜合)；盈虧平衡勝率=1/(1+RR)。
+                        PARAMS: 1m base · wait 60m · B4 · 2TF · RR1 · minProb 0.65 · EV off · maxRisk off · breakout off.<br>
+                        RISK: trail 50% → SL +5% TP · session limit ON · size follows top selector.
                     </div>
                 </div>
                 <div id="tr-params-live" style="margin-top:12px;">
                     <div class="panel-title" style="margin-top:0;">MODEL</div>
-                    <div class="form-group">
-                        <label>PRESET</label>
-                        <select id="preset-live" onchange="loadPreset('live')">
-                            <option value="default">Default</option>
-                        </select>
-                    </div>
-                    <div class="action-row">
-                        <button class="btn btn-outline btn-mini" onclick="savePreset('live')">SAVE</button>
-                        <button class="btn btn-outline btn-mini" onclick="deletePreset('live')" title="Delete selected preset">DEL</button>
-                    </div>
                     <div class="form-row" id="overlap-tf-row-live">
                         <div class="form-group" style="flex:1;">
                             <label>TIMEFRAMES <span class="lbl-hint">(pick 1 = single; pick 2+ = overlap)</span></label>

@@ -60,16 +60,17 @@ const DEFAULT_STRATEGY_PARAMS = {
     skip_zone_stability: false,
     conf_band_ticks: 4,
     conf_min_distinct_tf: 2,
-    conf_rr: 3.0,
+    conf_rr: 1.0,
     conf_wait_minutes: 60,
     conf_base_minutes: 1,
-    conf_min_prob: 0,
+    conf_min_prob: 0.65,
     conf_ev_floor: null,
     conf_rr_grid: null,
     conf_use_scorer: true,
     conf_enable_breakout: false,
-    conf_trail_trigger_pct: 0,
-    conf_trail_lock_pct: 0,
+    conf_max_risk_ticks: null,
+    conf_trail_trigger_pct: 0.50,
+    conf_trail_lock_pct: 0.05,
     conf_full_tp_lock: 0,
     conf_session_limit: true,
 };
@@ -495,9 +496,9 @@ function collectConfluenceParams(mode) {
     return {
         conf_band_ticks: fv('conf-band-' + mode, 4.0),
         conf_min_distinct_tf: iv('conf-mintf-' + mode, 2),
-        conf_rr: Math.max(1, Math.min(6, Math.round(fv('conf-rr-' + mode, 3.0)))),
+        conf_rr: Math.max(1, Math.min(6, Math.round(fv('conf-rr-' + mode, 1.0)))),
         conf_base_minutes: 1,
-        conf_min_prob: fv('conf-minprob-' + mode, 0.0),
+        conf_min_prob: fv('conf-minprob-' + mode, 0.65),
         conf_ev_floor: ovf('conf-evfloor-' + mode),
         conf_rr_grid: null,
         conf_use_scorer: true,
@@ -507,9 +508,10 @@ function collectConfluenceParams(mode) {
             const el = document.getElementById('conf-breakout-' + mode);
             return el ? el.value === '1' : false;
         })(),
+        conf_max_risk_ticks: iv('conf-maxrisk-' + mode, 0) || null,
         // STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original.
-        conf_trail_trigger_pct: fv('conf-trail-trigger-' + mode, 0.0),
-        conf_trail_lock_pct: fv('conf-trail-lock-' + mode, 0.0),
+        conf_trail_trigger_pct: fv('conf-trail-trigger-' + mode, 0.50),
+        conf_trail_lock_pct: fv('conf-trail-lock-' + mode, 0.05),
         conf_full_tp_lock: iv('conf-fulltplock-' + mode, 0),
         conf_session_limit: (function () {
             const el = document.getElementById('conf-session-limit-' + mode);
@@ -664,8 +666,8 @@ function applyStrategyParams(mode, params) {
     _set('confirm-bars-' + mode, String(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7));
 
     // ML (confluence) params — restored when the preset uses the ML strategy.
-    _set('conf-minprob-' + mode, String(p.conf_min_prob != null ? p.conf_min_prob : 0));
-    _set('conf-rr-' + mode, (p.conf_rr != null ? Number(p.conf_rr) : 3.0).toFixed(1));
+    _set('conf-minprob-' + mode, String(p.conf_min_prob != null ? p.conf_min_prob : 0.65));
+    _set('conf-rr-' + mode, (p.conf_rr != null ? Number(p.conf_rr) : 1.0).toFixed(1));
     _set('conf-band-' + mode, String(parseInt(p.conf_band_ticks != null ? p.conf_band_ticks : 4, 10)));
     _set('conf-mintf-' + mode, String(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2));
     _set('conf-evfloor-' + mode, (p.conf_ev_floor == null ? '' : String(p.conf_ev_floor)));
@@ -673,6 +675,7 @@ function applyStrategyParams(mode, params) {
     // with one decimal so it matches the <option> values (e.g. "1.0,1.5,...").
     _set('conf-rrmode-' + mode, 'fixed');
     _set('conf-breakout-' + mode, (p.conf_enable_breakout === false) ? '0' : '1');
+    _set('conf-maxrisk-' + mode, String(p.conf_max_risk_ticks != null ? p.conf_max_risk_ticks : 0));
     // STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original.
     // OFF option value is "0" (not "0.00"); only non-zero needs the 2-decimal form.
     const _pct = (v) => { const n = Number(v) || 0; return n === 0 ? '0' : n.toFixed(2); };
@@ -733,7 +736,7 @@ function buildPresetName(params) {
         p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
     );
     if (normalizeStrategyName(p.strategy) === 'confluence') {
-        const rrLabel = 'RR1:' + Number(p.conf_rr != null ? p.conf_rr : 3.0);
+        const rrLabel = 'RR1:' + Number(p.conf_rr != null ? p.conf_rr : 1.0);
         return 'ML ' + rrLabel +
             ' B' + Number(p.conf_band_ticks != null ? p.conf_band_ticks : 4) +
             ' TF' + Number(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2) +
@@ -876,7 +879,7 @@ async function initPresets() {
     }
 }
 
-// TRAIL TP TRIGGER is a binary OFF/5% toggle button backed by a hidden input
+// TRAIL TP TRIGGER is a binary OFF/50% toggle button backed by a hidden input
 // (id conf-trail-trigger-<mode>) so the backend payload reads exactly as before.
 function _syncTrailTriggerBtn(mode) {
     const inp = document.getElementById('conf-trail-trigger-' + mode);
@@ -956,7 +959,6 @@ function _applyModelCombo(mode, rr, band, tf, brk) {
     _set('conf-band-' + mode, String(Math.round(band)));
     _set('conf-mintf-' + mode, String(tf));
     _set('conf-rrmode-' + mode, 'fixed');
-    _set('conf-rr-' + mode, Number(rr).toFixed(1));
     _set('conf-breakout-' + mode, brk ? '1' : '0');
     if (typeof onRrModeChange === 'function') onRrModeChange(mode);
 }
@@ -982,7 +984,8 @@ async function onModelSelect(mode) {
         if (resp.ok && data.success) {
             _activeModelName = name;
             await loadModelRegistry();
-            log(`已啟用 ${name} (band ${Math.round(band)} · ${tf}TF · RR 1:${Math.round(rr)})`, 'success');
+            const runRr = parseFloat((document.getElementById('conf-rr-' + mode) || {}).value || '1');
+            log(`已啟用 ${name} (band ${Math.round(band)} · ${tf}TF · runtime RR 1:${Math.round(runRr)})`, 'success');
         } else {
             log('啟用模型失敗: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
         }
@@ -991,19 +994,16 @@ async function onModelSelect(mode) {
 
 async function retrainModel(mode) {
     const sel = document.getElementById('conf-model-' + mode);
-    const trainer = String((document.getElementById('conf-trainer-' + mode) || {}).value || 'codex');
+    const trainer = 'codex';
     const descriptionEl = document.getElementById('conf-description-' + mode);
-    const description = String((descriptionEl || {}).value || '').trim();
-    const rr = parseFloat((document.getElementById('conf-rr-' + mode) || {}).value || '3');
+    const rr = parseFloat((document.getElementById('conf-rr-' + mode) || {}).value || '1');
     const band = parseInt((document.getElementById('conf-band-' + mode) || {}).value || '4', 10);
     const tf = parseInt((document.getElementById('conf-mintf-' + mode) || {}).value || '2', 10);
     const brk = false;
     const lw = parseFloat((document.getElementById('conf-lossweight-' + mode) || {}).value || '1');
-    if (description.length < 3) {
-        log('請先填寫至少 3 個字的一句模型描述', 'warn');
-        if (descriptionEl) descriptionEl.focus();
-        return;
-    }
+    const minProb = String((document.getElementById('conf-minprob-' + mode) || {}).value || '0.65');
+    const description = String((descriptionEl || {}).value || '').trim()
+        || `RR${Math.round(rr)} B${band} TF${tf} prob${minProb} ui retrain`;
     if (!confirm(`新增模型版本\ntrainer = ${trainer.toUpperCase()}\ndescription = ${description}\nloss weight = ${lw}×\n需已載入歷史數據，訓練可能需要一段時間。`)) return;
     log(`訓練新版本中 · ${trainer.toUpperCase()} · ${description}…`, 'info');
     try {
@@ -1444,7 +1444,7 @@ async function _learnScorer(opts) {
                 train_frac: 1.0,
                 band_ticks: cp.conf_band_ticks != null ? cp.conf_band_ticks : 4.0,
                 min_distinct_tf: cp.conf_min_distinct_tf != null ? cp.conf_min_distinct_tf : 2,
-                rr: cp.conf_rr != null ? cp.conf_rr : 3.0,
+                rr: cp.conf_rr != null ? cp.conf_rr : 1.0,
                 enable_breakout: cp.conf_enable_breakout === true,
             }),
         });
@@ -1455,6 +1455,16 @@ async function _learnScorer(opts) {
             + ', AUC=' + (r.train_auc != null ? r.train_auc.toFixed(3) : '?')
             + ', TFs=' + (r.timeframes || []).join('/'), 'success');
         if (tw) log('LEARN weights: ' + tw, 'info');
+        if (r.threshold_sweep && r.threshold_sweep.rows) {
+            const sw = r.threshold_sweep;
+            const best = sw.recommended || {};
+            log('SWEEP: prob threshold scan (3 MNQ) — best: min_prob='
+                + (best.min_prob != null ? best.min_prob.toFixed(2) : '?')
+                + ' → PnL=$' + (best.pnl != null ? best.pnl.toFixed(0) : '?')
+                + ', maxDD=$' + (best.max_dd != null ? best.max_dd.toFixed(0) : '?')
+                + ', ' + (best.trades || 0) + ' trades, PF=' + (best.pf || 0),
+                best.max_dd < 2000 && best.pnl > 0 ? 'success' : 'warning');
+        }
         loadLearnResult();  // refresh the LEARN RESULT panel with the new model
 
         // 4) Run the panel-specific follow-up with the freshly trained scorer.

@@ -291,16 +291,17 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         strategy=strategy,
         conf_band_ticks=float(getattr(req, "conf_band_ticks", 4.0) or 4.0),
         conf_min_distinct_tf=int(getattr(req, "conf_min_distinct_tf", 2) or 2),
-        conf_rr=_normalize_conf_rr(getattr(req, "conf_rr", 3.0), 3.0),
+        conf_rr=_normalize_conf_rr(getattr(req, "conf_rr", 1.0), 1.0),
         conf_wait_minutes=int(getattr(req, "conf_wait_minutes", 60) or 60),
         conf_base_minutes=int(getattr(req, "conf_base_minutes", 1) or 1),
-        conf_min_prob=float(getattr(req, "conf_min_prob", 0.0) or 0.0),
+        conf_min_prob=float(getattr(req, "conf_min_prob", 0.65) or 0.0),
         conf_ev_floor=_conf_ev_floor_opt(getattr(req, "conf_ev_floor", None)),
         conf_rr_grid=None,
         conf_use_scorer=bool(getattr(req, "conf_use_scorer", True)),
         conf_enable_breakout=bool(getattr(req, "conf_enable_breakout", False)),
-        conf_trail_trigger_pct=float(getattr(req, "conf_trail_trigger_pct", 0.0) or 0.0),
-        conf_trail_lock_pct=float(getattr(req, "conf_trail_lock_pct", 0.0) or 0.0),
+        conf_max_risk_ticks=getattr(req, "conf_max_risk_ticks", None),
+        conf_trail_trigger_pct=float(getattr(req, "conf_trail_trigger_pct", 0.50) or 0.0),
+        conf_trail_lock_pct=float(getattr(req, "conf_trail_lock_pct", 0.05) or 0.0),
         conf_full_tp_lock=int(getattr(req, "conf_full_tp_lock", 0) or 0),
         conf_session_limit=bool(getattr(req, "conf_session_limit", True)),
         conf_shadow=bool(getattr(req, "conf_shadow", False)),
@@ -504,17 +505,18 @@ class BacktestRequest(BaseModel):
     # the multi-timeframe weighted-level engine is used instead of the trend engine.
     conf_band_ticks: float = 4.0          # level-cluster band width (ticks)
     conf_min_distinct_tf: int = 2         # cluster needs >= this many timeframes
-    conf_rr: float = Field(default=3.0, ge=1.0, le=6.0)
+    conf_rr: float = Field(default=1.0, ge=1.0, le=6.0)
     conf_wait_minutes: int = 60           # one-shot limit-order fill timeout
     conf_base_minutes: int = 1            # input candle resolution (1 or 5)
-    conf_min_prob: float = 0.0            # gate: skip signals below this win-prob (0=off)
+    conf_min_prob: float = 0.65           # optimized gate: skip signals below this win-prob
     conf_ev_floor: Optional[float] = None # EV-priority gate: keep EV>=floor (None=win-prob gate; 0=every +EV)
     conf_rr_grid: Optional[List[float]] = None
     conf_use_scorer: bool = True          # True=trained JSON, False=heuristic prior
     conf_enable_breakout: bool = False    # include breakout-retrace candidate (False=momentum+reversion only)
+    conf_max_risk_ticks: Optional[int] = None  # drop signals with SL > N ticks (None=no cap)
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
-    conf_trail_trigger_pct: float = 0.0   # 0 = trailing OFF; else fraction of entry→TP distance that fires break-even
-    conf_trail_lock_pct: float = 0.0      # locked SL as fraction of TP distance on trigger (0=pure break-even)
+    conf_trail_trigger_pct: float = 0.50  # optimized: fire after 50% of TP distance
+    conf_trail_lock_pct: float = 0.05     # optimized: lock +5% of TP distance
     conf_full_tp_lock: int = 0            # 0 = OFF; stop new entries after N full-TP exits/session
     conf_session_limit: bool = True       # one trade per session+direction (existing rule)
 
@@ -1340,6 +1342,8 @@ async def _run_confluence_backtest_proc(req: BacktestRequest) -> BacktestRespons
     ckey = _bt_candle_key(candles)
     send_candles = candles if ckey != _bt_last_candle_key else None
     progress = str(_BT_PROGRESS_FILE)
+    _bt_progress_file_cache["data"] = None
+    _bt_progress_file_cache["read_at"] = 0.0
     _update_bt_progress(
         "queued", 0, len(candles),
         f"{len(candles)} candles, {'new data' if send_candles is not None else 'cached data'}",
@@ -1436,13 +1440,14 @@ def _run_confluence_backtest(req: BacktestRequest, progress_callback=None) -> Ba
     sig_cfg.ev_floor = req.conf_ev_floor
     sig_cfg.rr_grid = None
     sig_cfg.enable_breakout = bool(getattr(req, "conf_enable_breakout", False))
+    sig_cfg.max_risk_ticks = getattr(req, "conf_max_risk_ticks", None)
     run_cfg = ConfluenceBacktestConfig(
         wait_minutes=req.conf_wait_minutes, min_score=min_score,
         base_minutes=base, timeframes=timeframes,
         one_trade_per_session_direction=bool(getattr(req, "conf_session_limit",
                                                       req.one_trade_per_session_direction)),
-        trail_trigger_pct=float(getattr(req, "conf_trail_trigger_pct", 0.0) or 0.0),
-        trail_lock_pct=float(getattr(req, "conf_trail_lock_pct", 0.0) or 0.0),
+        trail_trigger_pct=float(getattr(req, "conf_trail_trigger_pct", 0.50) or 0.0),
+        trail_lock_pct=float(getattr(req, "conf_trail_lock_pct", 0.05) or 0.0),
         full_tp_lock=int(getattr(req, "conf_full_tp_lock", 0) or 0),
     )
     bt_cfg = BacktestConfig(
@@ -1610,6 +1615,20 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
 
     sw = info["std_weights"]
     top = sorted(sw, key=lambda k: abs(sw[k]), reverse=True)[:5]
+
+    sweep_result = None
+    try:
+        from scripts.train_confluence import sweep_probability_threshold
+        full_tl = build_zone_timeline(candles, timeframes, tick, MAX_RECENCY_DEPTH)
+        rows, best_idx = sweep_probability_threshold(
+            candles, full_tl, scorer, cfg, req.contract_id,
+            contract_size=3, wait_minutes=req.wait_min,
+        )
+        sweep_result = {"rows": rows, "best_idx": best_idx,
+                        "recommended": rows[best_idx]}
+    except Exception:
+        pass
+
     return {
         "success": True,
         "n_bars": len(train),
@@ -1623,6 +1642,7 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
         "top_weights": [{"name": n, "weight": round(sw[n], 4),
                          "raw": round(weights[n], 6)} for n in top],
         "saved_to": str(out),
+        "threshold_sweep": sweep_result,
     }
 
 
@@ -1814,6 +1834,20 @@ def _retrain_model_sync(candles, req: "ModelRetrainRequest") -> dict:
 
     sw = info["std_weights"]
     top = sorted(sw, key=lambda k: abs(sw[k]), reverse=True)[:5]
+
+    sweep_result = None
+    try:
+        from scripts.train_confluence import sweep_probability_threshold
+        sweep_tl = build_zone_timeline(candles, timeframes, tick, MAX_RECENCY_DEPTH)
+        rows, best_idx = sweep_probability_threshold(
+            candles, sweep_tl, scorer, cfg, req.contract_id,
+            contract_size=3, wait_minutes=req.wait_min,
+        )
+        sweep_result = {"rows": rows, "best_idx": best_idx,
+                        "recommended": rows[best_idx]}
+    except Exception:
+        pass
+
     return {
         "success": True, "name": model_id, "model_id": model_id,
         "trainer": req.trainer, "description": scorer.meta["description"],
@@ -1823,6 +1857,7 @@ def _retrain_model_sync(candles, req: "ModelRetrainRequest") -> dict:
         "oos_brier": info["oos_brier"], "loss_weight": req.loss_weight,
         "top_weights": [{"name": n, "weight": round(sw[n], 4)} for n in top],
         "saved_to": str(out),
+        "threshold_sweep": sweep_result,
     }
 
 
@@ -3009,6 +3044,7 @@ def _run_conf_combo(candles, timeline, scorer, tick, base_minutes, timeframes,
         sig_cfg.ev_floor = ev_floor
         sig_cfg.rr_grid = None
         sig_cfg.enable_breakout = bool(enable_breakout)
+        sig_cfg.max_risk_ticks = req_data.get("conf_max_risk_ticks") or None
         run_cfg = ConfluenceBacktestConfig(
             wait_minutes=wait_minutes, min_score=min_score,
             base_minutes=base_minutes, timeframes=timeframes,
@@ -3086,7 +3122,7 @@ async def conf_combo_run(req: ConfComboRunRequest):
     tick = get_tick_size(contract_id)
     base = max(1, int(req.conf_base_minutes or 1))
     timeframes = timeframes_for_base(base)
-    trail_lock_pct = float(getattr(req, "conf_trail_lock_pct", 0.0) or 0.0)
+    trail_lock_pct = float(getattr(req, "conf_trail_lock_pct", 0.05) or 0.0)
 
     candles = sorted(_historical_candles, key=lambda c: c.timestamp)
     scorer = resolve_scorer(bool(req.conf_use_scorer), None)
@@ -3402,12 +3438,23 @@ async def get_ml_progress():
     return dict(_ml_progress)
 
 
+_bt_progress_file_cache: dict = {"data": None, "read_at": 0.0}
+
+
 @router.get("/backtest/progress")
 async def get_backtest_progress():
     """Return progress for the currently running single confluence backtest."""
+    import time as _t
+    now = _t.time()
+    cached = _bt_progress_file_cache
+    if now - cached["read_at"] < 1.0 and cached["data"] is not None:
+        return cached["data"]
     try:
         if _BT_PROGRESS_FILE.exists():
-            return json.loads(_BT_PROGRESS_FILE.read_text(encoding="utf-8"))
+            data = json.loads(_BT_PROGRESS_FILE.read_text(encoding="utf-8"))
+            cached["data"] = data
+            cached["read_at"] = now
+            return data
     except Exception:
         pass
     return dict(_bt_progress_state)
@@ -3458,17 +3505,18 @@ class LiveStartRequest(BaseModel):
     # conf_shadow defaults False — live places real orders (practice account).
     conf_band_ticks: float = 4.0
     conf_min_distinct_tf: int = 2
-    conf_rr: float = Field(default=3.0, ge=1.0, le=6.0)
+    conf_rr: float = Field(default=1.0, ge=1.0, le=6.0)
     conf_wait_minutes: int = 60
     conf_base_minutes: int = 1
-    conf_min_prob: float = 0.0
+    conf_min_prob: float = 0.65
     conf_ev_floor: Optional[float] = None
     conf_rr_grid: Optional[List[float]] = None
     conf_use_scorer: bool = True
     conf_enable_breakout: bool = False
+    conf_max_risk_ticks: Optional[int] = None
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
-    conf_trail_trigger_pct: float = 0.0
-    conf_trail_lock_pct: float = 0.0
+    conf_trail_trigger_pct: float = 0.50
+    conf_trail_lock_pct: float = 0.05
     conf_full_tp_lock: int = 0
     conf_session_limit: bool = True
     conf_shadow: bool = False
@@ -4061,19 +4109,24 @@ _DEFAULT_PRESET_PARAMS = {
     "tr_one_trade_per_session": True,
     "value_area_pct": 0.80,
     "area_timeframe": "5m",
+    "method": "single",
+    "tf_combo": [],
+    "rr_ratio": 2,
+    "breakout_confirm_bars": 7,
     "skip_zone_stability": False,
     "conf_band_ticks": 4.0,
     "conf_min_distinct_tf": 2,
-    "conf_rr": 3.0,
+    "conf_rr": 1.0,
     "conf_wait_minutes": 60,
     "conf_base_minutes": 1,
-    "conf_min_prob": 0.0,
+    "conf_min_prob": 0.65,
     "conf_ev_floor": None,
     "conf_rr_grid": None,
     "conf_use_scorer": True,
     "conf_enable_breakout": False,
-    "conf_trail_trigger_pct": 0.0,
-    "conf_trail_lock_pct": 0.0,
+    "conf_max_risk_ticks": None,
+    "conf_trail_trigger_pct": 0.50,
+    "conf_trail_lock_pct": 0.05,
     "conf_full_tp_lock": 0,
     "conf_session_limit": True,
     "conf_shadow": False,
@@ -4105,6 +4158,10 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         if params.get("value_area_pct") != 0.80:
             params["value_area_pct"] = 0.80
             changed = True
+
+    if presets.get(_DEFAULT_PRESET_NAME) != _DEFAULT_PRESET_PARAMS:
+        presets[_DEFAULT_PRESET_NAME] = dict(_DEFAULT_PRESET_PARAMS)
+        changed = True
 
     if not presets:
         presets[_DEFAULT_PRESET_NAME] = dict(_DEFAULT_PRESET_PARAMS)

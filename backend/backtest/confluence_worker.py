@@ -49,8 +49,13 @@ def _ensure_logging() -> None:
         root.setLevel(logging.INFO)
 
 
+_last_progress_write: float = 0.0
+_last_progress_stage: str = ""
+
+
 def _set_progress(progress, stage: str, current: int, total: int,
                   detail: str = "", status: str = "running") -> None:
+    global _last_progress_write, _last_progress_stage
     if progress is None:
         return
     state = {
@@ -65,6 +70,14 @@ def _set_progress(progress, stage: str, current: int, total: int,
         if hasattr(progress, "update"):
             progress.update(state)
             return
+        now = _time.time()
+        is_new_stage = stage != _last_progress_stage
+        if (not is_new_stage
+                and status not in ("complete", "error")
+                and now - _last_progress_write < 2.0):
+            return
+        _last_progress_write = now
+        _last_progress_stage = stage
         path = Path(str(progress))
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
@@ -142,27 +155,28 @@ def run_job(ckey, candles_or_none, params: dict, progress=None) -> dict:
     scorer = resolve_scorer(bool(p.get("conf_use_scorer", True)), rr_grid)
 
     min_score = 0.0
-    cmp = p.get("conf_min_prob")
+    cmp = p.get("conf_min_prob", 0.65)
     if cmp and 0.0 < cmp < 1.0:
         min_score = math.log(cmp / (1.0 - cmp))
 
     sig_cfg = ConfluenceConfig(
         band_ticks=p["conf_band_ticks"],
         min_distinct_tf=p["conf_min_distinct_tf"],
-        rr=float(p.get("conf_rr", 3.0) or 3.0),
+        rr=float(p.get("conf_rr", 1.0) or 1.0),
     )
     sig_cfg.direction_mode = "auto"
     sig_cfg.tick_size = tick
     sig_cfg.ev_floor = p.get("conf_ev_floor")
     sig_cfg.rr_grid = tuple(rr_grid) if rr_grid else None
     sig_cfg.enable_breakout = bool(p.get("conf_enable_breakout", False))
+    sig_cfg.max_risk_ticks = p.get("conf_max_risk_ticks") or None
 
     run_cfg = ConfluenceBacktestConfig(
         wait_minutes=p["conf_wait_minutes"], min_score=min_score,
         base_minutes=base, timeframes=timeframes,
         one_trade_per_session_direction=bool(p.get("conf_session_limit", True)),
-        trail_trigger_pct=float(p.get("conf_trail_trigger_pct", 0.0) or 0.0),
-        trail_lock_pct=float(p.get("conf_trail_lock_pct", 0.0) or 0.0),
+        trail_trigger_pct=float(p.get("conf_trail_trigger_pct", 0.50) or 0.0),
+        trail_lock_pct=float(p.get("conf_trail_lock_pct", 0.05) or 0.0),
         full_tp_lock=int(p.get("conf_full_tp_lock", 0) or 0),
     )
     bt_cfg = BacktestConfig(

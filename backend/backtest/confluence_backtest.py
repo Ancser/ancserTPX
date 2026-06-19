@@ -94,7 +94,7 @@ def build_zone_timeline(
     for i, candle in enumerate(candles):
         for det in detectors.values():
             det.update(candle)
-        counts = tuple(len(det.get_completed_zones()) for det in detectors.values())
+        counts = tuple(det.completed_zone_count for det in detectors.values())
         if counts != last_counts:
             snapshot = snapshot_zones_by_tf(detectors, depth)
             last_counts = counts
@@ -227,7 +227,7 @@ class ConfluenceBacktester:
         total = len(candles)
         wait = self.run_cfg.wait_bars  # minute-accurate timeout in input candles
         edge_guard = wait + 2  # no new entries this close to data end
-        progress_step = max(1000, total // 100) if total else 1
+        progress_step = max(5000, total // 20) if total else 1
         if progress_callback:
             progress_callback("replaying strategy", 0, total, "starting simulation")
 

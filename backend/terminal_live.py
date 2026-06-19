@@ -65,16 +65,17 @@ DEFAULT_PRESET_PARAMS = {
     "skip_zone_stability": False,
     "conf_band_ticks": 4.0,
     "conf_min_distinct_tf": 2,
-    "conf_rr": 3.0,
+    "conf_rr": 1.0,
     "conf_wait_minutes": 60,
     "conf_base_minutes": 1,
-    "conf_min_prob": 0.0,
+    "conf_min_prob": 0.65,
     "conf_ev_floor": None,
     "conf_rr_grid": None,
     "conf_use_scorer": True,
     "conf_enable_breakout": False,
-    "conf_trail_trigger_pct": 0.0,
-    "conf_trail_lock_pct": 0.0,
+    "conf_max_risk_ticks": None,
+    "conf_trail_trigger_pct": 0.50,
+    "conf_trail_lock_pct": 0.05,
     "conf_full_tp_lock": 0,
     "conf_session_limit": True,
     "conf_shadow": False,
@@ -160,7 +161,7 @@ def _load_presets_file() -> dict:
             "conf_band_ticks", "conf_min_distinct_tf", "conf_rr",
             "conf_wait_minutes", "conf_base_minutes", "conf_min_prob",
             "conf_ev_floor", "conf_rr_grid", "conf_use_scorer",
-            "conf_enable_breakout", "conf_trail_trigger_pct",
+            "conf_enable_breakout", "conf_max_risk_ticks", "conf_trail_trigger_pct",
             "conf_trail_lock_pct", "conf_full_tp_lock",
             "conf_session_limit", "conf_shadow",
         }
@@ -175,6 +176,8 @@ def _load_presets_file() -> dict:
             if new_name not in presets:
                 presets[new_name] = params
             del presets[name]
+    if presets.get(DEFAULT_PRESET_NAME) != DEFAULT_PRESET_PARAMS:
+        presets[DEFAULT_PRESET_NAME] = dict(DEFAULT_PRESET_PARAMS)
     if not presets:
         presets[DEFAULT_PRESET_NAME] = dict(DEFAULT_PRESET_PARAMS)
     if data.get("last_used_bt") != "default" and data.get("last_used_bt") not in presets:
@@ -404,6 +407,15 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         except (TypeError, ValueError):
             return None
 
+    def _conf_optional_int(key):
+        value = preset.get(key)
+        if value in (None, "", 0, "0"):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     return StrategyParams(
         strategy=strategy_mode,
         tp_ticks=primary["tp"],
@@ -432,16 +444,17 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         # v0.19 confluence config (used only when strategy == "confluence")
         conf_band_ticks=_conf_float("conf_band_ticks", 4.0),
         conf_min_distinct_tf=_conf_int("conf_min_distinct_tf", 2),
-        conf_rr=float(max(1, min(6, round(_conf_float("conf_rr", 3.0))))),
+        conf_rr=float(max(1, min(6, round(_conf_float("conf_rr", 1.0))))),
         conf_wait_minutes=_conf_int("conf_wait_minutes", 60),
         conf_base_minutes=_conf_int("conf_base_minutes", 1),
-        conf_min_prob=_conf_float("conf_min_prob", 0.0),
+        conf_min_prob=_conf_float("conf_min_prob", 0.65),
         conf_ev_floor=_conf_optional_float("conf_ev_floor"),
         conf_rr_grid=None,
         conf_use_scorer=bool(preset.get("conf_use_scorer", True)),
         conf_enable_breakout=bool(preset.get("conf_enable_breakout", False)),
-        conf_trail_trigger_pct=_conf_float("conf_trail_trigger_pct", 0.0),
-        conf_trail_lock_pct=_conf_float("conf_trail_lock_pct", 0.0),
+        conf_max_risk_ticks=_conf_optional_int("conf_max_risk_ticks"),
+        conf_trail_trigger_pct=_conf_float("conf_trail_trigger_pct", 0.50),
+        conf_trail_lock_pct=_conf_float("conf_trail_lock_pct", 0.05),
         conf_full_tp_lock=_conf_int("conf_full_tp_lock", 0),
         conf_session_limit=bool(preset.get("conf_session_limit", True)),
         conf_shadow=bool(preset.get("conf_shadow", False)),
@@ -496,9 +509,9 @@ async def run_terminal_live() -> int:
         preset["conf_shadow"] = _env_bool("TOPSTEPX_CONFLUENCE_SHADOW", False)
         preset["conf_base_minutes"] = 1
         try:
-            preset["conf_min_prob"] = float(os.getenv("TOPSTEPX_CONF_MIN_PROB", "0") or 0)
+            preset["conf_min_prob"] = float(os.getenv("TOPSTEPX_CONF_MIN_PROB", "0.65") or 0.65)
         except ValueError:
-            preset["conf_min_prob"] = 0.0
+            preset["conf_min_prob"] = 0.65
         preset_source = f"{preset_source}+confluence_env"
 
     client = TopstepXClient(username=username, api_key=api_key, use_demo=use_demo)

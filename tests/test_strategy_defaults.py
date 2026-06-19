@@ -16,9 +16,13 @@ class StrategyDefaultTests(unittest.TestCase):
         for params in (strategy, backtest, live):
             self.assertEqual(params.conf_band_ticks, 4.0)
             self.assertEqual(params.conf_min_distinct_tf, 2)
-            self.assertEqual(params.conf_rr, 3.0)
+            self.assertEqual(params.conf_rr, 1.0)
+            self.assertEqual(params.conf_min_prob, 0.65)
             self.assertIsNone(params.conf_rr_grid)
             self.assertFalse(params.conf_enable_breakout)
+            self.assertIsNone(getattr(params, "conf_max_risk_ticks", None))
+            self.assertEqual(params.conf_trail_trigger_pct, 0.50)
+            self.assertEqual(params.conf_trail_lock_pct, 0.05)
 
     def test_terminal_preserves_new_confluence_fields(self):
         params = _build_strategy_params({

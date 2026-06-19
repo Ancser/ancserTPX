@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import math
 import pickle
 import sys
 from datetime import datetime
@@ -47,7 +48,7 @@ from backend.strategy.confluence import (
     ConfluenceConfig, MAX_RECENCY_DEPTH, evaluate_confluence_scored,
 )
 from backend.strategy.confluence_features import (
-    FEATURE_NAMES, features_to_vector, CONTEXT_WINDOW,
+    FEATURE_NAMES, DEAD_FEATURES, features_to_vector, CONTEXT_WINDOW,
 )
 from backend.strategy.confluence_scorer import ConfluenceScorer, save_model_version
 from backend.backtest.confluence_backtest import build_zone_timeline
@@ -133,7 +134,8 @@ def fit_scorer(X, y, C=None, sample_weight=None):
     X = np.asarray(X, dtype=float)
     y = np.asarray(y, dtype=int)
     mean, std = X.mean(axis=0), X.std(axis=0)
-    usable = std > STD_TOL
+    dead_mask = np.array([name in DEAD_FEATURES for name in FEATURE_NAMES])
+    usable = (std > STD_TOL) & ~dead_mask
     Xz = (X[:, usable] - mean[usable]) / std[usable]
 
     clf = _fit_logistic(Xz, y, C, sample_weight)
@@ -159,7 +161,7 @@ def fit_scorer(X, y, C=None, sample_weight=None):
         "C": float(getattr(clf, "C_", [C or 1.0])[0]),
         "n_features_used": int(usable.sum()),
         "dropped_features": [FEATURE_NAMES[i] for i in range(len(FEATURE_NAMES))
-                             if not usable[i]],
+                             if not usable[i] or dead_mask[i]],
         "std_weights": std_weights,
     }
     return weights, b_raw, info
@@ -171,7 +173,8 @@ def make_oos_fit(C):
     def fit_fn(Xtr, ytr):
         Xtr = np.asarray(Xtr, dtype=float)
         mean, std = Xtr.mean(axis=0), Xtr.std(axis=0)
-        usable = std > STD_TOL
+        dead_mask = np.array([name in DEAD_FEATURES for name in FEATURE_NAMES])
+        usable = (std > STD_TOL) & ~dead_mask
         clf = _fit_logistic((Xtr[:, usable] - mean[usable]) / std[usable],
                             np.asarray(ytr, dtype=int), C, None)
 
@@ -211,6 +214,58 @@ def evaluate_and_meta(X, y, starts, ends, n_bars, embargo, C=None, loss_weight=1
     return weights, bias, info
 
 
+def sweep_probability_threshold(
+    candles, timeline, scorer, signal_cfg, contract_id="CON.F.US.MNQ.M26",
+    contract_size=3, wait_minutes=15,
+    probs=None, trail_trigger_pct=0.0, trail_lock_pct=0.0,
+    max_dd_target=2000.0,
+):
+    """Sweep min_prob thresholds and return per-threshold backtest metrics.
+
+    Reuses the precomputed ``timeline`` so only the signal gate changes per
+    run — each replay is cheap (no detector re-feeding). Returns a list of
+    dicts sorted by min_prob, plus the index of the recommended threshold
+    (highest PnL where maxDD < max_dd_target, or lowest maxDD if none qualifies).
+    """
+    from backend.backtest.confluence_backtest import (
+        ConfluenceBacktester, ConfluenceBacktestConfig,
+    )
+    from backend.db.models import get_point_value
+
+    if probs is None:
+        probs = [i / 20.0 for i in range(13)]  # 0.00, 0.05, … 0.60
+    point_val = get_point_value(contract_id)
+    rows = []
+    for prob in probs:
+        min_score = math.log(prob / (1.0 - prob)) if 0 < prob < 1.0 else 0.0
+        run_cfg = ConfluenceBacktestConfig(
+            wait_minutes=wait_minutes, min_score=min_score,
+            trail_trigger_pct=trail_trigger_pct, trail_lock_pct=trail_lock_pct,
+        )
+        bt = ConfluenceBacktester(
+            signal_cfg, run_cfg, contract_id, contract_size, scorer=scorer,
+        )
+        result = bt.run(candles, zones_timeline=timeline)
+        m = result.metrics
+        rows.append({
+            "min_prob": prob, "min_score": round(min_score, 4),
+            "trades": m.total_trades, "wins": m.wins,
+            "win_rate": round(m.win_rate, 4),
+            "pnl": round(m.total_pnl, 2),
+            "max_dd": round(m.max_drawdown, 2),
+            "pf": round(m.profit_factor, 2),
+            "max_consec_loss": m.max_consecutive_losses,
+            "avg_loss": round(m.avg_loss, 2),
+        })
+    # pick best: highest PnL among rows with maxDD < target; fallback to lowest maxDD
+    qualified = [r for r in rows if r["max_dd"] < max_dd_target and r["pnl"] > 0]
+    if qualified:
+        best_idx = rows.index(max(qualified, key=lambda r: r["pnl"]))
+    else:
+        best_idx = rows.index(min(rows, key=lambda r: r["max_dd"]))
+    return rows, best_idx
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=60)
@@ -238,6 +293,11 @@ def main():
                     help="one-line model description used in the version name")
     ap.add_argument("--enable-breakout", action="store_true",
                     help="include breakout-retrace candidates (default: off)")
+    ap.add_argument("--sweep", action="store_true",
+                    help="after training, sweep min_prob thresholds and print "
+                         "maxDD/PnL table (3 MNQ, target maxDD < $2k)")
+    ap.add_argument("--sweep-contracts", type=int, default=3,
+                    help="contract size for the threshold sweep (default: 3)")
     args = ap.parse_args()
 
     base = max(1, args.base_min)
@@ -318,6 +378,33 @@ def main():
     print(f"\n[model] {model_id}", flush=True)
     print(f"[version] {out}", flush=True)
     print(f"[active] {MODEL_DIR / 'confluence_scorer.json'}", flush=True)
+
+    if args.sweep:
+        print(f"\n[sweep] running probability threshold sweep "
+              f"({args.sweep_contracts} MNQ) ...", flush=True)
+        sweep_tl = build_zone_timeline(candles, timeframes, tick, MAX_RECENCY_DEPTH)
+        rows, best_idx = sweep_probability_threshold(
+            candles, sweep_tl, scorer, cfg, args.contract,
+            contract_size=args.sweep_contracts,
+            wait_minutes=args.wait,
+        )
+        print(f"\n{'prob':>6s} {'score':>7s} {'trades':>6s} {'WR':>6s} "
+              f"{'PnL':>10s} {'maxDD':>8s} {'PF':>6s} {'consec':>6s}", flush=True)
+        print("-" * 62, flush=True)
+        for i, r in enumerate(rows):
+            mark = " <<" if i == best_idx else ""
+            print(f"{r['min_prob']:6.2f} {r['min_score']:7.3f} {r['trades']:6d} "
+                  f"{r['win_rate']:6.1%} {r['pnl']:10.2f} {r['max_dd']:8.2f} "
+                  f"{r['pf']:6.2f} {r['max_consec_loss']:6d}{mark}", flush=True)
+        best = rows[best_idx]
+        if best["max_dd"] < 2000 and best["pnl"] > 0:
+            print(f"\n[sweep] RECOMMENDED: min_prob={best['min_prob']:.2f} → "
+                  f"maxDD=${best['max_dd']:.0f}, PnL=${best['pnl']:.0f}, "
+                  f"{best['trades']} trades", flush=True)
+        else:
+            print(f"\n[sweep] no threshold meets maxDD<$2k + positive PnL. "
+                  f"Lowest maxDD: ${best['max_dd']:.0f} at prob={best['min_prob']:.2f}",
+                  flush=True)
 
 
 if __name__ == "__main__":

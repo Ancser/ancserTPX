@@ -865,10 +865,14 @@ class ClockBucketZoneDetector:
         """The in-progress bucket zone (not yet a reference)."""
         return self._active_zone
 
+    @property
+    def completed_zone_count(self) -> int:
+        return len(self._completed_zones)
+
     def get_recent_zones(self, n: Optional[int] = None) -> List[ConsolidationZone]:
         """Last n completed zones (most recent last)."""
         n = n if n is not None else self.max_recent
-        return list(self._completed_zones[-n:])
+        return self._completed_zones[-n:]
 
     def get_completed_zones(self) -> List[ConsolidationZone]:
         return list(self._completed_zones)

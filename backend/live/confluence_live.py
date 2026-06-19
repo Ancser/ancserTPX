@@ -70,6 +70,7 @@ class ConfluenceLiveEvaluator:
         use_scorer: bool = True,
         scorer_path: Optional[str] = None,
         enable_breakout: bool = False,
+        max_risk_ticks: Optional[int] = None,
     ):
         self.contract_id = contract_id
         self.tick_size = get_tick_size(contract_id)
@@ -90,6 +91,7 @@ class ConfluenceLiveEvaluator:
         self.cfg.ev_floor = ev_floor
         self.cfg.rr_grid = None
         self.cfg.enable_breakout = bool(enable_breakout)
+        self.cfg.max_risk_ticks = max_risk_ticks
         self.modes = self.cfg.auto_modes()
 
         # probability gate -> raw logit (score) threshold
