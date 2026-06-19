@@ -292,6 +292,22 @@ class LiveTradingEngine:
         max_positive = max(0, self._floor_ticks_to_step(tp_ticks * trigger_pct) - self.TRAIL_TICK_STEP)
         return max(0, min(min(tp_ticks, max_positive), trail_ticks))
 
+    def _confluence_exit_style(self):
+        """ML/confluence trail knobs use the ML panel's conf_* fields.
+
+        Trend trailing is expressed as fixed ticks; confluence trailing is
+        expressed as percentages of the actual entry→TP distance, matching the
+        confluence backtester exactly.
+        """
+        from backend.strategy.exit_policy import ConfluenceExitStyle
+
+        return ConfluenceExitStyle(
+            trail_trigger_pct=float(getattr(self.strategy_params, "conf_trail_trigger_pct", 0.0) or 0.0),
+            trail_lock_pct=float(getattr(self.strategy_params, "conf_trail_lock_pct", 0.0) or 0.0),
+            full_tp_lock=int(getattr(self.strategy_params, "conf_full_tp_lock", 0) or 0),
+            session_limit=bool(getattr(self.strategy_params, "conf_session_limit", True)),
+        )
+
     @staticmethod
     def _order_id(order: Dict[str, Any]) -> Optional[int]:
         oid = order.get("id", order.get("orderId"))
@@ -1250,6 +1266,17 @@ class LiveTradingEngine:
             "protection_synced": self._protection_synced,
             "auto_oco_fail_safe_triggered": self._auto_oco_fail_safe_triggered,
             "auto_oco_settings_url": self.AUTO_OCO_SETTINGS_URL,
+            "trail_sl_triggered": self._trail_sl_triggered,
+            "trail_trigger_pct": (
+                float(getattr(self.strategy_params, "conf_trail_trigger_pct", 0.0) or 0.0)
+                if self.strategy_mode == "confluence"
+                else self._strategy_trigger_pct(StrategyType.TREND_FOLLOW)
+            ),
+            "trail_lock_pct": (
+                float(getattr(self.strategy_params, "conf_trail_lock_pct", 0.0) or 0.0)
+                if self.strategy_mode == "confluence"
+                else None
+            ),
             "daily_pnl": self._daily_pnl,
             "tp_locked": self._any_full_tp_locked(),
             "full_tp_lock": self._full_tp_lock,
@@ -2026,8 +2053,7 @@ class LiveTradingEngine:
         # Auto OCO protection is monitored before the candle gate; trailing still needs price.
         if self._open_position:
             self._position_age += 1   # track for display only
-            # Confluence trades keep their structural SL/TP (no trend trailing).
-            if self._last_market_price and self.strategy_mode != "confluence":
+            if self._last_market_price:
                 await self._check_trailing_sl_live()
             return
 
@@ -2376,9 +2402,72 @@ class LiveTradingEngine:
         if self._trail_sl_triggered or not self._active_signal or not self._fill_price:
             return
         sig = self._active_signal
+        if self.strategy_mode == "confluence":
+            style = self._confluence_exit_style()
+            if not style.trail_enabled:
+                return
+            mkt = self._last_market_price
+            if mkt is None:
+                return
+            from backend.strategy.exit_policy import maybe_trail_sl
+
+            entry = float(self._fill_price or sig.entry_price)
+            new_sl, triggered = maybe_trail_sl(
+                sig.direction,
+                entry,
+                sig.tp_price,
+                sig.sl_price,
+                self._trail_sl_triggered,
+                float(mkt),
+                style,
+            )
+            if not triggered:
+                return
+
+            self._trail_sl_triggered = True
+            new_sl = self._round_to_tick(new_sl)
+            tp_dist = abs(sig.tp_price - entry)
+            self._log_event(
+                f"[TRAIL SL] ML {style.trail_trigger_pct:.0%} TP -> SL {new_sl:.2f} "
+                f"(entry={entry:.2f}, lock={style.trail_lock_pct:.0%} TP, mkt={float(mkt):.2f})"
+            )
+
+            if not self._sl_order_id or not self._protection_synced:
+                synced = await self._sync_auto_oco_protection(sig, wait_seconds=2.0)
+                if not synced or not self._sl_order_id:
+                    self._log_event("[TRAIL SL] 找不到可修改的 Auto OCO SL，保留原保護單並等待下次重試", "error")
+                    self._trail_sl_triggered = False
+                    return
+
+            try:
+                resp = await self.client.modify_order(
+                    self.account_id,
+                    self._sl_order_id,
+                    size=self.contract_size,
+                    stop_price=new_sl,
+                )
+                if resp.success:
+                    self._log_event(f"[TRAIL SL] SL #{self._sl_order_id} -> {new_sl:.2f}")
+                    sig.sl_price = new_sl
+                    if tp_dist > 0:
+                        sig.entry_price = entry
+                    self._protection_synced = True
+                else:
+                    self._log_event(
+                        f"[TRAIL SL] 修改 SL 失敗: {resp.error_message} → 原 Auto OCO SL 維持不動",
+                        "error",
+                    )
+                    self._trail_sl_triggered = False
+            except Exception as e:
+                self._log_event(f"[TRAIL SL] 修改 SL 異常: {e} → 原 Auto OCO SL 維持不動", "error")
+                self._trail_sl_triggered = False
+            return
+
         if not self._strategy_trail_enabled(sig.strategy):
             return
         mkt = self._last_market_price
+        if mkt is None:
+            return
         if sig.direction == Direction.BUY:
             ticks_moved = (mkt - self._fill_price) / self.tick_size
         else:

@@ -2131,35 +2131,10 @@ async function pollLiveStatus() {
             if (window._liveTpLine) { try { candleSeries.removePriceLine(window._liveTpLine); } catch(e){} window._liveTpLine = null; }
             if (window._liveSlLine) { try { candleSeries.removePriceLine(window._liveSlLine); } catch(e){} window._liveSlLine = null; }
             if (window._liveEntryLine) { try { candleSeries.removePriceLine(window._liveEntryLine); } catch(e){} window._liveEntryLine = null; }
-            // ── No admitted trade: draw the scorer's BEST candidate (faded), so
-            // the chart keeps updating in real time and you can see the model's
-            // current entry/SL/TP + win-prob track the freshest zones. ──
-            const cand = st.confluence_candidate;
-            removeCandidateLines();  // clear last poll's preview before redrawing
-            if (candleSeries && cand && !st.position && !st.pending_order_id
-                && typeof cand.entry === 'number') {
-                const cIsLong = String(cand.direction || '').toLowerCase() === 'buy';
-                const probPct = ((cand.prob || 0) * 100).toFixed(0);
-                const tag = (cIsLong ? '候選BUY' : '候選SELL') + ' ' + probPct + '%'
-                    + ' EV' + ((cand.ev >= 0 ? '+' : '') + (cand.ev || 0).toFixed(2));
-                window._candEntryLine = candleSeries.createPriceLine({
-                    price: cand.entry, color: '#8a8f9a', lineWidth: 1,
-                    lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
-                    title: tag,
-                });
-                window._candTpLine = candleSeries.createPriceLine({
-                    price: cand.tp, color: 'rgba(0,229,160,0.45)', lineWidth: 1,
-                    lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
-                    title: 'TP? ' + (cand.tp || 0).toFixed(2),
-                });
-                window._candSlLine = candleSeries.createPriceLine({
-                    price: cand.sl, color: 'rgba(255,64,96,0.45)', lineWidth: 1,
-                    lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true,
-                    title: 'SL? ' + (cand.sl || 0).toFixed(2),
-                });
-            } else {
-                removeCandidateLines();
-            }
+            // FLAT / no working order: do not draw candidate Entry/SL/TP lines.
+            // They are model previews, not live orders, and looked too much like
+            // stale SL/TP after manual flatten/restart.
+            removeCandidateLines();
         }
 
         // ── Redraw zones from live status ──
