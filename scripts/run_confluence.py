@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: scripts/run_confluence.py
-# 狀態: v0.19.0 (standalone confluence research runner — base-candle aware)
+# 狀態: v1.0.6 (standalone confluence research runner — base-candle aware)
 # 用途: 抓取真實 MNQ 資料(1m 或 5m) → 跑多時間框加權匯流回測 → 輸出比較表
 # 關聯文件:
 #   ← backend/backtest/confluence_backtest.py  (ConfluenceBacktester)

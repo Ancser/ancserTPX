@@ -61,7 +61,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="ancserTPX",
         description="TopstepX NQ 期貨自動交易系統",
-        version="0.1.0",
+        version="1.0.6",
         lifespan=lifespan,
     )
 

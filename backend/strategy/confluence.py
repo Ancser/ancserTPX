@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: backend/strategy/confluence.py
-# 狀態: v0.21.0 (multi-timeframe weighted level confluence — core engine)
+# 狀態: v1.0.6 (multi-timeframe weighted level confluence — core engine)
 # 關聯文件:
 #   ← backend/strategy/consolidation.py      (per-TF ClockBucketZoneDetector zones)
 #   ← backend/db/models.py                   (ConsolidationZone, Direction)
@@ -130,13 +130,13 @@ class ConfluenceConfig:
     max_recency_depth: int = MAX_RECENCY_DEPTH
     tf_weight: Dict[str, float] = field(default_factory=lambda: dict(DEFAULT_TF_WEIGHT))
     weighted_entry: bool = True        # True = weighted avg, False = simple avg
-    # v0.23: where the limit sits inside a cluster. "edge" = the clustered level
+    # v1.0.6: where the limit sits inside a cluster. "edge" = the clustered level
     # NEAREST the current price (the first-touch structural boundary), so the
     # order sits ON a real level instead of floating at the weighted centroid
     # ("半空中"). "centroid" = legacy weighted/simple average (cluster.price).
     # Geometry-affecting → models trained under one value must run under the same.
     entry_mode: str = "edge"
-    # v0.23 breakout-retrace candidate (see _breakout_geometry). Default OFF:
+    # v1.0.6 breakout-retrace candidate (see _breakout_geometry). Default OFF:
     # production uses momentum + reversion only. Optimizers can still enable it
     # explicitly for controlled A/B tests.
     enable_breakout: bool = False
@@ -423,7 +423,7 @@ def evaluate_confluence_scored(
     sorted by score (desc) so the caller just takes the top one above its
     threshold — this is the 'auto-select best action this bar' behaviour.
 
-    ``recent_candles`` is the trailing price window used for the v0.22 context
+    ``recent_candles`` is the trailing price window used for the v1.0.6 context
     features (atr_R / trend_R). Live, backtest and training MUST all pass the
     same-length window (see confluence_features.CONTEXT_WINDOW) to stay in
     lock-step; omitting it makes those features neutral (pre-context behaviour).
@@ -459,7 +459,7 @@ def _best_rr_signal(cluster, mode, geom, current_price, cfg, scorer,
     uses its own reward:risk (read from geometry), so a lower-prob/higher-RR
     setup can win when its expected value is larger.
 
-    ``levels`` (full level universe) + ``recent_candles`` feed the v0.22 context
+    ``levels`` (full level universe) + ``recent_candles`` feed the v1.0.6 context
     features; they are threaded through unchanged so live/backtest/train match."""
     from backend.strategy.confluence_features import extract_features  # local: avoid cycle
     rrs = cfg.rr_grid if cfg.rr_grid else (cfg.rr,)
@@ -502,7 +502,7 @@ def _breakout_geometry(cluster, current_price, zones_by_tf, cfg, recent_candles)
     low-volume node (same span machinery as the other modes). Returns None unless
     a real, still-intact breakout is present in the recent window — so when no
     candles are supplied (old caller) breakout simply yields no candidate and the
-    pre-v0.23 universe is reproduced exactly.
+    pre-v1.0.6 universe is reproduced exactly.
 
       VAH cluster: close > vah_80 → BUY the pullback (entry between vah_80 and high)
       VAL cluster: close < val_80 → SELL the pullback (entry between low and val_80)

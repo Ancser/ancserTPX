@@ -5,7 +5,7 @@
 #   - calculate_all(trades, capital) → Metrics
 #   - 子方法: win_rate / expectancy / max_drawdown / calmar_ratio /
 #             profit_factor / max_consecutive_losses / daily_pnl_summary
-# 版本變更 (v0.11):
+# 版本變更 (v1.0.6):
 #   - 新增 _aggregate_post_breakout: 彙總 60 分鐘 MFE/MAE/路徑統計
 #   - 把這些欄位填入 Metrics.post_breakout_* (供前端顯示)
 # 勝率定義: pnl > 0 即為 win — TP 與賺錢的 trail-SL 都算勝
@@ -211,7 +211,7 @@ class MetricsCalculator:
 
         Buckets only count trades whose post-breakout window populated a value
         (post_breakout_max_favorable_ticks is not None). Trades that never had
-        a tracker (e.g. pre-v0.11 cached results) are skipped silently.
+        a tracker (e.g. pre-v1.0.6 cached results) are skipped silently.
 
         TP-clean   : reached TP within 60m, did NOT first cross trail or SL
         TP-trail   : reached TP within 60m, but first crossed the trail level
@@ -247,7 +247,7 @@ class MetricsCalculator:
 
     @staticmethod
     def _aggregate_zone_source(trades: List[Trade], metrics: Metrics) -> None:
-        """Aggregate current-zone performance. v0.17.0 does not trade previous zones."""
+        """Aggregate current-zone performance. v1.0.6 does not trade previous zones."""
 
         def _apply(prefix: str, bucket: List[Trade]) -> None:
             total = len(bucket)

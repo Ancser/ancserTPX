@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: backend/strategy/trend_follow.py
-# 狀態: v0.11+ (session-based breakout — the live/backtest trend strategy)
+# 狀態: v1.0.6 (session-based breakout — the live/backtest trend strategy)
 # 規則 (SessionTrendFollow):
 #   1. 等待 SessionZoneDetector 報告區間成熟
 #   2. 突破: 單根 K 線 open AND close 都在 VAH 上方 (up) 或 VAL 下方 (down)
@@ -193,7 +193,7 @@ class SessionTrendFollow:
         """Breakout vs. up to N recent reference zones.
 
         `zones` may be a single ConsolidationZone (legacy) or a list of the
-        recent reference zones (v0.18). A breakout up requires the candle to
+        recent reference zones (v1.0.6). A breakout up requires the candle to
         close AND open above the VAH of at least one zone; a breakout down
         below the VAL of at least one zone — sustained for CONFIRM_BARS
         consecutive candles. The trade zone is the strongest level broken
@@ -229,7 +229,7 @@ class SessionTrendFollow:
         return None
 
     def _generate_signal(self, candle: Candle, zone: ConsolidationZone, direction: str) -> TradeSignal:
-        # v0.18 SL model: SL = lowest-volume price node between POC and VAH (long)
+        # v1.0.6 SL model: SL = lowest-volume price node between POC and VAH (long)
         # or between POC and VAL (short). TP = entry ± rr_ratio × |entry − SL|.
         fallback_pts = self.SL_TICKS * self.TICK_SIZE
 

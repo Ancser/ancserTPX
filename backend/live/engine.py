@@ -1,7 +1,7 @@
-﻿# ============================================================
+# ============================================================
 
 # 文件: backend/live/engine.py
-# 狀態: v0.17.0
+# 狀態: v1.0.6
 # 功能 / Features:
 #   - Live trading engine for the trend strategy.
 #   - Polls TopstepX 1m bars and drops the newest bar so decisions use only the
@@ -33,7 +33,7 @@ from backend.broker.topstepx import TopstepXClient, order_error_meaning
 
 logger = logging.getLogger(__name__)
 
-ENGINE_VERSION = "v0.17.0-session-strategies"
+ENGINE_VERSION = "1.0.6"
 # Default fallbacks for legacy paths — actual values come from contract on init.
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
@@ -101,7 +101,7 @@ class LiveTradingEngine:
         self.point_value = get_point_value(contract_id)
         self.tick_size = get_tick_size(contract_id)
 
-        # v0.18: value-area width + area timeframe + method (single/overlap) are selectable.
+        # v1.0.6: value-area width + area timeframe + method (single/overlap) are selectable.
         value_area_pct = float(getattr(self.strategy_params, "value_area_pct", value_area_pct) or value_area_pct)
         area_timeframe = getattr(self.strategy_params, "area_timeframe", "5m") or "5m"
         method = (getattr(self.strategy_params, "method", "single") or "single").lower()
@@ -118,7 +118,7 @@ class LiveTradingEngine:
             max_recent=10,
             tf_combo=overlap_combo,
         )
-        # Strategy mode: "trend" (default, 1.0.x) or "confluence" (v0.19 ML).
+        # Strategy mode: "trend" (default, 1.0.6) or "confluence" (v1.0.6 ML).
         # The trend object is ALWAYS built so legacy state/helpers keep working;
         # confluence only adds a parallel evaluator and diverges at signal time.
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "trend") or "trend").lower()
@@ -126,7 +126,7 @@ class LiveTradingEngine:
             self.strategy_mode = "trend"
         self.trend_follow = SessionTrendFollow(params=self.strategy_params)
 
-        # v0.19: explainable multi-timeframe confluence evaluator (shadow or live).
+        # v1.0.6: explainable multi-timeframe confluence evaluator (shadow or live).
         self.confluence = None
         self._conf_shadow = bool(getattr(self.strategy_params, "conf_shadow", False))
         self._conf_signals_log: List[Dict] = []
@@ -1270,7 +1270,7 @@ class LiveTradingEngine:
             "phase": self._get_phase() if self._running else "引擎已停止",
             "trades": self._trades[-10:],
             "log": self._log[-20:],
-            # v0.19: explainable confluence telemetry (None unless in that mode)
+            # v1.0.6: explainable confluence telemetry (None unless in that mode)
             "confluence_mode": self.strategy_mode == "confluence",
             "confluence_shadow": self._conf_shadow if self.strategy_mode == "confluence" else None,
             "confluence_scorer": (self.confluence.scorer_source if self.confluence else None),
@@ -1301,7 +1301,7 @@ class LiveTradingEngine:
         return "無"
 
     def _get_trade_zone_phase(self) -> str:
-        """Current-zone gate. v0.17.0 never falls back to a previous/left zone."""
+        """Current-zone gate. v1.0.6 never falls back to a previous/left zone."""
         active = self.detector.get_active_zone()
         if active and self.detector.is_zone_mature:
             return "當前成熟區間"
@@ -1562,7 +1562,7 @@ class LiveTradingEngine:
             elif hasattr(self.trend_follow, 'warmup'):
                 self.trend_follow.warmup(c)
 
-        # v0.19: warm up confluence detectors on the SAME history so the first
+        # v1.0.6: warm up confluence detectors on the SAME history so the first
         # live bar already has full multi-timeframe zone context (live==backtest).
         if self.confluence is not None:
             self.confluence.warmup(historical_candles)
@@ -2055,13 +2055,13 @@ class LiveTradingEngine:
         if self._pending_order_id:
             return
 
-        # ── v0.19: explainable confluence path (separate from the trend rule) ──
+        # ── v1.0.6: explainable confluence path (separate from the trend rule) ──
         if self.strategy_mode == "confluence" and self.confluence is not None:
             await self._evaluate_confluence(candle)
             return
 
         # ── Strategy evaluation ──
-        # Evaluate breakout vs the recent 10 reference zones (v0.18).
+        # Evaluate breakout vs the recent 10 reference zones (v1.0.6).
         if not self._strategy_breakout_observable():
             self._reset_breakout_confirmation()
             return
@@ -2110,7 +2110,7 @@ class LiveTradingEngine:
             return
 
     async def _evaluate_confluence(self, candle: Candle):
-        """v0.19: evaluate the multi-timeframe confluence ML signal for this bar.
+        """v1.0.6: evaluate the multi-timeframe confluence ML signal for this bar.
 
         SHADOW (default): logs the explainable signal (entry/SL/TP/prob + the
         top weighted feature contributions) and records it — places NO orders,
@@ -2384,7 +2384,7 @@ class LiveTradingEngine:
         else:
             ticks_moved = (self._fill_price - mkt) / self.tick_size
 
-        # v0.18: TP is RR-based (TP = entry ± sl_dist × RR), so the static tp_ticks
+        # v1.0.6: TP is RR-based (TP = entry ± sl_dist × RR), so the static tp_ticks
         # param is no longer the real target. Derive the trigger from the actual
         # signal's planned TP distance — IDENTICAL to the backtest engine's
         # _check_trailing_sl, so live trails at the same point that was backtested.

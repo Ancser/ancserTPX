@@ -1,6 +1,6 @@
-﻿# ============================================================
+# ============================================================
 # 文件: backend/db/models.py
-# 狀態: v0.17.0
+# 狀態: v1.0.6
 # 功能 / Features:
 #   - Shared dataclasses and enums for candles, zones, signals, trades, metrics,
 #     backtest/live strategy params, risk DTOs, broker orders, and account data.
@@ -204,7 +204,7 @@ class TradeSignal:
     tp_price: float
     zone_id: str
     reason: str
-    zone_source: Optional[str] = None      # v0.17.0 uses current mature zone only
+    zone_source: Optional[str] = None      # v1.0.6 uses current mature zone only
     timestamp: Optional[datetime] = None
     vol_ratio: Optional[float] = None  # 趨勢跟隨時的成交量比率
     is_big_trend: bool = False
@@ -254,7 +254,7 @@ class Trade:
     fees: float = 0.0                  # round-turn fees deducted
     exit_reason: Optional[ExitReason] = None
     zone_id: str = ""
-    zone_source: Optional[str] = None      # v0.17.0 uses current mature zone only
+    zone_source: Optional[str] = None      # v1.0.6 uses current mature zone only
     contracts: int = 1
     point_value: float = 20.0          # NQ=$20, MNQ=$2 (per single contract)
     contract_id: str = ""              # which TopstepX contract was used
@@ -322,7 +322,7 @@ class StrategyParams:
     sl_ticks: int = 50                   # 50-200 tick
     trail_sl_ticks: int = 10            # 0..TP ticks from entry after trail triggers
     trail_trigger_pct: float = 0.30     # trigger trail when price reaches this fraction of TP
-    trail_enabled: bool = True          # v0.11+: master switch for trailing-SL mechanism
+    trail_enabled: bool = True          # v1.0.6: master switch for trailing-SL mechanism
     tr_tp_ticks: int = 200              # trend TP ticks
     tr_sl_ticks: int = 50               # trend SL ticks
     tr_trail_sl_ticks: int = 10         # trend trail-SL offset from entry
@@ -330,8 +330,8 @@ class StrategyParams:
     tr_trail_enabled: bool = True       # trend trail switch
     tr_full_tp_lock: int = 0            # trend full-TP lock count
     # Candle interval (seconds)
-    candle_seconds: int = 60             # v0.17.0 uses completed 1m bars in live and backtest
-    # Contract & sizing (v0.11+) — preferred default 3 × Micro NQ
+    candle_seconds: int = 60             # v1.0.6 uses completed 1m bars in live and backtest
+    # Contract & sizing (v1.0.6) — preferred default 3 × Micro NQ
     contract_id: str = "CON.F.US.MNQ.M26"  # full contractId (NQ=ENQ, MNQ=MNQ)
     contract_size: int = 3                 # number of contracts per order (1..N)
     # Full TP lock: 0=OFF, 1/2/3 = stop new entries after N full TP exits. Resets next Topstep session.
@@ -346,14 +346,14 @@ class StrategyParams:
     # Area (zone) configuration — fixed clock-bucket timeframe + value-area width.
     area_timeframe: str = "5m"             # "5m" | "15m" | "30m" | "1h" | "4h"
     value_area_pct: float = 0.80           # value-area width fraction (0.50..0.95)
-    # Zone method (v0.18): "single" = one timeframe; "overlap" = require 2..5
+    # Zone method (v1.0.6): "single" = one timeframe; "overlap" = require 2..5
     # timeframes' value areas to overlap (identical to backtest/ML overlap sweep).
     method: str = "single"                 # "single" | "overlap"
     tf_combo: List[str] = field(default_factory=list)  # overlap timeframes, e.g. ["5m","15m"]
-    # SL/TP model (v0.18): SL = lowest-volume node between POC and VAH/VAL;
+    # SL/TP model (v1.0.6): SL = lowest-volume node between POC and VAH/VAL;
     # TP = entry ± rr_ratio × SL-distance. rr_ratio selectable 1..6. No fixed ticks.
     rr_ratio: int = 2                      # reward:risk multiple (1..6)
-    # --- v0.19: explainable multi-timeframe confluence (ML scorer) ---
+    # --- v1.0.6: explainable multi-timeframe confluence (ML scorer) ---
     # Activated when strategy == "confluence". The live engine then runs the
     # SAME ConfluenceBacktester logic (per-TF detectors + trained scorer) so
     # live == backtest. conf_shadow=True logs signals WITHOUT placing orders.
@@ -434,7 +434,7 @@ class Metrics:
     post_breakout_tp_clean: int = 0             # trades that hit TP without ever touching trail level
     post_breakout_tp_after_trail: int = 0       # hit TP but first crossed trail-trigger
     post_breakout_tp_after_sl: int = 0          # hit TP but first crossed SL price
-    # Zone-source performance: v0.17.0 only trades the current mature zone.
+    # Zone-source performance: v1.0.6 only trades the current mature zone.
     current_zone_trades: int = 0
     current_zone_wins: int = 0
     current_zone_win_rate: float = 0.0
@@ -508,7 +508,7 @@ class AccountInfo:
 # Per-contract specs. Mini NQ ($20/pt) vs Micro NQ ($2/pt). Tick size 0.25 for both.
 # commission_rt / fees_rt are TopstepX round-turn costs PER CONTRACT — applied as
 # `rt_cost * pos.contracts` in the backtest engine. Using the wrong rate is what
-# made 10×MNQ look 75% worse than 1×NQ in v0.11.
+# made 10×MNQ look 75% worse than 1×NQ in v1.0.6.
 _CONTRACT_SPECS = {
     "ENQ": {"point_value": 20.0, "tick_size": 0.25, "label": "NQ (Mini)",
             "commission_rt": 1.00, "fees_rt": 2.80},   # NQ Mini RT ≈ $3.80

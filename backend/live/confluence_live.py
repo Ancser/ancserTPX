@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: backend/live/confluence_live.py
-# 狀態: v0.19.0 (explainable confluence — LIVE evaluator)
+# 狀態: v1.0.6 (explainable confluence — LIVE evaluator)
 # 用途: 即時引擎用的多時間框加權匯流評估器。與回測完全一致:
 #       同一套 per-TF ClockBucketZoneDetector + 同一個 trained scorer +
 #       evaluate_confluence_scored → live == backtest，可解釋、可複刻。
@@ -114,7 +114,7 @@ class ConfluenceLiveEvaluator:
             for tf in self.timeframes
         }
         self._warmed = False
-        # trailing raw-candle window for the v0.22 context features (atr_R /
+        # trailing raw-candle window for the v1.0.6 context features (atr_R /
         # trend_R). Same window the backtester / trainers feed → live==backtest.
         self._recent: List[Candle] = []
 

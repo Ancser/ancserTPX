@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: scripts/optimize_confluence.py
-# 狀態: v0.18.0 (confluence parameter optimizer — precompute zones once)
+# 狀態: v1.0.6 (confluence parameter optimizer — precompute zones once)
 # 用途: 用快取的真實 1m 資料, 把 7-TF 區間時間軸算一次, 再快速掃描訊號參數
 # 關聯文件:
 #   ← backend/backtest/confluence_backtest.py (build_zone_timeline + replay)

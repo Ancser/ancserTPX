@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: backend/strategy/confluence_scorer.py
-# 狀態: v0.19.0 (explainable confluence — linear scorer)
+# 狀態: v1.0.6 (explainable confluence — linear scorer)
 # 關聯文件:
 #   ← backend/strategy/confluence_features.py (FEATURE_NAMES, extract_features)
 #   ← scripts/train_confluence.py             (fits & saves weights JSON)

@@ -361,7 +361,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         contract_id,
         preset.get("contract_size", DEFAULT_PRESET_PARAMS["contract_size"]),
     )
-    # Zone selection (v0.18) — keep terminal in sync with the web flow so an
+    # Zone selection (v1.0.6) — keep terminal in sync with the web flow so an
     # OVERLAP or non-5m area-timeframe preset runs the same detector here.
     area_timeframe = str(preset.get("area_timeframe") or "5m").lower()
     if area_timeframe not in ML_TIMEFRAMES:
@@ -381,7 +381,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         confirm_bars = 7
     confirm_bars = max(1, min(10, confirm_bars))
 
-    # v0.19: confluence (explainable ML) mode — driven by preset["strategy"].
+    # v1.0.6: confluence (explainable ML) mode — driven by preset["strategy"].
     strategy_mode = str(preset.get("strategy") or "confluence").lower()
     if strategy_mode != "confluence":
         strategy_mode = "trend"
@@ -441,7 +441,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         one_trade_per_session_direction=bool(preset.get("one_trade_per_session_direction", True)),
         tr_one_trade_per_session=bool(preset.get("tr_one_trade_per_session", True)),
         skip_zone_stability=False,
-        # v0.19 confluence config (used only when strategy == "confluence")
+        # v1.0.6 confluence config (used only when strategy == "confluence")
         conf_band_ticks=_conf_float("conf_band_ticks", 4.0),
         conf_min_distinct_tf=_conf_int("conf_min_distinct_tf", 2),
         conf_rr=float(max(1, min(6, round(_conf_float("conf_rr", 1.0))))),
@@ -498,7 +498,7 @@ async def run_terminal_live() -> int:
 
     preset_name, preset, preset_source = _load_default_preset()
 
-    # v0.19: one-line console confluence switch (no preset editing needed).
+    # v1.0.6: one-line console confluence switch (no preset editing needed).
     #   TOPSTEPX_CONFLUENCE=1            -> run the explainable ML confluence mode
     #   TOPSTEPX_CONFLUENCE_SHADOW=1     -> log signals only (default: LIVE places orders)
     #   TOPSTEPX_CONF_MIN_PROB=0.55      -> skip signals below this win-probability

@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: scripts/confluence_common.py
-# 狀態: v0.19.0 (explainable confluence — shared script helpers)
+# 狀態: v1.0.6 (explainable confluence — shared script helpers)
 # 用途: 資料抓取/快取/時間框選擇 的共用邏輯 (run / optimize / train / validate)
 # ============================================================
 """Shared helpers so every confluence script handles base-candle resolution,

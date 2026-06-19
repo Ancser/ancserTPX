@@ -725,7 +725,7 @@ class SessionZoneDetector:
             zone.vah_80 = vp.vah
             zone.val_80 = vp.val
             zone.total_volume = vp.total_volume
-            zone.profile = dict(vp.profile)  # v0.18: histogram for lowest-volume-node SL
+            zone.profile = dict(vp.profile)  # v1.0.6: histogram for lowest-volume-node SL
             last_candle = zone.candles[-1]
             zone.va_curve.append({
                 "ts": last_candle.timestamp.isoformat(),

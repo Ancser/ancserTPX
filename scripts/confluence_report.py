@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: scripts/confluence_report.py
-# 狀態: v0.19.0 (explainable confluence — per-trade report + chart)
+# 狀態: v1.0.6 (explainable confluence — per-trade report + chart)
 # 用途: 把每一筆交易的「參數 + 實際結果 + 打分理由」匯出 CSV 並畫圖
 # ============================================================
 """Per-trade explainability: a CSV where every row is one trade with its full

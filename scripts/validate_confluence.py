@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: scripts/validate_confluence.py
-# 狀態: v0.19.0 (explainable confluence — out-of-sample validation)
+# 狀態: v1.0.6 (explainable confluence — out-of-sample validation)
 # 關聯文件:
 #   ← backend/strategy/confluence_scorer.py   (loads trained weights)
 #   ← backend/backtest/confluence_backtest.py (build_zone_timeline + run)

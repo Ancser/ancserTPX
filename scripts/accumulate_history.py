@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: scripts/accumulate_history.py
-# 狀態: v0.19.0 (explainable confluence — option C: persistent accumulator)
+# 狀態: v1.0.6 (explainable confluence — option C: persistent accumulator)
 # 用途: 自動解析現役前月合約 → 抓「目前可得的完整歷史」→ 併入會長大的持久檔
 # 關聯文件:
 #   ← backend/broker/topstepx.py            (TopstepXClient, front-month resolve)

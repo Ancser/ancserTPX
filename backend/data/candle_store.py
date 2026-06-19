@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: backend/data/candle_store.py
-# 狀態: v0.25.0 (unified persistent candle accumulator)
+# 狀態: v1.0.6 (unified persistent candle accumulator)
 # 關聯文件:
 #   ← backend/api/routes.py          (web fetch_historical uses this)
 #   ← scripts/confluence_common.py   (research scripts have a parallel store)

@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: backend/backtest/confluence_worker.py
-# 狀態: v0.25 (single-backtest off-loaded to a dedicated child process)
+# 狀態: v1.0.6 (single-backtest off-loaded to a dedicated child process)
 # 關聯文件:
 #   ← backend/api/routes.py                (submits jobs via ProcessPoolExecutor)
 #   ← backend/backtest/confluence_backtest.py (ConfluenceBacktester + timeline)

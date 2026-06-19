@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: backend/strategy/confluence_features.py
-# 狀態: v0.21.0 (explainable confluence — feature extraction)
+# 狀態: v1.0.6 (explainable confluence — feature extraction)
 # 關聯文件:
 #   ← backend/strategy/confluence.py         (ConfluenceSignal, Cluster, Level)
 #   → backend/strategy/confluence_scorer.py  (linear scorer consumes these)
@@ -39,18 +39,18 @@ FEATURE_NAMES: tuple = (
     "side_is_vah",         # 1 = resistance(VAH) cluster, 0 = support(VAL)
     "mode_is_reversion",   # 1 = fade the wall, 0 = momentum into it
     "mean_band_pct",       # avg value-area band hit (0.2..1.0)
-    # ── distance-aware (v0.20): scale-free proximity so a NEAR older-recency
+    # ── distance-aware (v1.0.6): scale-free proximity so a NEAR older-recency
     # zone (-1/-2/-3) scores like a near newest one regardless of absolute price.
     "rel_dist_to_price",   # |entry - price| / risk  (distance in R units)
-    # ── decision variable (v0.20, variable-RR / EV optimisation): the chosen
+    # ── decision variable (v1.0.6, variable-RR / EV optimisation): the chosen
     # reward:risk, read from geometry. Constant in fixed-RR training (≈0 weight),
     # informative once the multi-RR trainer feeds several RRs per setup.
     "rr",                  # |tp - entry| / |entry - SL|
-    # ── CONTEXT features (v0.22): the setup's SURROUNDINGS, not just its shape.
+    # ── CONTEXT features (v1.0.6): the setup's SURROUNDINGS, not just its shape.
     # These need extra inputs (the full level universe + recent candles); when an
     # input is absent (old caller / old JSON) the feature is 0.0 and the scorer's
     # weights.get default keeps everything backward-compatible.
-    # NOTE: 'opposing_weight_ahead' was removed in v0.24 — two retrains shrank it
+    # NOTE: 'opposing_weight_ahead' was removed in v1.0.6 — two retrains shrank it
     # to ~0 (dead) and its full path-scan wasted compute. Removal is name-keyed
     # safe; old JSONs that still list it are simply ignored by weights.get.
     "dist_to_obstacle_R",     # entry→nearest blocking level, in R units (= reward_R
@@ -58,7 +58,7 @@ FEATURE_NAMES: tuple = (
     "atr_R",                  # recent ATR ÷ risk_ticks. volatility vs our stop size.
     "trend_R",                # recent drift ÷ risk, oriented to trade direction.
                               # + = trading WITH the move, − = fading a fresh move.
-    # ── REGIME features (v0.23): let the model learn WHEN a fade works. The
+    # ── REGIME features (v1.0.6): let the model learn WHEN a fade works. The
     # linear model can't form interactions on its own, so the trend/range regime
     # is supplied raw AND pre-multiplied by the reversion flag.
     "efficiency_ratio",       # Kaufman ER over TREND_LOOKBACK: |net move| / Σ|steps|.
@@ -66,7 +66,7 @@ FEATURE_NAMES: tuple = (
     "reversion_in_trend",     # mode_is_reversion × efficiency_ratio. A negative
                               # weight = "fading INTO a strong trend loses". This is
                               # the term that breaks the always-reversion behaviour.
-    # ── BREAKOUT mode (v0.23): one-hot for the breakout-retrace candidate (baseline
+    # ── BREAKOUT mode (v1.0.6): one-hot for the breakout-retrace candidate (baseline
     # = momentum). Lets the model learn the breakout-retrace base win-rate separately
     # from reversion/momentum. See confluence._breakout_geometry.
     "is_breakout",            # 1 = breakout-retrace setup, 0 = momentum/reversion.
@@ -88,9 +88,9 @@ CONTEXT_WINDOW = TREND_LOOKBACK + 1   # recent-candle buffer length to supply
 
 def _context_features(sig, current_price, tick_size, risk_safe, reward_ticks,
                       levels, recent_candles) -> Dict[str, float]:
-    """The four v0.22 context features. Every value falls back to a neutral
+    """The four v1.0.6 context features. Every value falls back to a neutral
     default when its input is missing, so a caller that supplies neither levels
-    nor candles reproduces the pre-v0.22 behaviour exactly (all four = 0/clear)."""
+    nor candles reproduces the pre-v1.0.6 behaviour exactly (all four = 0/clear)."""
     entry, tp = sig.entry_price, sig.tp_price
     reward_R = reward_ticks / risk_safe
 
@@ -148,7 +148,7 @@ def extract_features(sig: "ConfluenceSignal", current_price: float, tick_size: f
     SL/entry geometry is already validated by build_signal, so risk_ticks is
     well-defined here. ``levels`` (the full level universe this bar) and
     ``recent_candles`` (trailing price window) are optional CONTEXT inputs; when
-    omitted the four v0.22 context features default to neutral so behaviour is
+    omitted the four v1.0.6 context features default to neutral so behaviour is
     identical to the pre-context scorer. Callers that want context MUST pass the
     SAME inputs in live, backtest and training to keep the three in lock-step.
     """

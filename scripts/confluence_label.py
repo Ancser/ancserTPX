@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: scripts/confluence_label.py
-# 狀態: v0.21.0 (explainable confluence — shared labeler + ML hygiene)
+# 狀態: v1.0.6 (explainable confluence — shared labeler + ML hygiene)
 # 用途: 單一真相來源的「前向掃描標註器」與統計衛生工具，供
 #       fixed-RR trainer 與 web /confluence/train 端點共用。
 #   ← scripts/train_confluence.py      (fixed-RR collect)

@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: scripts/train_confluence.py
-# 狀態: v0.19.0 (explainable confluence — scorer trainer)
+# 狀態: v1.0.6 (explainable confluence — scorer trainer)
 # 關聯文件:
 #   ← backend/backtest/confluence_backtest.py (build_zone_timeline)
 #   ← backend/strategy/confluence.py          (evaluate_confluence_scored)

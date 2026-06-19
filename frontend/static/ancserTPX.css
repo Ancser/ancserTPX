@@ -1053,7 +1053,7 @@
         .corner-decor.bl { bottom: -1px; left: -1px; border-bottom: 1px solid; border-left: 1px solid; }
         .corner-decor.br { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
 
-        /* ── Param help dots + hover tooltip (restored from 0.15.5) ── */
+        /* ── Param help dots + hover tooltip (restored from 1.0.6) ── */
         .help-dot {
             display: inline-flex;
             align-items: center;

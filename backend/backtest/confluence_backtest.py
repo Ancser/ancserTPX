@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: backend/backtest/confluence_backtest.py
-# 狀態: v0.18.0 (multi-timeframe weighted confluence — research backtester)
+# 狀態: v1.0.6 (multi-timeframe weighted confluence — research backtester)
 # 關聯文件:
 #   ← backend/strategy/confluence.py     (signal engine)
 #   ← backend/strategy/consolidation.py  (per-TF ClockBucketZoneDetector)
@@ -126,7 +126,7 @@ class ConfluenceBacktestConfig:
     timeframes: tuple = tuple(AREA_TIMEFRAME_MINUTES.keys())
     min_score: float = 0.0                 # scorer gate: skip signals below this
     base_minutes: int = 1                  # minutes per input candle (1m or 5m base)
-    # ── STYLE (v0.24 exit-policy): all default to a no-op so an all-OFF Style
+    # ── STYLE (v1.0.6 exit-policy): all default to a no-op so an all-OFF Style
     # reproduces the original behaviour. See backend/strategy/exit_policy.py. ──
     trail_trigger_pct: float = 0.0         # 0 = trailing OFF
     trail_lock_pct: float = 0.0            # locked SL as fraction of TP distance on trigger
@@ -177,7 +177,7 @@ class ConfluenceBacktester:
             for tf in self.run_cfg.timeframes
         }
 
-        # STYLE exit-policy (v0.24): shared helper so live == backtest.
+        # STYLE exit-policy (v1.0.6): shared helper so live == backtest.
         from backend.strategy.exit_policy import ConfluenceExitStyle
         self.style = ConfluenceExitStyle(
             trail_trigger_pct=float(getattr(self.run_cfg, "trail_trigger_pct", 0.0) or 0.0),

@@ -1,6 +1,6 @@
 # ============================================================
 # 文件: backend/strategy/exit_policy.py
-# 狀態: v0.24.0 (confluence "Style" — break-even / trail / lock exit policy)
+# 狀態: v1.0.6 (confluence "Style" — break-even / trail / lock exit policy)
 # 用途: SINGLE source of truth for the optional exit-policy ("保本/lock") that
 #       the ML CONFLUENCE panel's STYLE section toggles. Backtest and live call
 #       the SAME functions so the trailing math is identical (live == backtest).

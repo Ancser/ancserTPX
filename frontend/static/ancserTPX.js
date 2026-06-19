@@ -1046,7 +1046,7 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// -- Param help dots + hover tooltips (restored from 0.15.5, + ML) --
+// -- Param help dots + hover tooltips (restored from 1.0.6, + ML) --
 
 function addHelpDot(label, tip) {
     if (!label || !tip || label.querySelector('.help-dot')) return;
@@ -1517,7 +1517,7 @@ async function goLive() {
     log('GO LIVE: account=' + liveAccount.name + ' (' + (liveAccount.is_practice ? 'practice' : 'FUNDED') + ')', 'info');
     const stratParams = collectStrategyParams('live');
 
-    // v0.19: ML (confluence, explainable) is selected via the STRATEGY dropdown.
+    // v1.0.6: ML (confluence, explainable) is selected via the STRATEGY dropdown.
     // No shadow mode in live — practice account places real orders.
     const confParams = collectConfluenceParams('live');
     if (confParams) {
@@ -1565,7 +1565,7 @@ async function goLive() {
     // Keep controls locked until /live/start confirms that the engine is running.
 
     // ── Call /live/start to start the live trading engine ──
-    // stratParams now carries contract_id + contract_size (v0.11), so the
+    // stratParams now carries contract_id + contract_size (v1.0.6), so the
     // /live/start request reflects whatever the user picked in LIVE PARAMS.
     const liveParams = {
         account_id: liveAccount.id,
@@ -3435,7 +3435,7 @@ function applyDefaultChartView(chartData, zones) {
 
 function buildBacktestBody() {
     const params = collectStrategyParams('bt');
-    // v0.19: ML (confluence, explainable) backtest is selected via the STRATEGY dropdown.
+    // v1.0.6: ML (confluence, explainable) backtest is selected via the STRATEGY dropdown.
     const confParams = collectConfluenceParams('bt');
     if (confParams) {
         params.strategy = 'confluence';
@@ -3894,7 +3894,7 @@ async function runAllCombinations() {
     _startFullProgress();
 
     const params = collectStrategyParams('bt');
-    // v0.24: when STRATEGY = ML (confluence), COMBINATION sweeps the Model+Style
+    // v1.0.6: when STRATEGY = ML (confluence), COMBINATION sweeps the Model+Style
     // grid (288 runs) via /backtest/conf-combo-run; otherwise it sweeps TREND
     // timeframe×RR via /backtest/ml-run. Both share the progress bar + table.
     const confParams = collectConfluenceParams('bt');

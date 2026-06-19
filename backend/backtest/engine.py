@@ -1,7 +1,7 @@
-﻿# ============================================================
+# ============================================================
 
 # 文件: backend/backtest/engine.py
-# 狀態: v0.17.0
+# 狀態: v1.0.6
 # 功能 / Features:
 #   - Completed 1m candle backtest engine for the trend strategy.
 #   - Simulates limit/market entry, SL, TP, trail SL, pending timeout, and close-window flatten.
@@ -79,7 +79,7 @@ class BacktestEngine:
         self.POINT_VALUE = get_point_value(_cid)
         self.TICK_SIZE = get_tick_size(_cid)
 
-        # v0.18: value-area width + area timeframe are selectable per run.
+        # v1.0.6: value-area width + area timeframe are selectable per run.
         _va_pct = float(getattr(self.strategy_params, "value_area_pct", 0.80) or 0.80)
         self.config.value_area_pct = _va_pct
         _area_tf = getattr(self.strategy_params, "area_timeframe", "5m") or "5m"
@@ -714,7 +714,7 @@ class BacktestEngine:
         else:
             ticks_moved = (pos.entry_price - mkt) / self.TICK_SIZE
 
-        # v0.18: TP is RR-based, so derive the trail trigger from the position's
+        # v1.0.6: TP is RR-based, so derive the trail trigger from the position's
         # actual TP distance instead of the removed fixed tp_ticks param.
         tp_ticks = abs(pos.tp_price - pos.entry_price) / self.TICK_SIZE
         trigger_pct = self._strategy_trigger_pct(pos.strategy)

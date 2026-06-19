@@ -1,7 +1,7 @@
-﻿# ============================================================
+# ============================================================
 
 # 文件: backend/api/routes.py
-# 狀態: v0.17.0
+# 狀態: v1.0.6
 # 功能 / Features:
 #   - FastAPI REST routes for config, historical candles, backtest, machine learning,
 #     live engine, presets, and trade history.
@@ -76,7 +76,7 @@ def _normalize_trade_ticks(value, default: int) -> int:
 
 
 def _normalize_value_area_pct(value=None, default: float = 0.80) -> float:
-    """v0.17.0 locks every route to 80% Value Area."""
+    """v1.0.6 locks every route to 80% Value Area."""
     return 0.80
 
 
@@ -283,7 +283,7 @@ def _conf_rr_grid_opt(val):
 
 
 def _build_strategy_params_from_request(req, contract_size: int) -> StrategyParams:
-    # v0.19: "confluence" selects the explainable ML engine; anything else is trend.
+    # v1.0.6: "confluence" selects the explainable ML engine; anything else is trend.
     strategy = ("confluence" if str(getattr(req, "strategy", "confluence") or "").strip().lower()
                 == "confluence" else _normalize_strategy_name(getattr(req, "strategy", "confluence")))
     tr = _strategy_leg_params(req, "tr")
@@ -476,7 +476,7 @@ class BacktestRequest(BaseModel):
     trail_sl_ticks: int = 10
     trail_sl_pct: Optional[float] = 0.05
     trail_trigger_pct: float = 0.30
-    trail_enabled: bool = True            # v0.11+: master trail switch
+    trail_enabled: bool = True            # v1.0.6: master trail switch
     tr_tp_ticks: Optional[int] = None
     tr_sl_ticks: Optional[int] = None
     tr_trail_sl_ticks: Optional[int] = None
@@ -497,11 +497,11 @@ class BacktestRequest(BaseModel):
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
     breakout_confirm_bars: int = 7
-    # v0.18: "single" = one area timeframe; "overlap" = enter at the AVERAGE
+    # v1.0.6: "single" = one area timeframe; "overlap" = enter at the AVERAGE
     # overlapping VAH/VAL of the timeframes in tf_combo (reproduces an ML overlap row).
     method: str = "single"
     tf_combo: Optional[List[str]] = None
-    # v0.19: confluence (explainable ML scorer) backtest. When strategy=="confluence"
+    # v1.0.6: confluence (explainable ML scorer) backtest. When strategy=="confluence"
     # the multi-timeframe weighted-level engine is used instead of the trend engine.
     conf_band_ticks: float = 4.0          # level-cluster band width (ticks)
     conf_min_distinct_tf: int = 2         # cluster needs >= this many timeframes
@@ -1401,7 +1401,7 @@ async def _run_confluence_backtest_proc(req: BacktestRequest) -> BacktestRespons
 
 
 def _run_confluence_backtest(req: BacktestRequest, progress_callback=None) -> BacktestResponse:
-    """v0.19: explainable multi-timeframe confluence backtest.
+    """v1.0.6: explainable multi-timeframe confluence backtest.
 
     Uses the SAME ConfluenceBacktester + trained ConfluenceScorer that the
     research scripts and (soon) the live engine use, so the web result is
@@ -1891,7 +1891,7 @@ async def run_backtest(req: BacktestRequest):
             detail="請先通過 /api/data/fetch-historical 拉取數據"
         )
 
-    # v0.19: explainable confluence engine (separate, read-only path)
+    # v1.0.6: explainable confluence engine (separate, read-only path)
     if str(req.strategy or "").strip().lower() == "confluence":
         await _refresh_recent_historical_candles(req.contract_id)
         # Heavy full-history backtest: run in a dedicated child PROCESS so the
@@ -1901,7 +1901,7 @@ async def run_backtest(req: BacktestRequest):
 
     await _refresh_recent_historical_candles(req.contract_id)
 
-    # v0.11+: derive symbol + per-contract fees from the chosen contract_id so
+    # v1.0.6: derive symbol + per-contract fees from the chosen contract_id so
     # the trade journal shows /MNQ when MNQ is selected and 10×MNQ doesn't get
     # stuck paying 10× the NQ Mini fee schedule.
     contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
@@ -1920,7 +1920,7 @@ async def run_backtest(req: BacktestRequest):
 
     strategy_params = _build_strategy_params_from_request(req, contract_size)
 
-    # v0.18: overlap mode reproduces an ML overlap row — enter at the AVERAGE
+    # v1.0.6: overlap mode reproduces an ML overlap row — enter at the AVERAGE
     # overlapping VAH/VAL of the timeframes in tf_combo via a merged zone timeline.
     method = str(getattr(req, "method", "single") or "single").lower()
     tf_combo = tuple(t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES)
@@ -2251,7 +2251,7 @@ def _ml_profit_factor(r: dict) -> float:
 
 
 def _ml_valid_trade_range(r: dict) -> bool:
-    # New ML model (v0.18) has no fixed SL/TP ticks; every non-errored run is valid.
+    # New ML model (v1.0.6) has no fixed SL/TP ticks; every non-errored run is valid.
     return isinstance(r, dict) and not r.get("error")
 
 
@@ -2683,7 +2683,7 @@ class MLRunRequest(BaseModel):
     initial_capital: float = 50000.0
     start_date: str = ""
     end_date: str = ""
-    # v0.11+: contract / size / trail switch — keep parity with BacktestRequest
+    # v1.0.6: contract / size / trail switch — keep parity with BacktestRequest
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
     trail_enabled: bool = True
@@ -2818,7 +2818,7 @@ def _run_single_combo(candles, config, strategy, sl, tp, trail, trail_pct, trigg
             _ml_progress["current"] += 1
 
 
-# ── ML multi-timeframe overlap sweep helpers (v0.18) ──────────────────────
+# ── ML multi-timeframe overlap sweep helpers (v1.0.6) ──────────────────────
 
 ML_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h")
 ML_RR_VALUES = tuple(range(1, 7))   # 1:1 .. 1:6
@@ -3475,7 +3475,7 @@ class LiveStartRequest(BaseModel):
     value_area_pct: float = 0.80
     area_timeframe: str = "5m"
     rr_ratio: int = 2                     # reward:risk multiple (1..6)
-    # v0.18: "single" = one area timeframe; "overlap" = enter at the AVERAGE
+    # v1.0.6: "single" = one area timeframe; "overlap" = enter at the AVERAGE
     # overlapping VAH/VAL of the timeframes in tf_combo (mirrors backtest/ML).
     method: str = "single"
     tf_combo: Optional[List[str]] = None
@@ -3486,7 +3486,7 @@ class LiveStartRequest(BaseModel):
     trail_sl_ticks: int = 10
     trail_sl_pct: Optional[float] = 0.05
     trail_trigger_pct: float = 0.30
-    trail_enabled: bool = True            # v0.11+: master trail switch
+    trail_enabled: bool = True            # v1.0.6: master trail switch
     tr_tp_ticks: Optional[int] = None
     tr_sl_ticks: Optional[int] = None
     tr_trail_sl_ticks: Optional[int] = None
@@ -3501,7 +3501,7 @@ class LiveStartRequest(BaseModel):
     # Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: bool = False
     breakout_confirm_bars: int = 7
-    # v0.19: explainable confluence (ML scorer) live mode. Set strategy="confluence".
+    # v1.0.6: explainable confluence (ML scorer) live mode. Set strategy="confluence".
     # conf_shadow defaults False — live places real orders (practice account).
     conf_band_ticks: float = 4.0
     conf_min_distinct_tf: int = 2
