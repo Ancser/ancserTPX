@@ -182,3 +182,14 @@ cython_debug/
 *.json
 data/live_zones.json
 /data
+
+# Keep production ML scorer/model registry reproducible in git.
+# Other runtime data under /data stays ignored.
+!/data/
+/data/*
+!/data/models/
+/data/models/*
+!/data/models/confluence_scorer.json
+!/data/models/registry/
+/data/models/registry/*
+!/data/models/registry/*.json
