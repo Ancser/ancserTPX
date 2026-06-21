@@ -360,7 +360,7 @@ class StrategyParams:
     conf_band_ticks: float = 4.0           # level-cluster band width (ticks)
     conf_min_distinct_tf: int = 2          # cluster needs >= this many timeframes
     conf_rr: float = 1.0                   # optimized live/backtest runtime RR
-    conf_wait_minutes: int = 60            # one-shot limit-order fill timeout
+    conf_wait_minutes: int = 1             # live parity: one-shot limit-order fill timeout
     conf_base_minutes: int = 1             # input candle resolution (standardized: 1m)
     conf_min_prob: float = 0.65            # optimized gate: skip signals below this win-prob
     conf_ev_floor: Optional[float] = None  # EV-priority gate: keep signals with EV>=floor (None=use win-prob gate; 0=every +EV)
@@ -372,7 +372,7 @@ class StrategyParams:
     conf_trail_trigger_pct: float = 0.50   # optimized: fire after 50% of TP distance
     conf_trail_lock_pct: float = 0.05      # optimized: lock +5% of TP distance on trigger
     conf_full_tp_lock: int = 0             # 0 = OFF; stop new entries after N full-TP exits/session
-    conf_session_limit: bool = True        # one trade per session+direction (existing rule)
+    conf_session_limit: bool = True        # one trade per zone+direction per Topstep session
     conf_shadow: bool = False              # default LIVE — practice account places orders
 
 

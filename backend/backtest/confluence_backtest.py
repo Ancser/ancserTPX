@@ -14,11 +14,12 @@ weighted level confluence every bar, and emits Trade objects which are scored by
 the SHARED MetricsCalculator (so calmar / PF / drawdown / win-rate match the
 rest of the app).
 
-Key difference vs the trend BacktestEngine — the FILL MODEL is live-accurate:
-a confluence limit order is ONE-SHOT. It is given `wait_minutes` 1m candles to
-fill; if price never touches it, the order is cancelled and NOT re-posted. This
-removes the optimistic "re-post at a fresh level every candle" behaviour that
-made the trend backtest over-estimate live fills.
+Key differences vs the trend BacktestEngine are intentionally live-accurate:
+
+* pending confluence limits are one-shot and default to the live engine timeout
+  (1 completed input bar);
+* Session Limit follows live's lock: one filled zone/level wall + direction per
+  Topstep session. Different walls/TFs may still trade in the same direction.
 """
 
 from __future__ import annotations
@@ -27,7 +28,9 @@ import logging
 import time as _time
 import uuid
 from dataclasses import dataclass
+from datetime import timezone, timedelta
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,7 @@ from backend.backtest.intrabar import resolve_same_bar_exit
 
 # wait-timeout values the optimizer sweeps (minutes == 1m candles)
 WAIT_MINUTES_CHOICES = (1, 5, 15, 30, 60)
+_CT = ZoneInfo("America/Chicago")
 
 
 def build_zone_timeline(
@@ -121,8 +125,8 @@ def build_zone_timeline(
 @dataclass
 class ConfluenceBacktestConfig:
     """Run-level knobs distinct from the signal-level ConfluenceConfig."""
-    wait_minutes: int = 15                 # one-shot limit-order timeout (searched)
-    one_trade_per_session_direction: bool = True
+    wait_minutes: int = 1                  # live parity: one-shot timeout in minutes/bars
+    one_trade_per_session_direction: bool = True  # live-style zone+direction lock
     timeframes: tuple = tuple(AREA_TIMEFRAME_MINUTES.keys())
     min_score: float = 0.0                 # scorer gate: skip signals below this
     base_minutes: int = 1                  # minutes per input candle (1m or 5m base)
@@ -135,7 +139,7 @@ class ConfluenceBacktestConfig:
     @property
     def wait_bars(self) -> int:
         """One-shot timeout expressed in INPUT candles (minute-accurate across
-        base resolutions): wait_minutes=60 with a 5m base == 12 bars."""
+        base resolutions): wait_minutes=1 with a 1m base == live's 1 candle."""
         return max(1, round(self.wait_minutes / max(1, self.base_minutes)))
 
 
@@ -203,7 +207,35 @@ class ConfluenceBacktester:
 
     @staticmethod
     def _session_key(ts) -> str:
-        return ts.strftime("%Y-%m-%d")
+        """Topstep trade date: CT 17:00 belongs to the next session."""
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ct = ts.astimezone(_CT)
+        if ct.hour >= 17:
+            ct = ct + timedelta(days=1)
+        return ct.strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _breakout_direction_from_trade_direction(direction) -> Optional[str]:
+        d = str(getattr(direction, "value", direction) or "").lower()
+        if d in ("buy", "long", "up"):
+            return "up"
+        if d in ("sell", "short", "down"):
+            return "down"
+        return None
+
+    def _session_lock_key(self, ts, sig: ConfluenceSignal):
+        """Live parity lock key.
+
+        Live stores `(zone_id, breakout_direction)` for the active Topstep trade
+        date. The backtester includes the session key as the first component so
+        multi-day research resets at the same CT boundary.
+        """
+        zid = getattr(sig.cluster, "largest_tf", None)
+        direction = self._breakout_direction_from_trade_direction(sig.direction)
+        if not zid or not direction:
+            return None
+        return (self._session_key(ts), str(zid), direction)
 
     # ── main loop ──
 
@@ -254,6 +286,10 @@ class ConfluenceBacktester:
                     continue
                 self._pending_age += 1
                 if self._pending_age >= wait:
+                    if self.run_cfg.one_trade_per_session_direction:
+                        key = self._session_lock_key(candle.timestamp, self._pending)
+                        if key is not None:
+                            self._session_dir_used.discard(key)
                     self._pending = None          # one-shot: cancel, do NOT re-post
                     self._pending_age = 0
                 continue
@@ -293,9 +329,13 @@ class ConfluenceBacktester:
             return
         for sig in signals:
             if self.run_cfg.one_trade_per_session_direction:
-                key = (self._session_key(candle.timestamp), sig.direction.value)
-                if key in self._session_dir_used:
+                key = self._session_lock_key(candle.timestamp, sig)
+                if key is not None and key in self._session_dir_used:
                     continue
+                if key is not None:
+                    # Live locks on successful order placement, then releases
+                    # only if the pending entry times out/cancels unfilled.
+                    self._session_dir_used.add(key)
             self._pending = sig
             self._pending_age = 0
             return
@@ -309,8 +349,6 @@ class ConfluenceBacktester:
         self._open_trade(sig, candle)
         self._pending = None
         self._pending_age = 0
-        if self.run_cfg.one_trade_per_session_direction:
-            self._session_dir_used.add((self._session_key(candle.timestamp), sig.direction.value))
         # entry candle: only an immediate SL can trigger (TP needs a later bar)
         self._check_sl_only(candle)
         return True

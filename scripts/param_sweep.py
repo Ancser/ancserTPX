@@ -7,8 +7,10 @@ Only keeps top-5 signals per bar to save memory (~150MB vs ~1.5GB).
 from __future__ import annotations
 import math, sys, time, os
 from dataclasses import dataclass
+from datetime import timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -29,8 +31,9 @@ TICK = get_tick_size(CONTRACT)
 PV = get_point_value(CONTRACT)
 SIZE = 3
 TARGET_DD = 2000
-WAIT_BARS = 15
+WAIT_BARS = 1
 TOP_N = 10   # keep top-N signals per bar (by score)
+_CT = ZoneInfo("America/Chicago")
 
 OUT_DIR = ROOT / "data" / "machinelearning"
 OUT_FILE = OUT_DIR / "param_sweep_results.txt"
@@ -51,6 +54,7 @@ def log(msg):
 @dataclass(slots=True)
 class Sig:
     direction: str
+    zone_id: str
     mode: str
     entry: float
     sl: float
@@ -86,7 +90,8 @@ def precompute(candles, timeline, scorer, cfg) -> List[List[Sig]]:
         for s in sigs[:TOP_N]:
             rt = abs(s.entry_price - s.sl_price) / TICK
             bar_sigs.append(Sig(
-                direction=s.direction.value, mode=s.direction_mode,
+                direction=s.direction.value.upper(), mode=s.direction_mode,
+                zone_id=s.cluster.largest_tf,
                 entry=s.entry_price, sl=s.sl_price, tp=s.tp_price,
                 score=s.score, prob=s.prob, ev=s.ev, risk_ticks=rt,
             ))
@@ -121,7 +126,16 @@ def replay(candles, sigs_by_bar, *, min_score=0.0, max_risk=0,
     sess_tp: Dict[str, int] = {}
 
     def skey(ts):
-        return ts.strftime("%Y-%m-%d")
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ct = ts.astimezone(_CT)
+        if ct.hour >= 17:
+            ct = ct + timedelta(days=1)
+        return ct.strftime("%Y-%m-%d")
+
+    def lkey(ts, sig):
+        direction = "up" if sig.direction == "BUY" else "down"
+        return (skey(ts), str(sig.zone_id), direction)
 
     def do_exit(ep):
         nonlocal capital, peak, max_dd, consec, max_consec
@@ -192,8 +206,6 @@ def replay(candles, sigs_by_bar, *, min_score=0.0, max_risk=0,
                 open_sl = pending.sl
                 open_tp = pending.tp
                 trail_on = False
-                if session_limit:
-                    sess_used.add((skey(c.timestamp), pending.direction))
                 pending = None
                 pending_age = 0
                 if open_dir == "BUY" and c.low <= open_sl:
@@ -203,6 +215,8 @@ def replay(candles, sigs_by_bar, *, min_score=0.0, max_risk=0,
                 continue
             pending_age += 1
             if pending_age >= WAIT_BARS:
+                if session_limit:
+                    sess_used.discard(lkey(c.timestamp, pending))
                 pending = None
                 pending_age = 0
             continue
@@ -221,11 +235,13 @@ def replay(candles, sigs_by_bar, *, min_score=0.0, max_risk=0,
                 continue
             if max_risk and s.risk_ticks > max_risk:
                 continue
-            if session_limit and (skey(c.timestamp), s.direction) in sess_used:
+            if session_limit and lkey(c.timestamp, s) in sess_used:
                 continue
             if best is None or s.ev > best.ev:
                 best = s
         if best is not None:
+            if session_limit:
+                sess_used.add(lkey(c.timestamp, best))
             pending = best
             pending_age = 0
 

@@ -292,7 +292,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         conf_band_ticks=float(getattr(req, "conf_band_ticks", 4.0) or 4.0),
         conf_min_distinct_tf=int(getattr(req, "conf_min_distinct_tf", 2) or 2),
         conf_rr=_normalize_conf_rr(getattr(req, "conf_rr", 1.0), 1.0),
-        conf_wait_minutes=int(getattr(req, "conf_wait_minutes", 60) or 60),
+        conf_wait_minutes=int(getattr(req, "conf_wait_minutes", 1) or 1),
         conf_base_minutes=int(getattr(req, "conf_base_minutes", 1) or 1),
         conf_min_prob=float(getattr(req, "conf_min_prob", 0.65) or 0.0),
         conf_ev_floor=_conf_ev_floor_opt(getattr(req, "conf_ev_floor", None)),
@@ -506,7 +506,7 @@ class BacktestRequest(BaseModel):
     conf_band_ticks: float = 4.0          # level-cluster band width (ticks)
     conf_min_distinct_tf: int = 2         # cluster needs >= this many timeframes
     conf_rr: float = Field(default=1.0, ge=1.0, le=6.0)
-    conf_wait_minutes: int = 60           # one-shot limit-order fill timeout
+    conf_wait_minutes: int = 1            # live parity: one-shot limit-order timeout
     conf_base_minutes: int = 1            # input candle resolution (1 or 5)
     conf_min_prob: float = 0.65           # optimized gate: skip signals below this win-prob
     conf_ev_floor: Optional[float] = None # EV-priority gate: keep EV>=floor (None=win-prob gate; 0=every +EV)
@@ -518,7 +518,7 @@ class BacktestRequest(BaseModel):
     conf_trail_trigger_pct: float = 0.50  # optimized: fire after 50% of TP distance
     conf_trail_lock_pct: float = 0.05     # optimized: lock +5% of TP distance
     conf_full_tp_lock: int = 0            # 0 = OFF; stop new entries after N full-TP exits/session
-    conf_session_limit: bool = True       # one trade per session+direction (existing rule)
+    conf_session_limit: bool = True       # live-style one trade per zone+direction/session
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -3506,7 +3506,7 @@ class LiveStartRequest(BaseModel):
     conf_band_ticks: float = 4.0
     conf_min_distinct_tf: int = 2
     conf_rr: float = Field(default=1.0, ge=1.0, le=6.0)
-    conf_wait_minutes: int = 60
+    conf_wait_minutes: int = 1
     conf_base_minutes: int = 1
     conf_min_prob: float = 0.65
     conf_ev_floor: Optional[float] = None
@@ -4117,7 +4117,8 @@ _DEFAULT_PRESET_PARAMS = {
     "conf_band_ticks": 4.0,
     "conf_min_distinct_tf": 2,
     "conf_rr": 1.0,
-    "conf_wait_minutes": 60,
+    "conf_model_name": None,
+    "conf_wait_minutes": 1,
     "conf_base_minutes": 1,
     "conf_min_prob": 0.65,
     "conf_ev_floor": None,
@@ -4132,7 +4133,33 @@ _DEFAULT_PRESET_PARAMS = {
     "conf_shadow": False,
 }
 
-_BUILTIN_PRESETS = {}
+_CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
+_CODEX_620_PRESET_1 = "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON B4 TF2 MNQx3"
+_CODEX_620_PRESET_2 = "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx3"
+_DEFAULT_LAST_USED_PRESET = _CODEX_620_PRESET_2
+
+
+def _codex_620_preset(*, min_prob: float, trail_trigger: float) -> dict:
+    params = dict(_DEFAULT_PRESET_PARAMS)
+    params.update({
+        "tp_ticks": 250,
+        "tr_tp_ticks": 250,
+        "rr_ratio": 5,
+        "conf_model_name": _CODEX_620_MODEL,
+        "conf_rr": 5,
+        "conf_min_prob": min_prob,
+        "conf_max_risk_ticks": 80,
+        "conf_trail_trigger_pct": trail_trigger,
+        "conf_trail_lock_pct": 0.05,
+        "conf_session_limit": True,
+    })
+    return params
+
+
+_BUILTIN_PRESETS = {
+    _CODEX_620_PRESET_1: _codex_620_preset(min_prob=0.60, trail_trigger=0.0),
+    _CODEX_620_PRESET_2: _codex_620_preset(min_prob=0.0, trail_trigger=0.50),
+}
 _FIXED_PRESET_NAMES = ()
 
 
@@ -4163,6 +4190,11 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         presets[_DEFAULT_PRESET_NAME] = dict(_DEFAULT_PRESET_PARAMS)
         changed = True
 
+    for name, params in _BUILTIN_PRESETS.items():
+        if presets.get(name) != params:
+            presets[name] = dict(params)
+            changed = True
+
     if not presets:
         presets[_DEFAULT_PRESET_NAME] = dict(_DEFAULT_PRESET_PARAMS)
         changed = True
@@ -4171,7 +4203,7 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         if key not in data or (
             data.get(key) != "default" and data.get(key) not in presets
         ):
-            data[key] = next(iter(presets))
+            data[key] = _DEFAULT_LAST_USED_PRESET if _DEFAULT_LAST_USED_PRESET in presets else next(iter(presets))
             changed = True
 
     data["fixed_presets"] = []
@@ -4189,8 +4221,8 @@ def _load_presets_file() -> dict:
     if data is None:
         data = {
             "presets": {},
-            "last_used_bt": _DEFAULT_PRESET_NAME,
-            "last_used_live": _DEFAULT_PRESET_NAME,
+            "last_used_bt": _DEFAULT_LAST_USED_PRESET,
+            "last_used_live": _DEFAULT_LAST_USED_PRESET,
         }
     data, changed = _ensure_builtin_presets(data)
     if changed:

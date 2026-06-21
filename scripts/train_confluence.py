@@ -216,7 +216,7 @@ def evaluate_and_meta(X, y, starts, ends, n_bars, embargo, C=None, loss_weight=1
 
 def sweep_probability_threshold(
     candles, timeline, scorer, signal_cfg, contract_id="CON.F.US.MNQ.M26",
-    contract_size=3, wait_minutes=15,
+    contract_size=3, wait_minutes=1,
     probs=None, trail_trigger_pct=0.0, trail_lock_pct=0.0,
     max_dd_target=2000.0,
 ):
@@ -277,7 +277,7 @@ def main():
                     help="train on the persistent accumulated store (option C)")
     ap.add_argument("--train-frac", type=float, default=0.80, help="front fraction used to TRAIN")
     ap.add_argument("--stride", type=int, default=5, help="sample a candidate every N bars")
-    ap.add_argument("--wait", type=int, default=60, help="limit-fill timeout in MINUTES")
+    ap.add_argument("--wait", type=int, default=1, help="limit-fill timeout in MINUTES")
     ap.add_argument("--horizon", type=int, default=1440, help="SL/TP resolve window in MINUTES")
     ap.add_argument("--band", type=float, default=4.0)
     ap.add_argument("--mdt", type=int, default=2)

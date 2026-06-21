@@ -21,7 +21,7 @@ Grid (the "optimized" search) vs the fixed baseline (band=12, mdt=3, rr=2.0):
     min_distinct_tf ∈ {2, 3, 4}            confluence strictness
     rr              ∈ {1.5, 2.0, 3.0}      reward:risk
     direction_mode  ∈ {momentum, reversion}
-    wait_minutes    ∈ {15, 60}             one-shot timeout
+    wait_minutes    ∈ {1, 5, 15, 60}       one-shot timeout
 
 All net-negative right now, so rows rank by total PnL (min 20 trades), with
 profit factor reported alongside.
@@ -59,11 +59,11 @@ GRID_BAND = (8.0, 12.0, 16.0, 24.0)
 GRID_MDT = (2, 3, 4)
 GRID_RR = (1.5, 2.0, 3.0)
 GRID_MODE = ("momentum", "reversion")
-GRID_WAIT = (15, 60)
+GRID_WAIT = (1, 5, 15, 60)
 MIN_TRADES = 20  # ignore tiny-sample rows when ranking
 
 FIXED = {"band_ticks": 12.0, "min_distinct_tf": 3, "rr": 2.0,
-         "direction_mode": "reversion", "wait_minutes": 60}
+         "direction_mode": "reversion", "wait_minutes": 1}
 
 
 def _load_candles(contract_id: str, days: int):
@@ -163,7 +163,7 @@ def main():
               f"{r['pnl']:>11.1f}{r['profit_factor']:>6.2f}", flush=True)
 
     if fixed_row:
-        print(f"\n=== FIXED baseline (band=12 mdt=3 rr=2.0 reversion wait=60) ===", flush=True)
+        print(f"\n=== FIXED baseline (band=12 mdt=3 rr=2.0 reversion wait=1) ===", flush=True)
         print(f"  trades={fixed_row['trades']} wr={fixed_row['win_rate']}% "
               f"pnl=${fixed_row['pnl']} pf={fixed_row['profit_factor']}", flush=True)
 

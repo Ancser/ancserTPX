@@ -17,6 +17,7 @@ class StrategyDefaultTests(unittest.TestCase):
             self.assertEqual(params.conf_band_ticks, 4.0)
             self.assertEqual(params.conf_min_distinct_tf, 2)
             self.assertEqual(params.conf_rr, 1.0)
+            self.assertEqual(params.conf_wait_minutes, 1)
             self.assertEqual(params.conf_min_prob, 0.65)
             self.assertIsNone(params.conf_rr_grid)
             self.assertFalse(params.conf_enable_breakout)

@@ -61,7 +61,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     conf_band_ticks: 4,
     conf_min_distinct_tf: 2,
     conf_rr: 1.0,
-    conf_wait_minutes: 60,
+    conf_wait_minutes: 1,
     conf_base_minutes: 1,
     conf_min_prob: 0.65,
     conf_ev_floor: null,
@@ -379,6 +379,47 @@ function onRrModeChange(mode) {
     const gridEl = document.getElementById('conf-rrgrid-' + mode);
     if (rrEl) rrEl.style.display = isGrid ? 'none' : '';
     if (gridEl) gridEl.style.display = isGrid ? '' : 'none';
+    updateMlParamSummary(mode);
+}
+
+function _mlSelectValue(id, fallback) {
+    const el = document.getElementById(id);
+    return el ? el.value : fallback;
+}
+
+function _fmtMlProb(v) {
+    const n = parseFloat(v);
+    if (!Number.isFinite(n) || n <= 0) return 'OFF';
+    return n.toFixed(2);
+}
+
+function _fmtMlEv(v) {
+    if (v === '' || v == null) return 'OFF';
+    const n = parseFloat(v);
+    if (!Number.isFinite(n)) return 'OFF';
+    return '≥' + (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''));
+}
+
+function updateMlParamSummary(mode) {
+    const el = document.getElementById('ml-param-summary-' + mode);
+    if (!el) return;
+    const rr = Math.max(1, Math.min(6, Math.round(parseFloat(_mlSelectValue('conf-rr-' + mode, '1')) || 1)));
+    const band = parseInt(_mlSelectValue('conf-band-' + mode, '4'), 10) || 4;
+    const minTf = parseInt(_mlSelectValue('conf-mintf-' + mode, '2'), 10) || 2;
+    const maxRisk = parseInt(_mlSelectValue('conf-maxrisk-' + mode, '0'), 10) || 0;
+    const trigger = parseFloat(_mlSelectValue('conf-trail-trigger-' + mode, '0')) || 0;
+    const lockPct = parseFloat(_mlSelectValue('conf-trail-lock-' + mode, '0.05')) || 0.05;
+    const sessionOn = _mlSelectValue('conf-session-limit-' + mode, '1') !== '0';
+    const prob = _fmtMlProb(_mlSelectValue('conf-minprob-' + mode, '0.65'));
+    const ev = _fmtMlEv(_mlSelectValue('conf-evfloor-' + mode, ''));
+    const risk = maxRisk > 0 ? (maxRisk + 't') : 'OFF';
+    const trail = trigger > 0
+        ? ('trail ' + Math.round(trigger * 100) + '% → SL +' + Math.round(lockPct * 100) + '% TP')
+        : 'trail OFF';
+    el.innerHTML =
+        'PARAMS: 1m base · wait 1m · B' + band + ' · ' + minTf + 'TF · RR1:' + rr +
+        ' · minProb ' + prob + ' · EV ' + ev + ' · maxRisk ' + risk + ' · breakout off.<br>' +
+        'RISK: ' + trail + ' · session limit ' + (sessionOn ? 'ON' : 'OFF') + ' · size follows top selector.';
 }
 
 function onStrategyChange(mode) {
@@ -497,6 +538,7 @@ function collectConfluenceParams(mode) {
         conf_band_ticks: fv('conf-band-' + mode, 4.0),
         conf_min_distinct_tf: iv('conf-mintf-' + mode, 2),
         conf_rr: Math.max(1, Math.min(6, Math.round(fv('conf-rr-' + mode, 1.0)))),
+        conf_wait_minutes: 1,
         conf_base_minutes: 1,
         conf_min_prob: fv('conf-minprob-' + mode, 0.65),
         conf_ev_floor: ovf('conf-evfloor-' + mode),
@@ -666,7 +708,12 @@ function applyStrategyParams(mode, params) {
     _set('confirm-bars-' + mode, String(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7));
 
     // ML (confluence) params — restored when the preset uses the ML strategy.
-    _set('conf-minprob-' + mode, String(p.conf_min_prob != null ? p.conf_min_prob : 0.65));
+    const _prob = (v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) return '0';
+        return n.toFixed(2);
+    };
+    _set('conf-minprob-' + mode, _prob(p.conf_min_prob != null ? p.conf_min_prob : 0.65));
     _set('conf-rr-' + mode, (p.conf_rr != null ? Number(p.conf_rr) : 1.0).toFixed(1));
     _set('conf-band-' + mode, String(parseInt(p.conf_band_ticks != null ? p.conf_band_ticks : 4, 10)));
     _set('conf-mintf-' + mode, String(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2));
@@ -684,6 +731,10 @@ function applyStrategyParams(mode, params) {
     _set('conf-trail-lock-' + mode, _pct(p.conf_trail_lock_pct));
     _set('conf-fulltplock-' + mode, String(parseInt(p.conf_full_tp_lock != null ? p.conf_full_tp_lock : 0, 10)));
     _set('conf-session-limit-' + mode, (p.conf_session_limit === false) ? '0' : '1');
+    if (p.conf_model_name) {
+        _pendingPresetModelByMode[mode] = p.conf_model_name;
+        _selectModelFromPreset(mode, p.conf_model_name);
+    }
     onRrModeChange(mode);
 
     // Timeframe checkboxes: overlap → tf_combo; single → [area_timeframe].
@@ -696,6 +747,7 @@ function applyStrategyParams(mode, params) {
 
     updateStrategyParamVisibility(mode);
     syncZoneFilterUI();
+    updateMlParamSummary(mode);
 }
 
 // CONTRACT preset dropdown in the connect panel — fills the contract-id text input.
@@ -736,11 +788,23 @@ function buildPresetName(params) {
         p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
     );
     if (normalizeStrategyName(p.strategy) === 'confluence') {
-        const rrLabel = 'RR1:' + Number(p.conf_rr != null ? p.conf_rr : 1.0);
-        return 'ML ' + rrLabel +
+        const rrLabel = 'RR1:' + Math.max(1, Math.min(6, Math.round(Number(p.conf_rr != null ? p.conf_rr : 1.0) || 1)));
+        const prob = _fmtMlProb(p.conf_min_prob != null ? p.conf_min_prob : 0.65).replace('.', '');
+        const risk = p.conf_max_risk_ticks != null && Number(p.conf_max_risk_ticks) > 0
+            ? ('R' + Number(p.conf_max_risk_ticks))
+            : 'ROFF';
+        const trail = Number(p.conf_trail_trigger_pct || 0) > 0 ? 'Trail50L5' : 'TrailOFF';
+        const session = p.conf_session_limit === false ? 'SesOFF' : 'SesON';
+        const modelName = String(p.conf_model_name || _activeModelName || '').replace(/^20260618_codex_rr3-band4-mintf2-production-/, '');
+        const modelLabel = modelName ? (' ' + modelName) : '';
+        return 'ML' + modelLabel + ' ' + rrLabel +
+            ' P' + prob +
+            ' ' + risk +
+            ' ' + trail +
+            ' ' + session +
             ' B' + Number(p.conf_band_ticks != null ? p.conf_band_ticks : 4) +
             ' TF' + Number(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2) +
-            ' ' + contractLabel + '@' + contractSize;
+            ' W1m ' + contractLabel + '@' + contractSize;
     }
     // Naming: TR{VA%} {tf/tf/...} RR1:{rr} C{confirm} {contract}@{size}
     //   → e.g. "TR80 5m/1h/4h RR1:3 C7 MNQ@3"
@@ -762,7 +826,13 @@ async function fetchPresets() {
 async function savePreset(mode) {
     const params = collectStrategyParams(mode);
     const confParams = collectConfluenceParams(mode);
-    if (confParams) Object.assign(params, confParams, { strategy: 'confluence' });
+    if (confParams) {
+        const modelSel = document.getElementById('conf-model-' + mode);
+        Object.assign(params, confParams, {
+            strategy: 'confluence',
+            conf_model_name: (modelSel && modelSel.value) || _activeModelName || null,
+        });
+    }
     const name = prompt('Preset name:', buildPresetName(params));
     if (!name || !name.trim()) return;
     try {
@@ -792,7 +862,9 @@ async function loadPreset(mode) {
     if (name === 'default') {
         applyStrategyParams(mode, DEFAULT_STRATEGY_PARAMS);
     } else if (_presetsCache.presets[name]) {
-        applyStrategyParams(mode, _presetsCache.presets[name]);
+        const presetParams = _presetsCache.presets[name];
+        applyStrategyParams(mode, presetParams);
+        await activatePresetModel(mode, presetParams.conf_model_name);
         log('Preset "' + name + '" loaded', 'info');
     }
     // Record last used
@@ -865,6 +937,7 @@ async function initPresets() {
         btSel.value = lastBt;
         if (lastBt !== 'default' && _presetsCache.presets[lastBt]) {
             applyStrategyParams('bt', _presetsCache.presets[lastBt]);
+            await activatePresetModel('bt', _presetsCache.presets[lastBt].conf_model_name, { silent: true });
         } else {
             applyStrategyParams('bt', DEFAULT_STRATEGY_PARAMS);
         }
@@ -873,6 +946,7 @@ async function initPresets() {
         liveSel.value = lastLive;
         if (lastLive !== 'default' && _presetsCache.presets[lastLive]) {
             applyStrategyParams('live', _presetsCache.presets[lastLive]);
+            await activatePresetModel('live', _presetsCache.presets[lastLive].conf_model_name, { silent: true });
         } else {
             applyStrategyParams('live', DEFAULT_STRATEGY_PARAMS);
         }
@@ -895,8 +969,14 @@ function toggleTrailTrigger(mode) {
     const on = (parseFloat(inp.value) || 0) > 0;
     inp.value = on ? '0' : '0.5';
     _syncTrailTriggerBtn(mode);
+    updateMlParamSummary(mode);
 }
-document.addEventListener('DOMContentLoaded', () => { _syncTrailTriggerBtn('bt'); _syncTrailTriggerBtn('live'); });
+document.addEventListener('DOMContentLoaded', () => {
+    ['bt', 'live'].forEach((mode) => {
+        _syncTrailTriggerBtn(mode);
+        updateMlParamSummary(mode);
+    });
+});
 
 document.addEventListener('DOMContentLoaded', initPresets);
 
@@ -906,6 +986,7 @@ document.addEventListener('DOMContentLoaded', initPresets);
 // ════════════════════════════════════════════════════════════════════════
 let _modelRegistry = [];   // cached list from GET /confluence/models
 let _activeModelName = '';
+const _pendingPresetModelByMode = { bt: '', live: '' };
 
 function _fmtModelLabel(m) {
     const day = String(m.trained_at || m.name || '').slice(0, 10).replace(/-/g, '');
@@ -948,7 +1029,9 @@ function _populateModelSelect(mode) {
         sel.add(option);
     });
     const activeExists = _modelRegistry.some(m => m.name === _activeModelName);
-    sel.value = activeExists ? _activeModelName : _modelRegistry[0].name;
+    const preferred = _pendingPresetModelByMode[mode];
+    const preferredExists = preferred && _modelRegistry.some(m => m.name === preferred);
+    sel.value = preferredExists ? preferred : (activeExists ? _activeModelName : _modelRegistry[0].name);
     const m = _modelRegistry.find(model => model.name === sel.value) || _modelRegistry[0];
     _applyModelCombo(mode, m.rr, m.band, m.min_distinct_tf, m.breakout);
 }
@@ -961,6 +1044,41 @@ function _applyModelCombo(mode, rr, band, tf, brk) {
     _set('conf-rrmode-' + mode, 'fixed');
     _set('conf-breakout-' + mode, brk ? '1' : '0');
     if (typeof onRrModeChange === 'function') onRrModeChange(mode);
+    updateMlParamSummary(mode);
+}
+
+function _selectModelFromPreset(mode, name) {
+    if (!name) return false;
+    const sel = document.getElementById('conf-model-' + mode);
+    if (!sel) return false;
+    const model = _modelRegistry.find(m => m.name === name);
+    if (!model || !Array.from(sel.options).some(o => o.value === name)) return false;
+    sel.value = name;
+    _applyModelCombo(mode, model.rr, model.band, model.min_distinct_tf, model.breakout);
+    return true;
+}
+
+async function activatePresetModel(mode, name, opts) {
+    if (!name) return;
+    const silent = !!(opts && opts.silent);
+    _pendingPresetModelByMode[mode] = name;
+    try {
+        const resp = await fetch(API + '/confluence/models/activate', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data.success) {
+            if (!silent) log('Preset model activate failed: ' + (data.detail || ('HTTP ' + resp.status)), 'warn');
+            return;
+        }
+        _activeModelName = name;
+        await loadModelRegistry();
+        _selectModelFromPreset(mode, name);
+        if (!silent) log('Preset model active: ' + name, 'success');
+    } catch (e) {
+        if (!silent) log('Preset model activate failed: ' + e, 'warn');
+    }
 }
 
 async function onModelSelect(mode) {
@@ -970,6 +1088,7 @@ async function onModelSelect(mode) {
     const name = sel.value;
     const rr = Number(opt.dataset.rr), band = Number(opt.dataset.band);
     const tf = Number(opt.dataset.tf), brk = opt.dataset.brk === '1';
+    _pendingPresetModelByMode[mode] = name;
     _applyModelCombo(mode, rr, band, tf, brk);
     if (opt.dataset.trained !== '1') {
         log('此模型尚未訓練', 'warn');
@@ -1000,11 +1119,11 @@ async function retrainModel(mode) {
     const band = parseInt((document.getElementById('conf-band-' + mode) || {}).value || '4', 10);
     const tf = parseInt((document.getElementById('conf-mintf-' + mode) || {}).value || '2', 10);
     const brk = false;
-    const lw = parseFloat((document.getElementById('conf-lossweight-' + mode) || {}).value || '1');
+    const lw = 1;
     const minProb = String((document.getElementById('conf-minprob-' + mode) || {}).value || '0.65');
     const description = String((descriptionEl || {}).value || '').trim()
         || `RR${Math.round(rr)} B${band} TF${tf} prob${minProb} ui retrain`;
-    if (!confirm(`新增模型版本\ntrainer = ${trainer.toUpperCase()}\ndescription = ${description}\nloss weight = ${lw}×\n需已載入歷史數據，訓練可能需要一段時間。`)) return;
+    if (!confirm(`新增模型版本\ntrainer = ${trainer.toUpperCase()}\ndescription = ${description}\n需已載入歷史數據，訓練可能需要一段時間。`)) return;
     log(`訓練新版本中 · ${trainer.toUpperCase()} · ${description}…`, 'info');
     try {
         const resp = await fetch(API + '/confluence/models/retrain', {
@@ -1016,7 +1135,7 @@ async function retrainModel(mode) {
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data.success) {
             log(`✓ ${data.name} 訓練完成 · n=${data.n_samples} win=${(data.win_rate * 100).toFixed(0)}% `
-                + `oos=${Number(data.oos_auc).toFixed(2)} LW${lw}× · 已啟用`, 'success');
+                + `oos=${Number(data.oos_auc).toFixed(2)} · 已啟用`, 'success');
             await loadModelRegistry();
             if (sel) sel.value = data.name;
             if (descriptionEl) descriptionEl.value = '';
@@ -1110,6 +1229,9 @@ function decorateParamHelpDots() {
         'conf-band': '匯聚帶寬 (ticks)：不同時間框的水平位落在此範圍內視為同一匯聚區。越大 → 越容易匯聚、訊號越多。\nConfluence band (ticks): levels from different TFs within this range merge into one zone.',
         'conf-mintf': '最少不同時間框數：一個匯聚區至少需這麼多個不同 TF 的水平位才算有效訊號。越大 → 越嚴格、訊號越少。\nMin distinct timeframes required for a valid confluence zone.',
         'conf-evfloor': '期望值門檻，優先於 MIN PROB。EV = prob×RR − (1−prob)。開啓後依 EV 由高到低排序並篩選；≥0 = 接受所有正期望值訊號。\nExpected-value gate (overrides MIN PROB). EV = prob×RR − (1−prob); signals ranked & filtered by EV.',
+        'conf-maxrisk': '最大 SL 風險 (ticks)：超過此 SL 寬度的訊號直接跳過。80t 是目前 < $2k DD 策略的主要風險過濾。\nMax allowed stop distance in ticks. Signals wider than this are skipped.',
+        'conf-trail-trigger': 'ML 達到 TP 的此百分比後，將 SL 移到 +5% TP 的小正數鎖利位。\nWhen price reaches this percent of TP, move SL to +5% of TP.',
+        'conf-session-limit': 'Live parity 鎖定：同一 Topstep session / 同一主 TF 牆 / 同方向只做一次。\nLive-style lock: one trade per session, main wall, and direction.',
         'overlap-tf': '參與匯聚的時間框。選 1 個 = 單一框；選 2+ = 跨框重疊匯聚。框越多 → 匯聚位越具共識。\nTimeframes feeding the confluence. 1 = single TF; 2+ = multi-TF overlap.',
         // ── TREND ──
         'area-pct': 'TREND：區間判定的面積比例門檻，越高越嚴格。\nTREND: range-area threshold for breakout detection; higher = stricter.',

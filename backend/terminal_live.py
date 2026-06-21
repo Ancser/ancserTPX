@@ -66,7 +66,8 @@ DEFAULT_PRESET_PARAMS = {
     "conf_band_ticks": 4.0,
     "conf_min_distinct_tf": 2,
     "conf_rr": 1.0,
-    "conf_wait_minutes": 60,
+    "conf_model_name": None,
+    "conf_wait_minutes": 1,
     "conf_base_minutes": 1,
     "conf_min_prob": 0.65,
     "conf_ev_floor": None,
@@ -80,7 +81,33 @@ DEFAULT_PRESET_PARAMS = {
     "conf_session_limit": True,
     "conf_shadow": False,
 }
-BUILTIN_PRESETS = {}
+CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
+CODEX_620_PRESET_1 = "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON B4 TF2 MNQx3"
+CODEX_620_PRESET_2 = "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx3"
+DEFAULT_LAST_USED_PRESET = CODEX_620_PRESET_2
+
+
+def _codex_620_preset(*, min_prob: float, trail_trigger: float) -> Dict[str, Any]:
+    params = dict(DEFAULT_PRESET_PARAMS)
+    params.update({
+        "tp_ticks": 250,
+        "tr_tp_ticks": 250,
+        "rr_ratio": 5,
+        "conf_model_name": CODEX_620_MODEL,
+        "conf_rr": 5,
+        "conf_min_prob": min_prob,
+        "conf_max_risk_ticks": 80,
+        "conf_trail_trigger_pct": trail_trigger,
+        "conf_trail_lock_pct": 0.05,
+        "conf_session_limit": True,
+    })
+    return params
+
+
+BUILTIN_PRESETS = {
+    CODEX_620_PRESET_1: _codex_620_preset(min_prob=0.60, trail_trigger=0.0),
+    CODEX_620_PRESET_2: _codex_620_preset(min_prob=0.0, trail_trigger=0.50),
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -89,6 +116,22 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("ancserTPX.terminal")
+
+
+def _activate_preset_model(preset: Dict[str, Any]) -> None:
+    """Keep terminal/mac direct launch in sync with UI presets."""
+    if str(preset.get("strategy") or "").lower() != "confluence":
+        return
+    name = str(preset.get("conf_model_name") or "").strip()
+    if not name:
+        return
+    try:
+        from backend.strategy.confluence_scorer import activate_model_version
+
+        activate_model_version(name)
+        logger.info("Preset model active: %s", name)
+    except Exception as exc:
+        logger.warning("Preset model activate failed (%s): %s", name, exc)
 
 
 ES_CONTINUOUS = 0x80000000
@@ -158,7 +201,7 @@ def _load_presets_file() -> dict:
             "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
             "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
             "tr_one_trade_per_session",
-            "conf_band_ticks", "conf_min_distinct_tf", "conf_rr",
+            "conf_band_ticks", "conf_min_distinct_tf", "conf_rr", "conf_model_name",
             "conf_wait_minutes", "conf_base_minutes", "conf_min_prob",
             "conf_ev_floor", "conf_rr_grid", "conf_use_scorer",
             "conf_enable_breakout", "conf_max_risk_ticks", "conf_trail_trigger_pct",
@@ -178,12 +221,15 @@ def _load_presets_file() -> dict:
             del presets[name]
     if presets.get(DEFAULT_PRESET_NAME) != DEFAULT_PRESET_PARAMS:
         presets[DEFAULT_PRESET_NAME] = dict(DEFAULT_PRESET_PARAMS)
+    for name, params in BUILTIN_PRESETS.items():
+        if presets.get(name) != params:
+            presets[name] = dict(params)
     if not presets:
         presets[DEFAULT_PRESET_NAME] = dict(DEFAULT_PRESET_PARAMS)
     if data.get("last_used_bt") != "default" and data.get("last_used_bt") not in presets:
-        data["last_used_bt"] = next(iter(presets))
+        data["last_used_bt"] = DEFAULT_LAST_USED_PRESET if DEFAULT_LAST_USED_PRESET in presets else next(iter(presets))
     if data.get("last_used_live") != "default" and data.get("last_used_live") not in presets:
-        data["last_used_live"] = next(iter(presets))
+        data["last_used_live"] = DEFAULT_LAST_USED_PRESET if DEFAULT_LAST_USED_PRESET in presets else next(iter(presets))
     data["fixed_presets"] = []
     return data
 
@@ -445,7 +491,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         conf_band_ticks=_conf_float("conf_band_ticks", 4.0),
         conf_min_distinct_tf=_conf_int("conf_min_distinct_tf", 2),
         conf_rr=float(max(1, min(6, round(_conf_float("conf_rr", 1.0))))),
-        conf_wait_minutes=_conf_int("conf_wait_minutes", 60),
+        conf_wait_minutes=_conf_int("conf_wait_minutes", 1),
         conf_base_minutes=_conf_int("conf_base_minutes", 1),
         conf_min_prob=_conf_float("conf_min_prob", 0.65),
         conf_ev_floor=_conf_optional_float("conf_ev_floor"),
@@ -533,6 +579,7 @@ async def run_terminal_live() -> int:
         logger.info("ancserTPX terminal starting")
         logger.info("API: %s | user=%s", "demo" if use_demo else "production", username)
         logger.info("Preset: %s (%s)", preset_name, preset_source)
+        _activate_preset_model(preset)
 
         await client.authenticate()
         accounts = await client.get_accounts()

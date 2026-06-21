@@ -172,7 +172,7 @@ def run_job(ckey, candles_or_none, params: dict, progress=None) -> dict:
     sig_cfg.max_risk_ticks = p.get("conf_max_risk_ticks") or None
 
     run_cfg = ConfluenceBacktestConfig(
-        wait_minutes=p["conf_wait_minutes"], min_score=min_score,
+        wait_minutes=int(p.get("conf_wait_minutes", 1) or 1), min_score=min_score,
         base_minutes=base, timeframes=timeframes,
         one_trade_per_session_direction=bool(p.get("conf_session_limit", True)),
         trail_trigger_pct=float(p.get("conf_trail_trigger_pct", 0.50) or 0.0),

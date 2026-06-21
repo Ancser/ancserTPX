@@ -22,8 +22,10 @@ import sys
 import time
 from array import array
 from dataclasses import asdict, dataclass
+from datetime import timezone, timedelta
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 import numpy as np
 
@@ -61,10 +63,13 @@ SIZE = 3
 TICK = get_tick_size(CONTRACT)
 POINT_VALUE = get_point_value(CONTRACT)
 ROUND_TRIP_COST = get_commission_rt(CONTRACT) + get_fees_rt(CONTRACT)
-WAIT_BARS = 60  # the hidden production default: conf_wait_minutes=60, base=1m
+WAIT_BARS = 1  # live parity: conf_wait_minutes=1, base=1m
 RRS = tuple(range(1, 7))
 TARGET_MAX_DD = 2_000.0
 MIN_TRADES = 20
+_CT = ZoneInfo("America/Chicago")
+ZONE_NAMES = tuple(timeframes_for_base(1))
+ZONE_TO_CODE = {tf: i for i, tf in enumerate(ZONE_NAMES)}
 
 # Frontend runtime controls. min_prob=0.50 is intentionally omitted because the
 # backend maps both OFF (0) and 0.50 to score >= 0 / probability >= 50%.
@@ -97,6 +102,7 @@ LOCK = OUT_DIR / "parameter_study.lock"
 @dataclass(slots=True)
 class Candidate:
     direction: str
+    zone_id: str
     mode: str
     entry: float
     sl: float
@@ -120,6 +126,7 @@ class CompactBook:
     score: array
     prob: array
     risk: array
+    zone: array
     mode: array
 
     @classmethod
@@ -131,6 +138,7 @@ class CompactBook:
             score=array("d"),
             prob=array("d"),
             risk=array("f"),
+            zone=array("B"),
             mode=array("B"),
         )
 
@@ -151,6 +159,7 @@ class CompactBook:
             self.score.append(candidate.score)
             self.prob.append(candidate.prob)
             self.risk.append(candidate.risk_ticks)
+            self.zone.append(ZONE_TO_CODE.get(candidate.zone_id, 255))
             self.mode.append(MODE_TO_CODE[candidate.mode])
 
     def best(
@@ -169,6 +178,7 @@ class CompactBook:
             if not max_risk_ticks or self.risk[index] <= max_risk_ticks:
                 return Candidate(
                     direction=direction,
+                    zone_id=ZONE_NAMES[self.zone[index]] if self.zone[index] < len(ZONE_NAMES) else "unknown",
                     mode=CODE_TO_MODE[self.mode[index]],
                     entry=float(self.entry[index]),
                     sl=float(self.sl[index]),
@@ -245,7 +255,8 @@ def _model_paths() -> List[Tuple[Path, ConfluenceScorer]]:
 
 def _checkpoint_key(candles, models) -> dict:
     return {
-        "storage_version": 2,
+        "storage_version": 3,
+        "execution_parity": "live_zone_direction_lock_wait1",
         "bars": len(candles),
         "start": candles[0].timestamp.isoformat(),
         "end": candles[-1].timestamp.isoformat(),
@@ -326,6 +337,7 @@ def precompute_books(candles, timeline, models):
                         prob = 1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, score))))
                         per_model_rr[model_id][rr][direction].append(Candidate(
                             direction=direction,
+                            zone_id=signal6.cluster.largest_tf,
                             mode=mode,
                             entry=signal6.entry_price,
                             sl=signal6.sl_price,
@@ -415,7 +427,16 @@ def replay(
     session_used = set()
 
     def session_key(timestamp) -> str:
-        return timestamp.strftime("%Y-%m-%d")
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        ct = timestamp.astimezone(_CT)
+        if ct.hour >= 17:
+            ct = ct + timedelta(days=1)
+        return ct.strftime("%Y-%m-%d")
+
+    def lock_key(timestamp, candidate: Candidate):
+        direction = "up" if candidate.direction == "BUY" else "down"
+        return (session_key(timestamp), str(candidate.zone_id), direction)
 
     def close(price: float, reason: str) -> None:
         nonlocal capital, peak, max_dd, open_candidate, trail_triggered
@@ -489,8 +510,6 @@ def replay(
                 risks.append(pending.risk_ticks)
                 modes[pending.mode] = modes.get(pending.mode, 0) + 1
                 trail_triggered = False
-                if params.session_limit:
-                    session_used.add((session_key(candle.timestamp), pending.direction))
                 pending = None
                 pending_age = 0
                 # Production permits only an immediate SL on the fill candle.
@@ -501,6 +520,8 @@ def replay(
                 continue
             pending_age += 1
             if pending_age >= WAIT_BARS:
+                if params.session_limit:
+                    session_used.discard(lock_key(candle.timestamp, pending))
                 pending = None
                 pending_age = 0
             continue
@@ -509,15 +530,15 @@ def replay(
             continue
         candidates = []
         for direction in ("BUY", "SELL"):
-            if params.session_limit and (
-                session_key(candle.timestamp), direction
-            ) in session_used:
-                continue
             candidate = books.best(index, direction, params.max_risk_ticks)
             if candidate is not None and _passes_gate(candidate, params):
+                if params.session_limit and lock_key(candle.timestamp, candidate) in session_used:
+                    continue
                 candidates.append(candidate)
         if candidates:
             pending = max(candidates, key=lambda item: item.score)
+            if params.session_limit:
+                session_used.add(lock_key(candle.timestamp, pending))
             pending_age = 0
 
     wins = [pnl for pnl in pnls if pnl > 0]
@@ -892,7 +913,7 @@ def main() -> None:
                 "band_ticks": 4,
                 "min_distinct_tf": 2,
                 "base_minutes": 1,
-                "wait_minutes": 60,
+                "wait_minutes": 1,
                 "breakout": False,
                 "trail_trigger_when_on": 0.50,
                 "trail_lock_when_on": 0.05,

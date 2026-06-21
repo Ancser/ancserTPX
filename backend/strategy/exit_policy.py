@@ -34,11 +34,12 @@ from backend.db.models import Direction
 @dataclass
 class ConfluenceExitStyle:
     """Optional exit-policy knobs. Defaults = original behaviour (all OFF except
-    session_limit, which is confluence's existing one-shot-per-session rule)."""
+    session_limit, which is confluence's live-style one-shot-per-zone+direction
+    rule within a Topstep session)."""
     trail_trigger_pct: float = 0.0   # 0 = trailing OFF
     trail_lock_pct: float = 0.0      # locked SL as fraction of TP distance on trigger
     full_tp_lock: int = 0            # 0 = OFF; stop new entries after N full-TP exits/session
-    session_limit: bool = True       # one trade per session+direction (existing rule)
+    session_limit: bool = True       # one trade per zone+direction per Topstep session
 
     @property
     def trail_enabled(self) -> bool:

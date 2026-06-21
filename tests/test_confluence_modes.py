@@ -1,6 +1,10 @@
 import unittest
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from backend.backtest.confluence_backtest import ConfluenceBacktester
+from backend.db.models import Direction
 from backend.strategy.confluence import ConfluenceConfig, evaluate_confluence_scored
 
 
@@ -9,6 +13,18 @@ class _Scorer:
 
 
 class ConfluenceModeTests(unittest.TestCase):
+    def test_backtest_session_lock_is_zone_direction_scoped_like_live(self):
+        bt = ConfluenceBacktester(ConfluenceConfig())
+        ts = datetime(2026, 6, 19, 6, 0, tzinfo=timezone.utc)
+        buy_4h = SimpleNamespace(direction=Direction.BUY, cluster=SimpleNamespace(largest_tf="4h"))
+        buy_10m = SimpleNamespace(direction=Direction.BUY, cluster=SimpleNamespace(largest_tf="10m"))
+        buy_4h_again = SimpleNamespace(direction=Direction.BUY, cluster=SimpleNamespace(largest_tf="4h"))
+        sell_4h = SimpleNamespace(direction=Direction.SELL, cluster=SimpleNamespace(largest_tf="4h"))
+
+        self.assertEqual(bt._session_lock_key(ts, buy_4h), bt._session_lock_key(ts, buy_4h_again))
+        self.assertNotEqual(bt._session_lock_key(ts, buy_4h), bt._session_lock_key(ts, buy_10m))
+        self.assertNotEqual(bt._session_lock_key(ts, buy_4h), bt._session_lock_key(ts, sell_4h))
+
     def test_default_modes_exclude_breakout(self):
         self.assertEqual(
             ConfluenceConfig().auto_modes(),
