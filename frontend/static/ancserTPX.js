@@ -69,6 +69,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     conf_use_scorer: true,
     conf_enable_breakout: false,
     conf_max_risk_ticks: null,
+    conf_allowed_sessions: ['ASIA', 'PRE'],
     conf_trail_trigger_pct: 0.50,
     conf_trail_lock_pct: 0.05,
     conf_full_tp_lock: 0,
@@ -400,6 +401,28 @@ function _fmtMlEv(v) {
     return '≥' + (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''));
 }
 
+function normalizeAllowedSessions(value) {
+    if (value == null) return null;
+    const raw = Array.isArray(value)
+        ? value
+        : String(value).replace(/\|/g, ',').replace(/\+/g, ',').split(',');
+    const order = ['ASIA', 'EURO', 'PRE', 'RTH', 'AH'];
+    const set = new Set(raw.map(v => String(v || '').trim().toUpperCase()).filter(Boolean));
+    if (!set.size || set.has('ALL') || set.has('*')) return null;
+    const arr = order.filter(code => set.has(code));
+    return arr.length ? arr : null;
+}
+
+function allowedSessionsLabel(value) {
+    const arr = normalizeAllowedSessions(value);
+    return arr ? arr.join('+') : 'ALL';
+}
+
+function allowedSessionsSelectValue(value) {
+    const arr = normalizeAllowedSessions(value);
+    return arr ? arr.join(',') : '';
+}
+
 function updateMlParamSummary(mode) {
     const el = document.getElementById('ml-param-summary-' + mode);
     if (!el) return;
@@ -410,6 +433,7 @@ function updateMlParamSummary(mode) {
     const trigger = parseFloat(_mlSelectValue('conf-trail-trigger-' + mode, '0')) || 0;
     const lockPct = parseFloat(_mlSelectValue('conf-trail-lock-' + mode, '0.05')) || 0.05;
     const sessionOn = _mlSelectValue('conf-session-limit-' + mode, '1') !== '0';
+    const marketSession = allowedSessionsLabel(_mlSelectValue('conf-allowed-sessions-' + mode, 'ASIA,PRE'));
     const prob = _fmtMlProb(_mlSelectValue('conf-minprob-' + mode, '0.65'));
     const ev = _fmtMlEv(_mlSelectValue('conf-evfloor-' + mode, ''));
     const risk = maxRisk > 0 ? (maxRisk + 't') : 'OFF';
@@ -419,7 +443,8 @@ function updateMlParamSummary(mode) {
     el.innerHTML =
         'PARAMS: 1m base · wait 1m · B' + band + ' · ' + minTf + 'TF · RR1:' + rr +
         ' · minProb ' + prob + ' · EV ' + ev + ' · maxRisk ' + risk + ' · breakout off.<br>' +
-        'RISK: ' + trail + ' · session limit ' + (sessionOn ? 'ON' : 'OFF') + ' · size follows top selector.';
+        'RISK: ' + trail + ' · session limit ' + (sessionOn ? 'ON' : 'OFF') +
+        ' · market ' + marketSession + ' · size follows top selector.';
 }
 
 function onStrategyChange(mode) {
@@ -551,6 +576,9 @@ function collectConfluenceParams(mode) {
             return el ? el.value === '1' : false;
         })(),
         conf_max_risk_ticks: iv('conf-maxrisk-' + mode, 0) || null,
+        conf_allowed_sessions: normalizeAllowedSessions(
+            _mlSelectValue('conf-allowed-sessions-' + mode, 'ASIA,PRE')
+        ),
         // STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original.
         conf_trail_trigger_pct: fv('conf-trail-trigger-' + mode, 0.50),
         conf_trail_lock_pct: fv('conf-trail-lock-' + mode, 0.05),
@@ -731,6 +759,9 @@ function applyStrategyParams(mode, params) {
     _set('conf-trail-lock-' + mode, _pct(p.conf_trail_lock_pct));
     _set('conf-fulltplock-' + mode, String(parseInt(p.conf_full_tp_lock != null ? p.conf_full_tp_lock : 0, 10)));
     _set('conf-session-limit-' + mode, (p.conf_session_limit === false) ? '0' : '1');
+    _set('conf-allowed-sessions-' + mode, allowedSessionsSelectValue(
+        p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA', 'PRE']
+    ));
     if (p.conf_model_name) {
         _pendingPresetModelByMode[mode] = p.conf_model_name;
         _selectModelFromPreset(mode, p.conf_model_name);
@@ -795,6 +826,7 @@ function buildPresetName(params) {
             : 'ROFF';
         const trail = Number(p.conf_trail_trigger_pct || 0) > 0 ? 'Trail50L5' : 'TrailOFF';
         const session = p.conf_session_limit === false ? 'SesOFF' : 'SesON';
+        const market = allowedSessionsLabel(p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA', 'PRE']);
         const modelName = String(p.conf_model_name || _activeModelName || '').replace(/^20260618_codex_rr3-band4-mintf2-production-/, '');
         const modelLabel = modelName ? (' ' + modelName) : '';
         return 'ML' + modelLabel + ' ' + rrLabel +
@@ -802,6 +834,7 @@ function buildPresetName(params) {
             ' ' + risk +
             ' ' + trail +
             ' ' + session +
+            ' ' + market +
             ' B' + Number(p.conf_band_ticks != null ? p.conf_band_ticks : 4) +
             ' TF' + Number(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2) +
             ' W1m ' + contractLabel + '@' + contractSize;
@@ -1232,6 +1265,7 @@ function decorateParamHelpDots() {
         'conf-maxrisk': '最大 SL 風險 (ticks)：超過此 SL 寬度的訊號直接跳過。80t 是目前 < $2k DD 策略的主要風險過濾。\nMax allowed stop distance in ticks. Signals wider than this are skipped.',
         'conf-trail-trigger': 'ML 達到 TP 的此百分比後，將 SL 移到 +5% TP 的小正數鎖利位。\nWhen price reaches this percent of TP, move SL to +5% of TP.',
         'conf-session-limit': 'Live parity 鎖定：同一 Topstep session / 同一主 TF 牆 / 同方向只做一次。\nLive-style lock: one trade per session, main wall, and direction.',
+        'conf-allowed-sessions': '市場盤段過濾：只在選定盤段開新單。ASIA+PRE 是目前回測最穩定的預設。\nMarket segment filter: only open new entries inside the selected segment(s).',
         'overlap-tf': '參與匯聚的時間框。選 1 個 = 單一框；選 2+ = 跨框重疊匯聚。框越多 → 匯聚位越具共識。\nTimeframes feeding the confluence. 1 = single TF; 2+ = multi-TF overlap.',
         // ── TREND ──
         'area-pct': 'TREND：區間判定的面積比例門檻，越高越嚴格。\nTREND: range-area threshold for breakout detection; higher = stricter.',
@@ -1654,7 +1688,8 @@ async function goLive() {
             : ('rr=' + stratParams.conf_rr);
         log('ML CONFLUENCE: LIVE (places orders) base=1m ' + gateTxt
             + ' ' + rrTxt + ' band=' + stratParams.conf_band_ticks
-            + ' minTF=' + stratParams.conf_min_distinct_tf, 'info');
+            + ' minTF=' + stratParams.conf_min_distinct_tf
+            + ' market=' + allowedSessionsLabel(stratParams.conf_allowed_sessions), 'info');
     }
 
     // Switch the zone filter to LIVE and preselect the timeframe(s) being traded
@@ -2130,16 +2165,18 @@ async function pollLiveStatus() {
         // ── Phase — both top bar and left panel ──
         let phaseText = st.phase || '--';
         const phaseDisplayText = phaseText + (st.tp_locked ? ' TPLOCK' : '');
+        const isMLStatus = (st.strategy_mode === 'confluence') || st.confluence_mode;
         const panelPhaseEl = document.getElementById('live-position-text');
         if (panelPhaseEl) {
             panelPhaseEl.textContent = phaseDisplayText;
-            panelPhaseEl.style.color = st.tp_locked ? 'var(--amber)' : 'var(--text3)';
+            panelPhaseEl.style.color = st.tp_locked
+                ? 'var(--amber)'
+                : (isMLStatus ? 'var(--text1)' : 'var(--text3)');
         }
         // Status-line label adapts to the active strategy (ML 狀態 / TREND 狀態)
         const statusLabelEl = document.getElementById('lv-status-label');
         if (statusLabelEl) {
-            const isML = (st.strategy_mode === 'confluence') || st.confluence_mode;
-            statusLabelEl.textContent = isML ? 'ML 狀態' : 'TREND 狀態';
+            statusLabelEl.textContent = isMLStatus ? 'ML 狀態' : 'TREND 狀態';
         }
         const phaseTopEl = document.getElementById('lv-phase-top');
         if (phaseTopEl) {
@@ -2149,7 +2186,7 @@ async function pollLiveStatus() {
             else if (/交易中|持倉|TRADE/i.test(phaseText)) phaseTopEl.style.color = 'var(--green)';
             else if (/突破中|出界|break/i.test(phaseText)) phaseTopEl.style.color = 'var(--amber)';
             else if (/盤整|區間內/i.test(phaseText)) phaseTopEl.style.color = 'var(--cyan)';
-            else phaseTopEl.style.color = 'var(--text3)';
+            else phaseTopEl.style.color = isMLStatus ? 'var(--cyan)' : 'var(--text3)';
         }
 
         // ── ML level-universe overlay (chart bottom-right) ──
@@ -2206,9 +2243,11 @@ async function pollLiveStatus() {
             const orderType = String(sig.order_type || 'limit').toUpperCase();
             document.getElementById('lv-sig-direction').textContent = isLong ? '▲ ' + orderType + ' BUY' : '▼ ' + orderType + ' SELL';
             document.getElementById('lv-sig-direction').style.color = isLong ? 'var(--green)' : 'var(--red)';
+            const sigSL = sig.original_sl_price != null ? sig.original_sl_price : sig.sl_price;
+            const sigTP = sig.original_tp_price != null ? sig.original_tp_price : sig.tp_price;
             document.getElementById('lv-sig-entry').textContent = sig.entry_price.toFixed(2);
-            document.getElementById('lv-sig-sl').textContent = sig.sl_price.toFixed(2);
-            document.getElementById('lv-sig-tp').textContent = sig.tp_price.toFixed(2);
+            document.getElementById('lv-sig-sl').textContent = Number(sigSL).toFixed(2);
+            document.getElementById('lv-sig-tp').textContent = Number(sigTP).toFixed(2);
             const sigStatus = document.getElementById('lv-sig-status');
             if (st.position) {
                 const hasSLTP = st.sl_order_id && st.tp_order_id;
@@ -2226,27 +2265,12 @@ async function pollLiveStatus() {
 
             // An admitted signal is showing — clear any faded candidate preview.
             removeCandidateLines();
-            // Draw TP/SL price lines on chart
-            if (candleSeries) {
-                if (window._liveTpLine) { try { candleSeries.removePriceLine(window._liveTpLine); } catch(e){} }
-                if (window._liveSlLine) { try { candleSeries.removePriceLine(window._liveSlLine); } catch(e){} }
-                if (window._liveEntryLine) { try { candleSeries.removePriceLine(window._liveEntryLine); } catch(e){} }
-                window._liveEntryLine = candleSeries.createPriceLine({
-                    price: sig.entry_price, color: '#FFD700', lineWidth: 1,
-                    lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true,
-                    title: (isLong ? 'BUY' : 'SELL') + ' ' + orderType + ' ' + sig.entry_price.toFixed(2),
-                });
-                window._liveTpLine = candleSeries.createPriceLine({
-                    price: sig.tp_price, color: '#00E5A0', lineWidth: 1,
-                    lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true,
-                    title: 'TP ' + sig.tp_price.toFixed(2),
-                });
-                window._liveSlLine = candleSeries.createPriceLine({
-                    price: sig.sl_price, color: '#FF4060', lineWidth: 1,
-                    lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true,
-                    title: 'SL ' + sig.sl_price.toFixed(2),
-                });
-            }
+            // Do not draw chart price-lines for Entry/SL/TP. The chart overlay
+            // only shows the decision zone; exact prices stay in the control UI.
+            if (window._liveTpLine) { try { candleSeries.removePriceLine(window._liveTpLine); } catch(e){} window._liveTpLine = null; }
+            if (window._liveSlLine) { try { candleSeries.removePriceLine(window._liveSlLine); } catch(e){} window._liveSlLine = null; }
+            if (window._liveEntryLine) { try { candleSeries.removePriceLine(window._liveEntryLine); } catch(e){} window._liveEntryLine = null; }
+            updateLiveWorkingDecision(sig, isLong, sigSL, sigTP);
         } else {
             sigRow.style.display = 'none';
             // Remove admitted-signal lines when no signal
@@ -2257,6 +2281,7 @@ async function pollLiveStatus() {
             // They are model previews, not live orders, and looked too much like
             // stale SL/TP after manual flatten/restart.
             removeCandidateLines();
+            clearLiveWorkingDecision();
         }
 
         // ── Redraw zones from live status ──
@@ -2271,65 +2296,48 @@ async function pollLiveStatus() {
             }
         }
 
-        // ── Live trade markers on chart (accumulated history) ──
+        // ── Live realtime markers on chart (pending/open only) ──
         if (candleSeries) {
-            // Accumulate trade history from engine log
-            if (!window._liveTradeMarkers) window._liveTradeMarkers = [];
-
-            // Track new trades from engine (entries + closes)
-            if (st.trades && st.trades.length > (window._lastLiveTradeCount || 0)) {
-                const newTrades = st.trades.slice(window._lastLiveTradeCount || 0);
-                newTrades.forEach(t => {
-                    if (!t.time) return;
-                    const chartTime = isoToChartTime(t.time);
-                    if (t.type === 'entry') {
-                        const isLong = t.direction === 'buy';
-                        window._liveTradeMarkers.push({
-                            time: chartTime,
-                            position: isLong ? 'belowBar' : 'aboveBar',
-                            color: isLong ? '#00e5a0' : '#ff4060',
-                            shape: isLong ? 'arrowUp' : 'arrowDown',
-                            text: (isLong ? 'BUY' : 'SELL') + ' @ ' + (t.price || 0).toFixed(0),
-                        });
-                    } else if (t.type === 'closed') {
-                        window._liveTradeMarkers.push({
-                            time: chartTime,
-                            position: 'aboveBar',
-                            color: '#ffa726',
-                            shape: 'circle',
-                            text: 'EXIT',
-                        });
-                    }
-                });
-                window._lastLiveTradeCount = st.trades.length;
-            }
-
-            const liveMarkers = [...(window._liveTradeMarkers || [])];
+            if (st.trades) window._lastLiveTradeCount = st.trades.length;
+            const liveMarkers = [];
 
             // Show pending signal as marker
             if (sig) {
                 const sigDir = String(sig.direction || '').toLowerCase();
                 const isLong = sigDir === 'buy' || sigDir === 'long';
                 const localOffset = new Date().getTimezoneOffset() * -60;
+                const pseudoTrade = {
+                    direction: isLong ? 'buy' : 'sell',
+                    entry_price: sig.entry_price,
+                    mode: sig.mode,
+                    side: sig.side,
+                };
+                const decision = _tradeDecisionPhrase(pseudoTrade);
                 liveMarkers.push({
                     time: Math.floor(Date.now() / 1000) + localOffset,
                     position: isLong ? 'belowBar' : 'aboveBar',
-                    color: '#FFD700',
-                    shape: isLong ? 'arrowUp' : 'arrowDown',
-                    text: (isLong ? 'BUY' : 'SELL') + ' LIMIT @ ' + sig.entry_price.toFixed(0),
+                    color: '#ffa726',
+                    shape: 'circle',
+                    text: 'PENDING' + (decision ? '\n' + decision : ''),
                 });
             }
             // Show filled position as marker
             if (st.position && st.fill_price) {
-                const posMeta = positionSideMeta(st.position);
-                const posIsLong = posMeta.isLong;
+                const posIsLong = positionSideMeta(st.position).isLong;
                 const localOffset = new Date().getTimezoneOffset() * -60;
+                const pseudoTrade = {
+                    direction: posIsLong ? 'buy' : 'sell',
+                    entry_price: st.fill_price,
+                    mode: sig && sig.mode,
+                    side: sig && sig.side,
+                };
+                const decision = _tradeDecisionPhrase(pseudoTrade);
                 liveMarkers.push({
                     time: Math.floor(Date.now() / 1000) + localOffset,
                     position: posIsLong ? 'belowBar' : 'aboveBar',
-                    color: posIsLong ? '#00e5a0' : '#ff4060',
-                    shape: posIsLong ? 'arrowUp' : 'arrowDown',
-                    text: posMeta.label + ' @ ' + (st.fill_price || 0).toFixed(0),
+                    color: '#ffa726',
+                    shape: 'circle',
+                    text: 'OPEN' + (decision ? '\n' + decision : ''),
                 });
             }
 
@@ -2490,10 +2498,7 @@ function initChart() {
         });
         // Redraw VP overlay on resize
         renderTfZones();
-        clearPositionOverlay();
-        if (backtestData && backtestData.trades) {
-            drawPositionTools(backtestData.trades);
-        }
+        redrawTradeDecisionOverlays();
         drawSessionDividers();
     }).observe(container);
 
@@ -2504,10 +2509,7 @@ function initChart() {
         _vpRafId = requestAnimationFrame(() => {
             _vpRafId = null;
             renderTfZones();
-            clearPositionOverlay();
-            if (backtestData && backtestData.trades) {
-                drawPositionTools(backtestData.trades);
-            }
+            redrawTradeDecisionOverlays();
             drawSessionDividers();
         });
     };
@@ -2842,16 +2844,7 @@ function _drawZoneLines(ctx, z, tf, lw, color, op, W, H, rightX, priceToY, tX) {
     if (yPOC >= 0 && yPOC <= H) { ctx.beginPath(); ctx.moveTo(x0, yPOC); ctx.lineTo(x1, yPOC); ctx.stroke(); }
     ctx.setLineDash([]);
 
-    // TF label at the left edge of the VAH line
-    ctx.fillStyle = `rgba(${color}, ${(0.85 * op).toFixed(3)})`;
-    ctx.font = '9px "IBM Plex Mono", monospace';
-    ctx.textAlign = 'left';
-    const lx = Math.max(2, x0 + 4);
-    // Clamp the label baseline inside the chart so a zone near the top/bottom
-    // edge doesn't paint its TF tag off-canvas (fixes labels "出界").
-    const clampY = (y) => Math.min(Math.max(y, 9), H - 2);
-    if (yVAH >= 0 && yVAH <= H) ctx.fillText(tf, lx, clampY(yVAH - 3));
-    else if (yPOC >= 0 && yPOC <= H) ctx.fillText(tf, lx, clampY(yPOC - 3));
+    // No text labels here: zones are represented visually by the range lines.
 }
 
 // Render the selected-timeframe zones onto the VP overlay canvas.
@@ -2869,6 +2862,11 @@ function renderTfZones() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
+
+    // Once trade-decision overlays exist, suppress the generic bucket reference
+    // lines (the tiny per-candle VAH/VAL segments). The decision overlay now
+    // draws the exact primary zone used at entry.
+    if (_combinedDecisionTrades().length > 0) return;
 
     const tfs = _zoneFilter.tfs;
     if (!tfs || tfs.size === 0) return;
@@ -2944,8 +2942,8 @@ function clearVPOverlay() {
     }
 }
 
-// -- Position Tool (TradingView style with SL/TP zones) --
-// Draw on a single canvas overlay instead of DOM divs for correct positioning
+// -- Decision-zone overlay --
+// Draw only the primary VAH/VAL range used by each trade decision.
 
 let posToolCanvas = null;
 
@@ -2980,134 +2978,69 @@ function drawPositionTools(trades) {
 
     // Only draw trades whose entry is visible in the current viewport
     let drawn = 0;
-    const maxDraw = 15; // limit to avoid clutter
+    const maxDraw = 25; // limit to avoid clutter
+
+    const drawHLine = (x0, x1, y, color) => {
+        if (y === null || y < -50 || y > chartH + 50) return;
+        ctx.save();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = color;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(x0, y);
+        ctx.lineTo(x1, y);
+        ctx.stroke();
+        ctx.restore();
+    };
+
+    const drawPrimaryZone = (t, fallbackEntryX) => {
+        const z = t.primary_zone || {};
+        const vah = Number(z.vah_80);
+        const val = Number(z.val_80);
+        if (!Number.isFinite(vah) || !Number.isFinite(val)) return false;
+        const yVAH = candleSeries.priceToCoordinate(vah);
+        const yVAL = candleSeries.priceToCoordinate(val);
+        if (yVAH === null || yVAL === null) return false;
+        if ((yVAH < -80 && yVAL < -80) || (yVAH > chartH + 80 && yVAL > chartH + 80)) return false;
+
+        let x0 = null, x1 = null;
+        try { if (z.formed_at) x0 = chart.timeScale().timeToCoordinate(isoToChartTime(z.formed_at)); } catch(_) {}
+        try { if (z.left_at) x1 = chart.timeScale().timeToCoordinate(isoToChartTime(z.left_at)); } catch(_) {}
+        if (x0 === null) x0 = fallbackEntryX - 80;
+        if (x1 === null || x1 <= x0) x1 = fallbackEntryX + 120;
+        if (x1 < -20 || x0 > chartW + 20) return false;
+        x0 = Math.max(0, x0);
+        x1 = Math.min(chartW - 60, x1);
+        if (x1 <= x0 + 4) return false;
+
+        const top = Math.min(yVAH, yVAL);
+        const h = Math.abs(yVAL - yVAH);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.055)';
+        ctx.fillRect(x0, top, x1 - x0, h);
+        drawHLine(x0, x1, yVAH, 'rgba(255, 255, 255, 0.78)');
+        drawHLine(x0, x1, yVAL, 'rgba(255, 255, 255, 0.78)');
+        return true;
+    };
 
     trades.forEach((t) => {
         if (drawn >= maxDraw) return;
-
-        const isBuy = t.direction === 'buy';
-        const origSL = t.original_sl_price != null ? t.original_sl_price : t.sl_price;
-        const origTP = t.original_tp_price != null ? t.original_tp_price : t.tp_price;
-        const entryY = candleSeries.priceToCoordinate(t.entry_price);
-        const slY = candleSeries.priceToCoordinate(origSL);
-        const tpY = candleSeries.priceToCoordinate(origTP);
-
-        if (entryY === null || slY === null || tpY === null) return;
-        if (entryY < -50 || entryY > chartH + 50) return;
 
         const entryTime = isoToChartTime(t.entry_time);
         const entryX = chart.timeScale().timeToCoordinate(entryTime);
         if (entryX === null) return;
         if (entryX < -200 || entryX > chartW + 50) return;
 
-        let exitX = entryX + 100;
-        if (t.exit_time) {
-            const exitTime = isoToChartTime(t.exit_time);
-            const ex = chart.timeScale().timeToCoordinate(exitTime);
-            if (ex !== null && ex > entryX) exitX = ex;
-        }
-
-        const width = Math.min(Math.max(60, exitX - entryX), chartW - entryX);
-
-        // ── TP zone (green background, original TP) ──
-        const tpTop = Math.min(entryY, tpY);
-        const tpH = Math.abs(tpY - entryY);
-        ctx.fillStyle = 'rgba(0, 229, 160, 0.06)';
-        ctx.fillRect(entryX, tpTop, width, tpH);
-
-        // ── SL zone (red background, original SL) ──
-        const slTop = Math.min(entryY, slY);
-        const slH = Math.abs(slY - entryY);
-        ctx.fillStyle = 'rgba(255, 64, 96, 0.06)';
-        ctx.fillRect(entryX, slTop, width, slH);
+        // Primary decision zone only: full formed_at → left_at VAH/VAL span.
+        if (!drawPrimaryZone(t, entryX)) return;
 
         drawn++;
     });
 }
 
-// ── Actual TopstepX trade overlay — pink (loss) / blue (win) zones ──
+// Legacy shim kept for older callers: live trades now use the same primary-zone
+// decision overlay as backtests.
 function drawLiveTrades(trades) {
-    if (!trades || trades.length === 0) return;
-    if (!chart) return;
-
-    const canvas = createPosToolCanvas();
-    const container = document.getElementById('chart-container');
-    const dpr = window.devicePixelRatio || 1;
-    const chartW = container.clientWidth;
-    const chartH = container.clientHeight;
-
-    // Ensure canvas is sized (don't clear — drawPositionTools already cleared,
-    // or we're the only drawer and caller is clearPositionOverlay-aware)
-    if (canvas.width <= 300) {
-        canvas.width = Math.round(chartW * dpr);
-        canvas.height = Math.round(chartH * dpr);
-        canvas.style.width = chartW + 'px';
-        canvas.style.height = chartH + 'px';
-    }
-    const ctx = canvas.getContext('2d');
-    ctx.save();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const ORANGE      = '#ffa726';
-    const ORANGE_GLOW = 'rgba(255, 167, 38, 0.35)';
-    const TRI_SIZE    = 7;
-    const TRI_OFFSET  = 55;
-
-    ctx.font = '10px "IBM Plex Mono", monospace';
-    ctx.textAlign = 'center';
-
-    const seen = new Set();
-
-    trades.forEach((t) => {
-        try {
-            if (!t || !t.entry_time || t.entry_price == null) return;
-
-            let entryTC;
-            try { entryTC = isoToChartTime(t.entry_time); } catch(_) { return; }
-
-            const entryX = chart.timeScale().timeToCoordinate(entryTC);
-            // null  = library says this time has no position (outside data entirely)
-            if (entryX === null) return;
-            // skip if the coordinate is off the visible canvas
-            if (entryX < -10 || entryX > chartW + 10) return;
-
-            // dedup: same entry_time + direction = same round trip fill
-            const key = t.entry_time + ':' + (t.direction || '?');
-            if (seen.has(key)) return;
-            seen.add(key);
-
-            let entryY = null;
-            try { entryY = candleSeries ? candleSeries.priceToCoordinate(t.entry_price) : null; } catch(_) {}
-            if (entryY === null) return;
-
-            const isBuy  = t.direction === 'buy';
-            const pnlVal = t.pnl || 0;
-            const pnlStr = '$' + (pnlVal >= 0 ? '+' : '-') + Math.abs(pnlVal).toFixed(0);
-
-            const tipY  = isBuy ? entryY + TRI_OFFSET                : entryY - TRI_OFFSET;
-            const baseY = isBuy ? entryY + TRI_OFFSET + TRI_SIZE*1.6 : entryY - TRI_OFFSET - TRI_SIZE*1.6;
-
-            ctx.fillStyle = ORANGE_GLOW;
-            ctx.beginPath();
-            ctx.moveTo(entryX, tipY);
-            ctx.lineTo(entryX - TRI_SIZE - 2, baseY);
-            ctx.lineTo(entryX + TRI_SIZE + 2, baseY);
-            ctx.closePath();
-            ctx.fill();
-
-            ctx.fillStyle = ORANGE;
-            ctx.beginPath();
-            ctx.moveTo(entryX, tipY);
-            ctx.lineTo(entryX - TRI_SIZE, baseY);
-            ctx.lineTo(entryX + TRI_SIZE, baseY);
-            ctx.closePath();
-            ctx.fill();
-
-            ctx.fillStyle = ORANGE;
-            ctx.fillText(pnlStr, entryX, isBuy ? baseY + 11 : baseY - 4);
-        } catch(_) {}
-    });
-    ctx.restore();
+    drawPositionTools(trades || []);
 }
 
 async function fetchAndDrawTradeHistory(refresh, accountId) {
@@ -3136,18 +3069,22 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
                 renderMetrics(backtestData.metrics, backtestData.trades);
             }
 
-            // setMarkers handles all viewports — no canvas redraw needed here
+            // setMarkers handles all viewports; the canvas overlay is redrawn with
+            // both backtest and completed live decisions so SL/TP/zone style stays unified.
             drawLiveTradeMarkers(trades);
             if (_overlaySyncData) {
-                const sd = _overlaySyncData;
                 if (_cachedVPZones) drawVolumeProfile(_cachedVPZones);
-                if (sd.trades) drawPositionTools(sd.trades);
+                redrawTradeDecisionOverlays();
                 drawSessionDividers();
             }
         } else {
             window._liveCompletedTrades = [];
             renderExecuteTrades([]);
             drawLiveTradeMarkers([]);
+            if (_overlaySyncData) {
+                redrawTradeDecisionOverlays();
+                drawSessionDividers();
+            }
             if (backtestData && backtestData.metrics) {
                 renderMetrics(backtestData.metrics, backtestData.trades);
             }
@@ -3193,98 +3130,8 @@ async function refreshTradeHistoryForCurrentAccount(refresh) {
 }
 
 function drawPendingOrderOverlay(po, idx) {
-    const canvas = createPosToolCanvas();
-    const container = document.getElementById('chart-container');
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = container.clientWidth * dpr;
-    canvas.height = container.clientHeight * dpr;
-    canvas.style.width = container.clientWidth + 'px';
-    canvas.style.height = container.clientHeight + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
-
-    const chartW = container.clientWidth;
-    const isBuy = po.direction === 'buy';
-
-    const entryY = candleSeries.priceToCoordinate(po.entry_price);
-    const slY = candleSeries.priceToCoordinate(po.sl_price);
-    const tpY = candleSeries.priceToCoordinate(po.tp_price);
-    if (entryY === null) return;
-
-    // Get X from chart time scale
-    let startX = 0;
-
-    // ── Pending entry limit line (cyan dashed, full width from order candle) ──
-    ctx.setLineDash([8, 4]);
-    ctx.strokeStyle = 'rgba(100, 220, 255, 0.8)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(Math.max(0, startX - 200), entryY);
-    ctx.lineTo(chartW, entryY);
-    ctx.stroke();
-
-    // Entry price label
-    ctx.font = '10px "IBM Plex Mono", monospace';
-    ctx.fillStyle = 'rgba(100, 220, 255, 0.9)';
-    ctx.textAlign = 'left';
-    const dirLabel = isBuy ? 'BUY' : 'SELL';
-    const stratLabel = 'TRD';
-    const labelText = `⏳ ${dirLabel} ${stratLabel} LIMIT @ ${po.entry_price.toFixed(2)}`;
-    const lblW = ctx.measureText(labelText).width + 10;
-    ctx.fillStyle = 'rgba(100, 220, 255, 0.12)';
-    ctx.fillRect(startX + 5, entryY - 16, lblW, 15);
-    ctx.strokeStyle = 'rgba(100, 220, 255, 0.5)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(startX + 5, entryY - 16, lblW, 15);
-    ctx.fillStyle = 'rgba(100, 220, 255, 0.9)';
-    ctx.fillText(labelText, startX + 9, entryY - 4);
-
-    // ── TP target line (yellow dashed, full width) ──
-    if (tpY !== null) {
-        ctx.setLineDash([8, 5]);
-        ctx.strokeStyle = 'rgba(255, 200, 40, 0.6)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(0, tpY);
-        ctx.lineTo(chartW, tpY);
-        ctx.stroke();
-        // TP zone background
-        const tpTop = Math.min(entryY, tpY);
-        const tpH = Math.abs(tpY - entryY);
-        ctx.fillStyle = 'rgba(0, 229, 160, 0.04)';
-        ctx.fillRect(0, tpTop, chartW, tpH);
-        // TP label
-        const tpDollar = Math.abs(po.tp_price - po.entry_price) * 20;
-        ctx.font = '10px "IBM Plex Mono", monospace';
-        ctx.fillStyle = 'rgba(255, 200, 40, 0.8)';
-        ctx.textAlign = 'right';
-        ctx.fillText('TP ' + po.tp_price.toFixed(2) + '  +$' + tpDollar.toFixed(0), chartW - 6, tpY + (isBuy ? -4 : 12));
-    }
-
-    // ── SL line (yellow dashed, full width) ──
-    if (slY !== null) {
-        ctx.setLineDash([8, 5]);
-        ctx.strokeStyle = 'rgba(255, 200, 40, 0.6)';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(0, slY);
-        ctx.lineTo(chartW, slY);
-        ctx.stroke();
-        // SL zone background
-        const slTop = Math.min(entryY, slY);
-        const slH = Math.abs(slY - entryY);
-        ctx.fillStyle = 'rgba(255, 64, 96, 0.04)';
-        ctx.fillRect(0, slTop, chartW, slH);
-        // SL label
-        const slDollar = Math.abs(po.sl_price - po.entry_price) * 20;
-        ctx.font = '10px "IBM Plex Mono", monospace';
-        ctx.fillStyle = 'rgba(255, 200, 40, 0.8)';
-        ctx.textAlign = 'right';
-        ctx.fillText('SL ' + po.sl_price.toFixed(2) + '  -$' + slDollar.toFixed(0), chartW - 6, slY + (isBuy ? 12 : -4));
-    }
-
-    ctx.setLineDash([]);
+    // Deprecated: pending/live decision visuals are handled by
+    // drawPositionTools() via the primary-zone overlay only.
 }
 
 function clearPositionOverlay() {
@@ -4325,8 +4172,8 @@ function renderChart(data) {
     // Draw zones (VP overlay + legend)
     drawBacktestZones(data.zones);
 
-    // Draw position tools (TradingView-style SL/TP zones) + PnL markers
-    drawPositionTools(data.trades);
+    // Draw decision overlays (entry marker + primary VAH/VAL zone)
+    drawPositionTools([...(data.trades || []), ...(window._liveCompletedTrades || [])]);
     drawTradeMarkers(data.trades);
 
     // Apply default chart view with POC centering from zones
@@ -4373,8 +4220,7 @@ function startOverlaySync() {
             lastCheckX = curX;
             const zonesToDraw = _cachedVPZones || data.zones;
             if (zonesToDraw) drawVolumeProfile(zonesToDraw);
-            clearPositionOverlay();
-            if (data.trades) drawPositionTools(data.trades);
+            redrawTradeDecisionOverlays();
             drawSessionDividers();
         }
     }
@@ -4408,49 +4254,123 @@ function isoToChartTime(iso) {
     return Math.floor(d.getTime() / 1000) + localOffsetSec;
 }
 
+function _tradeIsBuy(t) {
+    const d = String((t && t.direction) || '').toLowerCase();
+    return d === 'buy' || d === 'long';
+}
+
+function _tradePnlText(t) {
+    const pnl = Number((t && t.pnl) || 0);
+    return (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
+}
+
+function _tradeDecisionPhrase(t) {
+    let side = String((t && (t.side || t.entry_side)) || '').toUpperCase();
+    if (!side && t && Array.isArray(t.labels)) {
+        const joined = t.labels.join(' ').toUpperCase();
+        if (joined.includes(':VAH')) side = 'VAH';
+        else if (joined.includes(':VAL')) side = 'VAL';
+    }
+    const mode = String((t && t.mode) || '').toLowerCase();
+    const modeCn = mode === 'reversion' ? '逆勢'
+        : mode === 'momentum' ? '順勢'
+        : mode === 'breakout' ? '突破'
+        : '';
+    const dirCn = _tradeIsBuy(t) ? 'long' : 'short';
+    return (side ? side : '') + modeCn + dirCn;
+}
+
+function _entryDecisionMarker(t, fallbackColor) {
+    if (!t || !t.entry_time) return null;
+    const entryTime = isoToChartTime(t.entry_time);
+    if (!entryTime || isNaN(entryTime)) return null;
+    const isBuy = _tradeIsBuy(t);
+    const pnl = Number(t.pnl || 0);
+    const pnlColor = pnl >= 0 ? '#00e5a0' : '#ff4060';
+    const decision = _tradeDecisionPhrase(t);
+    return {
+        time: entryTime,
+        position: isBuy ? 'belowBar' : 'aboveBar',
+        color: fallbackColor || pnlColor,
+        shape: 'circle',
+        text: _tradePnlText(t) + (decision ? '\n' + decision : ''),
+    };
+}
+
+function _combinedDecisionTrades() {
+    const bt = (backtestData && backtestData.trades) ? backtestData.trades : [];
+    const live = window._liveCompletedTrades || [];
+    const working = window._liveWorkingDecisionTrade ? [window._liveWorkingDecisionTrade] : [];
+    return [...bt, ...live, ...working];
+}
+
+function updateLiveWorkingDecision(sig, isLong, sigSL, sigTP) {
+    if (!sig || sig.entry_price == null) return;
+    const entryNum = Number(sig.entry_price);
+    const slNum = Number(sigSL);
+    const tpNum = Number(sigTP);
+    if (!Number.isFinite(entryNum) || !Number.isFinite(slNum) || !Number.isFinite(tpNum)) return;
+    const key = [
+        sig.direction || '',
+        entryNum,
+        slNum,
+        tpNum,
+        sig.mode || '',
+        sig.side || '',
+        (sig.primary_zone && sig.primary_zone.zone_id) || '',
+    ].join('|');
+    if (window._liveWorkingDecisionKey !== key) {
+        window._liveWorkingDecisionKey = key;
+        window._liveWorkingDecisionTs = new Date().toISOString();
+    }
+    window._liveWorkingDecisionTrade = {
+        trade_id: 'LIVE_WORKING',
+        direction: isLong ? 'buy' : 'sell',
+        entry_price: entryNum,
+        entry_time: window._liveWorkingDecisionTs || new Date().toISOString(),
+        exit_time: null,
+        sl_price: slNum,
+        tp_price: tpNum,
+        original_sl_price: slNum,
+        original_tp_price: tpNum,
+        pnl: 0,
+        mode: sig.mode,
+        side: sig.side,
+        largest_tf: sig.largest_tf,
+        labels: sig.labels || [],
+        primary_zone: sig.primary_zone,
+    };
+    renderTfZones();
+    redrawTradeDecisionOverlays();
+}
+
+function clearLiveWorkingDecision() {
+    if (!window._liveWorkingDecisionTrade && !window._liveWorkingDecisionKey) return;
+    window._liveWorkingDecisionTrade = null;
+    window._liveWorkingDecisionKey = null;
+    window._liveWorkingDecisionTs = null;
+    renderTfZones();
+    redrawTradeDecisionOverlays();
+}
+
+function redrawTradeDecisionOverlays() {
+    clearPositionOverlay();
+    drawPositionTools(_combinedDecisionTrades());
+}
+
 
 function drawTradeMarkers(trades) {
     if (!trades || trades.length === 0) { _backtestMarkers = []; _refreshAllMarkers(); return; }
-    const markers = [];
-    trades.forEach(t => {
-        const entryTime = isoToChartTime(t.entry_time);
-        if (entryTime && !isNaN(entryTime)) {
-            markers.push({
-                time: entryTime,
-                position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
-                color: '#2196f3',
-                shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-                text: (t.direction === 'buy' ? 'L' : 'S'),
-            });
-        }
-        if (t.exit_time) {
-            const exitTime = isoToChartTime(t.exit_time);
-            if (exitTime && !isNaN(exitTime)) {
-                const pnlVal = t.pnl || 0;
-                const isWin = pnlVal >= 0;
-                markers.push({
-                    time: exitTime,
-                    position: t.direction === 'buy' ? 'aboveBar' : 'belowBar',
-                    color: isWin ? '#00e5a0' : '#ff4060',
-                    shape: t.direction === 'buy' ? 'arrowDown' : 'arrowUp',
-                    text: (pnlVal >= 0 ? '+' : '') + '$' + pnlVal.toFixed(0),
-                });
-            }
-        }
-    });
+    const markers = trades.map(t => _entryDecisionMarker(t)).filter(Boolean);
     markers.sort((a, b) => a.time - b.time);
     _backtestMarkers = markers;
     _refreshAllMarkers();
 }
 
 function drawLiveTradeMarkers(trades) {
-    _liveMarkers = (!trades || trades.length === 0) ? [] : trades.map(t => ({
-        time: isoToChartTime(t.entry_time),
-        position: t.direction === 'buy' ? 'belowBar' : 'aboveBar',
-        color: '#ffa726',
-        shape: t.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-        text: '$' + ((t.pnl || 0) >= 0 ? '+' : '-') + Math.abs(t.pnl || 0).toFixed(0),
-    })).filter(m => m.time && !isNaN(m.time));
+    _liveMarkers = (!trades || trades.length === 0)
+        ? []
+        : trades.map(t => _entryDecisionMarker(t, '#ffa726')).filter(Boolean);
     _refreshAllMarkers();
 }
 

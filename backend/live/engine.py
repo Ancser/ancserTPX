@@ -28,6 +28,9 @@ from backend.db.models import (
     StrategyParams, get_point_value, get_tick_size,
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
+from backend.strategy.session_filter import (
+    DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
+)
 from backend.strategy.trend_follow import SessionTrendFollow
 from backend.broker.topstepx import TopstepXClient, order_error_meaning
 
@@ -129,6 +132,11 @@ class LiveTradingEngine:
         # v1.0.6: explainable multi-timeframe confluence evaluator (shadow or live).
         self.confluence = None
         self._conf_shadow = bool(getattr(self.strategy_params, "conf_shadow", False))
+        self._conf_allowed_sessions = (
+            getattr(self.strategy_params, "conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+            or None
+        )
+        self._last_session_block_log: Optional[str] = None
         self._conf_signals_log: List[Dict] = []
         # explain payload (weights x features) of the confluence signal that is
         # currently pending/active — carried through fill so each closed trade can
@@ -307,6 +315,12 @@ class LiveTradingEngine:
             full_tp_lock=int(getattr(self.strategy_params, "conf_full_tp_lock", 0) or 0),
             session_limit=bool(getattr(self.strategy_params, "conf_session_limit", True)),
         )
+
+    def _confluence_session_allowed(self, ts: datetime) -> bool:
+        return is_allowed_session(ts, self._conf_allowed_sessions)
+
+    def _confluence_session_label(self) -> str:
+        return allowed_sessions_label(self._conf_allowed_sessions)
 
     @staticmethod
     def _order_id(order: Dict[str, Any]) -> Optional[int]:
@@ -665,6 +679,9 @@ class LiveTradingEngine:
         direction: Optional[str],
         trail_triggered: bool,
         zone_id: Optional[str] = None,
+        conf_payload: Optional[Dict] = None,
+        original_sl_price: Optional[float] = None,
+        original_tp_price: Optional[float] = None,
     ):
         """Append a single exit record to data/live_exits.json so trade-history
         can map fills (which only carry pnl) to true exit reason buckets
@@ -693,8 +710,16 @@ class LiveTradingEngine:
                 "entry_price": entry_price,
                 "sl_price": sl_price,
                 "tp_price": tp_price,
+                "original_sl_price": original_sl_price or sl_price,
+                "original_tp_price": original_tp_price or tp_price,
                 "direction": direction,
                 "zone_id": zone_id,
+                "mode": conf_payload.get("mode") if conf_payload else None,
+                "side": conf_payload.get("side") if conf_payload else None,
+                "largest_tf": conf_payload.get("largest_tf") if conf_payload else None,
+                "wall_id": conf_payload.get("wall_id") if conf_payload else None,
+                "labels": conf_payload.get("labels") if conf_payload else [],
+                "primary_zone": conf_payload.get("primary_zone") if conf_payload else None,
                 "trail_triggered": trail_triggered,
                 "size": self.contract_size,
             })
@@ -758,6 +783,14 @@ class LiveTradingEngine:
                 "exit_price": exit_price,
                 "sl_price": signal.sl_price if signal else None,
                 "tp_price": signal.tp_price if signal else None,
+                "original_sl_price": (
+                    getattr(signal, "original_sl_price", signal.sl_price)
+                    if signal else None
+                ),
+                "original_tp_price": (
+                    getattr(signal, "original_tp_price", signal.tp_price)
+                    if signal else None
+                ),
                 "exit_reason": exit_reason,
                 "won": won,
                 "trail_triggered": trail_triggered,
@@ -775,7 +808,9 @@ class LiveTradingEngine:
                     "cluster_weight": conf_payload.get("weight"),
                     "tfs": conf_payload.get("tfs"),
                     "largest_tf": conf_payload.get("largest_tf"),
+                    "wall_id": conf_payload.get("wall_id"),
                     "labels": conf_payload.get("labels"),
+                    "primary_zone": conf_payload.get("primary_zone"),
                     "reason": conf_payload.get("reason"),
                     # full per-feature breakdown: (name, value, weight, contribution)
                     "contributions": [
@@ -1244,6 +1279,7 @@ class LiveTradingEngine:
         """Return current engine state for frontend."""
         # Use active_signal (after fill) or pending_signal (before fill)
         sig = self._pending_signal or self._active_signal
+        sig_payload = self._pending_conf_payload or self._active_conf_payload or {}
         return {
             "engine_version": ENGINE_VERSION,
             "running": self._running,
@@ -1256,6 +1292,14 @@ class LiveTradingEngine:
                 "entry_price": sig.entry_price,
                 "sl_price": sig.sl_price,
                 "tp_price": sig.tp_price,
+                "original_sl_price": getattr(sig, "original_sl_price", sig.sl_price),
+                "original_tp_price": getattr(sig, "original_tp_price", sig.tp_price),
+                "mode": sig_payload.get("mode"),
+                "side": sig_payload.get("side"),
+                "largest_tf": sig_payload.get("largest_tf"),
+                "wall_id": sig_payload.get("wall_id"),
+                "labels": sig_payload.get("labels") or [],
+                "primary_zone": sig_payload.get("primary_zone"),
                 "strategy": sig.strategy.value,
                 "order_type": getattr(sig, "order_type", "limit"),
             } if sig else None,
@@ -1301,6 +1345,7 @@ class LiveTradingEngine:
             "confluence_mode": self.strategy_mode == "confluence",
             "confluence_shadow": self._conf_shadow if self.strategy_mode == "confluence" else None,
             "confluence_scorer": (self.confluence.scorer_source if self.confluence else None),
+            "confluence_allowed_sessions": self._confluence_session_label() if self.confluence else "ALL",
             "confluence_signals": self._conf_signals_log[-20:] if self.confluence else [],
             # full explainable level universe (per-TF/recency zones + weight + distance)
             "confluence_universe": (
@@ -2037,6 +2082,17 @@ class LiveTradingEngine:
             await self._cancel_pending()
 
         # ── Check if pending order filled ──
+        if (
+            self.strategy_mode == "confluence"
+            and self._pending_order_id
+            and not self._confluence_session_allowed(candle.timestamp)
+        ):
+            self._log_event(
+                f"Session filter {self._confluence_session_label()}: cancel pending outside allowed segment"
+            )
+            await self._cancel_pending(release_breakout_lock=True)
+            return
+
         if self._pending_order_id and not self._open_position:
             filled = await self._check_pending_fill()
             if filled:
@@ -2145,6 +2201,12 @@ class LiveTradingEngine:
         trend strategy uses (brackets + session-direction lock honoured).
         """
         if self._open_position or self._pending_order_id:
+            return
+        if not self._confluence_session_allowed(candle.timestamp):
+            label = self._confluence_session_label()
+            if self._last_session_block_log != label:
+                self._log_event(f"Session filter {label}: skip new ML entries outside allowed segment")
+                self._last_session_block_log = label
             return
         payload = self.confluence.explain(candle)
         if not payload:
@@ -2270,6 +2332,8 @@ class LiveTradingEngine:
         protection_fixes = self._normalize_entry_protection(signal)
         if protection_fixes:
             self._log_event("[BRACKET FIX] " + " | ".join(protection_fixes), "warn")
+        signal.original_sl_price = signal.sl_price
+        signal.original_tp_price = signal.tp_price
 
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "買" if signal.direction == Direction.BUY else "賣"
@@ -2356,6 +2420,8 @@ class LiveTradingEngine:
         protection_fixes = self._normalize_entry_protection(signal)
         if protection_fixes:
             self._log_event("[BRACKET FIX] " + " | ".join(protection_fixes), "warn")
+        signal.original_sl_price = signal.sl_price
+        signal.original_tp_price = signal.tp_price
 
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "買" if signal.direction == Direction.BUY else "賣"
@@ -2682,12 +2748,29 @@ class LiveTradingEngine:
                 sig = self._pending_signal
                 if sig:
                     sig_dir = sig.direction.value
+                conf_payload = self._pending_conf_payload or {}
                 self._trades.append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "entry",
                     "direction": sig_dir,
                     "price": self._fill_price,
                     "strategy": sig.strategy.value if sig else self.strategy_mode,
+                    "sl_price": sig.sl_price if sig else None,
+                    "tp_price": sig.tp_price if sig else None,
+                    "original_sl_price": (
+                        getattr(sig, "original_sl_price", sig.sl_price)
+                        if sig else None
+                    ),
+                    "original_tp_price": (
+                        getattr(sig, "original_tp_price", sig.tp_price)
+                        if sig else None
+                    ),
+                    "mode": conf_payload.get("mode"),
+                    "side": conf_payload.get("side"),
+                    "largest_tf": conf_payload.get("largest_tf"),
+                    "wall_id": conf_payload.get("wall_id"),
+                    "labels": conf_payload.get("labels") or [],
+                    "primary_zone": conf_payload.get("primary_zone"),
                 })
 
                 # Place SL/TP protection orders
@@ -2852,6 +2935,15 @@ class LiveTradingEngine:
                     direction=_sig_for_log.direction.value if _sig_for_log else None,
                     trail_triggered=self._trail_sl_triggered,
                     zone_id=_sig_for_log.zone_id if _sig_for_log else None,
+                    conf_payload=_conf_payload,
+                    original_sl_price=(
+                        getattr(_sig_for_log, "original_sl_price", _sig_for_log.sl_price)
+                        if _sig_for_log else None
+                    ),
+                    original_tp_price=(
+                        getattr(_sig_for_log, "original_tp_price", _sig_for_log.tp_price)
+                        if _sig_for_log else None
+                    ),
                 )
 
                 # Durable explainable trade ledger (data/trades.json):

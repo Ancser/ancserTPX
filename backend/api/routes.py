@@ -38,6 +38,9 @@ from backend.data.candle_store import (
     _as_utc as _store_utc,
 )
 from backend.strategy.volume_profile import VolumeProfileCalculator
+from backend.strategy.session_filter import (
+    DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, normalize_allowed_sessions,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -282,6 +285,11 @@ def _conf_rr_grid_opt(val):
     return None
 
 
+def _conf_allowed_sessions_list(val) -> Optional[List[str]]:
+    allowed = normalize_allowed_sessions(val)
+    return list(allowed) if allowed is not None else None
+
+
 def _build_strategy_params_from_request(req, contract_size: int) -> StrategyParams:
     # v1.0.6: "confluence" selects the explainable ML engine; anything else is trend.
     strategy = ("confluence" if str(getattr(req, "strategy", "confluence") or "").strip().lower()
@@ -300,6 +308,9 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         conf_use_scorer=bool(getattr(req, "conf_use_scorer", True)),
         conf_enable_breakout=bool(getattr(req, "conf_enable_breakout", False)),
         conf_max_risk_ticks=getattr(req, "conf_max_risk_ticks", None),
+        conf_allowed_sessions=_conf_allowed_sessions_list(
+            getattr(req, "conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+        ),
         conf_trail_trigger_pct=float(getattr(req, "conf_trail_trigger_pct", 0.50) or 0.0),
         conf_trail_lock_pct=float(getattr(req, "conf_trail_lock_pct", 0.05) or 0.0),
         conf_full_tp_lock=int(getattr(req, "conf_full_tp_lock", 0) or 0),
@@ -514,6 +525,9 @@ class BacktestRequest(BaseModel):
     conf_use_scorer: bool = True          # True=trained JSON, False=heuristic prior
     conf_enable_breakout: bool = False    # include breakout-retrace candidate (False=momentum+reversion only)
     conf_max_risk_ticks: Optional[int] = None  # drop signals with SL > N ticks (None=no cap)
+    conf_allowed_sessions: Optional[List[str]] = Field(
+        default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
+    )
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
     conf_trail_trigger_pct: float = 0.50  # optimized: fire after 50% of TP distance
     conf_trail_lock_pct: float = 0.05     # optimized: lock +5% of TP distance
@@ -555,6 +569,12 @@ class TradeResponse(BaseModel):
     exit_reason: Optional[str]
     zone_id: str
     zone_source: Optional[str] = None
+    mode: Optional[str] = None
+    side: Optional[str] = None
+    largest_tf: Optional[str] = None
+    wall_id: Optional[str] = None
+    labels: List[str] = Field(default_factory=list)
+    primary_zone: Optional[Dict[str, Any]] = None
     vol_ratio: Optional[float]
     is_big_trend: bool
 
@@ -1449,6 +1469,9 @@ def _run_confluence_backtest(req: BacktestRequest, progress_callback=None) -> Ba
         trail_trigger_pct=float(getattr(req, "conf_trail_trigger_pct", 0.50) or 0.0),
         trail_lock_pct=float(getattr(req, "conf_trail_lock_pct", 0.05) or 0.0),
         full_tp_lock=int(getattr(req, "conf_full_tp_lock", 0) or 0),
+        allowed_sessions=tuple(_conf_allowed_sessions_list(
+            getattr(req, "conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+        ) or ()),
     )
     bt_cfg = BacktestConfig(
         initial_capital=req.initial_capital,
@@ -1496,6 +1519,12 @@ def _run_confluence_backtest(req: BacktestRequest, progress_callback=None) -> Ba
             exit_reason=t.exit_reason.value if t.exit_reason else None,
             zone_id=t.zone_id,
             zone_source=getattr(t, "zone_source", "confluence"),
+            mode=meta.get("mode"),
+            side=meta.get("side"),
+            largest_tf=meta.get("largest_tf"),
+            wall_id=meta.get("wall_id"),
+            labels=meta.get("labels") or [],
+            primary_zone=meta.get("primary_zone"),
             vol_ratio=getattr(t, "vol_ratio", 0.0),
             is_big_trend=getattr(t, "is_big_trend", False),
         ))
@@ -1952,6 +1981,7 @@ async def run_backtest(req: BacktestRequest):
     trades_resp = []
     symbol_label = "/" + config.symbol   # TopstepX-style "/NQ"
     for t in result.trades:
+        meta = getattr(t, "meta", None) or {}
         trades_resp.append(TradeResponse(
             trade_id=t.trade_id,
             strategy=t.strategy.value,
@@ -1972,6 +2002,12 @@ async def run_backtest(req: BacktestRequest):
             exit_reason=t.exit_reason.value if t.exit_reason else None,
             zone_id=t.zone_id,
             zone_source=getattr(t, "zone_source", None),
+            mode=meta.get("mode"),
+            side=meta.get("side"),
+            largest_tf=meta.get("largest_tf"),
+            wall_id=meta.get("wall_id"),
+            labels=meta.get("labels") or [],
+            primary_zone=meta.get("primary_zone"),
             vol_ratio=t.vol_ratio,
             is_big_trend=t.is_big_trend,
         ))
@@ -3017,6 +3053,9 @@ def _run_conf_combo(candles, timeline, scorer, tick, base_minutes, timeframes,
     if full_tp_lock > 0:
         bits.append(f"FTL{full_tp_lock}")
     bits.append("SES" if session_limit else "noSES")
+    sess_filter = allowed_sessions_label(req_data.get("conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS))
+    if sess_filter != "ALL":
+        bits.append(sess_filter)
 
     base = {
         "method": "conf",
@@ -3031,6 +3070,9 @@ def _run_conf_combo(candles, timeline, scorer, tick, base_minutes, timeframes,
         "conf_trail_lock_pct": float(trail_lock_pct),
         "conf_full_tp_lock": int(full_tp_lock),
         "conf_session_limit": bool(session_limit),
+        "conf_allowed_sessions": _conf_allowed_sessions_list(
+            req_data.get("conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+        ),
         "full_tp_lock": int(full_tp_lock),
     }
     try:
@@ -3052,6 +3094,9 @@ def _run_conf_combo(candles, timeline, scorer, tick, base_minutes, timeframes,
             trail_trigger_pct=float(trail_trigger_pct),
             trail_lock_pct=float(trail_lock_pct),
             full_tp_lock=int(full_tp_lock),
+            allowed_sessions=tuple(_conf_allowed_sessions_list(
+                req_data.get("conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+            ) or ()),
         )
         bt = ConfluenceBacktester(
             signal_cfg=sig_cfg, run_cfg=run_cfg, contract_id=contract_id,
@@ -3514,6 +3559,9 @@ class LiveStartRequest(BaseModel):
     conf_use_scorer: bool = True
     conf_enable_breakout: bool = False
     conf_max_risk_ticks: Optional[int] = None
+    conf_allowed_sessions: Optional[List[str]] = Field(
+        default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
+    )
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
     conf_trail_trigger_pct: float = 0.50
     conf_trail_lock_pct: float = 0.05
@@ -3799,11 +3847,11 @@ def _load_live_exits() -> List[dict]:
     return []
 
 
-def _build_exit_index(exits: List[dict]) -> Dict[tuple, str]:
-    """Index exits as {(account_id, contract_id, exit_time_str): reason} for
+def _build_exit_index(exits: List[dict]) -> Dict[tuple, dict]:
+    """Index exits as {(account_id, contract_id, exit_time_str): row} for
     O(1) lookup during fill pairing. Time matches are loose: we keep the ISO
     string as written by the engine, and pairing tries a few variants."""
-    idx: Dict[tuple, str] = {}
+    idx: Dict[tuple, dict] = {}
     for e in exits or []:
         try:
             acc = e.get("account_id")
@@ -3812,16 +3860,16 @@ def _build_exit_index(exits: List[dict]) -> Dict[tuple, str]:
             reason = e.get("exit_reason") or ""
             if acc is None or not etime or not reason:
                 continue
-            idx[(acc, cid, etime)] = reason
+            idx[(acc, cid, etime)] = e
             # Also key without seconds for fuzzy match
             if "T" in etime and len(etime) >= 16:
-                idx.setdefault((acc, cid, etime[:16]), reason)
+                idx.setdefault((acc, cid, etime[:16]), e)
         except Exception:
             continue
     return idx
 
 
-def _lookup_exit_reason(idx: Dict[tuple, str], account_id, contract_id, exit_time: str) -> Optional[str]:
+def _lookup_exit_record(idx: Dict[tuple, dict], account_id, contract_id, exit_time: str) -> Optional[dict]:
     if not exit_time:
         return None
     cid = contract_id or ""
@@ -3833,6 +3881,28 @@ def _lookup_exit_reason(idx: Dict[tuple, str], account_id, contract_id, exit_tim
         if v:
             return v
     return None
+
+
+def _lookup_exit_reason(idx: Dict[tuple, dict], account_id, contract_id, exit_time: str) -> Optional[str]:
+    rec = _lookup_exit_record(idx, account_id, contract_id, exit_time)
+    return (rec or {}).get("exit_reason")
+
+
+def _decision_fields_from_exit_record(rec: Optional[dict]) -> dict:
+    rec = rec or {}
+    return {
+        "sl_price": rec.get("sl_price"),
+        "tp_price": rec.get("tp_price"),
+        "original_sl_price": rec.get("original_sl_price") or rec.get("sl_price"),
+        "original_tp_price": rec.get("original_tp_price") or rec.get("tp_price"),
+        "mode": rec.get("mode"),
+        "side": rec.get("side"),
+        "largest_tf": rec.get("largest_tf"),
+        "wall_id": rec.get("wall_id"),
+        "labels": rec.get("labels") or [],
+        "primary_zone": rec.get("primary_zone"),
+        "zone_id": rec.get("zone_id"),
+    }
 
 
 def _normalize_topstep_fill(t: dict) -> dict:
@@ -3927,7 +3997,8 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 _gross_pnl = (_ep - _xp) * _pt * _sz
             # Prefer the engine-recorded reason; fall back to pnl sign only when
             # we have nothing better (e.g. trades that pre-date the exit log).
-            reason = _lookup_exit_reason(exit_idx, f.get("account_id"), _cid, f.get("time") or "")
+            exit_rec = _lookup_exit_record(exit_idx, f.get("account_id"), _cid, f.get("time") or "")
+            reason = (exit_rec or {}).get("exit_reason")
             if not reason:
                 reason = "tp" if _gross_pnl >= 0 else "sl"
             elif reason == "tp" and _gross_pnl < 0:
@@ -3949,12 +4020,14 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 "account_id": f.get("account_id"),
                 "contract_id": _cid,
                 "source": "topstep",
+                **_decision_fields_from_exit_record(exit_rec),
             })
         else:
             # Orphan closer — keep as single point so nothing is lost
-            reason = _lookup_exit_reason(
+            exit_rec = _lookup_exit_record(
                 exit_idx, f.get("account_id"), f.get("contract_id") or "", f.get("time") or ""
-            ) or ("tp" if (f["pnl"] or 0) >= 0 else "sl")
+            )
+            reason = (exit_rec or {}).get("exit_reason") or ("tp" if (f["pnl"] or 0) >= 0 else "sl")
             trades.append({
                 "trade_id": str(f["fill_id"]),
                 "direction": f["direction"],
@@ -3970,6 +4043,7 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 "account_id": f.get("account_id"),
                 "contract_id": f.get("contract_id"),
                 "source": "topstep",
+                **_decision_fields_from_exit_record(exit_rec),
             })
 
     # Remaining unpaired openers → single-point markers
@@ -4126,6 +4200,7 @@ _DEFAULT_PRESET_PARAMS = {
     "conf_use_scorer": True,
     "conf_enable_breakout": False,
     "conf_max_risk_ticks": None,
+    "conf_allowed_sessions": list(DEFAULT_ALLOWED_SESSIONS),
     "conf_trail_trigger_pct": 0.50,
     "conf_trail_lock_pct": 0.05,
     "conf_full_tp_lock": 0,
@@ -4134,16 +4209,30 @@ _DEFAULT_PRESET_PARAMS = {
 }
 
 _CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
-_CODEX_620_PRESET_1 = "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON B4 TF2 MNQx3"
-_CODEX_620_PRESET_2 = "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx3"
+_CODEX_620_PRESET_1 = "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON ASIA+PRE B4 TF2 MNQx3"
+_CODEX_620_PRESET_2 = "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA+PRE B4 TF2 MNQx3"
+_CODEX_623_PRESET_3 = "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA+PRE B4 TF2 MNQx1"
 _DEFAULT_LAST_USED_PRESET = _CODEX_620_PRESET_2
+_PRESET_RENAMES = {
+    "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON B4 TF2 MNQx3": _CODEX_620_PRESET_1,
+    "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx3": _CODEX_620_PRESET_2,
+    "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx1": _CODEX_623_PRESET_3,
+}
 
 
-def _codex_620_preset(*, min_prob: float, trail_trigger: float) -> dict:
+def _codex_620_preset(
+    *,
+    min_prob: float,
+    trail_trigger: float,
+    contract_id: str = "CON.F.US.MNQ.M26",
+    contract_size: int = 3,
+) -> dict:
     params = dict(_DEFAULT_PRESET_PARAMS)
     params.update({
         "tp_ticks": 250,
         "tr_tp_ticks": 250,
+        "contract_id": contract_id,
+        "contract_size": contract_size,
         "rr_ratio": 5,
         "conf_model_name": _CODEX_620_MODEL,
         "conf_rr": 5,
@@ -4159,6 +4248,12 @@ def _codex_620_preset(*, min_prob: float, trail_trigger: float) -> dict:
 _BUILTIN_PRESETS = {
     _CODEX_620_PRESET_1: _codex_620_preset(min_prob=0.60, trail_trigger=0.0),
     _CODEX_620_PRESET_2: _codex_620_preset(min_prob=0.0, trail_trigger=0.50),
+    _CODEX_623_PRESET_3: _codex_620_preset(
+        min_prob=0.0,
+        trail_trigger=0.50,
+        contract_id="CON.F.US.MNQ.U26",
+        contract_size=1,
+    ),
 }
 _FIXED_PRESET_NAMES = ()
 
@@ -4184,6 +4279,18 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             changed = True
         if params.get("value_area_pct") != 0.80:
             params["value_area_pct"] = 0.80
+            changed = True
+        if normalized_strategy == "confluence" and "conf_allowed_sessions" not in params:
+            params["conf_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
+            changed = True
+
+    for old_name, new_name in _PRESET_RENAMES.items():
+        if old_name in presets:
+            old_params = presets.pop(old_name)
+            presets[new_name] = old_params
+            for key in ("last_used_bt", "last_used_live"):
+                if data.get(key) == old_name:
+                    data[key] = new_name
             changed = True
 
     if presets.get(_DEFAULT_PRESET_NAME) != _DEFAULT_PRESET_PARAMS:

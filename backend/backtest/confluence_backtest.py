@@ -43,9 +43,12 @@ from backend.strategy.consolidation import (
 )
 from backend.strategy.confluence import (
     ConfluenceConfig, evaluate_confluence, evaluate_confluence_scored, gate_signals,
-    ConfluenceSignal, snapshot_zones_by_tf,
+    ConfluenceSignal, snapshot_zones_by_tf, cluster_wall_id,
 )
 from backend.strategy.confluence_features import CONTEXT_WINDOW
+from backend.strategy.session_filter import (
+    DEFAULT_ALLOWED_SESSIONS, is_allowed_session,
+)
 from backend.backtest.metrics import MetricsCalculator
 from backend.backtest.intrabar import resolve_same_bar_exit
 
@@ -135,6 +138,7 @@ class ConfluenceBacktestConfig:
     trail_trigger_pct: float = 0.0         # 0 = trailing OFF
     trail_lock_pct: float = 0.0            # locked SL as fraction of TP distance on trigger
     full_tp_lock: int = 0                  # 0 = OFF; stop new entries after N full-TP exits/session
+    allowed_sessions: Optional[tuple] = DEFAULT_ALLOWED_SESSIONS
 
     @property
     def wait_bars(self) -> int:
@@ -231,11 +235,24 @@ class ConfluenceBacktester:
         date. The backtester includes the session key as the first component so
         multi-day research resets at the same CT boundary.
         """
+        # Keep the conservative production safety lock by largest timeframe.
+        # A direct physical-wall lock was tested on 60d and increased trades
+        # ~5.8x with unacceptable drawdown. wall_id remains in telemetry.
         zid = getattr(sig.cluster, "largest_tf", None)
         direction = self._breakout_direction_from_trade_direction(sig.direction)
         if not zid or not direction:
             return None
         return (self._session_key(ts), str(zid), direction)
+
+    def _session_entry_allowed(self, ts) -> bool:
+        return is_allowed_session(ts, self.run_cfg.allowed_sessions)
+
+    def _release_pending_lock(self, ts, sig: Optional[ConfluenceSignal]) -> None:
+        if not sig or not self.run_cfg.one_trade_per_session_direction:
+            return
+        key = self._session_lock_key(ts, sig)
+        if key is not None:
+            self._session_dir_used.discard(key)
 
     # ── main loop ──
 
@@ -282,14 +299,16 @@ class ConfluenceBacktester:
 
             # 3) manage a pending one-shot limit order
             if self._pending is not None:
+                if not self._session_entry_allowed(candle.timestamp):
+                    self._release_pending_lock(candle.timestamp, self._pending)
+                    self._pending = None
+                    self._pending_age = 0
+                    continue
                 if self._try_fill(candle):
                     continue
                 self._pending_age += 1
                 if self._pending_age >= wait:
-                    if self.run_cfg.one_trade_per_session_direction:
-                        key = self._session_lock_key(candle.timestamp, self._pending)
-                        if key is not None:
-                            self._session_dir_used.discard(key)
+                    self._release_pending_lock(candle.timestamp, self._pending)
                     self._pending = None          # one-shot: cancel, do NOT re-post
                     self._pending_age = 0
                 continue
@@ -305,6 +324,8 @@ class ConfluenceBacktester:
 
     def _maybe_open(self, candle: Candle, zones_by_tf: Optional[Dict[str, list]] = None,
                     recent_candles: Optional[List[Candle]] = None):
+        if not self._session_entry_allowed(candle.timestamp):
+            return
         if zones_by_tf is None:
             zones_by_tf = self._zones_by_tf()
         if len(zones_by_tf) < self.signal_cfg.min_distinct_tf:
@@ -377,7 +398,22 @@ class ConfluenceBacktester:
                 "weight": round(cl.total_weight, 2),
                 "tfs": cl.distinct_tfs,
                 "largest_tf": cl.largest_tf,
+                "wall_id": cluster_wall_id(cl),
                 "labels": cl.labels,
+                "primary_zone": {
+                    "tf": cl.largest_tf,
+                    "zone_id": getattr(cl, "primary_zone_id", "") or "",
+                    "vah_80": getattr(cl, "primary_zone_vah_80", None),
+                    "val_80": getattr(cl, "primary_zone_val_80", None),
+                    "formed_at": (
+                        cl.primary_zone_formed_at.isoformat()
+                        if getattr(cl, "primary_zone_formed_at", None) else None
+                    ),
+                    "left_at": (
+                        cl.primary_zone_left_at.isoformat()
+                        if getattr(cl, "primary_zone_left_at", None) else None
+                    ),
+                },
                 "wait_min": self.run_cfg.wait_minutes,
                 "score": round(sig.score, 4),
                 "prob": round(sig.prob, 4),

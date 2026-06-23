@@ -42,7 +42,7 @@ from backend.strategy.consolidation import (
 )
 from backend.strategy.confluence import (
     ConfluenceConfig, MAX_RECENCY_DEPTH, evaluate_confluence_scored, gate_signals,
-    snapshot_zones_by_tf,
+    snapshot_zones_by_tf, cluster_wall_id,
 )
 from backend.strategy.confluence_scorer import (
     ConfluenceScorer, default_scorer_path, resolve_scorer,
@@ -214,6 +214,8 @@ class ConfluenceLiveEvaluator:
             entry_price=sig.entry_price,
             sl_price=sig.sl_price,
             tp_price=sig.tp_price,
+            # Conservative session lock key; the exact physical wall is still
+            # emitted separately as wall_id for telemetry and future research.
             zone_id=cl.largest_tf,
             zone_source="confluence",
             reason=sig.reason,
@@ -295,7 +297,22 @@ class ConfluenceLiveEvaluator:
             "tfs": cl.distinct_tfs,
             "tf_weights": tf_weights,
             "largest_tf": cl.largest_tf,
+            "wall_id": cluster_wall_id(cl),
             "labels": cl.labels,
+            "primary_zone": {
+                "tf": cl.largest_tf,
+                "zone_id": getattr(cl, "primary_zone_id", "") or "",
+                "vah_80": getattr(cl, "primary_zone_vah_80", None),
+                "val_80": getattr(cl, "primary_zone_val_80", None),
+                "formed_at": (
+                    cl.primary_zone_formed_at.isoformat()
+                    if getattr(cl, "primary_zone_formed_at", None) else None
+                ),
+                "left_at": (
+                    cl.primary_zone_left_at.isoformat()
+                    if getattr(cl, "primary_zone_left_at", None) else None
+                ),
+            },
             "explain": self.scorer.explain(sig.features),
             "reason": sig.reason,
         }

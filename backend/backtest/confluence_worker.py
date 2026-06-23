@@ -140,6 +140,7 @@ def run_job(ckey, candles_or_none, params: dict, progress=None) -> dict:
     from backend.strategy.consolidation import timeframes_for_base
     from backend.strategy.confluence import ConfluenceConfig, MAX_RECENCY_DEPTH
     from backend.strategy.confluence_scorer import resolve_scorer
+    from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, normalize_allowed_sessions
     from backend.backtest.confluence_backtest import (
         ConfluenceBacktester, ConfluenceBacktestConfig,
     )
@@ -178,6 +179,10 @@ def run_job(ckey, candles_or_none, params: dict, progress=None) -> dict:
         trail_trigger_pct=float(p.get("conf_trail_trigger_pct", 0.50) or 0.0),
         trail_lock_pct=float(p.get("conf_trail_lock_pct", 0.05) or 0.0),
         full_tp_lock=int(p.get("conf_full_tp_lock", 0) or 0),
+        allowed_sessions=tuple(
+            normalize_allowed_sessions(p.get("conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS))
+            or ()
+        ),
     )
     bt_cfg = BacktestConfig(
         initial_capital=p["initial_capital"],

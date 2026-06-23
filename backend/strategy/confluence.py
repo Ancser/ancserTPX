@@ -98,6 +98,10 @@ class Level:
     zone_id: str
     poc: float            # owning zone POC (for SL span)
     tf_minutes: int       # for "largest TF" selection
+    zone_vah_80: float = 0.0
+    zone_val_80: float = 0.0
+    zone_formed_at: object = None
+    zone_left_at: object = None
 
     @property
     def label(self) -> str:
@@ -163,10 +167,36 @@ class Cluster:
     distinct_tfs: List[str]
     largest_tf: str
     largest_tf_minutes: int
+    primary_zone_id: str = ""
+    primary_zone_vah_80: float = 0.0
+    primary_zone_val_80: float = 0.0
+    primary_zone_formed_at: object = None
+    primary_zone_left_at: object = None
 
     @property
     def labels(self) -> List[str]:
         return [lv.label for lv in self.levels]
+
+
+def cluster_wall_id(cluster: Cluster) -> str:
+    """Telemetry identity for the physical wall represented by a cluster."""
+    levels = list(getattr(cluster, "levels", None) or [])
+    if not levels:
+        return str(getattr(cluster, "largest_tf", "") or "")
+    primary_tf = str(getattr(cluster, "largest_tf", "") or "")
+    primary_zone_id = str(getattr(cluster, "primary_zone_id", "") or "")
+    anchor = next(
+        (
+            lv for lv in levels
+            if str(getattr(lv, "tf", "") or "") == primary_tf
+            and str(getattr(lv, "zone_id", "") or "") == primary_zone_id
+        ),
+        max(levels, key=lambda lv: int(getattr(lv, "tf_minutes", 0))),
+    )
+    return (
+        f"{anchor.tf}:{anchor.zone_id}:"
+        f"{anchor.side}{int(anchor.band_pct)}"
+    )
 
 
 @dataclass
@@ -222,8 +252,21 @@ def extract_levels(
                 if not band:
                     continue
                 vah, val = band
-                levels.append(Level(tf, recency, pct, "VAH", vah, w, zone.zone_id, zone.poc, tf_min))
-                levels.append(Level(tf, recency, pct, "VAL", val, w, zone.zone_id, zone.poc, tf_min))
+                base = dict(
+                    tf=tf,
+                    recency=recency,
+                    band_pct=pct,
+                    weight=w,
+                    zone_id=zone.zone_id,
+                    poc=zone.poc,
+                    tf_minutes=tf_min,
+                    zone_vah_80=zone.vah_80,
+                    zone_val_80=zone.val_80,
+                    zone_formed_at=zone.formed_at,
+                    zone_left_at=zone.left_at,
+                )
+                levels.append(Level(side="VAH", price=vah, **base))
+                levels.append(Level(side="VAL", price=val, **base))
     return levels
 
 
@@ -272,6 +315,11 @@ def _build_cluster(side: str, group: List[Level], cfg: ConfluenceConfig) -> Clus
         distinct_tfs=distinct,
         largest_tf=largest.tf,
         largest_tf_minutes=largest.tf_minutes,
+        primary_zone_id=largest.zone_id,
+        primary_zone_vah_80=largest.zone_vah_80,
+        primary_zone_val_80=largest.zone_val_80,
+        primary_zone_formed_at=largest.zone_formed_at,
+        primary_zone_left_at=largest.zone_left_at,
     )
 
 

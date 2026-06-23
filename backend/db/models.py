@@ -368,6 +368,7 @@ class StrategyParams:
     conf_use_scorer: bool = True           # True=trained JSON, False=heuristic prior
     conf_enable_breakout: bool = False     # include breakout-retrace candidate (False=momentum+reversion only)
     conf_max_risk_ticks: Optional[int] = None  # optional risk-width cap; None/0 = off
+    conf_allowed_sessions: Optional[List[str]] = field(default_factory=lambda: ["ASIA", "PRE"])
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
     conf_trail_trigger_pct: float = 0.50   # optimized: fire after 50% of TP distance
     conf_trail_lock_pct: float = 0.05      # optimized: lock +5% of TP distance on trigger

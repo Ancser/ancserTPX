@@ -230,10 +230,22 @@
                             <option value="0">OFF</option>
                         </select>
                     </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>MARKET SESSION</label>
+                        <select id="conf-allowed-sessions-bt" onchange="updateMlParamSummary('bt')">
+                            <option value="">ALL</option>
+                            <option value="ASIA,PRE" selected>ASIA + PRE</option>
+                            <option value="ASIA">ASIA</option>
+                            <option value="PRE">PRE</option>
+                            <option value="EURO">EURO</option>
+                            <option value="RTH">RTH</option>
+                            <option value="AH">AH</option>
+                        </select>
+                    </div>
                 </div>
                 <div id="ml-param-summary-bt" style="font-size:10px;color:var(--text2);line-height:1.6;">
                     PARAMS: 1m base · wait 1m · B4 · 2TF · RR1:5 · minProb 0.60 · EV off · maxRisk 80t · breakout off.<br>
-                    RISK: trail 50% → SL +5% TP · session limit ON · size follows top selector.
+                    RISK: trail 50% → SL +5% TP · session limit ON · market ASIA+PRE · size follows top selector.
                 </div>
             </div>
             <div id="tr-params-bt" style="margin-top:12px;">
@@ -489,10 +501,22 @@
                                 <option value="0">OFF</option>
                             </select>
                         </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>MARKET SESSION</label>
+                            <select id="conf-allowed-sessions-live" onchange="updateMlParamSummary('live')">
+                                <option value="">ALL</option>
+                                <option value="ASIA,PRE" selected>ASIA + PRE</option>
+                                <option value="ASIA">ASIA</option>
+                                <option value="PRE">PRE</option>
+                                <option value="EURO">EURO</option>
+                                <option value="RTH">RTH</option>
+                                <option value="AH">AH</option>
+                            </select>
+                        </div>
                     </div>
                     <div id="ml-param-summary-live" style="font-size:10px;color:var(--text2);line-height:1.6;">
                         PARAMS: 1m base · wait 1m · B4 · 2TF · RR1:5 · minProb 0.60 · EV off · maxRisk 80t · breakout off.<br>
-                        RISK: trail 50% → SL +5% TP · session limit ON · size follows top selector.
+                        RISK: trail 50% → SL +5% TP · session limit ON · market ASIA+PRE · size follows top selector.
                     </div>
                 </div>
                 <div id="tr-params-live" style="margin-top:12px;">
@@ -624,7 +648,7 @@
                 <!-- Status line — its own row, adapts to ML (confluence) or Trend -->
                 <div style="display:flex;align-items:center;height:22px;border-top:1px solid var(--border);padding:0 12px;font-size:10px;letter-spacing:0.3px;">
                     <span id="lv-status-label" style="color:var(--cyan);font-weight:600;margin-right:8px;white-space:nowrap;">狀態</span>
-                    <span id="lv-phase-top" style="color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span>
+                    <span id="lv-phase-top" style="color:var(--text1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">--</span>
                 </div>
                 <!-- Zone levels row (always show when zone active) -->
                 <div id="lv-zone-row" style="display:none;height:22px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:16px;font-size:10px;letter-spacing:0.5px;">
@@ -646,7 +670,7 @@
                 <!-- ML decision-basis banner (confluence): why the order fired + params -->
                 <div id="lv-confluence-row" style="display:none;min-height:22px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:8px;font-size:10px;letter-spacing:0.3px;padding:2px 10px;">
                     <span style="color:var(--cyan);font-weight:600;">ML 判斷依據</span>
-                    <span id="lv-conf-basis" style="color:var(--text2);font-family:'IBM Plex Mono',monospace;">--</span>
+                    <span id="lv-conf-basis" style="color:var(--text1);font-family:'IBM Plex Mono',monospace;">--</span>
                 </div>
             </div>
 

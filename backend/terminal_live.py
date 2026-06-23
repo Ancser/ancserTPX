@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 from backend.broker.topstepx import TopstepXClient
 from backend.db.models import BarUnit, StrategyParams, _extract_symbol
 from backend.live.engine import LiveTradingEngine
+from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, normalize_allowed_sessions
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -75,6 +76,7 @@ DEFAULT_PRESET_PARAMS = {
     "conf_use_scorer": True,
     "conf_enable_breakout": False,
     "conf_max_risk_ticks": None,
+    "conf_allowed_sessions": list(DEFAULT_ALLOWED_SESSIONS),
     "conf_trail_trigger_pct": 0.50,
     "conf_trail_lock_pct": 0.05,
     "conf_full_tp_lock": 0,
@@ -82,16 +84,30 @@ DEFAULT_PRESET_PARAMS = {
     "conf_shadow": False,
 }
 CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
-CODEX_620_PRESET_1 = "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON B4 TF2 MNQx3"
-CODEX_620_PRESET_2 = "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx3"
+CODEX_620_PRESET_1 = "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON ASIA+PRE B4 TF2 MNQx3"
+CODEX_620_PRESET_2 = "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA+PRE B4 TF2 MNQx3"
+CODEX_623_PRESET_3 = "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA+PRE B4 TF2 MNQx1"
 DEFAULT_LAST_USED_PRESET = CODEX_620_PRESET_2
+PRESET_RENAMES = {
+    "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON B4 TF2 MNQx3": CODEX_620_PRESET_1,
+    "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx3": CODEX_620_PRESET_2,
+    "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx1": CODEX_623_PRESET_3,
+}
 
 
-def _codex_620_preset(*, min_prob: float, trail_trigger: float) -> Dict[str, Any]:
+def _codex_620_preset(
+    *,
+    min_prob: float,
+    trail_trigger: float,
+    contract_id: str = "CON.F.US.MNQ.M26",
+    contract_size: int = 3,
+) -> Dict[str, Any]:
     params = dict(DEFAULT_PRESET_PARAMS)
     params.update({
         "tp_ticks": 250,
         "tr_tp_ticks": 250,
+        "contract_id": contract_id,
+        "contract_size": contract_size,
         "rr_ratio": 5,
         "conf_model_name": CODEX_620_MODEL,
         "conf_rr": 5,
@@ -107,6 +123,12 @@ def _codex_620_preset(*, min_prob: float, trail_trigger: float) -> Dict[str, Any
 BUILTIN_PRESETS = {
     CODEX_620_PRESET_1: _codex_620_preset(min_prob=0.60, trail_trigger=0.0),
     CODEX_620_PRESET_2: _codex_620_preset(min_prob=0.0, trail_trigger=0.50),
+    CODEX_623_PRESET_3: _codex_620_preset(
+        min_prob=0.0,
+        trail_trigger=0.50,
+        contract_id="CON.F.US.MNQ.U26",
+        contract_size=1,
+    ),
 }
 
 logging.basicConfig(
@@ -206,12 +228,14 @@ def _load_presets_file() -> dict:
             "conf_ev_floor", "conf_rr_grid", "conf_use_scorer",
             "conf_enable_breakout", "conf_max_risk_ticks", "conf_trail_trigger_pct",
             "conf_trail_lock_pct", "conf_full_tp_lock",
-            "conf_session_limit", "conf_shadow",
+            "conf_session_limit", "conf_allowed_sessions", "conf_shadow",
         }
         for key in list(params.keys()):
             if key not in allowed_keys:
                 params.pop(key, None)
         params["value_area_pct"] = 0.80
+        if params["strategy"] == "confluence" and "conf_allowed_sessions" not in params:
+            params["conf_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
         new_name = None
         if str(name).startswith("BR "):
             new_name = "TR " + str(name)[3:]
@@ -219,6 +243,12 @@ def _load_presets_file() -> dict:
             if new_name not in presets:
                 presets[new_name] = params
             del presets[name]
+    for old_name, new_name in PRESET_RENAMES.items():
+        if old_name in presets:
+            presets[new_name] = presets.pop(old_name)
+            for key in ("last_used_bt", "last_used_live"):
+                if data.get(key) == old_name:
+                    data[key] = new_name
     if presets.get(DEFAULT_PRESET_NAME) != DEFAULT_PRESET_PARAMS:
         presets[DEFAULT_PRESET_NAME] = dict(DEFAULT_PRESET_PARAMS)
     for name, params in BUILTIN_PRESETS.items():
@@ -499,6 +529,10 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         conf_use_scorer=bool(preset.get("conf_use_scorer", True)),
         conf_enable_breakout=bool(preset.get("conf_enable_breakout", False)),
         conf_max_risk_ticks=_conf_optional_int("conf_max_risk_ticks"),
+        conf_allowed_sessions=list(
+            normalize_allowed_sessions(preset.get("conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS))
+            or []
+        ) or None,
         conf_trail_trigger_pct=_conf_float("conf_trail_trigger_pct", 0.50),
         conf_trail_lock_pct=_conf_float("conf_trail_lock_pct", 0.05),
         conf_full_tp_lock=_conf_int("conf_full_tp_lock", 0),
