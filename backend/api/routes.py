@@ -1941,6 +1941,10 @@ async def confluence_model_retrain(req: ModelRetrainRequest):
 async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestResponse:
     """Backtest ML Consolidation V2: Value Area mean reversion."""
     candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+    _update_bt_progress(
+        "mlc2_vp", 0, len(candles),
+        f"MLC2 rolling VP over {len(candles)} candles",
+    )
     contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
     tick = get_tick_size(req.contract_id)
 
@@ -1978,6 +1982,10 @@ async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestRes
 
     # Pre-compute VP timeline (heavy, but same as sweep scripts)
     vp_tl = precompute_vp_timeline(candles, lookback, tick, recalc_interval=5)
+    _update_bt_progress(
+        "mlc2_run", len(candles), len(candles),
+        f"MLC2 replaying signals",
+    )
 
     bt = MLTrendBacktester(
         signal_cfg=sig_cfg, run_cfg=run_cfg,
@@ -1994,6 +2002,7 @@ async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestRes
         contracts = int(t.contracts or 1)
         side = "VAL" if t.direction == Direction.BUY else "VAH"
         meta = t.meta or {}
+        labels = ["long" if t.direction == Direction.BUY else "short"]
         trades_resp.append(TradeResponse(
             trade_id=t.trade_id or f"MLC2_{idx:05d}",
             strategy="ml_consolidation_v2",
@@ -2018,7 +2027,7 @@ async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestRes
             side=side,
             largest_tf=f"LB{lookback}",
             wall_id="ml_consol_v2",
-            labels=[f"ML-Consol-V2", side, meta.get("reason", "")],
+            labels=labels,
             primary_zone=None,
             vol_ratio=None,
             is_big_trend=False,
@@ -2027,21 +2036,24 @@ async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestRes
     m = result.metrics
     metrics_resp = MetricsResponse(
         total_trades=m.total_trades,
-        winning_trades=m.winning_trades,
-        losing_trades=m.losing_trades,
+        wins=m.wins,
+        losses=m.losses,
         win_rate=m.win_rate,
-        total_pnl=m.total_pnl,
-        avg_pnl=m.avg_pnl,
         avg_win=m.avg_win,
         avg_loss=m.avg_loss,
-        max_win=m.max_win,
-        max_loss=m.max_loss,
-        profit_factor=m.profit_factor,
+        avg_rr_ratio=m.avg_rr_ratio,
+        expectancy=m.expectancy,
         max_drawdown=m.max_drawdown,
-        sharpe_ratio=m.sharpe_ratio,
-        calmar_ratio=getattr(m, "calmar_ratio", 0.0),
-        max_consecutive_wins=m.max_consecutive_wins,
+        max_drawdown_pct=m.max_drawdown_pct,
+        calmar_ratio=m.calmar_ratio,
+        profit_factor=m.profit_factor,
         max_consecutive_losses=m.max_consecutive_losses,
+        total_pnl=m.total_pnl,
+        total_gain=getattr(m, "total_gain", 0.0),
+        total_loss=getattr(m, "total_loss", 0.0),
+        daily_pnl=m.daily_pnl or {},
+        weekly_stats=_weekly_stats(m.daily_pnl or {}),
+        trend_follow=None,
     )
 
     equity = []
@@ -2053,12 +2065,18 @@ async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestRes
         )
         equity.append([ts_ms, round(eq, 2)])
 
-    return BacktestResponse(
+    resp = BacktestResponse(
         metrics=metrics_resp,
         trades=trades_resp,
         zones=[],
         equity_curve=equity,
     )
+    _backtest_results.append(resp)
+    _update_bt_progress(
+        "complete", len(candles), len(candles),
+        f"{len(trades_resp)} trades", status="complete",
+    )
+    return resp
 
 
 @router.post("/backtest/run", response_model=BacktestResponse)

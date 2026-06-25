@@ -269,8 +269,20 @@ class MLTrendBacktester:
         sig = self._pending
         market_entry = float(candle.open)
 
-        # keep structural SL; recalculate TP from actual entry if rr mode
+        # Keep the structural SL, but reject market fills that have already
+        # crossed it.  Otherwise a next-bar market entry can be opened on the
+        # wrong side of the planned stop and immediately "exit at SL" for a
+        # fake profit / zero-duration trade.  Live bracket placement would not
+        # preserve that as a real edge.
         sl = sig.sl_price
+        if sig.direction == Direction.BUY and sl >= market_entry:
+            self._pending = None
+            return
+        if sig.direction == Direction.SELL and sl <= market_entry:
+            self._pending = None
+            return
+
+        # Recalculate TP from the actual market entry if rr mode.
         if self.signal_cfg.tp_mode == "poc":
             tp = sig.tp_price  # POC is fixed
         else:
@@ -282,7 +294,18 @@ class MLTrendBacktester:
 
         risk = abs(market_entry - sl)
         reward = abs(tp - market_entry)
+        risk_t = risk / self.TICK_SIZE
+        reward_t = reward / self.TICK_SIZE
         if risk <= 0 or reward <= 0:
+            self._pending = None
+            return
+        if risk_t < self.signal_cfg.min_risk_ticks or risk_t > self.signal_cfg.max_risk_ticks or reward_t < 2:
+            self._pending = None
+            return
+        if sig.direction == Direction.BUY and tp <= market_entry:
+            self._pending = None
+            return
+        if sig.direction == Direction.SELL and tp >= market_entry:
             self._pending = None
             return
 

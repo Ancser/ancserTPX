@@ -4034,19 +4034,7 @@ function _tradePnlText(t) {
 }
 
 function _tradeDecisionPhrase(t) {
-    let side = String((t && (t.side || t.entry_side)) || '').toUpperCase();
-    if (!side && t && Array.isArray(t.labels)) {
-        const joined = t.labels.join(' ').toUpperCase();
-        if (joined.includes(':VAH')) side = 'VAH';
-        else if (joined.includes(':VAL')) side = 'VAL';
-    }
-    const mode = String((t && t.mode) || '').toLowerCase();
-    const modeCn = mode === 'reversion' ? '逆勢'
-        : mode === 'momentum' ? '順勢'
-        : mode === 'breakout' ? '突破'
-        : '';
-    const dirCn = _tradeIsBuy(t) ? 'long' : 'short';
-    return (side ? side : '') + modeCn + dirCn;
+    return _tradeIsBuy(t) ? 'long' : 'short';
 }
 
 function _entryDecisionMarker(t, fallbackColor) {
@@ -4062,7 +4050,7 @@ function _entryDecisionMarker(t, fallbackColor) {
         position: isBuy ? 'belowBar' : 'aboveBar',
         color: fallbackColor || pnlColor,
         shape: 'circle',
-        text: _tradePnlText(t) + (decision ? '\n' + decision : ''),
+        text: _tradePnlText(t) + (decision ? ' ' + decision : ''),
     };
 }
 
@@ -4599,6 +4587,7 @@ function renderTrades(trades) {
         if (!entryIso || !exitIso) return '--';
         const diffMs = new Date(exitIso).getTime() - new Date(entryIso).getTime();
         if (diffMs < 0) return '--';
+        if (diffMs === 0) return '<1m';
         const totalSec = Math.floor(diffMs / 1000);
         const hh = Math.floor(totalSec / 3600);
         const mm = Math.floor((totalSec % 3600) / 60);
@@ -4665,6 +4654,7 @@ function renderExecuteTrades(trades) {
         if (!entryIso || !exitIso) return '--';
         const diffMs = new Date(exitIso).getTime() - new Date(entryIso).getTime();
         if (diffMs < 0) return '--';
+        if (diffMs === 0) return '<1m';
         const totalSec = Math.floor(diffMs / 1000);
         const hh = Math.floor(totalSec / 3600);
         const mm = Math.floor((totalSec % 3600) / 60);
