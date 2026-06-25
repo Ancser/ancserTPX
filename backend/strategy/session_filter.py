@@ -19,7 +19,7 @@ from typing import Iterable, Optional
 
 
 SESSION_CODES = ("ASIA", "EURO", "PRE", "RTH", "AH")
-DEFAULT_ALLOWED_SESSIONS = ("ASIA", "PRE")
+DEFAULT_ALLOWED_SESSIONS = ("ASIA",)
 
 
 def market_session_code(ts: datetime) -> str:

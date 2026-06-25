@@ -35,6 +35,7 @@ TRAIL_TICK_STEP = 5
 # Keep in sync with backend.api.routes.ML_TIMEFRAMES so terminal honours the
 # same area-timeframe / overlap selections the web UI saves into presets.
 ML_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h")
+PRESET_SCHEMA_VERSION = "2026-06-25-ml-consolidation-v2"
 DEFAULT_PRESET_NAME = "ML CONFLUENCE MNQx3 DEFAULT"
 DEFAULT_PRESET_PARAMS = {
     "strategy": "confluence",
@@ -52,8 +53,8 @@ DEFAULT_PRESET_PARAMS = {
     "tr_trail_enabled": True,
     "tr_full_tp_lock": 0,
     "candle_seconds": 60,
-    "contract_id": "CON.F.US.MNQ.M26",
-    "contract_size": 3,
+    "contract_id": "CON.F.US.MNQ.U26",
+    "contract_size": 1,
     "full_tp_lock": 0,
     "one_trade_per_session_direction": True,
     "tr_one_trade_per_session": True,
@@ -66,53 +67,78 @@ DEFAULT_PRESET_PARAMS = {
     "skip_zone_stability": False,
     "conf_band_ticks": 4.0,
     "conf_min_distinct_tf": 2,
-    "conf_rr": 1.0,
+    "conf_rr": 3.0,
     "conf_model_name": None,
     "conf_wait_minutes": 1,
     "conf_base_minutes": 1,
-    "conf_min_prob": 0.65,
+    "conf_min_prob": 0.0,
     "conf_ev_floor": None,
     "conf_rr_grid": None,
     "conf_use_scorer": True,
     "conf_enable_breakout": False,
-    "conf_max_risk_ticks": None,
-    "conf_allowed_sessions": list(DEFAULT_ALLOWED_SESSIONS),
+    "conf_max_risk_ticks": 80,
+    "conf_allowed_sessions": ["ASIA"],
     "conf_trail_trigger_pct": 0.50,
     "conf_trail_lock_pct": 0.05,
     "conf_full_tp_lock": 0,
     "conf_session_limit": True,
     "conf_shadow": False,
+    "mlc2_lookback": 30,
+    "mlc2_band_ticks": 2.0,
+    "mlc2_sl_buffer_ticks": 4.0,
+    "mlc2_tp_mode": "rr",
+    "mlc2_rr": 4.0,
+    "mlc2_trail_trigger_pct": 0.0,
+    "mlc2_trail_lock_pct": 0.0,
+    "mlc2_session_limit": False,
+    "mlc2_min_score": 0.0,
+    "mlc2_allowed_sessions": ["ASIA", "EURO"],
+    "mlc2_shadow": False,
 }
 CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
-CODEX_620_PRESET_1 = "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON ASIA+PRE B4 TF2 MNQx3"
-CODEX_620_PRESET_2 = "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA+PRE B4 TF2 MNQx3"
-CODEX_623_PRESET_3 = "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA+PRE B4 TF2 MNQx1"
-DEFAULT_LAST_USED_PRESET = CODEX_620_PRESET_2
-PRESET_RENAMES = {
-    "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON B4 TF2 MNQx3": CODEX_620_PRESET_1,
-    "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx3": CODEX_620_PRESET_2,
-    "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx1": CODEX_623_PRESET_3,
+CODEX_624_PRESET_1 = "06.24 CODEX #1 穩健測試 MNQx1 RR1:3 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2"
+CODEX_624_PRESET_2 = "06.24 CODEX #2 收益較高 MNQx1 RR1:2.75 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2"
+CODEX_624_PRESET_3 = "06.24 CODEX #3 卡瑪最佳 MNQx1 RR1:1.75 POFF R70 W1m Trail50L5 SesON ASIA B4 TF2"
+CODEX_624_PRESET_4 = "06.24 CODEX #4 PNL最高 MNQx1 RR1:1.5 POFF R50 W1m Trail50L5 SesON ASIA B4 TF2"
+CODEX_624_PRESET_5 = "06.24 CODEX #5 回撤最低 MNQx1 RR1:2.5 P0.65 R90 W1m Trail50L5 SesON ASIA B4 TF2"
+MLC2_PRESET = "06.25 CODEX #1 均值回歸 MNQx1 MLC2 LB30 Band2 SLB4 RR1:4 ASIA+EURO TrailOFF"
+DEFAULT_LAST_USED_PRESET = CODEX_624_PRESET_1
+PRESET_RENAMES = {}
+REMOVED_PRESET_NAMES = {
+    DEFAULT_PRESET_NAME,
+    "ML CONFLUENCE MNQx3 DEFAULT",
+    "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON ASIA B4 TF2 MNQx3",
+    "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2 MNQx3",
+    "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2 MNQx1",
+    "6/20 CLAUDE #1 ML RR1:3 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
+    "6/20 CLAUDE #1 SVD RR1:2 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
+    "6/22 CLAUDE #1 ML RR1:3 P0.55 ROFF W1m TrailOFF SesON B4 TF2 MNQx1",
 }
 
 
-def _codex_620_preset(
+def _codex_624_preset(
     *,
-    min_prob: float,
-    trail_trigger: float,
-    contract_id: str = "CON.F.US.MNQ.M26",
-    contract_size: int = 3,
+    rr: float,
+    max_risk_ticks: int,
+    min_prob: float = 0.0,
+    trail_trigger: float = 0.50,
+    contract_id: str = "CON.F.US.MNQ.U26",
+    contract_size: int = 1,
 ) -> Dict[str, Any]:
     params = dict(DEFAULT_PRESET_PARAMS)
     params.update({
-        "tp_ticks": 250,
-        "tr_tp_ticks": 250,
+        "tp_ticks": int(round(50 * float(rr))),
+        "tr_tp_ticks": int(round(50 * float(rr))),
         "contract_id": contract_id,
         "contract_size": contract_size,
-        "rr_ratio": 5,
+        "rr_ratio": float(rr),
         "conf_model_name": CODEX_620_MODEL,
-        "conf_rr": 5,
-        "conf_min_prob": min_prob,
-        "conf_max_risk_ticks": 80,
+        "conf_rr": float(rr),
+        "conf_min_prob": float(min_prob),
+        "conf_max_risk_ticks": int(max_risk_ticks),
+        "conf_band_ticks": 4.0,
+        "conf_min_distinct_tf": 2,
+        "conf_allowed_sessions": ["ASIA"],
         "conf_trail_trigger_pct": trail_trigger,
         "conf_trail_lock_pct": 0.05,
         "conf_session_limit": True,
@@ -121,14 +147,28 @@ def _codex_620_preset(
 
 
 BUILTIN_PRESETS = {
-    CODEX_620_PRESET_1: _codex_620_preset(min_prob=0.60, trail_trigger=0.0),
-    CODEX_620_PRESET_2: _codex_620_preset(min_prob=0.0, trail_trigger=0.50),
-    CODEX_623_PRESET_3: _codex_620_preset(
-        min_prob=0.0,
-        trail_trigger=0.50,
-        contract_id="CON.F.US.MNQ.U26",
-        contract_size=1,
-    ),
+    CODEX_624_PRESET_1: _codex_624_preset(rr=3.0, max_risk_ticks=80),
+    CODEX_624_PRESET_2: _codex_624_preset(rr=2.75, max_risk_ticks=80),
+    CODEX_624_PRESET_3: _codex_624_preset(rr=1.75, max_risk_ticks=70),
+    CODEX_624_PRESET_4: _codex_624_preset(rr=1.50, max_risk_ticks=50),
+    CODEX_624_PRESET_5: _codex_624_preset(rr=2.50, max_risk_ticks=90, min_prob=0.65),
+    MLC2_PRESET: {
+        **dict(DEFAULT_PRESET_PARAMS),
+        "strategy": "ml_consolidation_v2",
+        "contract_id": "CON.F.US.MNQ.U26",
+        "contract_size": 1,
+        "mlc2_lookback": 30,
+        "mlc2_band_ticks": 2.0,
+        "mlc2_sl_buffer_ticks": 4.0,
+        "mlc2_tp_mode": "rr",
+        "mlc2_rr": 4.0,
+        "mlc2_trail_trigger_pct": 0.0,
+        "mlc2_trail_lock_pct": 0.0,
+        "mlc2_session_limit": False,
+        "mlc2_min_score": 0.0,
+        "mlc2_allowed_sessions": ["ASIA", "EURO"],
+        "mlc2_shadow": False,
+    },
 }
 
 logging.basicConfig(
@@ -209,11 +249,16 @@ def _load_presets_file() -> dict:
     if not isinstance(presets, dict):
         presets = {}
         data["presets"] = presets
+    if data.get("preset_schema") != PRESET_SCHEMA_VERSION:
+        presets.clear()
+        data["preset_schema"] = PRESET_SCHEMA_VERSION
+        data["last_used_bt"] = DEFAULT_LAST_USED_PRESET
+        data["last_used_live"] = DEFAULT_LAST_USED_PRESET
     for name, params in list(presets.items()):
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        params["strategy"] = "confluence" if strategy == "confluence" else "trend"
+        params["strategy"] = strategy if strategy in {"confluence", "ml_consolidation_v2"} else "trend"
         allowed_keys = {
             "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
             "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
@@ -229,6 +274,10 @@ def _load_presets_file() -> dict:
             "conf_enable_breakout", "conf_max_risk_ticks", "conf_trail_trigger_pct",
             "conf_trail_lock_pct", "conf_full_tp_lock",
             "conf_session_limit", "conf_allowed_sessions", "conf_shadow",
+            "mlc2_lookback", "mlc2_band_ticks", "mlc2_sl_buffer_ticks",
+            "mlc2_tp_mode", "mlc2_rr", "mlc2_trail_trigger_pct",
+            "mlc2_trail_lock_pct", "mlc2_session_limit", "mlc2_min_score",
+            "mlc2_allowed_sessions", "mlc2_shadow",
         }
         for key in list(params.keys()):
             if key not in allowed_keys:
@@ -249,13 +298,13 @@ def _load_presets_file() -> dict:
             for key in ("last_used_bt", "last_used_live"):
                 if data.get(key) == old_name:
                     data[key] = new_name
-    if presets.get(DEFAULT_PRESET_NAME) != DEFAULT_PRESET_PARAMS:
-        presets[DEFAULT_PRESET_NAME] = dict(DEFAULT_PRESET_PARAMS)
+    for name in REMOVED_PRESET_NAMES:
+        presets.pop(name, None)
     for name, params in BUILTIN_PRESETS.items():
         if presets.get(name) != params:
             presets[name] = dict(params)
     if not presets:
-        presets[DEFAULT_PRESET_NAME] = dict(DEFAULT_PRESET_PARAMS)
+        presets[DEFAULT_LAST_USED_PRESET] = dict(BUILTIN_PRESETS[DEFAULT_LAST_USED_PRESET])
     if data.get("last_used_bt") != "default" and data.get("last_used_bt") not in presets:
         data["last_used_bt"] = DEFAULT_LAST_USED_PRESET if DEFAULT_LAST_USED_PRESET in presets else next(iter(presets))
     if data.get("last_used_live") != "default" and data.get("last_used_live") not in presets:
@@ -520,7 +569,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         # v1.0.6 confluence config (used only when strategy == "confluence")
         conf_band_ticks=_conf_float("conf_band_ticks", 4.0),
         conf_min_distinct_tf=_conf_int("conf_min_distinct_tf", 2),
-        conf_rr=float(max(1, min(6, round(_conf_float("conf_rr", 1.0))))),
+        conf_rr=float(round(max(1.0, min(6.0, _conf_float("conf_rr", 1.0))), 2)),
         conf_wait_minutes=_conf_int("conf_wait_minutes", 1),
         conf_base_minutes=_conf_int("conf_base_minutes", 1),
         conf_min_prob=_conf_float("conf_min_prob", 0.65),

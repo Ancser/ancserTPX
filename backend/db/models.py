@@ -375,6 +375,18 @@ class StrategyParams:
     conf_full_tp_lock: int = 0             # 0 = OFF; stop new entries after N full-TP exits/session
     conf_session_limit: bool = True        # one trade per zone+direction per Topstep session
     conf_shadow: bool = False              # default LIVE — practice account places orders
+    # --- ML Consolidation V2: VA mean reversion (strategy == "ml_consolidation_v2") ---
+    mlc2_lookback: int = 30                # rolling VP window (1m bars)
+    mlc2_band_ticks: float = 2.0           # proximity to VAL/VAH boundary (ticks)
+    mlc2_sl_buffer_ticks: float = 4.0      # SL beyond 100% range (ticks)
+    mlc2_tp_mode: str = "rr"               # "poc" = TP at POC; "rr" = fixed RR
+    mlc2_rr: float = 4.0                   # reward:risk ratio (tp_mode=="rr")
+    mlc2_trail_trigger_pct: float = 0.0    # 0 = trail OFF
+    mlc2_trail_lock_pct: float = 0.0       # locked SL as fraction of TP dist
+    mlc2_session_limit: bool = False        # one trade per session
+    mlc2_min_score: float = 0.0            # ML scorer gate (0=OFF)
+    mlc2_allowed_sessions: Optional[List[str]] = field(default_factory=lambda: ["ASIA", "EURO"])
+    mlc2_shadow: bool = False              # default LIVE — practice account places orders
 
 
 # ── 回測 ──────────────────────────────────────────────

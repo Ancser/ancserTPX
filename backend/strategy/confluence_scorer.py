@@ -38,7 +38,7 @@ def default_scorer_path() -> Path:
     return Path(__file__).resolve().parents[2] / "data" / "models" / "confluence_scorer.json"
 
 
-MODEL_TRAINERS = ("codex", "claude")
+MODEL_TRAINERS = ("user", "codex", "claude")
 
 
 def model_registry_dir(active_path=None) -> Path:
@@ -79,26 +79,111 @@ def _normalise_trainer(trainer: str) -> str:
     return value
 
 
-def build_model_id(trained_at, trainer: str, description: str, registry=None) -> str:
-    """Build YYYYMMDD_trainer_description, adding -02/-03 on collisions."""
-    trainer = _normalise_trainer(trainer)
-    description = _normalise_description(description)
+def _trained_day_prefix(trained_at) -> str:
     if isinstance(trained_at, datetime):
-        day = trained_at.strftime("%Y%m%d")
-    else:
-        raw = str(trained_at or "")
-        day = raw[:10].replace("-", "")
-        if len(day) != 8 or not day.isdigit():
-            day = datetime.now().strftime("%Y%m%d")
-    base = f"{day}_{trainer}_{_description_slug(description)}"
+        return trained_at.strftime("%m.%d")
+    raw = str(trained_at or "")
+    try:
+        return datetime.fromisoformat(raw[:19]).strftime("%m.%d")
+    except ValueError:
+        return datetime.now().strftime("%m.%d")
+
+
+def _fmt_num(value, fallback) -> str:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        n = float(fallback)
+    return f"{n:.2f}".rstrip("0").rstrip(".")
+
+
+def _contract_symbol(contract_id: str) -> str:
+    raw = str(contract_id or "").upper()
+    if ".MNQ." in raw or raw.endswith(".MNQ") or raw == "MNQ":
+        return "MNQ"
+    if ".MES." in raw or raw.endswith(".MES") or raw == "MES":
+        return "MES"
+    if ".NQ." in raw or raw.endswith(".NQ") or raw == "NQ":
+        return "NQ"
+    if ".ES." in raw or raw.endswith(".ES") or raw == "ES":
+        return "ES"
+    return raw.split(".")[-2] if "." in raw else (raw or "MODEL")
+
+
+def _parse_description_param(description: str, pattern: str, fallback) -> str:
+    match = re.search(pattern, str(description or ""), re.IGNORECASE)
+    if not match:
+        return _fmt_num(fallback, fallback)
+    for group in match.groups():
+        if group:
+            return _fmt_num(group, fallback)
+    return _fmt_num(fallback, fallback)
+
+
+def _model_param_label(meta=None, description: str = "") -> str:
+    meta = dict(meta or {})
+    cfg = dict(meta.get("cfg") or {})
+    rr = cfg.get("rr")
+    band = cfg.get("band_ticks")
+    tf = cfg.get("min_distinct_tf")
+    if rr is None:
+        rr = _parse_description_param(description, r"RR\s*([0-9]+(?:\.[0-9]+)?)", 3)
+    if band is None:
+        band = _parse_description_param(description, r"Band\s*([0-9]+(?:\.[0-9]+)?)|B\s*([0-9]+(?:\.[0-9]+)?)", 4)
+        if isinstance(band, str) and band == "":
+            band = 4
+    if tf is None:
+        tf = _parse_description_param(description, r"MinTF\s*([0-9]+)|TF\s*([0-9]+)", 2)
+    contract = _contract_symbol(str(meta.get("contract") or "MNQ"))
+    base = _fmt_num(meta.get("base_min", 1), 1)
+    return f"{contract} RR1-{_fmt_num(rr, 3)} B{_fmt_num(band, 4)} TF{_fmt_num(tf, 2)} W{base}m"
+
+
+def _safe_model_id(value: str) -> str:
+    safe = re.sub(r'[<>:"/\\|?*]+', "-", str(value or ""))
+    safe = re.sub(r"\s+", " ", safe).strip(" .-")
+    return safe[:140].rstrip(" .-") or "model"
+
+
+def _next_daily_model_number(registry: Path, day: str, trainer: str) -> int:
+    prefix = f"{day} {trainer.upper()} #"
+    max_n = 0
+    if registry.exists():
+        for path in registry.glob("*.json"):
+            stem = path.stem
+            if not stem.startswith(prefix):
+                continue
+            match = re.search(r"#(\d+)\b", stem)
+            if match:
+                max_n = max(max_n, int(match.group(1)))
+    return max_n + 1
+
+
+def build_model_id(
+    trained_at,
+    trainer: str,
+    description: str,
+    registry=None,
+    *,
+    meta=None,
+    contract_params: str | None = None,
+) -> str:
+    """Build `MM.DD TRAINER #N contract params`.
+
+    Description is still stored in metadata, but it is intentionally not part of
+    the immutable model id.  This keeps model names short and comparable.
+    """
+    trainer = _normalise_trainer(trainer)
+    day = _trained_day_prefix(trained_at)
+    label = contract_params or _model_param_label(meta, description)
     if registry is None:
-        return base
+        return _safe_model_id(f"{day} {trainer.upper()} #1 {label}")
     registry = Path(registry)
-    candidate = base
-    suffix = 2
+    number = _next_daily_model_number(registry, day, trainer)
+    candidate = _safe_model_id(f"{day} {trainer.upper()} #{number} {label}")
     while (registry / f"{candidate}.json").exists():
-        candidate = f"{base}-{suffix:02d}"
-        suffix += 1
+        number += 1
+        candidate = _safe_model_id(f"{day} {trainer.upper()} #{number} {label}")
     return candidate
 
 
@@ -118,7 +203,13 @@ def save_model_version(
     description = _normalise_description(description)
     trained_at = scorer.meta.get("trained_at") or datetime.now().isoformat(timespec="seconds")
     while True:
-        model_id = build_model_id(trained_at, trainer, description, registry)
+        model_id = build_model_id(
+            trained_at,
+            trainer,
+            description,
+            registry,
+            meta=scorer.meta,
+        )
         scorer.meta.update(
             model_id=model_id,
             model_name=model_id,

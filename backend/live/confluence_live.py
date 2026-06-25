@@ -192,9 +192,11 @@ class ConfluenceLiveEvaluator:
     def evaluate(self, candle: Candle) -> Optional[TradeSignal]:
         """Return the best confluence signal at this bar (>= min_score) or None.
 
-        The returned TradeSignal is a one-shot LIMIT order: entry at the cluster
-        price, structural SL, RR-based TP — fed through the engine's existing
-        order path so brackets/session-locks/wait-timeout all apply unchanged.
+        The returned TradeSignal is a MARKET order: entry at bar close (current
+        price), structural SL, RR-based TP recalculated from the market entry.
+        This eliminates the adverse fill selection that plagued limit orders
+        (backtest assumes 100% fill on price touch, but live misses the best
+        reversals where price barely touches and snaps back).
         """
         zbt = self.zones_by_tf()
         if len(zbt) < self.cfg.min_distinct_tf:
@@ -208,19 +210,30 @@ class ConfluenceLiveEvaluator:
             return None
         sig = signals[0]  # already sorted by EV desc
         cl = sig.cluster
+        # Market-order entry: use bar close as entry, recalculate TP from
+        # actual market entry vs structural SL.
+        market_entry = float(candle.close)
+        risk = abs(market_entry - sig.sl_price)
+        if risk <= 0:
+            return None
+        rr = self.cfg.rr
+        if sig.direction == Direction.BUY:
+            new_tp = market_entry + risk * rr
+        else:
+            new_tp = market_entry - risk * rr
         return TradeSignal(
             strategy=StrategyType.TREND_FOLLOW,
             direction=sig.direction,
-            entry_price=sig.entry_price,
+            entry_price=market_entry,
             sl_price=sig.sl_price,
-            tp_price=sig.tp_price,
+            tp_price=round(new_tp, 2),
             # Conservative session lock key; the exact physical wall is still
             # emitted separately as wall_id for telemetry and future research.
             zone_id=cl.largest_tf,
             zone_source="confluence",
             reason=sig.reason,
             timestamp=candle.timestamp,
-            order_type="limit",
+            order_type="market",
         )
 
     def top_candidate(self) -> Optional[dict]:

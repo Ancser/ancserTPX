@@ -29,7 +29,7 @@
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        1.0.6
+        1.0.7a
         </span></h1>
     <div class="header-tabs">
         <div class="tab active" data-tab="backtest">Backtest</div>
@@ -119,7 +119,8 @@
                     <label>STRATEGY</label>
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
                         <option value="trend">TREND</option>
-                        <option value="confluence" selected>ML (confluence)</option>
+                        <option value="confluence" selected>ML Confluence</option>
+                        <option value="ml_consolidation_v2">ML Consolidation V2</option>
                     </select>
                 </div>
             </div>
@@ -182,16 +183,24 @@
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
-                        <label>RR <span class="lbl-hint">(固定 1–6)</span></label>
+                        <label>RR <span class="lbl-hint">(固定 1–6 · 支援 0.25)</span></label>
                         <div style="display:flex;gap:6px;">
                             <input type="hidden" id="conf-rrmode-bt" value="fixed">
                             <select id="conf-rr-bt" style="flex:1.3;" onchange="updateMlParamSummary('bt')">
-                                <option value="1.0" selected>1:1</option>
-                                <option value="2.0">1:2</option>
-                                <option value="3.0">1:3</option>
-                                <option value="4.0">1:4</option>
-                                <option value="5.0">1:5</option>
-                                <option value="6.0">1:6</option>
+                                <option value="1.00">1:1</option>
+                                <option value="1.25">1:1.25</option>
+                                <option value="1.50">1:1.5</option>
+                                <option value="1.75">1:1.75</option>
+                                <option value="2.00" selected>1:2</option>
+                                <option value="2.25">1:2.25</option>
+                                <option value="2.50">1:2.5</option>
+                                <option value="2.75">1:2.75</option>
+                                <option value="3.00">1:3</option>
+                                <option value="3.25">1:3.25</option>
+                                <option value="3.50">1:3.5</option>
+                                <option value="4.00">1:4</option>
+                                <option value="5.00">1:5</option>
+                                <option value="6.00">1:6</option>
                             </select>
                         </div>
                     </div>
@@ -234,8 +243,8 @@
                         <label>MARKET SESSION</label>
                         <select id="conf-allowed-sessions-bt" onchange="updateMlParamSummary('bt')">
                             <option value="">ALL</option>
-                            <option value="ASIA,PRE" selected>ASIA + PRE</option>
-                            <option value="ASIA">ASIA</option>
+                            <option value="ASIA,PRE">ASIA + PRE</option>
+                            <option value="ASIA" selected>ASIA</option>
                             <option value="PRE">PRE</option>
                             <option value="EURO">EURO</option>
                             <option value="RTH">RTH</option>
@@ -245,7 +254,7 @@
                 </div>
                 <div id="ml-param-summary-bt" style="font-size:10px;color:var(--text2);line-height:1.6;">
                     PARAMS: 1m base · wait 1m · B4 · 2TF · RR1:5 · minProb 0.60 · EV off · maxRisk 80t · breakout off.<br>
-                    RISK: trail 50% → SL +5% TP · session limit ON · market ASIA+PRE · size follows top selector.
+                    RISK: trail 50% → SL +5% TP · session limit ON · market ASIA · size follows top selector.
                 </div>
             </div>
             <div id="tr-params-bt" style="margin-top:12px;">
@@ -316,8 +325,6 @@
                 </div>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
-                <button class="btn btn-learn" id="btn-learn-bt" onclick="learnAndBacktest()" disabled
-                        title="用完整歷史重新訓練 ML scorer (1m base)，然後立即用最新 scorer 回測">LEARN &amp; BACKTEST</button>
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
                 <div id="backtest-progress-wrap" style="display:none;margin-top:1px;">
                     <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
@@ -327,30 +334,6 @@
                     <div style="height:2px;background:rgba(255,255,255,0.07);border-radius:1px;overflow:hidden;">
                         <div id="backtest-progress-bar" style="height:100%;width:0%;background:var(--green);border-radius:1px;transition:width 0.25s linear;box-shadow:0 0 6px rgba(0,229,160,0.5);"></div>
                     </div>
-                </div>
-                <div class="full-run-wrap">
-                    <button class="btn btn-full" id="btn-run-all" onclick="runAllCombinations()" disabled title="Run all parameter combinations and rank results">COMBINATION</button>
-                    <button class="btn btn-full full-filter-btn" id="btn-full-filter" onclick="toggleFullFixedDropdown(event)" disabled title="Fixed combination params">v</button>
-                    <div class="full-filter-panel" id="full-fixed-panel">
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-strategy" checked> STRATEGY</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-contract" checked> CONTRACT</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-size" checked> SIZE</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-tp"> TP</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-sl"> SL</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-trail-trigger"> TRAIL TRIGGER</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-trail"> TRAIL SL</label>
-                        <label class="full-fix-row"><input type="checkbox" id="full-fix-full-tp-lock"> FULL TP LOCK</label>
-                    </div>
-                </div>
-            </div>
-            <!-- Machine Learning progress bar -->
-            <div id="full-progress-wrap" style="display:none;margin-top:7px;">
-                <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-                    <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">COMBINATIONS</span>
-                    <span id="full-progress-text" style="font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text2);">0 / 0</span>
-                </div>
-                <div style="height:2px;background:rgba(255,255,255,0.07);border-radius:1px;overflow:hidden;">
-                    <div id="full-progress-bar" style="height:100%;width:0%;background:#fff;border-radius:1px;transition:width 0.25s linear;box-shadow:0 0 6px rgba(255,255,255,0.5);"></div>
                 </div>
             </div>
         </div>
@@ -390,7 +373,8 @@
                         <label>STRATEGY</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
                             <option value="trend">TREND</option>
-                            <option value="confluence" selected>ML (confluence)</option>
+                            <option value="confluence" selected>ML Confluence</option>
+                            <option value="ml_consolidation_v2">ML Consolidation V2</option>
                         </select>
                     </div>
                 </div>
@@ -453,16 +437,24 @@
                     </div>
                     <div class="form-row">
                         <div class="form-group" style="flex:1;">
-                            <label>RR <span class="lbl-hint">(固定 1–6)</span></label>
+                            <label>RR <span class="lbl-hint">(固定 1–6 · 支援 0.25)</span></label>
                             <div style="display:flex;gap:6px;">
                                 <input type="hidden" id="conf-rrmode-live" value="fixed">
                                 <select id="conf-rr-live" style="flex:1.3;" onchange="updateMlParamSummary('live')">
-                                    <option value="1.0" selected>1:1</option>
-                                    <option value="2.0">1:2</option>
-                                    <option value="3.0">1:3</option>
-                                    <option value="4.0">1:4</option>
-                                    <option value="5.0">1:5</option>
-                                    <option value="6.0">1:6</option>
+                                    <option value="1.00">1:1</option>
+                                    <option value="1.25">1:1.25</option>
+                                    <option value="1.50">1:1.5</option>
+                                    <option value="1.75">1:1.75</option>
+                                    <option value="2.00" selected>1:2</option>
+                                    <option value="2.25">1:2.25</option>
+                                    <option value="2.50">1:2.5</option>
+                                    <option value="2.75">1:2.75</option>
+                                    <option value="3.00">1:3</option>
+                                    <option value="3.25">1:3.25</option>
+                                    <option value="3.50">1:3.5</option>
+                                    <option value="4.00">1:4</option>
+                                    <option value="5.00">1:5</option>
+                                    <option value="6.00">1:6</option>
                                 </select>
                             </div>
                         </div>
@@ -505,8 +497,8 @@
                             <label>MARKET SESSION</label>
                             <select id="conf-allowed-sessions-live" onchange="updateMlParamSummary('live')">
                                 <option value="">ALL</option>
-                                <option value="ASIA,PRE" selected>ASIA + PRE</option>
-                                <option value="ASIA">ASIA</option>
+                                <option value="ASIA,PRE">ASIA + PRE</option>
+                                <option value="ASIA" selected>ASIA</option>
                                 <option value="PRE">PRE</option>
                                 <option value="EURO">EURO</option>
                                 <option value="RTH">RTH</option>
@@ -516,7 +508,7 @@
                     </div>
                     <div id="ml-param-summary-live" style="font-size:10px;color:var(--text2);line-height:1.6;">
                         PARAMS: 1m base · wait 1m · B4 · 2TF · RR1:5 · minProb 0.60 · EV off · maxRisk 80t · breakout off.<br>
-                        RISK: trail 50% → SL +5% TP · session limit ON · market ASIA+PRE · size follows top selector.
+                        RISK: trail 50% → SL +5% TP · session limit ON · market ASIA · size follows top selector.
                     </div>
                 </div>
                 <div id="tr-params-live" style="margin-top:12px;">
@@ -593,9 +585,6 @@
                     <option>-- NO ACCOUNT --</option>
                 </select>
                 <div id="live-account-info" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3);line-height:1.8;margin-bottom:10px;"></div>
-                <button class="btn btn-learn" id="btn-learn-live" onclick="learnAndLive()" disabled
-                        style="width:100%;margin-bottom:6px;"
-                        title="用完整歷史重新訓練 ML scorer (1m base)，然後立即用 ML 策略上線">LEARN &amp; LIVE</button>
                 <div style="display:flex;gap:6px;">
                     <button class="btn btn-green" id="btn-go-live" onclick="goLive()" disabled style="flex:1;">GO LIVE</button>
                     <button class="btn btn-amber" id="btn-stop-live" onclick="stopLive()" disabled style="flex:1;">STOP</button>
@@ -621,20 +610,6 @@
     <!-- Main Content -->
     <div class="content">
         <div id="chart-container">
-
-            <!-- Chart legend (圖例) — explains every drawn element -->
-            <div id="chart-legend" style="position:absolute;left:8px;bottom:8px;z-index:18;background:rgba(8,9,13,0.85);border:1px solid var(--border-h);padding:6px 8px;font-family:'IBM Plex Mono',monospace;font-size:10px;line-height:1.65;color:var(--text2);backdrop-filter:blur(4px);max-width:210px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;color:var(--cyan);font-weight:600;margin-bottom:3px;" onclick="toggleChartLegend()">
-                    <span>圖例 LEGEND</span><span id="chart-legend-toggle">▾</span>
-                </div>
-                <div id="chart-legend-body">
-                    <div><span style="display:inline-block;width:16px;border-top:2px solid rgba(255,255,255,0.9);vertical-align:middle;margin-right:6px;"></span>參考區 VAH/VAL (過去)</div>
-                    <div><span style="display:inline-block;width:16px;border-top:2px dashed rgba(255,255,255,0.7);vertical-align:middle;margin-right:6px;"></span>POC 成交密集</div>
-                    <div><span style="display:inline-block;width:16px;border-top:2px solid rgba(255,165,0,1);vertical-align:middle;margin-right:6px;"></span>當前區 (引擎判斷中)</div>
-                    <div><span style="color:var(--text3);">4h/1h/30m</span> = 水平所屬時間框</div>
-                    <div><span style="color:var(--green);">$+</span> / <span style="color:#e0533d;">$−</span> = 每筆交易盈虧</div>
-                </div>
-            </div>
 
             <!-- Live Monitor Top Bar -->
             <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'IBM Plex Mono',monospace;font-size:11px;">
@@ -686,7 +661,6 @@
         <div class="bottom-panel" id="bottom-panel">
             <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
             <div class="bottom-tabs">
-                <div class="bottom-tab" data-btab="full">COMBINATION</div>
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
                 <div class="bottom-tab" data-btab="learn">LEARN RESULT</div>
@@ -694,34 +668,6 @@
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
-                <div id="btab-full" class="hidden">
-                    <div id="full-config-caption" style="display:none;padding:6px 8px;font-size:10px;color:var(--text2);border-bottom:1px solid var(--border);font-family:'IBM Plex Mono',monospace;"></div>
-                    <div class="trade-table-wrap">
-                        <table id="full-table">
-                            <thead id="full-thead">
-                                <tr>
-                                    <th class="full-sort-th" data-col="method"   style="width:54px;" onclick="fullSortBy('method')">METHOD <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="tf"       style="width:96px;" onclick="fullSortBy('tf')" title="Timeframe combination">TFs <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="overlap"  style="width:40px;" onclick="fullSortBy('overlap')" title="Overlapping timeframes">OVL <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="rr"       style="width:42px;" onclick="fullSortBy('rr')" title="Reward:Risk">RR <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="contract" style="width:64px;" onclick="fullSortBy('contract')" title="Contract @ size">CON <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="trades"   style="width:44px;" onclick="fullSortBy('trades')">TRADES <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="win_rate" style="width:52px;" onclick="fullSortBy('win_rate')">WIN% <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="pnl"      style="width:68px;" onclick="fullSortBy('pnl')">FINAL PNL <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="max_dd"   style="width:60px;" onclick="fullSortBy('max_dd')">MAX DD <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="best_day" style="width:60px;" onclick="fullSortBy('best_day')">BEST DAY <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="worst_day"style="width:60px;" onclick="fullSortBy('worst_day')">WORST DAY <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="wk_std"   style="width:56px;" onclick="fullSortBy('wk_std')" title="Weekly PnL std-dev">WK STD <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="wk_cv"    style="width:52px;" onclick="fullSortBy('wk_cv')" title="Weekly PnL coefficient of variation">WK CV <span class="sa">↕</span></th>
-                                    <th class="full-sort-th" data-col="pf"       style="width:48px;" onclick="fullSortBy('pf')" title="Profit Factor (gross gain / gross loss)">PF <span class="sa">↕</span></th>
-                                    <th class="full-sort-th sort-active sort-desc" data-col="calmar" style="width:52px;" onclick="fullSortBy('calmar')">CALMAR <span class="sa">↓</span></th>
-                                    <th style="width:32px;"></th>
-                                </tr>
-                            </thead>
-                            <tbody id="full-tbody"></tbody>
-                        </table>
-                    </div>
-                </div>
                 <div id="btab-trades">
                     <div class="trade-table-wrap">
                         <table>
@@ -792,7 +738,7 @@
     </div>
 </div>
 
-<script src="/static/ancserTPX.js?v=1.0.6"></script>
+    <script src="/static/ancserTPX.js?v=1.0.6&nyzone=20260624&sweepbt=1&rr025=1"></script>
 </body>
 </html>
 

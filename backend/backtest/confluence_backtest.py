@@ -363,10 +363,22 @@ class ConfluenceBacktester:
 
     def _try_fill(self, candle: Candle) -> bool:
         sig = self._pending
-        entry = sig.entry_price
-        filled = (candle.low <= entry) if sig.direction == Direction.BUY else (candle.high >= entry)
-        if not filled:
-            return False
+        # Market-order execution: fill at next bar's OPEN unconditionally.
+        # (Old limit-order logic checked if price touched `sig.entry_price`;
+        #  that caused adverse fill selection — backtest assumed 100% fills on
+        #  price touches, but live systematically missed the best reversals.)
+        market_entry = float(candle.open)
+        # Recalculate TP from actual market entry vs structural SL
+        risk = abs(market_entry - sig.sl_price)
+        if risk <= 0:
+            return False  # degenerate — SL == entry
+        rr = self.signal_cfg.rr
+        if sig.direction == Direction.BUY:
+            new_tp = market_entry + risk * rr
+        else:
+            new_tp = market_entry - risk * rr
+        sig.entry_price = market_entry
+        sig.tp_price = round(new_tp, 2)
         self._open_trade(sig, candle)
         self._pending = None
         self._pending_age = 0

@@ -379,54 +379,6 @@
         .btn-full:disabled:hover {
             box-shadow: none;
         }
-        /* LEARN & LIVE — same hatched "machine learning" aesthetic as .btn-full, orange identity */
-        .btn-learn {
-            position: relative;
-            overflow: hidden;
-            border: 1px solid #ff8c1a;
-            color: #ff8c1a;
-            font-family: 'Rajdhani', sans-serif;
-            font-size: 13px;
-            letter-spacing: 2px;
-            font-weight: 600;
-            background: repeating-linear-gradient(
-                -45deg,
-                rgba(255, 140, 26, 0.12) 0px,
-                rgba(255, 140, 26, 0.12) 6px,
-                rgba(255, 140, 26, 0.04) 6px,
-                rgba(255, 140, 26, 0.04) 12px
-            );
-        }
-        .btn-learn::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: repeating-linear-gradient(
-                -45deg,
-                transparent 0px,
-                transparent 6px,
-                rgba(255, 140, 26, 0.07) 6px,
-                rgba(255, 140, 26, 0.07) 7px
-            );
-            pointer-events: none;
-        }
-        .btn-learn:hover:not(:disabled) {
-            background: repeating-linear-gradient(
-                -45deg,
-                rgba(255, 140, 26, 0.24) 0px,
-                rgba(255, 140, 26, 0.24) 6px,
-                rgba(255, 140, 26, 0.09) 6px,
-                rgba(255, 140, 26, 0.09) 12px
-            );
-            box-shadow: 0 0 20px rgba(255, 140, 26, 0.25);
-        }
-        .btn-learn:disabled {
-            opacity: 0.3;
-            cursor: not-allowed;
-        }
-        .btn-learn:disabled:hover {
-            box-shadow: none;
-        }
         .full-run-wrap {
             position: relative;
             display: flex;

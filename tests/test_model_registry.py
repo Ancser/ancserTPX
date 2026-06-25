@@ -21,7 +21,7 @@ class ModelRegistryTests(unittest.TestCase):
         )
         self.assertEqual(
             model_id,
-            "20260618_codex_rr3-band4-mintf2-production-baseline",
+            "06.18 CODEX #1 MNQ RR1-3 B4 TF2 W1m",
         )
 
     def test_versions_append_and_can_be_reactivated(self):
@@ -78,8 +78,8 @@ class ModelRegistryTests(unittest.TestCase):
                 "same description",
                 active_path=active,
             )
-            self.assertEqual(first_id, "20260618_codex_same-description")
-            self.assertEqual(second_id, "20260618_codex_same-description-02")
+            self.assertEqual(first_id, "06.18 CODEX #1 MNQ RR1-3 B4 TF2 W1m")
+            self.assertEqual(second_id, "06.18 CODEX #2 MNQ RR1-3 B4 TF2 W1m")
 
 
 if __name__ == "__main__":

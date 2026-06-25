@@ -26,7 +26,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.db.models import (
-    BacktestConfig, BarUnit, Candle, StrategyParams,
+    BacktestConfig, BarUnit, Candle, Direction, StrategyParams,
     get_point_value, get_contract_label, get_tick_size,
     get_commission_rt, get_fees_rt, _extract_symbol,
 )
@@ -41,6 +41,10 @@ from backend.strategy.volume_profile import VolumeProfileCalculator
 from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, normalize_allowed_sessions,
 )
+from backend.backtest.ml_trend_backtest import (
+    MLTrendBacktester, MLTrendBacktestConfig, precompute_vp_timeline,
+)
+from backend.strategy.ml_trend import MLTrendConfig
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -188,6 +192,7 @@ def _normalize_strategy_name(value: str) -> str:
     return "trend"
 
 
+
 AREA_TIMEFRAME_CHOICES = ("5m", "15m", "30m", "1h", "4h")
 
 
@@ -216,12 +221,12 @@ def _normalize_rr_ratio(value, default: int = 2) -> int:
 
 
 def _normalize_conf_rr(value, default: float = 1.0) -> float:
-    """Fixed confluence RR uses whole-number steps from 1 through 6."""
+    """Fixed confluence RR supports fractional market-entry tuning, 1.0..6.0."""
     try:
-        rr = int(round(float(value)))
+        rr = float(value)
     except (TypeError, ValueError):
-        rr = int(default)
-    return float(max(1, min(6, rr)))
+        rr = float(default)
+    return round(max(1.0, min(6.0, rr)), 2)
 
 
 def _strategy_leg_params(req, prefix: str) -> dict:
@@ -292,8 +297,13 @@ def _conf_allowed_sessions_list(val) -> Optional[List[str]]:
 
 def _build_strategy_params_from_request(req, contract_size: int) -> StrategyParams:
     # v1.0.6: "confluence" selects the explainable ML engine; anything else is trend.
-    strategy = ("confluence" if str(getattr(req, "strategy", "confluence") or "").strip().lower()
-                == "confluence" else _normalize_strategy_name(getattr(req, "strategy", "confluence")))
+    raw_strat = str(getattr(req, "strategy", "confluence") or "").strip().lower()
+    if raw_strat == "confluence":
+        strategy = "confluence"
+    elif raw_strat in ("ml_consolidation_v2", "ml_consol_v2", "mlc2"):
+        strategy = "ml_consolidation_v2"
+    else:
+        strategy = _normalize_strategy_name(raw_strat)
     tr = _strategy_leg_params(req, "tr")
     return StrategyParams(
         strategy=strategy,
@@ -316,6 +326,17 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         conf_full_tp_lock=int(getattr(req, "conf_full_tp_lock", 0) or 0),
         conf_session_limit=bool(getattr(req, "conf_session_limit", True)),
         conf_shadow=bool(getattr(req, "conf_shadow", False)),
+        mlc2_lookback=int(getattr(req, "mlc2_lookback", 30) or 30),
+        mlc2_band_ticks=float(getattr(req, "mlc2_band_ticks", 2.0) or 2.0),
+        mlc2_sl_buffer_ticks=float(getattr(req, "mlc2_sl_buffer_ticks", 4.0) or 4.0),
+        mlc2_tp_mode=str(getattr(req, "mlc2_tp_mode", "rr") or "rr"),
+        mlc2_rr=float(getattr(req, "mlc2_rr", 4.0) or 4.0),
+        mlc2_trail_trigger_pct=float(getattr(req, "mlc2_trail_trigger_pct", 0.0) or 0.0),
+        mlc2_trail_lock_pct=float(getattr(req, "mlc2_trail_lock_pct", 0.0) or 0.0),
+        mlc2_session_limit=bool(getattr(req, "mlc2_session_limit", False)),
+        mlc2_min_score=float(getattr(req, "mlc2_min_score", 0.0) or 0.0),
+        mlc2_allowed_sessions=list(getattr(req, "mlc2_allowed_sessions", None) or ["ASIA", "EURO"]),
+        mlc2_shadow=bool(getattr(req, "mlc2_shadow", False)),
         tp_ticks=tr["tp_ticks"],
         sl_ticks=tr["sl_ticks"],
         trail_sl_ticks=tr["trail_sl_ticks"],
@@ -533,6 +554,20 @@ class BacktestRequest(BaseModel):
     conf_trail_lock_pct: float = 0.05     # optimized: lock +5% of TP distance
     conf_full_tp_lock: int = 0            # 0 = OFF; stop new entries after N full-TP exits/session
     conf_session_limit: bool = True       # live-style one trade per zone+direction/session
+    # --- ML Consolidation V2 params (strategy="ml_consolidation_v2") ---
+    mlc2_lookback: int = 30              # rolling VP window (1m bars)
+    mlc2_band_ticks: float = 2.0         # proximity to VAL/VAH boundary (ticks)
+    mlc2_sl_buffer_ticks: float = 4.0    # SL beyond 100% range (ticks)
+    mlc2_tp_mode: str = "rr"             # "poc" = TP at POC; "rr" = fixed RR
+    mlc2_rr: float = 4.0                # reward:risk ratio
+    mlc2_trail_trigger_pct: float = 0.0  # 0 = trail OFF
+    mlc2_trail_lock_pct: float = 0.0     # locked SL fraction
+    mlc2_session_limit: bool = False     # one trade per session
+    mlc2_min_score: float = 0.0          # ML scorer gate
+    mlc2_allowed_sessions: Optional[List[str]] = Field(
+        default_factory=lambda: ["ASIA", "EURO"]
+    )
+    mlc2_shadow: bool = False            # shadow mode (log only)
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -1784,7 +1819,7 @@ async def confluence_model_activate(req: ModelActivateRequest):
 
 class ModelRetrainRequest(BaseModel):
     """Train a new immutable model version and optionally activate it."""
-    trainer: Literal["codex", "claude"] = "codex"
+    trainer: Literal["user", "codex", "claude"] = "codex"
     description: str = Field(
         default="RR3 Band4 MinTF2 retrain", min_length=3, max_length=120,
     )
@@ -1902,6 +1937,130 @@ async def confluence_model_retrain(req: ModelRetrainRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+
+async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestResponse:
+    """Backtest ML Consolidation V2: Value Area mean reversion."""
+    candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+    contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
+    tick = get_tick_size(req.contract_id)
+
+    # ── params from request / preset ──
+    lookback = int(getattr(req, "mlc2_lookback", 30) or 30)
+    band = float(getattr(req, "mlc2_band_ticks", 2.0) or 2.0)
+    sl_buf = float(getattr(req, "mlc2_sl_buffer_ticks", 4.0) or 4.0)
+    tp_mode = str(getattr(req, "mlc2_tp_mode", "rr") or "rr")
+    rr = float(getattr(req, "mlc2_rr", 4.0) or 4.0)
+    trail_trig = float(getattr(req, "mlc2_trail_trigger_pct", 0.0) or 0.0)
+    trail_lock = float(getattr(req, "mlc2_trail_lock_pct", 0.0) or 0.0)
+    session_limit = bool(getattr(req, "mlc2_session_limit", False))
+    min_score = float(getattr(req, "mlc2_min_score", 0.0) or 0.0)
+    sessions = getattr(req, "mlc2_allowed_sessions", None) or ["ASIA", "EURO"]
+    if isinstance(sessions, str):
+        sessions = [s.strip() for s in sessions.split(",") if s.strip()]
+
+    sig_cfg = MLTrendConfig(
+        lookback=lookback, band_ticks=band, sl_buffer_ticks=sl_buf,
+        tick_size=tick, tp_mode=tp_mode, rr=rr,
+    )
+    run_cfg = MLTrendBacktestConfig(
+        trail_trigger_pct=trail_trig,
+        trail_lock_pct=trail_lock,
+        one_trade_per_session=session_limit,
+        allowed_sessions=tuple(sessions),
+        min_score=min_score,
+    )
+    bt_cfg = BacktestConfig(
+        initial_capital=float(req.initial_capital or 50000.0),
+        symbol=_extract_symbol(req.contract_id),
+        commission_rt=get_commission_rt(req.contract_id),
+        fees_rt=get_fees_rt(req.contract_id),
+    )
+
+    # Pre-compute VP timeline (heavy, but same as sweep scripts)
+    vp_tl = precompute_vp_timeline(candles, lookback, tick, recalc_interval=5)
+
+    bt = MLTrendBacktester(
+        signal_cfg=sig_cfg, run_cfg=run_cfg,
+        contract_id=req.contract_id,
+        contract_size=contract_size,
+        bt_config=bt_cfg,
+    )
+    result = bt.run(candles, vp_timeline=vp_tl)
+
+    # ── convert to response format ──
+    symbol_label = "/" + _extract_symbol(req.contract_id)
+    trades_resp: List[TradeResponse] = []
+    for idx, t in enumerate(result.trades, 1):
+        contracts = int(t.contracts or 1)
+        side = "VAL" if t.direction == Direction.BUY else "VAH"
+        meta = t.meta or {}
+        trades_resp.append(TradeResponse(
+            trade_id=t.trade_id or f"MLC2_{idx:05d}",
+            strategy="ml_consolidation_v2",
+            symbol=symbol_label,
+            size=contracts,
+            direction=t.direction.value if hasattr(t.direction, "value") else str(t.direction),
+            entry_price=t.entry_price,
+            entry_time=t.entry_time.isoformat() if t.entry_time else "",
+            exit_price=t.exit_price,
+            exit_time=t.exit_time.isoformat() if t.exit_time else None,
+            sl_price=t.original_sl_price or t.sl_price,
+            tp_price=t.original_tp_price or t.tp_price,
+            original_sl_price=t.original_sl_price,
+            original_tp_price=t.original_tp_price,
+            pnl=t.pnl or 0.0,
+            commission=t.commission or 0.0,
+            fees=t.fees or 0.0,
+            exit_reason=t.exit_reason.value if hasattr(t.exit_reason, "value") else str(t.exit_reason or ""),
+            zone_id="ml_consol_v2",
+            zone_source="ml_consolidation_v2",
+            mode="reversion",
+            side=side,
+            largest_tf=f"LB{lookback}",
+            wall_id="ml_consol_v2",
+            labels=[f"ML-Consol-V2", side, meta.get("reason", "")],
+            primary_zone=None,
+            vol_ratio=None,
+            is_big_trend=False,
+        ))
+
+    m = result.metrics
+    metrics_resp = MetricsResponse(
+        total_trades=m.total_trades,
+        winning_trades=m.winning_trades,
+        losing_trades=m.losing_trades,
+        win_rate=m.win_rate,
+        total_pnl=m.total_pnl,
+        avg_pnl=m.avg_pnl,
+        avg_win=m.avg_win,
+        avg_loss=m.avg_loss,
+        max_win=m.max_win,
+        max_loss=m.max_loss,
+        profit_factor=m.profit_factor,
+        max_drawdown=m.max_drawdown,
+        sharpe_ratio=m.sharpe_ratio,
+        calmar_ratio=getattr(m, "calmar_ratio", 0.0),
+        max_consecutive_wins=m.max_consecutive_wins,
+        max_consecutive_losses=m.max_consecutive_losses,
+    )
+
+    equity = []
+    eq = float(req.initial_capital or 50000.0)
+    for t in result.trades:
+        eq += float(t.pnl or 0.0)
+        ts_ms = t.exit_time.timestamp() * 1000 if t.exit_time else (
+            t.entry_time.timestamp() * 1000 if t.entry_time else 0
+        )
+        equity.append([ts_ms, round(eq, 2)])
+
+    return BacktestResponse(
+        metrics=metrics_resp,
+        trades=trades_resp,
+        zones=[],
+        equity_curve=equity,
+    )
+
+
 @router.post("/backtest/run", response_model=BacktestResponse)
 async def run_backtest(req: BacktestRequest):
     """
@@ -1927,6 +2086,10 @@ async def run_backtest(req: BacktestRequest):
         # CPU-bound work never holds the server's GIL — data-fetch / live / chart
         # stay responsive while it computes (falls back to in-thread on failure).
         return await _run_confluence_backtest_proc(req)
+
+    if str(req.strategy or "").strip().lower() in ("ml_consolidation_v2", "ml_consol_v2", "mlc2"):
+        await _refresh_recent_historical_candles(req.contract_id)
+        return await _run_ml_consolidation_v2_backtest(req)
 
     await _refresh_recent_historical_candles(req.contract_id)
 
@@ -3568,6 +3731,20 @@ class LiveStartRequest(BaseModel):
     conf_full_tp_lock: int = 0
     conf_session_limit: bool = True
     conf_shadow: bool = False
+    # --- ML Consolidation V2 params ---
+    mlc2_lookback: int = 30
+    mlc2_band_ticks: float = 2.0
+    mlc2_sl_buffer_ticks: float = 4.0
+    mlc2_tp_mode: str = "rr"
+    mlc2_rr: float = 4.0
+    mlc2_trail_trigger_pct: float = 0.0
+    mlc2_trail_lock_pct: float = 0.0
+    mlc2_session_limit: bool = False
+    mlc2_min_score: float = 0.0
+    mlc2_allowed_sessions: Optional[List[str]] = Field(
+        default_factory=lambda: ["ASIA", "EURO"]
+    )
+    mlc2_shadow: bool = False
 
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
@@ -4159,6 +4336,7 @@ _PRESETS_FILE = os.path.join(
     "data", "presets.json"
 )
 
+_PRESET_SCHEMA_VERSION = "2026-06-25-ml-consolidation-v2"
 _DEFAULT_PRESET_NAME = "ML CONFLUENCE MNQx3 DEFAULT"
 _DEFAULT_PRESET_PARAMS = {
     "strategy": "confluence",
@@ -4176,8 +4354,8 @@ _DEFAULT_PRESET_PARAMS = {
     "tr_trail_enabled": True,
     "tr_full_tp_lock": 0,
     "candle_seconds": 60,
-    "contract_id": "CON.F.US.MNQ.M26",
-    "contract_size": 3,
+    "contract_id": "CON.F.US.MNQ.U26",
+    "contract_size": 1,
     "full_tp_lock": 0,
     "one_trade_per_session_direction": True,
     "tr_one_trade_per_session": True,
@@ -4190,70 +4368,109 @@ _DEFAULT_PRESET_PARAMS = {
     "skip_zone_stability": False,
     "conf_band_ticks": 4.0,
     "conf_min_distinct_tf": 2,
-    "conf_rr": 1.0,
+    "conf_rr": 3.0,
     "conf_model_name": None,
     "conf_wait_minutes": 1,
     "conf_base_minutes": 1,
-    "conf_min_prob": 0.65,
+    "conf_min_prob": 0.0,
     "conf_ev_floor": None,
     "conf_rr_grid": None,
     "conf_use_scorer": True,
     "conf_enable_breakout": False,
-    "conf_max_risk_ticks": None,
-    "conf_allowed_sessions": list(DEFAULT_ALLOWED_SESSIONS),
+    "conf_max_risk_ticks": 80,
+    "conf_allowed_sessions": ["ASIA"],
     "conf_trail_trigger_pct": 0.50,
     "conf_trail_lock_pct": 0.05,
     "conf_full_tp_lock": 0,
     "conf_session_limit": True,
     "conf_shadow": False,
+    "mlc2_lookback": 30,
+    "mlc2_band_ticks": 2.0,
+    "mlc2_sl_buffer_ticks": 4.0,
+    "mlc2_tp_mode": "rr",
+    "mlc2_rr": 4.0,
+    "mlc2_trail_trigger_pct": 0.0,
+    "mlc2_trail_lock_pct": 0.0,
+    "mlc2_session_limit": False,
+    "mlc2_min_score": 0.0,
+    "mlc2_allowed_sessions": ["ASIA", "EURO"],
+    "mlc2_shadow": False,
 }
 
 _CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
-_CODEX_620_PRESET_1 = "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON ASIA+PRE B4 TF2 MNQx3"
-_CODEX_620_PRESET_2 = "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA+PRE B4 TF2 MNQx3"
-_CODEX_623_PRESET_3 = "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA+PRE B4 TF2 MNQx1"
-_DEFAULT_LAST_USED_PRESET = _CODEX_620_PRESET_2
+_CODEX_624_PRESET_1 = "06.24 CODEX #1 穩健測試 MNQx1 RR1:3 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2"
+_CODEX_624_PRESET_2 = "06.24 CODEX #2 收益較高 MNQx1 RR1:2.75 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2"
+_CODEX_624_PRESET_3 = "06.24 CODEX #3 卡瑪最佳 MNQx1 RR1:1.75 POFF R70 W1m Trail50L5 SesON ASIA B4 TF2"
+_CODEX_624_PRESET_4 = "06.24 CODEX #4 PNL最高 MNQx1 RR1:1.5 POFF R50 W1m Trail50L5 SesON ASIA B4 TF2"
+_CODEX_624_PRESET_5 = "06.24 CODEX #5 回撤最低 MNQx1 RR1:2.5 P0.65 R90 W1m Trail50L5 SesON ASIA B4 TF2"
+_MLC2_PRESET = "06.25 CODEX #1 均值回歸 MNQx1 MLC2 LB30 Band2 SLB4 RR1:4 ASIA+EURO TrailOFF"
+_DEFAULT_LAST_USED_PRESET = _CODEX_624_PRESET_1
 _PRESET_RENAMES = {
-    "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON B4 TF2 MNQx3": _CODEX_620_PRESET_1,
-    "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx3": _CODEX_620_PRESET_2,
-    "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON B4 TF2 MNQx1": _CODEX_623_PRESET_3,
+}
+_REMOVED_PRESET_NAMES = {
+    _DEFAULT_PRESET_NAME,
+    "ML CONFLUENCE MNQx3 DEFAULT",
+    "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON ASIA B4 TF2 MNQx3",
+    "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2 MNQx3",
+    "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2 MNQx1",
+    "6/20 CLAUDE #1 ML RR1:3 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
+    "6/20 CLAUDE #1 SVD RR1:2 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
+    "6/22 CLAUDE #1 ML RR1:3 P0.55 ROFF W1m TrailOFF SesON B4 TF2 MNQx1",
 }
 
 
-def _codex_620_preset(
+def _codex_624_preset(
     *,
-    min_prob: float,
-    trail_trigger: float,
-    contract_id: str = "CON.F.US.MNQ.M26",
-    contract_size: int = 3,
+    rr: float,
+    max_risk_ticks: int,
+    min_prob: float = 0.0,
+    trail_trigger: float = 0.50,
+    contract_id: str = "CON.F.US.MNQ.U26",
+    contract_size: int = 1,
 ) -> dict:
     params = dict(_DEFAULT_PRESET_PARAMS)
     params.update({
-        "tp_ticks": 250,
-        "tr_tp_ticks": 250,
+        "tp_ticks": int(round(50 * float(rr))),
+        "tr_tp_ticks": int(round(50 * float(rr))),
         "contract_id": contract_id,
         "contract_size": contract_size,
-        "rr_ratio": 5,
+        "rr_ratio": float(rr),
         "conf_model_name": _CODEX_620_MODEL,
-        "conf_rr": 5,
-        "conf_min_prob": min_prob,
-        "conf_max_risk_ticks": 80,
+        "conf_rr": float(rr),
+        "conf_min_prob": float(min_prob),
+        "conf_max_risk_ticks": int(max_risk_ticks),
+        "conf_band_ticks": 4.0,
+        "conf_min_distinct_tf": 2,
+        "conf_allowed_sessions": ["ASIA"],
         "conf_trail_trigger_pct": trail_trigger,
         "conf_trail_lock_pct": 0.05,
         "conf_session_limit": True,
     })
     return params
 
-
 _BUILTIN_PRESETS = {
-    _CODEX_620_PRESET_1: _codex_620_preset(min_prob=0.60, trail_trigger=0.0),
-    _CODEX_620_PRESET_2: _codex_620_preset(min_prob=0.0, trail_trigger=0.50),
-    _CODEX_623_PRESET_3: _codex_620_preset(
-        min_prob=0.0,
-        trail_trigger=0.50,
-        contract_id="CON.F.US.MNQ.U26",
-        contract_size=1,
-    ),
+    _CODEX_624_PRESET_1: _codex_624_preset(rr=3.0, max_risk_ticks=80),
+    _CODEX_624_PRESET_2: _codex_624_preset(rr=2.75, max_risk_ticks=80),
+    _CODEX_624_PRESET_3: _codex_624_preset(rr=1.75, max_risk_ticks=70),
+    _CODEX_624_PRESET_4: _codex_624_preset(rr=1.50, max_risk_ticks=50),
+    _CODEX_624_PRESET_5: _codex_624_preset(rr=2.50, max_risk_ticks=90, min_prob=0.65),
+    _MLC2_PRESET: {
+        **dict(_DEFAULT_PRESET_PARAMS),
+        "strategy": "ml_consolidation_v2",
+        "contract_id": "CON.F.US.MNQ.U26",
+        "contract_size": 1,
+        "mlc2_lookback": 30,
+        "mlc2_band_ticks": 2.0,
+        "mlc2_sl_buffer_ticks": 4.0,
+        "mlc2_tp_mode": "rr",
+        "mlc2_rr": 4.0,
+        "mlc2_trail_trigger_pct": 0.0,
+        "mlc2_trail_lock_pct": 0.0,
+        "mlc2_session_limit": False,
+        "mlc2_min_score": 0.0,
+        "mlc2_allowed_sessions": ["ASIA", "EURO"],
+        "mlc2_shadow": False,
+    },
 }
 _FIXED_PRESET_NAMES = ()
 
@@ -4269,11 +4486,21 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         data["presets"] = presets
         changed = True
 
+    # One-time preset migration.  The 06.24 market-entry confluence pass replaced
+    # the older 6/20-6/23 presets and the temporary liquidity-sweep presets.
+    # After this marker is written, user-saved presets are kept normally.
+    if data.get("preset_schema") != _PRESET_SCHEMA_VERSION:
+        presets.clear()
+        data["preset_schema"] = _PRESET_SCHEMA_VERSION
+        data["last_used_bt"] = _DEFAULT_LAST_USED_PRESET
+        data["last_used_live"] = _DEFAULT_LAST_USED_PRESET
+        changed = True
+
     for name, params in list(presets.items()):
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        normalized_strategy = "confluence" if strategy == "confluence" else "trend"
+        normalized_strategy = strategy if strategy in {"confluence", "ml_consolidation_v2"} else "trend"
         if params.get("strategy") != normalized_strategy:
             params["strategy"] = normalized_strategy
             changed = True
@@ -4293,9 +4520,10 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
                     data[key] = new_name
             changed = True
 
-    if presets.get(_DEFAULT_PRESET_NAME) != _DEFAULT_PRESET_PARAMS:
-        presets[_DEFAULT_PRESET_NAME] = dict(_DEFAULT_PRESET_PARAMS)
-        changed = True
+    for name in _REMOVED_PRESET_NAMES:
+        if name in presets:
+            presets.pop(name, None)
+            changed = True
 
     for name, params in _BUILTIN_PRESETS.items():
         if presets.get(name) != params:
@@ -4303,7 +4531,7 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             changed = True
 
     if not presets:
-        presets[_DEFAULT_PRESET_NAME] = dict(_DEFAULT_PRESET_PARAMS)
+        presets[_DEFAULT_LAST_USED_PRESET] = dict(_BUILTIN_PRESETS[_DEFAULT_LAST_USED_PRESET])
         changed = True
 
     for key in ("last_used_bt", "last_used_live"):
@@ -4328,6 +4556,7 @@ def _load_presets_file() -> dict:
     if data is None:
         data = {
             "presets": {},
+            "preset_schema": _PRESET_SCHEMA_VERSION,
             "last_used_bt": _DEFAULT_LAST_USED_PRESET,
             "last_used_live": _DEFAULT_LAST_USED_PRESET,
         }

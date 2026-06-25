@@ -9,8 +9,8 @@ const API = window.location.origin + '/api';
 const FULL_RANGE_START = '2008-01-01';
 // CONNECT (and auto-connect on boot) only loads this many days of recent history
 // so startup is fast (account list + chart + GO LIVE ready in ~1s). The full
-// multi-year range is fetched lazily on the first backtest / Machine Learning /
-// LEARN & LIVE click via _ensureBacktestData().
+// multi-year range is fetched lazily on the first backtest / Machine Learning
+// action via _ensureBacktestData().
 const CONNECT_WARMUP_DAYS = 14;
 // Cap how many recent 1m bars get pulled into the chart. Full-range data can be
 // hundreds of thousands of bars; rendering them all blocks the main thread and
@@ -69,11 +69,27 @@ const DEFAULT_STRATEGY_PARAMS = {
     conf_use_scorer: true,
     conf_enable_breakout: false,
     conf_max_risk_ticks: null,
-    conf_allowed_sessions: ['ASIA', 'PRE'],
+    conf_allowed_sessions: ['ASIA'],
     conf_trail_trigger_pct: 0.50,
     conf_trail_lock_pct: 0.05,
     conf_full_tp_lock: 0,
     conf_session_limit: true,
+    mlc2_lookback: 30,
+    mlc2_band_ticks: 2.0,
+    mlc2_sl_buffer_ticks: 4.0,
+    mlc2_tp_mode: 'rr',
+    mlc2_rr: 4.0,
+    mlc2_trail_trigger_pct: 0.0,
+    mlc2_trail_lock_pct: 0.0,
+    mlc2_session_limit: false,
+    mlc2_min_score: 0.0,
+    mlc2_allowed_sessions: ['ASIA', 'EURO'],
+    mlc2_shadow: false,
+};
+
+const _appliedStrategyParamsByMode = {
+    bt: Object.assign({}, DEFAULT_STRATEGY_PARAMS),
+    live: Object.assign({}, DEFAULT_STRATEGY_PARAMS),
 };
 
 const MNQ_SIZE_CHOICES = [1, 3, 5, 10];
@@ -332,7 +348,10 @@ function setOverlapTfCombo(mode, combo) {
 }
 
 function normalizeStrategyName(value) {
-    return String(value || '').trim().toLowerCase() === 'confluence' ? 'confluence' : 'trend';
+    const v = String(value || '').trim().toLowerCase();
+    if (v === 'confluence') return 'confluence';
+    if (v === 'ml_consolidation_v2' || v === 'ml_consol_v2' || v === 'mlc2') return 'ml_consolidation_v2';
+    return 'trend';
 }
 
 function strategyIdPrefix(kind) {
@@ -344,31 +363,22 @@ function strategyIdPrefix(kind) {
 // CONFIRM, and the TIMEFRAMES picker — and reveal only the ML params actually
 // used by the confluence engine (min prob / rr / band / min distinct tf).
 function updateStrategyParamVisibility(mode) {
-    const isML = normalizeStrategyName(
+    const strategy = normalizeStrategyName(
         (document.getElementById('strategy-' + mode) || {}).value
-    ) === 'confluence';
+    );
+    const isML = strategy === 'confluence';
+    const isMLC2 = strategy === 'ml_consolidation_v2';
     const show = (id, on) => {
         const el = document.getElementById(id);
         if (el) el.style.display = on ? '' : 'none';
     };
-    // trend-only controls — hidden in ML mode.
-    // AREA % / CONFIRM now live INSIDE tr-params, so they hide with it automatically.
-    show('tr-params-' + mode, !isML);
-    show('overlap-tf-row-' + mode, !isML);
-    // ML-only params — shown only in ML mode
+    // trend-only controls — hidden in ML / MLC2 mode.
+    show('tr-params-' + mode, !isML && !isMLC2);
+    show('overlap-tf-row-' + mode, !isML && !isMLC2);
+    // ML Confluence params — shown only in confluence mode
     show('ml-params-' + mode, isML);
     if (isML) onRrModeChange(mode);
-    if (!isML) updateTrailBounds(mode);
-}
-
-// Chart legend collapse/expand.
-function toggleChartLegend() {
-    const body = document.getElementById('chart-legend-body');
-    const tog = document.getElementById('chart-legend-toggle');
-    if (!body) return;
-    const hidden = body.style.display === 'none';
-    body.style.display = hidden ? '' : 'none';
-    if (tog) tog.textContent = hidden ? '▾' : '▸';
+    if (!isML && !isMLC2) updateTrailBounds(mode);
 }
 
 // RR mode toggle: "固定" shows the single-RR select; "變動" shows the RR-grid
@@ -401,6 +411,21 @@ function _fmtMlEv(v) {
     return '≥' + (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''));
 }
 
+function _clampConfRr(value, fallback) {
+    const n = parseFloat(value);
+    const rr = Number.isFinite(n) ? n : (fallback != null ? fallback : 1.0);
+    return Math.max(1, Math.min(6, Math.round(rr * 4) / 4));
+}
+
+function _fmtConfRr(value) {
+    const rr = _clampConfRr(value, 1.0);
+    return Number.isInteger(rr) ? String(rr) : rr.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function _confRrSelectValue(value) {
+    return _clampConfRr(value, 1.0).toFixed(2);
+}
+
 function normalizeAllowedSessions(value) {
     if (value == null) return null;
     const raw = Array.isArray(value)
@@ -426,14 +451,14 @@ function allowedSessionsSelectValue(value) {
 function updateMlParamSummary(mode) {
     const el = document.getElementById('ml-param-summary-' + mode);
     if (!el) return;
-    const rr = Math.max(1, Math.min(6, Math.round(parseFloat(_mlSelectValue('conf-rr-' + mode, '1')) || 1)));
+    const rr = _clampConfRr(_mlSelectValue('conf-rr-' + mode, '1'), 1.0);
     const band = parseInt(_mlSelectValue('conf-band-' + mode, '4'), 10) || 4;
     const minTf = parseInt(_mlSelectValue('conf-mintf-' + mode, '2'), 10) || 2;
     const maxRisk = parseInt(_mlSelectValue('conf-maxrisk-' + mode, '0'), 10) || 0;
     const trigger = parseFloat(_mlSelectValue('conf-trail-trigger-' + mode, '0')) || 0;
     const lockPct = parseFloat(_mlSelectValue('conf-trail-lock-' + mode, '0.05')) || 0.05;
     const sessionOn = _mlSelectValue('conf-session-limit-' + mode, '1') !== '0';
-    const marketSession = allowedSessionsLabel(_mlSelectValue('conf-allowed-sessions-' + mode, 'ASIA,PRE'));
+    const marketSession = allowedSessionsLabel(_mlSelectValue('conf-allowed-sessions-' + mode, 'ASIA'));
     const prob = _fmtMlProb(_mlSelectValue('conf-minprob-' + mode, '0.65'));
     const ev = _fmtMlEv(_mlSelectValue('conf-evfloor-' + mode, ''));
     const risk = maxRisk > 0 ? (maxRisk + 't') : 'OFF';
@@ -441,7 +466,7 @@ function updateMlParamSummary(mode) {
         ? ('trail ' + Math.round(trigger * 100) + '% → SL +' + Math.round(lockPct * 100) + '% TP')
         : 'trail OFF';
     el.innerHTML =
-        'PARAMS: 1m base · wait 1m · B' + band + ' · ' + minTf + 'TF · RR1:' + rr +
+        'PARAMS: 1m base · wait 1m · B' + band + ' · ' + minTf + 'TF · RR1:' + _fmtConfRr(rr) +
         ' · minProb ' + prob + ' · EV ' + ev + ' · maxRisk ' + risk + ' · breakout off.<br>' +
         'RISK: ' + trail + ' · session limit ' + (sessionOn ? 'ON' : 'OFF') +
         ' · market ' + marketSession + ' · size follows top selector.';
@@ -562,7 +587,7 @@ function collectConfluenceParams(mode) {
     return {
         conf_band_ticks: fv('conf-band-' + mode, 4.0),
         conf_min_distinct_tf: iv('conf-mintf-' + mode, 2),
-        conf_rr: Math.max(1, Math.min(6, Math.round(fv('conf-rr-' + mode, 1.0)))),
+        conf_rr: _clampConfRr(fv('conf-rr-' + mode, 1.0), 1.0),
         conf_wait_minutes: 1,
         conf_base_minutes: 1,
         conf_min_prob: fv('conf-minprob-' + mode, 0.65),
@@ -577,7 +602,7 @@ function collectConfluenceParams(mode) {
         })(),
         conf_max_risk_ticks: iv('conf-maxrisk-' + mode, 0) || null,
         conf_allowed_sessions: normalizeAllowedSessions(
-            _mlSelectValue('conf-allowed-sessions-' + mode, 'ASIA,PRE')
+            _mlSelectValue('conf-allowed-sessions-' + mode, 'ASIA')
         ),
         // STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original.
         conf_trail_trigger_pct: fv('conf-trail-trigger-' + mode, 0.50),
@@ -590,7 +615,13 @@ function collectConfluenceParams(mode) {
     };
 }
 
+
 function collectStrategyParams(mode) {
+    const applied = Object.assign(
+        {},
+        DEFAULT_STRATEGY_PARAMS,
+        _appliedStrategyParamsByMode[mode] || {}
+    );
     const _int = (id, fallback) => {
         const el = document.getElementById(id);
         if (!el) return fallback || 0;
@@ -641,7 +672,7 @@ function collectStrategyParams(mode) {
     const method = tfs.length >= 2 ? 'overlap' : 'single';
     const tfCombo = method === 'overlap' ? tfs : [];
     const areaTimeframe = tfs[0];
-    return {
+    const params = {
         strategy: strategy,
         method: method,
         tf_combo: tfCombo,
@@ -670,6 +701,24 @@ function collectStrategyParams(mode) {
         skip_zone_stability: false,
         breakout_confirm_bars: Math.max(1, Math.min(10, _int('confirm-bars-' + mode, 7))),
     };
+    if (strategy === 'ml_consolidation_v2') {
+        Object.assign(params, {
+            mlc2_lookback: parseInt(applied.mlc2_lookback != null ? applied.mlc2_lookback : 30, 10) || 30,
+            mlc2_band_ticks: Number(applied.mlc2_band_ticks != null ? applied.mlc2_band_ticks : 2.0) || 2.0,
+            mlc2_sl_buffer_ticks: Number(applied.mlc2_sl_buffer_ticks != null ? applied.mlc2_sl_buffer_ticks : 4.0) || 4.0,
+            mlc2_tp_mode: String(applied.mlc2_tp_mode || 'rr'),
+            mlc2_rr: Number(applied.mlc2_rr != null ? applied.mlc2_rr : 4.0) || 4.0,
+            mlc2_trail_trigger_pct: Number(applied.mlc2_trail_trigger_pct || 0),
+            mlc2_trail_lock_pct: Number(applied.mlc2_trail_lock_pct || 0),
+            mlc2_session_limit: !!applied.mlc2_session_limit,
+            mlc2_min_score: Number(applied.mlc2_min_score || 0),
+            mlc2_allowed_sessions: normalizeAllowedSessions(
+                applied.mlc2_allowed_sessions != null ? applied.mlc2_allowed_sessions : ['ASIA', 'EURO']
+            ),
+            mlc2_shadow: !!applied.mlc2_shadow,
+        });
+    }
+    return params;
 }
 
 function applyStrategyParams(mode, params) {
@@ -678,6 +727,7 @@ function applyStrategyParams(mode, params) {
     const _setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     const _ticks = (val, fallback) => Math.max(50, Math.min(200, parseInt(val != null ? val : fallback, 10) || fallback));
     p.strategy = normalizeStrategyName(p.strategy);
+    _appliedStrategyParamsByMode[mode] = Object.assign({}, p);
     _set('strategy-' + mode, p.strategy);
     _set('area-pct-' + mode, (p.value_area_pct != null ? Number(p.value_area_pct) : 0.80).toFixed(2));
     const cidEl = document.getElementById('contract-' + mode);
@@ -742,7 +792,7 @@ function applyStrategyParams(mode, params) {
         return n.toFixed(2);
     };
     _set('conf-minprob-' + mode, _prob(p.conf_min_prob != null ? p.conf_min_prob : 0.65));
-    _set('conf-rr-' + mode, (p.conf_rr != null ? Number(p.conf_rr) : 1.0).toFixed(1));
+    _set('conf-rr-' + mode, _confRrSelectValue(p.conf_rr != null ? Number(p.conf_rr) : 1.0));
     _set('conf-band-' + mode, String(parseInt(p.conf_band_ticks != null ? p.conf_band_ticks : 4, 10)));
     _set('conf-mintf-' + mode, String(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2));
     _set('conf-evfloor-' + mode, (p.conf_ev_floor == null ? '' : String(p.conf_ev_floor)));
@@ -760,7 +810,7 @@ function applyStrategyParams(mode, params) {
     _set('conf-fulltplock-' + mode, String(parseInt(p.conf_full_tp_lock != null ? p.conf_full_tp_lock : 0, 10)));
     _set('conf-session-limit-' + mode, (p.conf_session_limit === false) ? '0' : '1');
     _set('conf-allowed-sessions-' + mode, allowedSessionsSelectValue(
-        p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA', 'PRE']
+        p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA']
     ));
     if (p.conf_model_name) {
         _pendingPresetModelByMode[mode] = p.conf_model_name;
@@ -803,7 +853,123 @@ function isFixedPreset(name) {
     return Array.isArray(_presetsCache.fixed_presets) && _presetsCache.fixed_presets.includes(name);
 }
 
-function buildPresetName(params) {
+function _namingDatePrefix(d) {
+    const dt = d instanceof Date ? d : new Date();
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const dd = String(dt.getDate()).padStart(2, '0');
+    return mm + '.' + dd;
+}
+
+function _normalizeNamingAuthor(author) {
+    const value = String(author || 'USER').trim().toUpperCase();
+    return ['USER', 'CODEX', 'CLAUDE'].includes(value) ? value : 'USER';
+}
+
+function _sanitizePresetPurpose(value, fallback) {
+    const clean = String(value || '').replace(/\s+/g, '').trim();
+    return (clean || fallback || '手動保存').slice(0, 12);
+}
+
+function _nextPresetNumber(author, datePrefix) {
+    const a = _normalizeNamingAuthor(author);
+    const prefix = datePrefix + ' ' + a + ' #';
+    let maxN = 0;
+    Object.keys((_presetsCache && _presetsCache.presets) || {}).forEach((name) => {
+        if (!String(name).startsWith(prefix)) return;
+        const m = String(name).match(/#(\d+)/);
+        if (m) maxN = Math.max(maxN, parseInt(m[1], 10) || 0);
+    });
+    return maxN + 1;
+}
+
+function _contractPresetToken(params) {
+    const p = params || {};
+    const label = contractLabelFromId(p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id);
+    const size = normalizeContractSize(
+        p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id,
+        p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
+    );
+    return label + 'x' + size;
+}
+
+function _probToken(value) {
+    const n = Number(value || 0);
+    return n > 0 ? ('P' + n.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')) : 'POFF';
+}
+
+function buildPresetParamToken(params) {
+    const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
+    if (normalizeStrategyName(p.strategy) === 'confluence') {
+        const risk = p.conf_max_risk_ticks != null && Number(p.conf_max_risk_ticks) > 0
+            ? ('R' + Number(p.conf_max_risk_ticks))
+            : 'ROFF';
+        const trailPct = Number(p.conf_trail_trigger_pct || 0);
+        const lockPct = Number(p.conf_trail_lock_pct != null ? p.conf_trail_lock_pct : 0.05);
+        const trail = trailPct > 0
+            ? ('Trail' + Math.round(trailPct * 100) + 'L' + Math.round(lockPct * 100))
+            : 'TrailOFF';
+        const sessionLimit = p.conf_session_limit === false ? 'SesOFF' : 'SesON';
+        const market = allowedSessionsLabel(p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA']);
+        return [
+            _contractPresetToken(p),
+            'RR1:' + _fmtConfRr(p.conf_rr != null ? p.conf_rr : 1.0),
+            _probToken(p.conf_min_prob),
+            risk,
+            'W1m',
+            trail,
+            sessionLimit,
+            market,
+            'B' + Number(p.conf_band_ticks != null ? p.conf_band_ticks : 4),
+            'TF' + Number(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2),
+        ].join(' ');
+    }
+    if (normalizeStrategyName(p.strategy) === 'ml_consolidation_v2') {
+        return [
+            _contractPresetToken(p),
+            'MLC2',
+            'LB' + Number(p.mlc2_lookback != null ? p.mlc2_lookback : 30),
+            'Band' + Number(p.mlc2_band_ticks != null ? p.mlc2_band_ticks : 2),
+            'SLB' + Number(p.mlc2_sl_buffer_ticks != null ? p.mlc2_sl_buffer_ticks : 4),
+            'RR1:' + _fmtConfRr(p.mlc2_rr != null ? p.mlc2_rr : 4),
+            allowedSessionsLabel(p.mlc2_allowed_sessions != null ? p.mlc2_allowed_sessions : ['ASIA', 'EURO']),
+            Number(p.mlc2_trail_trigger_pct || 0) > 0 ? 'TrailON' : 'TrailOFF',
+        ].join(' ');
+    }
+    const vaPct = Math.round((p.value_area_pct != null ? Number(p.value_area_pct) : 0.80) * 100);
+    const rr = Math.max(1, Math.min(6, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
+    const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
+    const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
+    const tfs = (method === 'overlap' && tfCombo.length >= 2)
+        ? tfCombo
+        : (tfCombo.length ? [tfCombo[0]] : [p.area_timeframe || '5m']);
+    const confirm = Math.max(1, Math.min(10, parseInt(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7, 10) || 7));
+    return 'TR' + vaPct + ' ' + tfs.join('/') + ' RR1:' + rr + ' C' + confirm + ' ' + _contractPresetToken(p);
+}
+
+function suggestedPresetPurpose(params) {
+    const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
+    if (normalizeStrategyName(p.strategy) === 'ml_consolidation_v2') return '均值回歸';
+    if (normalizeStrategyName(p.strategy) === 'confluence') {
+        const risk = Number(p.conf_max_risk_ticks || 0);
+        const prob = Number(p.conf_min_prob || 0);
+        const rr = Number(p.conf_rr || 0);
+        if (prob >= 0.6) return '回撤最低';
+        if (risk <= 50) return 'PNL最高';
+        if (rr >= 2.75) return '穩健測試';
+        if (rr <= 1.75) return '卡瑪最佳';
+        return '手動測試';
+    }
+    return '手動測試';
+}
+
+function buildPresetName(params, purpose, author) {
+    const px = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
+    const day = _namingDatePrefix();
+    const a = _normalizeNamingAuthor(author || 'USER');
+    const n = _nextPresetNumber(a, day);
+    const use = _sanitizePresetPurpose(purpose, suggestedPresetPurpose(px));
+    return day + ' ' + a + ' #' + n + ' ' + use + ' ' + buildPresetParamToken(px);
+
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
     const vaPct = Math.round((p.value_area_pct != null ? Number(p.value_area_pct) : 0.80) * 100);
     const rr = Math.max(1, Math.min(6, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
@@ -819,14 +985,14 @@ function buildPresetName(params) {
         p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
     );
     if (normalizeStrategyName(p.strategy) === 'confluence') {
-        const rrLabel = 'RR1:' + Math.max(1, Math.min(6, Math.round(Number(p.conf_rr != null ? p.conf_rr : 1.0) || 1)));
+        const rrLabel = 'RR1:' + _fmtConfRr(p.conf_rr != null ? p.conf_rr : 1.0);
         const prob = _fmtMlProb(p.conf_min_prob != null ? p.conf_min_prob : 0.65).replace('.', '');
         const risk = p.conf_max_risk_ticks != null && Number(p.conf_max_risk_ticks) > 0
             ? ('R' + Number(p.conf_max_risk_ticks))
             : 'ROFF';
         const trail = Number(p.conf_trail_trigger_pct || 0) > 0 ? 'Trail50L5' : 'TrailOFF';
         const session = p.conf_session_limit === false ? 'SesOFF' : 'SesON';
-        const market = allowedSessionsLabel(p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA', 'PRE']);
+        const market = allowedSessionsLabel(p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA']);
         const modelName = String(p.conf_model_name || _activeModelName || '').replace(/^20260618_codex_rr3-band4-mintf2-production-/, '');
         const modelLabel = modelName ? (' ' + modelName) : '';
         return 'ML' + modelLabel + ' ' + rrLabel +
@@ -866,7 +1032,9 @@ async function savePreset(mode) {
             conf_model_name: (modelSel && modelSel.value) || _activeModelName || null,
         });
     }
-    const name = prompt('Preset name:', buildPresetName(params));
+    const purpose = prompt('Preset purpose (4-5 chars):', suggestedPresetPurpose(params));
+    if (purpose == null) return;
+    const name = buildPresetName(params, purpose, 'USER');
     if (!name || !name.trim()) return;
     try {
         const saveResp = await fetch(API + '/presets/save', {
@@ -1022,6 +1190,10 @@ let _activeModelName = '';
 const _pendingPresetModelByMode = { bt: '', live: '' };
 
 function _fmtModelLabel(m) {
+    const labelActive = m.active ? '● ' : '';
+    const labelOos = (m.oos_auc != null) ? ` · AUC ${Number(m.oos_auc).toFixed(2)}` : '';
+    return `${labelActive}${m.name}${labelOos}`;
+
     const day = String(m.trained_at || m.name || '').slice(0, 10).replace(/-/g, '');
     const trainer = String(m.trainer || 'codex').toUpperCase();
     const active = m.active ? '● ' : '';
@@ -1137,7 +1309,7 @@ async function onModelSelect(mode) {
             _activeModelName = name;
             await loadModelRegistry();
             const runRr = parseFloat((document.getElementById('conf-rr-' + mode) || {}).value || '1');
-            log(`已啟用 ${name} (band ${Math.round(band)} · ${tf}TF · runtime RR 1:${Math.round(runRr)})`, 'success');
+            log(`已啟用 ${name} (band ${Math.round(band)} · ${tf}TF · runtime RR 1:${_fmtConfRr(runRr)})`, 'success');
         } else {
             log('啟用模型失敗: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
         }
@@ -1155,7 +1327,7 @@ async function retrainModel(mode) {
     const lw = 1;
     const minProb = String((document.getElementById('conf-minprob-' + mode) || {}).value || '0.65');
     const description = String((descriptionEl || {}).value || '').trim()
-        || `RR${Math.round(rr)} B${band} TF${tf} prob${minProb} ui retrain`;
+        || `RR${_fmtConfRr(rr)} B${band} TF${tf} prob${minProb} ui retrain`;
     if (!confirm(`新增模型版本\ntrainer = ${trainer.toUpperCase()}\ndescription = ${description}\n需已載入歷史數據，訓練可能需要一段時間。`)) return;
     log(`訓練新版本中 · ${trainer.toUpperCase()} · ${description}…`, 'info');
     try {
@@ -1252,38 +1424,38 @@ function hideHelpTooltip() {
 function decorateParamHelpDots() {
     // Applied to BOTH backtest (-bt) and live (-live) panels.
     const shared = {
-        'strategy': '策略邏輯：TREND = 區間突破趨勢單；ML (confluence) = 可解釋的多時間框水平匯聚機器學習評分。\nStrategy: TREND (range-breakout) or ML confluence (explainable multi-TF level scorer).',
-        'contract': '交易 / 回測使用的期貨合約，例 CON.F.US.MNQ.M26。\nFutures contract used for data & orders.',
-        'size': '每筆交易的合約口數。\nNumber of contracts per trade.',
-        'preset': '載入或保存目前所有參數設定。\nLoad or save the current parameter set.',
-        // ── ML CONFLUENCE ──
-        'conf-minprob': 'ML 機率門檻：只在 scorer 預測勝率 ≥ 此值時進場。OFF = 不過濾機率（仍受 EV FLOOR 影響）。\nML win-probability gate: enter only when the scorer\u2019s predicted win-rate \u2265 this value.',
-        'conf-rrmode': '固定盈虧比，可選 1:1 到 1:6。LATEST production scorer 使用 RR3 訓練。\nFixed reward:risk from 1:1 to 1:6. The LATEST production scorer is trained at RR3.',
-        'conf-band': '匯聚帶寬 (ticks)：不同時間框的水平位落在此範圍內視為同一匯聚區。越大 → 越容易匯聚、訊號越多。\nConfluence band (ticks): levels from different TFs within this range merge into one zone.',
-        'conf-mintf': '最少不同時間框數：一個匯聚區至少需這麼多個不同 TF 的水平位才算有效訊號。越大 → 越嚴格、訊號越少。\nMin distinct timeframes required for a valid confluence zone.',
-        'conf-evfloor': '期望值門檻，優先於 MIN PROB。EV = prob×RR − (1−prob)。開啓後依 EV 由高到低排序並篩選；≥0 = 接受所有正期望值訊號。\nExpected-value gate (overrides MIN PROB). EV = prob×RR − (1−prob); signals ranked & filtered by EV.',
-        'conf-maxrisk': '最大 SL 風險 (ticks)：超過此 SL 寬度的訊號直接跳過。80t 是目前 < $2k DD 策略的主要風險過濾。\nMax allowed stop distance in ticks. Signals wider than this are skipped.',
-        'conf-trail-trigger': 'ML 達到 TP 的此百分比後，將 SL 移到 +5% TP 的小正數鎖利位。\nWhen price reaches this percent of TP, move SL to +5% of TP.',
-        'conf-session-limit': 'Live parity 鎖定：同一 Topstep session / 同一主 TF 牆 / 同方向只做一次。\nLive-style lock: one trade per session, main wall, and direction.',
-        'conf-allowed-sessions': '市場盤段過濾：只在選定盤段開新單。ASIA+PRE 是目前回測最穩定的預設。\nMarket segment filter: only open new entries inside the selected segment(s).',
-        'overlap-tf': '參與匯聚的時間框。選 1 個 = 單一框；選 2+ = 跨框重疊匯聚。框越多 → 匯聚位越具共識。\nTimeframes feeding the confluence. 1 = single TF; 2+ = multi-TF overlap.',
-        // ── TREND ──
-        'area-pct': 'TREND：區間判定的面積比例門檻，越高越嚴格。\nTREND: range-area threshold for breakout detection; higher = stricter.',
-        'confirm-bars': 'TREND：突破後需連續確認的 K 線數，越多越保守。\nTREND: confirmation bars required after a breakout; more = more conservative.',
-        'rr-ratio': 'TREND：止盈與止損的比例 (TP:SL)。\nTREND: take-profit to stop-loss ratio.',
-        'trail-trigger-pct': '價格到達 TP 的此百分比後開始移動止損 (移動保護)。OFF = 不移動。\nMoves the stop once price reaches this percent of TP. OFF = disabled.',
-        'trail-sl-pct': '觸發後止損要移到的位置（相對入場 / TP）。\nWhere the stop moves to after the trigger, relative to entry/TP.',
-        'full-tp-lock': '日內達到此獲利目標後鎖定、不再開新倉 (0 = OFF)。\nBlocks new entries after this daily profit target is reached.',
-        'tr-session-limit': '限制交易時段（僅在主要時段進場）。\nRestricts entries to the main trading session.',
+        'strategy': '\u7b56\u7565\u908f\u8f2f\uff1aTREND = \u5340\u9593\u7a81\u7834\u8da8\u52e2\u55ae\uff1bML Confluence = \u591a\u6642\u9593\u6846\u6c34\u5e73\u532f\u805a\u8a55\u5206\uff1bML Consolidation V2 = \u6efe\u52d5\u5340\u9593 VAH/VAL \u5747\u503c\u56de\u6b78\u3002\nStrategy selector for trend, ML confluence, or ML Consolidation V2.',
+        'contract': '\u4ea4\u6613 / \u56de\u6e2c\u4f7f\u7528\u7684\u671f\u8ca8\u5408\u7d04\uff0c\u4f8b\u5982 CON.F.US.MNQ.M26\u3002\nFutures contract used for data and orders.',
+        'size': '\u6bcf\u7b46\u4ea4\u6613\u7684\u5408\u7d04\u53e3\u6578\u3002\nNumber of contracts per trade.',
+        'preset': '\u8f09\u5165\u6216\u4fdd\u5b58\u76ee\u524d\u6240\u6709\u53c3\u6578\u8a2d\u5b9a\u3002\nLoad or save the current parameter set.',
+        // ML CONFLUENCE
+        'conf-minprob': 'ML \u6a5f\u7387\u9580\u6abb\uff1a\u53ea\u5728 scorer \u9810\u6e2c\u52dd\u7387 \u2265 \u6b64\u503c\u6642\u9032\u5834\u3002OFF = \u4e0d\u7528\u52dd\u7387\u9580\u6abb\u3002\nML win-probability gate.',
+        'conf-rrmode': '\u56fa\u5b9a\u76c8\u8667\u6bd4\uff0c\u53ef\u9078 1:1 \u5230 1:6\u3002LATEST production scorer \u76ee\u524d\u7528 RR3 \u8a13\u7df4\u3002\nFixed reward:risk from 1:1 to 1:6.',
+        'conf-band': '\u532f\u805a\u5e36\u5bec\uff08ticks\uff09\uff1a\u4e0d\u540c TF \u6c34\u5e73\u4f4d\u843d\u5728\u6b64\u7bc4\u570d\u5167\u8996\u70ba\u540c\u4e00\u532f\u805a\u5340\u3002\u8d8a\u5927 = \u8d8a\u5bb9\u6613\u5408\u4f75\uff0c\u8a0a\u865f\u66f4\u591a\u3002\nConfluence band in ticks.',
+        'conf-mintf': '\u6700\u5c11\u4e0d\u540c\u6642\u9593\u6846\u6578\uff1a\u4e00\u500b\u532f\u805a\u5340\u81f3\u5c11\u9700\u8981\u591a\u5c11\u500b\u4e0d\u540c TF \u7684\u6c34\u5e73\u4f4d\u624d\u7b97\u6709\u6548\u3002\nMinimum distinct timeframes required.',
+        'conf-evfloor': '\u671f\u671b\u503c\u9580\u6abb\uff0c\u512a\u5148\u65bc MIN PROB\u3002EV = prob \u00d7 RR \u2212 (1 \u2212 prob)\u3002\nExpected-value gate.',
+        'conf-maxrisk': '\u6700\u5927 SL \u98a8\u96aa\uff08ticks\uff09\uff1aSL \u8ddd\u96e2\u8d85\u904e\u6b64\u503c\u7684\u8a0a\u865f\u6703\u88ab\u8df3\u904e\u3002\nMax allowed stop distance in ticks.',
+        'conf-trail-trigger': 'ML \u9054\u5230 TP \u7684\u6307\u5b9a\u767e\u5206\u6bd4\u5f8c\uff0c\u5c07 SL \u79fb\u5230 +5% TP \u7684\u9396\u5229\u4f4d\u3002\nTrail trigger for moving stop after partial progress toward TP.',
+        'conf-session-limit': 'Live parity \u9396\u5b9a\uff1a\u540c\u4e00 session / \u4e3b TF \u7246 / \u65b9\u5411\u53ea\u505a\u4e00\u6b21\u3002\nLive-style duplicate-entry lock.',
+        'conf-allowed-sessions': '\u5e02\u5834\u76e4\u6bb5\u904e\u6ffe\uff1a\u53ea\u5728\u9078\u5b9a\u76e4\u6bb5\u958b\u65b0\u55ae\u3002ASIA \u662f\u76ee\u524d\u8f03\u7a69\u7684\u9810\u8a2d\u3002\nMarket segment filter.',
+        'overlap-tf': '\u53c3\u8207\u532f\u805a\u7684\u6642\u9593\u6846\u3002\u9078 1 = \u55ae\u4e00\u6846\uff1b\u9078 2+ = \u8de8\u6846\u91cd\u758a\u532f\u805a\u3002\nTimeframes feeding confluence.',
+        // TREND
+        'area-pct': 'TREND\uff1a\u5340\u9593\u5224\u5b9a\u7684\u9762\u7a4d\u6bd4\u4f8b\u9580\u6abb\uff0c\u8d8a\u9ad8\u8d8a\u56b4\u683c\u3002\nTREND range-area threshold.',
+        'confirm-bars': 'TREND\uff1a\u7a81\u7834\u5f8c\u9700\u8981\u9023\u7e8c\u78ba\u8a8d\u7684 K \u7dda\u6578\uff0c\u8d8a\u591a\u8d8a\u4fdd\u5b88\u3002\nConfirmation bars after breakout.',
+        'rr-ratio': 'TREND\uff1a\u6b62\u76c8\u8207\u6b62\u640d\u7684\u6bd4\u4f8b\uff08TP:SL\uff09\u3002\nTake-profit to stop-loss ratio.',
+        'trail-trigger-pct': '\u50f9\u683c\u5230\u9054 TP \u7684\u6307\u5b9a\u767e\u5206\u6bd4\u5f8c\u958b\u59cb\u79fb\u52d5\u6b62\u640d\u3002OFF = \u4e0d\u79fb\u52d5\u3002\nTrail trigger percentage.',
+        'trail-sl-pct': '\u89f8\u767c\u5f8c\u6b62\u640d\u8981\u79fb\u5230\u7684\u4f4d\u7f6e\uff0c\u76f8\u5c0d\u5165\u5834 / TP \u8a08\u7b97\u3002\nWhere the stop moves after trigger.',
+        'full-tp-lock': '\u65e5\u5167\u9054\u5230\u6b64\u7372\u5229\u76ee\u6a19\u5f8c\u9396\u5b9a\uff0c\u4e0d\u518d\u958b\u65b0\u55ae\uff080 = OFF\uff09\u3002\nBlocks new entries after daily profit target.',
+        'tr-session-limit': '\u9650\u5236\u4ea4\u6613\u6642\u6bb5\uff0c\u53ea\u5728\u4e3b\u8981\u5141\u8a31\u6642\u6bb5\u9032\u5834\u3002\nRestricts entries to allowed sessions.',
     };
     const standalone = {
-        'username': 'Topstep / ProjectX 登入郵箱。\nTopstep login email.',
-        'apikey': 'ProjectX API 金鑰。\nProjectX API key.',
-        'contract-preset': '快速填入 contractId。\nShortcut that fills the contractId.',
-        'contract-id': '期貨合約 ID，例 CON.F.US.MNQ.M26。\nFutures contract ID.',
-        'start-date': '歷史資料開始日期。\nStart date for historical data.',
-        'end-date': '歷史資料結束日期。\nEnd date for historical data.',
-        'data-count': '目前載入的 1 分鐘 K 線數量。\nLoaded 1-minute candle count.',
+        'username': 'Topstep / ProjectX \u767b\u5165\u90f5\u7bb1\u3002\nTopstep login email.',
+        'apikey': 'ProjectX API \u91d1\u9470\u3002\nProjectX API key.',
+        'contract-preset': '\u5feb\u901f\u586b\u5165 contractId\u3002\nShortcut that fills the contractId.',
+        'contract-id': '\u671f\u8ca8\u5408\u7d04 ID\uff0c\u4f8b\u5982 CON.F.US.MNQ.M26\u3002\nFutures contract ID.',
+        'start-date': '\u6b77\u53f2\u8cc7\u6599\u958b\u59cb\u65e5\u671f\u3002\nStart date for historical data.',
+        'end-date': '\u6b77\u53f2\u8cc7\u6599\u7d50\u675f\u65e5\u671f\u3002\nEnd date for historical data.',
+        'data-count': '\u76ee\u524d\u8f09\u5165\u7684 1 \u5206\u9418 K \u7dda\u6578\u91cf\u3002\nLoaded 1-minute candle count.',
     };
     const apply = (id, tip) => {
         const el = document.getElementById(id);
@@ -1304,7 +1476,6 @@ document.addEventListener('DOMContentLoaded', () => {
     decorateParamHelpDots();
     checkHealth();
     loadEnvConfig();
-    loadFullBacktestResults();
     updateClock();
     setInterval(updateClock, 1000);
 
@@ -1359,8 +1530,9 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
             t.classList.add('active');
             const tab = t.dataset.btab;
-            ['full','trades','execute','learn','pnl','log'].forEach(id => {
-                document.getElementById('btab-' + id).classList.toggle('hidden', id !== tab);
+            ['trades','execute','learn','pnl','log'].forEach(id => {
+                const panel = document.getElementById('btab-' + id);
+                if (panel) panel.classList.toggle('hidden', id !== tab);
             });
             if (tab === 'log') scrollSystemLogToBottom();
             if (tab === 'learn') loadLearnResult();
@@ -1425,8 +1597,6 @@ async function loadAccounts() {
                 liveSelect.value = practice.id;
             }
             document.getElementById('btn-go-live').disabled = false;
-            const learnBtn = document.getElementById('btn-learn-live');
-            if (learnBtn) learnBtn.disabled = false;
             onLiveAccountSwitch();
         }
 
@@ -1559,100 +1729,6 @@ async function refreshLiveZoneOverlay(stratParams) {
     }
 }
 
-// Shared LEARN flow: force this panel to ML (confluence) → load the FULL history
-// → retrain the explainable 1m scorer (same /confluence/train endpoint as the
-// CLI trainer) → run the panel-specific `afterFn` (goLive or runBacktest).
-// LEARN & LIVE and LEARN & BACKTEST are thin wrappers, so both share one code
-// path and therefore one identical, reproducible scorer.
-async function _learnScorer(opts) {
-    const { mode, btnId, siblingId, confirmMsg, contractInputId, afterLabel, afterFn,
-            requireAccount } = opts;
-    if (requireAccount && !liveAccount) { log('Select an account first', 'warn'); return; }
-    const btn = document.getElementById(btnId);
-    if (!btn || btn.disabled) return;
-    if (!confirm(confirmMsg)) return;
-
-    const origText = btn.textContent;
-    btn.disabled = true;
-    const sibling = siblingId ? document.getElementById(siblingId) : null;
-    if (sibling) sibling.disabled = true;
-
-    try {
-        // 1) Force this panel's strategy to ML (confluence) so it uses the scorer.
-        const stratSel = document.getElementById('strategy-' + mode);
-        if (stratSel) { stratSel.value = 'confluence'; updateStrategyParamVisibility(mode); }
-
-        // 2) Ensure the FULL history is loaded (the scorer learns from all of it).
-        btn.innerHTML = '<span class="spinner"><span></span><span></span><span></span><span></span></span> LOADING HISTORY...';
-        const today = new Date().toISOString().slice(0, 10);
-        const dataOk = await _ensureBacktestData(btn, FULL_RANGE_START, today);
-        if (!dataOk) throw new Error('歷史數據載入失敗');
-
-        // 3) Retrain the scorer on the loaded 1m history (matches CLI trainer).
-        btn.innerHTML = '<span class="spinner"><span></span><span></span><span></span><span></span></span> LEARNING...';
-        log('LEARN: 用完整歷史重新訓練 ML scorer (1m base)...', 'info');
-        const cp = collectConfluenceParams(mode) || {};
-        const resp = await fetch(API + '/confluence/train', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contract_id: (document.getElementById(contractInputId)?.value) || 'CON.F.US.MNQ.M26',
-                train_frac: 1.0,
-                band_ticks: cp.conf_band_ticks != null ? cp.conf_band_ticks : 4.0,
-                min_distinct_tf: cp.conf_min_distinct_tf != null ? cp.conf_min_distinct_tf : 2,
-                rr: cp.conf_rr != null ? cp.conf_rr : 1.0,
-                enable_breakout: cp.conf_enable_breakout === true,
-            }),
-        });
-        if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || ('HTTP ' + resp.status)); }
-        const r = await resp.json();
-        const tw = (r.top_weights || []).map(w => w.name + '=' + w.weight).join(', ');
-        log('LEARN done: ' + r.n_samples + ' samples, win%=' + (r.win_rate * 100).toFixed(0)
-            + ', AUC=' + (r.train_auc != null ? r.train_auc.toFixed(3) : '?')
-            + ', TFs=' + (r.timeframes || []).join('/'), 'success');
-        if (tw) log('LEARN weights: ' + tw, 'info');
-        if (r.threshold_sweep && r.threshold_sweep.rows) {
-            const sw = r.threshold_sweep;
-            const best = sw.recommended || {};
-            log('SWEEP: prob threshold scan (3 MNQ) — best: min_prob='
-                + (best.min_prob != null ? best.min_prob.toFixed(2) : '?')
-                + ' → PnL=$' + (best.pnl != null ? best.pnl.toFixed(0) : '?')
-                + ', maxDD=$' + (best.max_dd != null ? best.max_dd.toFixed(0) : '?')
-                + ', ' + (best.trades || 0) + ' trades, PF=' + (best.pf || 0),
-                best.max_dd < 2000 && best.pnl > 0 ? 'success' : 'warning');
-        }
-        loadLearnResult();  // refresh the LEARN RESULT panel with the new model
-
-        // 4) Run the panel-specific follow-up with the freshly trained scorer.
-        btn.innerHTML = '<span class="spinner"><span></span><span></span><span></span><span></span></span> ' + (afterLabel || 'RUNNING...');
-        if (sibling) sibling.disabled = false;   // let afterFn manage its own button
-        await afterFn();
-    } catch (e) {
-        log('LEARN failed: ' + e.message, 'error');
-        if (sibling) sibling.disabled = false;
-    } finally {
-        btn.disabled = false;
-        btn.textContent = origText;
-    }
-}
-
-function learnAndBacktest() {
-    return _learnScorer({
-        mode: 'bt', btnId: 'btn-learn-bt', siblingId: 'btn-backtest',
-        contractInputId: 'contract-bt', requireAccount: false, afterLabel: 'BACKTESTING...',
-        confirmMsg: 'LEARN & BACKTEST 會先載入完整歷史並重新訓練 ML scorer (約需數十秒～數分鐘)，完成後立即用最新 scorer 回測。是否繼續？',
-        afterFn: () => runBacktest(),
-    });
-}
-
-function learnAndLive() {
-    return _learnScorer({
-        mode: 'live', btnId: 'btn-learn-live', siblingId: 'btn-go-live',
-        contractInputId: 'contract-live', requireAccount: true, afterLabel: 'GOING LIVE...',
-        confirmMsg: 'LEARN & LIVE 會先載入完整歷史並重新訓練 ML scorer (約需數十秒～數分鐘)，完成後立即用 ML 策略上線。是否繼續？',
-        afterFn: () => goLive(),
-    });
-}
 
 async function goLive() {
     if (!liveAccount) { log('Select an account first', 'warn'); return; }
@@ -1690,6 +1766,14 @@ async function goLive() {
             + ' ' + rrTxt + ' band=' + stratParams.conf_band_ticks
             + ' minTF=' + stratParams.conf_min_distinct_tf
             + ' market=' + allowedSessionsLabel(stratParams.conf_allowed_sessions), 'info');
+    }
+    if (stratParams.strategy === 'ml_consolidation_v2') {
+        stratParams.mlc2_shadow = false;
+        log('ML CONSOLIDATION V2: LIVE (places orders) '
+            + 'LB=' + stratParams.mlc2_lookback
+            + ' band=' + stratParams.mlc2_band_ticks
+            + ' rr=' + stratParams.mlc2_rr
+            + ' market=' + allowedSessionsLabel(stratParams.mlc2_allowed_sessions), 'info');
     }
 
     // Switch the zone filter to LIVE and preselect the timeframe(s) being traded
@@ -1744,7 +1828,7 @@ async function goLive() {
             statusEl.textContent = '僅監控';
         } else {
             engineStarted = true;
-            log('即時交易引擎啟動', 'success');
+            log('????????? ? ??????', 'success');
             refreshTfZones(true);
             setTimeout(() => refreshLiveZoneOverlay(stratParams), 0);
         }
@@ -1765,7 +1849,7 @@ async function goLive() {
         if (stopBtn) stopBtn.disabled = true;
         const flattenBtn = document.getElementById('btn-flatten');
         if (flattenBtn) flattenBtn.disabled = true;
-        log('即時交易引擎啟動中 — 等待狀態確認', 'success');
+        log('????????? ? ??????', 'success');
     } else {
         const dot = document.getElementById('live-status-dot');
         if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
@@ -2050,8 +2134,9 @@ async function pollLiveStatus() {
         // ── Top bar: ML (confluence) decision-basis banner ──
         const confRow = document.getElementById('lv-confluence-row');
         if (confRow) {
-            const sigs = st.confluence_signals || [];
-            if (st.confluence_mode && sigs.length) {
+            const isMlc2 = !!st.mlc2_mode;
+            const sigs = isMlc2 ? (st.mlc2_signals || []) : (st.confluence_signals || []);
+            if ((st.confluence_mode || isMlc2) && sigs.length) {
                 const last = sigs[sigs.length - 1];
                 const basis = last.basis || (
                     (last.mode ? '[' + last.mode + '] ' : '') + (last.direction || '') + ' ' + (last.side || '')
@@ -2060,7 +2145,9 @@ async function pollLiveStatus() {
                 );
                 const tag = st.confluence_shadow ? 'SHADOW · ' : '';
                 const scorer = st.confluence_scorer ? (' · scorer=' + st.confluence_scorer) : '';
-                document.getElementById('lv-conf-basis').textContent = tag + basis + scorer;
+                const bannerTag = (isMlc2 ? st.mlc2_shadow : st.confluence_shadow) ? 'SHADOW · ' : '';
+                const bannerScorer = (!isMlc2 && st.confluence_scorer) ? (' · scorer=' + st.confluence_scorer) : '';
+                document.getElementById('lv-conf-basis').textContent = bannerTag + (isMlc2 ? 'MLC2 · ' : '') + basis + bannerScorer;
                 confRow.style.display = 'flex';
             } else {
                 confRow.style.display = 'none';
@@ -2143,7 +2230,7 @@ async function pollLiveStatus() {
         // MODE = execution/sub-mode, kept distinct from STRAT (no duplication).
         //   ML (confluence): 影子(不下單) vs 實盤  ← shadow gate
         //   Trend: the active sub-mode, only when it differs from the strategy name
-        const isMLmode = (st.strategy_mode === 'confluence') || st.confluence_mode;
+        const isMLmode = (st.strategy_mode === 'confluence') || st.confluence_mode || st.mlc2_mode;
         let modeText, modeColor;
         if (isMLmode) {
             modeText = st.confluence_shadow ? '影子(不下單)' : '實盤';
@@ -2165,7 +2252,7 @@ async function pollLiveStatus() {
         // ── Phase — both top bar and left panel ──
         let phaseText = st.phase || '--';
         const phaseDisplayText = phaseText + (st.tp_locked ? ' TPLOCK' : '');
-        const isMLStatus = (st.strategy_mode === 'confluence') || st.confluence_mode;
+        const isMLStatus = (st.strategy_mode === 'confluence') || st.confluence_mode || st.mlc2_mode;
         const panelPhaseEl = document.getElementById('live-position-text');
         if (panelPhaseEl) {
             panelPhaseEl.textContent = phaseDisplayText;
@@ -2566,10 +2653,60 @@ const SESSION_BOUNDARIES = [
 const NO_TRADE_WINDOWS_UTC = [
     { startH: 19, startM: 30, endH: 22, endM: 0, label: 'NO TRADE' },
 ];
+const NY_OPEN_ZONE_WINDOWS = [
+    {
+        startH: 8, startM: 0, endH: 8, endM: 15,
+        label: 'NY OPEN ZONE 08:00-08:15',
+        fill: 'rgba(168, 85, 247, 0.105)',
+        stroke: 'rgba(196, 145, 255, 0.72)',
+        text: 'rgba(222, 190, 255, 0.88)',
+        labelY: 42,
+    },
+    {
+        startH: 9, startM: 30, endH: 9, endM: 45,
+        label: 'NY 09:30-09:45',
+        fill: 'rgba(0, 229, 160, 0.080)',
+        stroke: 'rgba(0, 229, 160, 0.62)',
+        text: 'rgba(0, 245, 180, 0.85)',
+        labelY: 56,
+    },
+];
 
 function utcMsToChartTime(ms) {
     const localOffset = new Date(ms).getTimezoneOffset() * -60;
     return Math.floor(ms / 1000) + localOffset;
+}
+
+function _timeZoneOffsetMs(timeZone, utcMs) {
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone,
+            timeZoneName: 'shortOffset',
+            hour: '2-digit',
+            minute: '2-digit',
+        }).formatToParts(new Date(utcMs));
+        const name = (parts.find(p => p.type === 'timeZoneName') || {}).value || 'GMT';
+        if (name === 'GMT' || name === 'UTC') return 0;
+        const m = name.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+        if (!m) return 0;
+        const sign = m[1] === '-' ? -1 : 1;
+        const hours = parseInt(m[2], 10) || 0;
+        const mins = parseInt(m[3] || '0', 10) || 0;
+        return sign * (hours * 60 + mins) * 60000;
+    } catch (e) {
+        // Futures dates in this app are modern US dates; if Intl shortOffset is
+        // unavailable, EDT/EST precision only affects the background annotation.
+        return -4 * 3600000;
+    }
+}
+
+function nyLocalToUtcMs(year, month, day, hour, minute) {
+    const guess = Date.UTC(year, month, day, hour, minute, 0);
+    let offset = _timeZoneOffsetMs('America/New_York', guess);
+    let utc = guess - offset;
+    const offset2 = _timeZoneOffsetMs('America/New_York', utc);
+    if (offset2 !== offset) utc = guess - offset2;
+    return utc;
 }
 
 // Chart time values are local-wall-clock encoded as UTC seconds (see
@@ -2661,6 +2798,9 @@ function drawSessionDividers() {
     startDay.setUTCHours(0, 0, 0, 0);
     const endMs = toMs + dayMs;
 
+    // Sweep-only uses session high/low levels, so keep session dividers but do
+    // not shade NY-open windows by default.
+
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
@@ -2696,6 +2836,53 @@ function drawSessionDividers() {
     }
 
     drawNoTradeHatching(ctx, W, H, startDay.getTime(), endMs, fromMs, toMs);
+}
+
+function drawNYOpenZoneBackgrounds(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
+    const dayMs = 86400000;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 1;
+    ctx.font = '9px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+
+    // Iterate a wider day span because chart timestamps are encoded in the
+    // browser's wall-clock timezone while these windows are New York local time.
+    for (let d = startDayMs - dayMs; d <= endMs + dayMs; d += dayMs) {
+        const day = new Date(d);
+        NY_OPEN_ZONE_WINDOWS.forEach(w => {
+            const startUtcMs = nyLocalToUtcMs(
+                day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(),
+                w.startH, w.startM
+            );
+            const endUtcMs = nyLocalToUtcMs(
+                day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(),
+                w.endH, w.endM
+            );
+            const startChartMs = utcMsToChartTime(startUtcMs) * 1000;
+            const endChartMs = utcMsToChartTime(endUtcMs) * 1000;
+            if (endChartMs < fromMs || startChartMs > toMs) return;
+
+            const x1 = chart.timeScale().timeToCoordinate(utcMsToChartTime(startUtcMs));
+            const x2 = chart.timeScale().timeToCoordinate(utcMsToChartTime(endUtcMs));
+            if (x1 === null || x2 === null) return;
+            const left = Math.max(0, Math.min(x1, x2));
+            const right = Math.min(W, Math.max(x1, x2));
+            if (right <= 0 || left >= W || right - left < 2) return;
+
+            ctx.fillStyle = w.fill;
+            ctx.strokeStyle = w.stroke;
+            ctx.fillRect(left, 0, right - left, H);
+            ctx.strokeRect(left + 0.5, 0.5, Math.max(0, right - left - 1), Math.max(0, H - 1));
+
+            if (right - left >= 22) {
+                ctx.fillStyle = w.text;
+                ctx.fillText(w.label, left + 4, w.labelY);
+            }
+        });
+    }
+    ctx.restore();
 }
 
 function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
@@ -2866,7 +3053,12 @@ function renderTfZones() {
     // Once trade-decision overlays exist, suppress the generic bucket reference
     // lines (the tiny per-candle VAH/VAL segments). The decision overlay now
     // draws the exact primary zone used at entry.
-    if (_combinedDecisionTrades().length > 0) return;
+    const _allDecisionTrades = [
+        ...((backtestData && backtestData.trades) ? backtestData.trades : []),
+        ...(window._liveCompletedTrades || []),
+        ...(window._liveWorkingDecisionTrade ? [window._liveWorkingDecisionTrade] : []),
+    ];
+    if (_allDecisionTrades.length > 0) return;
 
     const tfs = _zoneFilter.tfs;
     if (!tfs || tfs.size === 0) return;
@@ -3022,6 +3214,55 @@ function drawPositionTools(trades) {
         return true;
     };
 
+    const tradePrice = (t, keys) => {
+        for (const k of keys) {
+            const n = Number(t && t[k]);
+            if (Number.isFinite(n)) return n;
+        }
+        return NaN;
+    };
+
+    const drawRiskRewardBox = (t, entryX) => {
+        const entry = tradePrice(t, ['entry_price', 'entry']);
+        const sl = tradePrice(t, ['original_sl_price', 'sl_price', 'sl']);
+        const tp = tradePrice(t, ['original_tp_price', 'tp_price', 'tp']);
+        if (!Number.isFinite(entry) || !Number.isFinite(sl) || !Number.isFinite(tp)) return false;
+
+        const yEntry = candleSeries.priceToCoordinate(entry);
+        const ySL = candleSeries.priceToCoordinate(sl);
+        const yTP = candleSeries.priceToCoordinate(tp);
+        if (yEntry === null || ySL === null || yTP === null) return false;
+
+        let x1 = null;
+        try { if (t.exit_time) x1 = chart.timeScale().timeToCoordinate(isoToChartTime(t.exit_time)); } catch (_) {}
+        if (x1 === null || x1 <= entryX + 3) x1 = entryX + 120;
+        if (x1 < -20 || entryX > chartW + 20) return false;
+        const x0 = Math.max(0, entryX);
+        const xEnd = Math.min(chartW - 60, x1);
+        if (xEnd <= x0 + 3) return false;
+
+        const greenTop = Math.min(yEntry, yTP);
+        const greenH = Math.abs(yTP - yEntry);
+        const redTop = Math.min(yEntry, ySL);
+        const redH = Math.abs(ySL - yEntry);
+
+        ctx.save();
+        ctx.setLineDash([]);
+        if (greenH > 1) {
+            ctx.fillStyle = 'rgba(0, 229, 160, 0.105)';
+            ctx.fillRect(x0, greenTop, xEnd - x0, greenH);
+        }
+        if (redH > 1) {
+            ctx.fillStyle = 'rgba(255, 64, 96, 0.115)';
+            ctx.fillRect(x0, redTop, xEnd - x0, redH);
+        }
+        drawHLine(x0, xEnd, yEntry, 'rgba(255, 167, 38, 0.74)');
+        drawHLine(x0, xEnd, yTP, 'rgba(0, 229, 160, 0.82)');
+        drawHLine(x0, xEnd, ySL, 'rgba(255, 64, 96, 0.82)');
+        ctx.restore();
+        return true;
+    };
+
     trades.forEach((t) => {
         if (drawn >= maxDraw) return;
 
@@ -3030,8 +3271,9 @@ function drawPositionTools(trades) {
         if (entryX === null) return;
         if (entryX < -200 || entryX > chartW + 50) return;
 
-        // Primary decision zone only: full formed_at → left_at VAH/VAL span.
-        if (!drawPrimaryZone(t, entryX)) return;
+        const drewRisk = drawRiskRewardBox(t, entryX);
+        const drewZone = drawPrimaryZone(t, entryX);
+        if (!drewRisk && !drewZone) return;
 
         drawn++;
     });
@@ -3226,10 +3468,10 @@ async function connectAPI() {
         document.getElementById('conn-trigger').classList.add('connected');
         document.getElementById('data-count').value = data.candles_count + ' bars';
         document.getElementById('btn-backtest').disabled = false;
-        const learnBtBtn = document.getElementById('btn-learn-bt');
-        if (learnBtBtn) learnBtBtn.disabled = false;
-        document.getElementById('btn-run-all').disabled = false;
-        document.getElementById('btn-full-filter').disabled = false;
+        const btnRunAll = document.getElementById('btn-run-all');
+        if (btnRunAll) btnRunAll.disabled = false;
+        const btnFullFilter = document.getElementById('btn-full-filter');
+        if (btnFullFilter) btnFullFilter.disabled = false;
         _updateDataInfo(data.first, data.last, 'conn', data.candles_count);
         // CONNECT only loaded the recent warm-up window → record it so the first
         // backtest / ML / LEARN sees the range mismatch and pulls the full history.
@@ -3620,479 +3862,6 @@ async function runBacktest() {
 
 // -- Machine Learning -----------------------------------
 
-let _fullResults = [];
-let _fullProgressInterval = null;
-const FULL_RESULTS_LIMIT = 200;
-
-// -- Machine Learning column sort state ----------------
-let _fullSortCol = 'calmar';
-let _fullSortDir = 'desc';   // 'desc' | 'asc'
-
-function _fullSortVal(r, col) {
-    switch (col) {
-        case 'rank':      return r.rank || 0;
-        case 'method':    return (r.method || '').toLowerCase();
-        case 'tf':        return (r.tf_label || (Array.isArray(r.tf_combo) ? r.tf_combo.join('+') : '')).toLowerCase();
-        case 'overlap':   return r.overlap_count || 0;
-        case 'rr':        return r.rr_ratio || 0;
-        case 'contract':  return contractLabelFromId(r.contract_id || '').toLowerCase();
-        case 'size':      return r.contract_size || 0;
-        case 'trades':    return r.total_trades || 0;
-        case 'win_rate':  return r.win_rate || 0;
-        case 'pnl':       return r.total_pnl || 0;
-        case 'max_dd':    return r.max_drawdown || 0;
-        case 'wk_std':    return r.weekly_std || 0;
-        case 'wk_cv':     return r.weekly_cv || 0;
-        case 'pf':        return fullResultProfitFactor(r);
-        case 'calmar':    return r.calmar_ratio || 0;
-        case 'best_day': { const v = Object.values(r.daily_pnl || {}); return v.length ? Math.max(...v) : 0; }
-        case 'worst_day':{ const v = Object.values(r.daily_pnl || {}); return v.length ? Math.min(...v) : 0; }
-        default:          return 0;
-    }
-}
-
-function fullResultTotalLoss(r) {
-    if (r.total_loss != null) return Number(r.total_loss) || 0;
-    return (Number(r.avg_loss) || 0) * (Number(r.losses) || 0);
-}
-
-function fullResultProfitFactor(r) {
-    // Profit Factor = gross gain / gross loss. Prefer the backend value.
-    if (r.profit_factor != null) return Number(r.profit_factor) || 0;
-    const gain = Math.abs(Number(r.total_gain) || 0);
-    const loss = Math.abs(fullResultTotalLoss(r));
-    return loss > 0 ? gain / loss : (gain > 0 ? Infinity : 0);
-}
-
-function isFullResultAllowed(r) {
-    // New ML model has no fixed SL/TP ticks; keep every non-errored result.
-    return !!r && !r.error;
-}
-
-function normalizeFullResults(results) {
-    return (results || [])
-        .filter(isFullResultAllowed)
-        .map(r => {
-            const pf = fullResultProfitFactor(r);
-            return Object.assign({}, r, { profit_factor: pf });
-        });
-}
-
-async function fullSortBy(col) {
-    if (_fullSortCol === col) {
-        _fullSortDir = _fullSortDir === 'desc' ? 'asc' : 'desc';
-    } else {
-        _fullSortCol = col;
-        _fullSortDir = 'desc';
-    }
-    // Update all header visual states
-    document.querySelectorAll('.full-sort-th').forEach(th => {
-        const isActive = th.dataset.col === col;
-        th.classList.toggle('sort-active', isActive);
-        const arrow = th.querySelector('.sa');
-        if (!arrow) return;
-        if (isActive) {
-            arrow.textContent = _fullSortDir === 'desc' ? '↓' : '↑';
-        } else {
-            arrow.textContent = '↕';
-        }
-    });
-    await loadFullBacktestResults();
-}
-
-async function loadFullBacktestResults() {
-    try {
-        const params = new URLSearchParams({
-            sort_col: _fullSortCol,
-            sort_dir: _fullSortDir,
-            limit: String(FULL_RESULTS_LIMIT),
-        });
-        const resp = await fetch(API + '/backtest/ml-results?' + params.toString());
-        if (!resp.ok) return;
-        const data = await resp.json();
-        const results = normalizeFullResults(data.results).slice(0, FULL_RESULTS_LIMIT);
-        if (!results.length) return;
-        _fullResults = results;
-        renderFullResults(_fullResults);
-        log('Loaded Combination top ' + _fullResults.length + ' by ' + _fullSortCol + ' ' + _fullSortDir, 'info');
-    } catch(e) {
-        // Non-blocking: the table simply stays empty until the next run.
-    }
-}
-
-function _startFullProgress() {
-    const wrap = document.getElementById('full-progress-wrap');
-    const bar  = document.getElementById('full-progress-bar');
-    const text = document.getElementById('full-progress-text');
-    if (wrap) wrap.style.display = 'block';
-    if (bar)  bar.style.width = '0%';
-    if (text) text.textContent = '0 / 0';
-
-    _fullProgressInterval = setInterval(async () => {
-        try {
-            const r = await fetch(API + '/backtest/ml-progress');
-            const d = await r.json();
-            const cur = d.current || 0;
-            const tot = d.total  || 0;
-            const stage = d.stage || '';
-            // Before the sweep starts (total still 0) show the prep stage text so
-            // the bar doesn't look stuck at 0/0 while zone timelines are built.
-            if (text) {
-                if (tot > 0) text.textContent = cur + ' / ' + tot + (stage ? ' \u2014 ' + stage : '');
-                else         text.textContent = stage || 'preparing\u2026';
-            }
-            if (bar) bar.style.width = (tot > 0 ? (cur / tot * 100).toFixed(1) : 0) + '%';
-        } catch(e) { /* ignore poll errors */ }
-    }, 350);
-}
-
-function _stopFullProgress(success) {
-    if (_fullProgressInterval) { clearInterval(_fullProgressInterval); _fullProgressInterval = null; }
-    const bar  = document.getElementById('full-progress-bar');
-    const wrap = document.getElementById('full-progress-wrap');
-    if (success && bar) {
-        bar.style.width = '100%';
-        // fade out after 1.2 s
-        setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, 1200);
-    } else {
-        if (wrap) wrap.style.display = 'none';
-    }
-}
-
-function toggleFullFixedDropdown(event) {
-    if (event) event.stopPropagation();
-    const panel = document.getElementById('full-fixed-panel');
-    const btn = document.getElementById('btn-full-filter');
-    if (!panel || !btn) return;
-    const open = !panel.classList.contains('open');
-    panel.classList.toggle('open', open);
-    if (!open) return;
-
-    const rect = btn.getBoundingClientRect();
-    const pad = 8;
-    panel.style.visibility = 'hidden';
-    const panelW = panel.offsetWidth;
-    const panelH = panel.offsetHeight;
-    const left = Math.min(rect.right + pad, window.innerWidth - panelW - pad);
-    const top = Math.max(pad, Math.min(
-        rect.top + rect.height / 2 - panelH / 2,
-        window.innerHeight - panelH - pad
-    ));
-    panel.style.left = left + 'px';
-    panel.style.top = top + 'px';
-    panel.style.visibility = 'visible';
-}
-
-function getFullFixedParams() {
-    const pairs = [
-        ['strategy', 'full-fix-strategy'],
-        ['contract', 'full-fix-contract'],
-        ['size', 'full-fix-size'],
-        ['tp', 'full-fix-tp'],
-        ['sl', 'full-fix-sl'],
-        ['trail_trigger', 'full-fix-trail-trigger'],
-        ['trail', 'full-fix-trail'],
-        ['full_tp_lock', 'full-fix-full-tp-lock'],
-    ];
-    return pairs.filter(([, id]) => {
-        const el = document.getElementById(id);
-        return el && el.checked;
-    }).map(([key]) => key);
-}
-
-document.addEventListener('click', (e) => {
-    const panel = document.getElementById('full-fixed-panel');
-    const wrap = document.querySelector('.full-run-wrap');
-    if (panel && wrap && !wrap.contains(e.target)) panel.classList.remove('open');
-});
-
-async function runAllCombinations() {
-    const btn = document.getElementById('btn-run-all');
-    const filterBtn = document.getElementById('btn-full-filter');
-    btn.disabled = true;
-    if (filterBtn) filterBtn.disabled = true;
-    const fixedParams = getFullFixedParams();
-    const fullPanel = document.getElementById('full-fixed-panel');
-    if (fullPanel) fullPanel.classList.remove('open');
-
-    // Machine learning uses the same date range as Execute Backtest (date pickers / slider).
-    const dataOk = await _ensureBacktestData(btn);
-    if (!dataOk) {
-        btn.disabled = false;
-        if (filterBtn) filterBtn.disabled = false;
-        btn.textContent = 'COMBINATION';
-        return;
-    }
-
-    btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
-
-    // Switch to Machine learning tab so user can watch
-    document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
-    document.querySelector('[data-btab="full"]').classList.add('active');
-    ['full','trades','execute','learn','pnl','log'].forEach(id => {
-        document.getElementById('btab-' + id).classList.toggle('hidden', id !== 'full');
-    });
-
-    // (full-status row removed)
-
-    _startFullProgress();
-
-    const params = collectStrategyParams('bt');
-    // v1.0.6: when STRATEGY = ML (confluence), COMBINATION sweeps the Model+Style
-    // grid (288 runs) via /backtest/conf-combo-run; otherwise it sweeps TREND
-    // timeframe×RR via /backtest/ml-run. Both share the progress bar + table.
-    const confParams = collectConfluenceParams('bt');
-    const isConf = !!confParams;
-    let success = false;
-    try {
-        const startDate = document.getElementById('start-date').value;
-        const endDate   = document.getElementById('end-date').value;
-        const capital   = 50000;
-
-        const endpoint = isConf ? '/backtest/conf-combo-run' : '/backtest/ml-run';
-        const body = isConf
-            ? { ...params, ...confParams, strategy: 'confluence',
-                initial_capital: capital, start_date: startDate, end_date: endDate }
-            : { ...params,
-                strategy: fixedParams.includes('strategy') ? params.strategy : 'all',
-                one_trade_per_session_direction: true, skip_zone_stability: false,
-                initial_capital: capital, start_date: startDate, end_date: endDate,
-                fixed_params: fixedParams };
-
-        const resp = await fetch(API + endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        _fullResults = normalizeFullResults(data.results).slice(0, FULL_RESULTS_LIMIT);
-        renderFullResults(_fullResults);
-        _renderMlConfigCaption(params, fixedParams, startDate, endDate, data);
-        // status row removed — result count logged below
-        log('Combination complete: showing top ' + _fullResults.length + ' / ' + (data.total_combinations || 0) + ' combos', 'success');
-        if (data.artifact && data.artifact.json) {
-            log('Combination AI file: ' + data.artifact.json, 'info');
-        }
-        success = true;
-    } catch(e) {
-        log('Combination failed: ' + e.message, 'error');
-    } finally {
-        _stopFullProgress(success);
-        btn.disabled = false;
-        if (filterBtn) filterBtn.disabled = false;
-        btn.textContent = 'COMBINATION';
-    }
-}
-
-// Caption above the ML table: shows every constant option the sweep used (the
-// sweep itself only varies TIMEFRAME COMBO + RR; everything else is fixed here).
-function _renderMlConfigCaption(params, fixedParams, startDate, endDate, data) {
-    const el = document.getElementById('full-config-caption');
-    if (!el) return;
-    // Confluence COMBINATION sweep: describe the Model+Style grid + held knobs.
-    if (data && data.held_constant) {
-        const h = data.held_constant;
-        const total = data.total_combinations ? data.total_combinations + ' runs' : '';
-        const parts = [
-            'COMBINATION: RR×Breakout×TrailTrig×FullTPLock×Session' + (total ? ' = ' + total : ''),
-            'HELD: BAND ' + h.band_ticks + ' · MIN-TF ' + h.min_distinct_tf +
-                ' · MIN-PROB ' + h.min_prob + ' · TRAIL-LOCK ' + Math.round((h.trail_lock_pct || 0) * 100) + '%',
-            'TFs ' + (Array.isArray(h.timeframes) ? h.timeframes.join('+') : '') + ' · ' + (h.contract || ''),
-            'RANGE ' + (h.range || ((startDate || '?') + ' → ' + (endDate || '?'))),
-        ];
-        el.innerHTML = parts.map(s =>
-            '<span style="display:inline-block;margin-right:14px;">' + s + '</span>'
-        ).join('');
-        el.style.display = 'block';
-        return;
-    }
-    const p = params || {};
-    const contractLabel = contractLabelFromId(p.contract_id || 'CON.F.US.MNQ.M26');
-    const size = normalizeContractSize(p.contract_id, p.contract_size != null ? p.contract_size : 3);
-    const areaPct = Math.round((p.value_area_pct != null ? p.value_area_pct : 0.80) * 100);
-    const confirm = p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7;
-    const sessionLock = p.tr_one_trade_per_session === false ? 'OFF' : 'ON';
-    const tpLock = p.full_tp_lock ? p.full_tp_lock : 'OFF';
-    const trig = (p.trail_trigger_pct && p.trail_enabled !== false) ? Math.round(p.trail_trigger_pct * 100) + '%' : 'OFF';
-    const total = data && data.total_combinations ? data.total_combinations : '';
-    const parts = [
-        'SWEEP: 31 TF combos × RR 1:1–1:6' + (total ? ' = ' + total + ' runs' : ''),
-        'CONTRACT ' + contractLabel + '@' + size,
-        'AREA% ' + areaPct,
-        'CONFIRM ' + confirm + ' bars',
-        'SESSION LOCK ' + sessionLock,
-        'FULL TP LOCK ' + tpLock,
-        'TRAIL TRIG ' + trig,
-        'SL = lowest-volume node · TP = RR × SL',
-        'RANGE ' + (startDate || '?') + ' → ' + (endDate || '?'),
-    ];
-    el.innerHTML = parts.map(s =>
-        '<span style="display:inline-block;margin-right:14px;">' + s + '</span>'
-    ).join('');
-    el.style.display = 'block';
-}
-
-function renderFullResults(results) {
-    const tbody = document.getElementById('full-tbody');
-    if (!tbody) return;
-    tbody.innerHTML = '';
-
-    if (!results || results.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="16" style="text-align:center;color:var(--text3);padding:20px;">No results</td></tr>';
-        return;
-    }
-
-    // Apply current sort
-    const dir = _fullSortDir === 'desc' ? -1 : 1;
-    const sorted = normalizeFullResults(results).sort((a, b) => {
-        const va = _fullSortVal(a, _fullSortCol);
-        const vb = _fullSortVal(b, _fullSortCol);
-        if (typeof va === 'string') return dir * va.localeCompare(vb);
-        return dir * ((va || 0) - (vb || 0));
-    });
-
-    sorted.forEach(function(r, idx) {
-        const rank = idx + 1;          // display rank (changes with sort)
-        const origRank = r.rank || rank; // original rank (stable, used for save)
-        const dd = r.max_drawdown || 0;
-        const wr = ((r.win_rate || 0) * 100).toFixed(1);
-        const calmar = r.calmar_ratio || 0;
-        const calmarColor = calmar >= 1 ? 'var(--green)' : '';
-        const profitFactor = fullResultProfitFactor(r);
-        const pfColor = profitFactor >= 1 ? 'var(--green)' : 'var(--red)';
-        const pfLabel = (Number.isFinite(profitFactor) && profitFactor < 999) ? profitFactor.toFixed(2) : '∞';
-        const pnl = r.total_pnl || 0;
-        const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-        const contractLabel = contractLabelFromId(r.contract_id || 'CON.F.US.MNQ.M26');
-        const contractSize = r.contract_size || 1;
-
-        // New ML model fields.
-        const method = (r.method || 'single').toUpperCase();
-        const methodColor = (r.method === 'overlap') ? 'var(--cyan)' : '';
-        const tfLabel = r.tf_label || (Array.isArray(r.tf_combo) ? r.tf_combo.join('+') : '—');
-        const overlap = r.overlap_count || (Array.isArray(r.tf_combo) ? r.tf_combo.length : 1);
-        const rrLabel = '1:' + (r.rr_ratio || 0);
-        const wkStd = r.weekly_std != null ? Number(r.weekly_std) : null;
-        const wkCv = r.weekly_cv != null ? Number(r.weekly_cv) : null;
-        const wkStdLabel = wkStd != null ? '$' + wkStd.toFixed(0) : '—';
-        const wkCvLabel = wkCv != null ? wkCv.toFixed(2) : '—';
-        // Lower CV = steadier week-to-week; green when consistent.
-        const wkCvColor = wkCv != null ? (wkCv <= 1 ? 'var(--green)' : (wkCv >= 3 ? 'var(--red)' : '')) : '';
-
-        // Best/worst day from daily_pnl dict
-        const daily = r.daily_pnl || {};
-        const dailyVals = Object.values(daily);
-        const bestDay = dailyVals.length ? '$' + Math.max(...dailyVals).toFixed(0) : '—';
-        const worstDay = dailyVals.length ? '$' + Math.min(...dailyVals).toFixed(0) : '—';
-
-        // Preset badge keyed by original rank (stable across re-sorts)
-        const savedLabel = _fullSavedMap[origRank] ? _fullSavedMap[origRank] : '';
-
-        const tr = document.createElement('tr');
-        tr.innerHTML =
-            '<td style="text-align:center;color:' + methodColor + ';">' + method + '</td>' +
-            '<td style="text-align:center;font-size:10px;" title="' + tfLabel + '">' + tfLabel + '</td>' +
-            '<td style="text-align:center;">' + overlap + '</td>' +
-            '<td style="text-align:center;">' + rrLabel + '</td>' +
-            '<td style="text-align:center;">' + contractLabel + '@' + contractSize + '</td>' +
-            '<td style="text-align:center;">' + (r.total_trades || 0) + '</td>' +
-            '<td style="text-align:center;color:' + (parseFloat(wr) >= 50 ? 'var(--green)' : '') + ';">' + wr + '%</td>' +
-            '<td style="text-align:right;color:' + pnlColor + ';">$' + pnl.toFixed(0) + '</td>' +
-            '<td style="text-align:right;color:var(--red);">$' + dd.toFixed(0) + '</td>' +
-            '<td style="text-align:right;color:var(--green);">' + bestDay + '</td>' +
-            '<td style="text-align:right;color:var(--red);">' + worstDay + '</td>' +
-            '<td style="text-align:right;">' + wkStdLabel + '</td>' +
-            '<td style="text-align:center;color:' + wkCvColor + ';">' + wkCvLabel + '</td>' +
-            '<td style="text-align:center;color:' + pfColor + ';">' + pfLabel + '</td>' +
-            '<td style="text-align:center;color:' + calmarColor + ';">' + (calmar >= 999 ? '∞' : calmar.toFixed(2)) + '</td>' +
-            '<td style="text-align:center;">' +
-                '<button class="btn btn-outline" onclick="saveFullPreset(' + origRank + ')" ' +
-                    'style="padding:2px 6px;font-size:10px;width:24px;height:24px;' +
-                    (savedLabel ? 'background:var(--green2);border-color:var(--green);color:var(--green);' : '') + '" ' +
-                    'title="' + (savedLabel ? 'Saved: ' + savedLabel : 'Save as preset') + '">+</button>' +
-            '</td>';
-        tbody.appendChild(tr);
-    });
-}
-
-// Track which ORIGINAL ranks have been saved as presets.
-const _fullSavedMap = {};
-
-async function saveFullPreset(origRank) {
-    // Find by original rank (stable across sort order changes)
-    const r = _fullResults.find(x => (x.rank || 0) === origRank);
-    if (!r) return;
-
-    const strat = 'trend';
-    const contractSize = r.contract_size || 1;
-    const triggerPct = r.trail_trigger_pct != null ? r.trail_trigger_pct : 0.30;
-    const trailEnabled = triggerPct > 0;
-    const rrRatio = r.rr_ratio != null ? r.rr_ratio : 2;
-    // New ML model: SL = lowest-volume node, TP = RR x SL. Keep nominal ticks
-    // (50 SL fallback, RR*50 TP) so legacy preset fields stay valid.
-    const fallbackSl = 50;
-    const nominalTp = Math.max(1, fallbackSl * rrRatio);
-    // Pick the (lowest / fastest) timeframe in the combo as the live area timeframe.
-    const tfCombo = Array.isArray(r.tf_combo) ? r.tf_combo : (r.tf_label ? r.tf_label.split('+') : []);
-    const areaTf = tfCombo.length ? tfCombo[0] : (r.area_timeframe || '5m');
-    const method = (r.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
-    const confirmBars = Math.max(1, Math.min(10, parseInt(r.breakout_confirm_bars != null ? r.breakout_confirm_bars : 7, 10) || 7));
-
-    const params = {
-        strategy: strat,
-        tp_ticks: nominalTp,
-        sl_ticks: fallbackSl,
-        trail_sl_ticks: 0,
-        trail_sl_pct: 0,
-        trail_trigger_pct: triggerPct,
-        trail_enabled: trailEnabled,
-        tr_tp_ticks: nominalTp,
-        tr_sl_ticks: fallbackSl,
-        tr_trail_sl_ticks: 0,
-        tr_trail_sl_pct: 0,
-        tr_trail_trigger_pct: r.tr_trail_trigger_pct != null ? r.tr_trail_trigger_pct : triggerPct,
-        tr_trail_enabled: r.tr_trail_enabled != null ? r.tr_trail_enabled : trailEnabled,
-        tr_full_tp_lock: r.tr_full_tp_lock != null ? r.tr_full_tp_lock : (r.full_tp_lock || 0),
-        candle_seconds: r.candle_seconds || 60,
-        contract_id: r.contract_id || 'CON.F.US.MNQ.M26',
-        contract_size: contractSize,
-        full_tp_lock: r.full_tp_lock || 0,
-        one_trade_per_session_direction: true,
-        tr_one_trade_per_session: r.tr_one_trade_per_session != null ? r.tr_one_trade_per_session : true,
-        value_area_pct: r.value_area_pct != null ? r.value_area_pct : 0.80,
-        area_timeframe: areaTf,
-        rr_ratio: rrRatio,
-        breakout_confirm_bars: confirmBars,
-        method: method,
-        tf_combo: tfCombo,
-        skip_zone_stability: false,
-    };
-    const presetName = buildPresetName(params);
-
-    try {
-        await fetch(API + '/presets/save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: presetName, params: params }),
-        });
-        await fetchPresets();
-        refreshPresetDropdowns();
-        _fullSavedMap[origRank] = presetName;
-        renderFullResults(_fullResults);   // re-render to show badge
-        log('Preset saved: ' + presetName, 'success');
-    } catch(e) {
-        log('Machine learning preset save error: ' + e.message, 'error');
-    }
-}
-
-function clearFullResults() {
-    _fullResults = [];
-    Object.keys(_fullSavedMap).forEach(k => delete _fullSavedMap[k]);
-    const tbody = document.getElementById('full-tbody');
-    if (tbody) tbody.innerHTML = '';
-}
 
 // -- Bottom-panel drag-to-resize -------------------
 (function () {
@@ -4297,13 +4066,6 @@ function _entryDecisionMarker(t, fallbackColor) {
     };
 }
 
-function _combinedDecisionTrades() {
-    const bt = (backtestData && backtestData.trades) ? backtestData.trades : [];
-    const live = window._liveCompletedTrades || [];
-    const working = window._liveWorkingDecisionTrade ? [window._liveWorkingDecisionTrade] : [];
-    return [...bt, ...live, ...working];
-}
-
 function updateLiveWorkingDecision(sig, isLong, sigSL, sigTP) {
     if (!sig || sig.entry_price == null) return;
     const entryNum = Number(sig.entry_price);
@@ -4355,7 +4117,12 @@ function clearLiveWorkingDecision() {
 
 function redrawTradeDecisionOverlays() {
     clearPositionOverlay();
-    drawPositionTools(_combinedDecisionTrades());
+    const _allDecision = [
+        ...((backtestData && backtestData.trades) ? backtestData.trades : []),
+        ...(window._liveCompletedTrades || []),
+        ...(window._liveWorkingDecisionTrade ? [window._liveWorkingDecisionTrade] : []),
+    ];
+    drawPositionTools(_allDecision);
 }
 
 
@@ -4389,9 +4156,9 @@ function getSessionCodeFromDate(d) {
 
 function getTradeExitBucket(trade) {
     const reason = ((trade && trade.exit_reason) || '').toLowerCase();
-    if (reason === 'tp') return 'tp';
+    if (reason === 'tp' || reason === 'tp_4r') return 'tp';
     if (reason === 'trail_sl') return 'trail_sl';
-    if (reason === 'sl') return 'sl';
+    if (reason === 'sl' || reason === 'be_sl') return 'sl';
     return 'other';
 }
 
@@ -4774,6 +4541,9 @@ function renderMetrics(m, backtestTrades) {
         { label: 'TRADE COUNTS',
           value: String(total_trades || 0) + paren(liveStats ? String(liveStats.trades || 0) : ''),
           cls: '' },
+        { label: 'WIN RATE',
+          value: ((backtestStats.win_rate || 0) * 100).toFixed(1) + '%' + paren(liveStats ? ((liveStats.win_rate || 0) * 100).toFixed(1) + '%' : ''),
+          cls: (backtestStats.win_rate || 0) >= 0.5 ? 'pos' : '' },
         weeklyVarItem,
         { label: 'RR RATIO',
           value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
@@ -5063,10 +4833,10 @@ function _renderScorerCard(title, model) {
         '<span style="margin-right:14px;">' + label + ': <b style="color:' + (cls || 'var(--text1)') + ';">' + val + '</b></span>';
 
     let meta = '<div style="margin:4px 0 6px;line-height:1.7;">';
-    meta += kv('訓練時間', _fmtTs(m.trained_at));
+    meta += kv('è¨“ç·´æ™‚é–“', _fmtTs(m.trained_at));
     meta += kv('來源', m.source || '--');
     meta += '<br>';
-    meta += kv('數據時間段', _fmtTs(m.data_start) + ' → ' + _fmtTs(m.data_end));
+    meta += kv('æ•¸æ“šæ™‚é–“æ®µ', _fmtTs(m.data_start) + ' → ' + _fmtTs(m.data_end));
     meta += '<br>';
     meta += kv('樣本', (m.n_samples != null ? m.n_samples.toLocaleString() : '--'));
     meta += kv('勝率', (m.train_win_rate != null ? (m.train_win_rate * 100).toFixed(1) + '%' : '--'));
@@ -5281,3 +5051,4 @@ function updateClock() {
     const now = new Date();
     document.getElementById('clock').textContent = now.toLocaleTimeString('en-US', {hour12:false});
 }
+
