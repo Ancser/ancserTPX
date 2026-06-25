@@ -329,6 +329,8 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         mlc2_lookback=int(getattr(req, "mlc2_lookback", 30) or 30),
         mlc2_band_ticks=float(getattr(req, "mlc2_band_ticks", 2.0) or 2.0),
         mlc2_sl_buffer_ticks=float(getattr(req, "mlc2_sl_buffer_ticks", 4.0) or 4.0),
+        mlc2_sl_mode=str(getattr(req, "mlc2_sl_mode", "va") or "va"),
+        mlc2_max_risk_ticks=float(getattr(req, "mlc2_max_risk_ticks", 40.0) or 40.0),
         mlc2_tp_mode=str(getattr(req, "mlc2_tp_mode", "rr") or "rr"),
         mlc2_rr=float(getattr(req, "mlc2_rr", 4.0) or 4.0),
         mlc2_trail_trigger_pct=float(getattr(req, "mlc2_trail_trigger_pct", 0.0) or 0.0),
@@ -557,7 +559,9 @@ class BacktestRequest(BaseModel):
     # --- ML Consolidation V2 params (strategy="ml_consolidation_v2") ---
     mlc2_lookback: int = 30              # rolling VP window (1m bars)
     mlc2_band_ticks: float = 2.0         # proximity to VAL/VAH boundary (ticks)
-    mlc2_sl_buffer_ticks: float = 4.0    # SL beyond 100% range (ticks)
+    mlc2_sl_buffer_ticks: float = 4.0    # SL beyond reference level (ticks)
+    mlc2_sl_mode: str = "va"             # "va" = SL at VA edge; "range" = SL at 100% range edge
+    mlc2_max_risk_ticks: float = 40.0    # reject signals with risk > N ticks
     mlc2_tp_mode: str = "rr"             # "poc" = TP at POC; "rr" = fixed RR
     mlc2_rr: float = 4.0                # reward:risk ratio
     mlc2_trail_trigger_pct: float = 0.0  # 0 = trail OFF
@@ -1952,6 +1956,8 @@ async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestRes
     lookback = int(getattr(req, "mlc2_lookback", 30) or 30)
     band = float(getattr(req, "mlc2_band_ticks", 2.0) or 2.0)
     sl_buf = float(getattr(req, "mlc2_sl_buffer_ticks", 4.0) or 4.0)
+    sl_mode = str(getattr(req, "mlc2_sl_mode", "va") or "va")
+    max_risk = float(getattr(req, "mlc2_max_risk_ticks", 40.0) or 40.0)
     tp_mode = str(getattr(req, "mlc2_tp_mode", "rr") or "rr")
     rr = float(getattr(req, "mlc2_rr", 4.0) or 4.0)
     trail_trig = float(getattr(req, "mlc2_trail_trigger_pct", 0.0) or 0.0)
@@ -1964,7 +1970,8 @@ async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestRes
 
     sig_cfg = MLTrendConfig(
         lookback=lookback, band_ticks=band, sl_buffer_ticks=sl_buf,
-        tick_size=tick, tp_mode=tp_mode, rr=rr,
+        sl_mode=sl_mode, tick_size=tick, tp_mode=tp_mode, rr=rr,
+        max_risk_ticks=max_risk,
     )
     run_cfg = MLTrendBacktestConfig(
         trail_trigger_pct=trail_trig,
@@ -3753,6 +3760,8 @@ class LiveStartRequest(BaseModel):
     mlc2_lookback: int = 30
     mlc2_band_ticks: float = 2.0
     mlc2_sl_buffer_ticks: float = 4.0
+    mlc2_sl_mode: str = "va"
+    mlc2_max_risk_ticks: float = 40.0
     mlc2_tp_mode: str = "rr"
     mlc2_rr: float = 4.0
     mlc2_trail_trigger_pct: float = 0.0
@@ -4405,6 +4414,8 @@ _DEFAULT_PRESET_PARAMS = {
     "mlc2_lookback": 30,
     "mlc2_band_ticks": 2.0,
     "mlc2_sl_buffer_ticks": 4.0,
+    "mlc2_sl_mode": "va",
+    "mlc2_max_risk_ticks": 40.0,
     "mlc2_tp_mode": "rr",
     "mlc2_rr": 4.0,
     "mlc2_trail_trigger_pct": 0.0,
@@ -4416,12 +4427,13 @@ _DEFAULT_PRESET_PARAMS = {
 }
 
 _CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
+# Legacy 06.24 CODEX presets (kept in _REMOVED for migration)
 _CODEX_624_PRESET_1 = "06.24 CODEX #1 穩健測試 MNQx1 RR1:3 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2"
 _CODEX_624_PRESET_2 = "06.24 CODEX #2 收益較高 MNQx1 RR1:2.75 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2"
 _CODEX_624_PRESET_3 = "06.24 CODEX #3 卡瑪最佳 MNQx1 RR1:1.75 POFF R70 W1m Trail50L5 SesON ASIA B4 TF2"
 _CODEX_624_PRESET_4 = "06.24 CODEX #4 PNL最高 MNQx1 RR1:1.5 POFF R50 W1m Trail50L5 SesON ASIA B4 TF2"
 _CODEX_624_PRESET_5 = "06.24 CODEX #5 回撤最低 MNQx1 RR1:2.5 P0.65 R90 W1m Trail50L5 SesON ASIA B4 TF2"
-_MLC2_PRESET = "06.25 CODEX #1 均值回歸 MNQx1 MLC2 LB30 Band2 SLB4 RR1:4 ASIA+EURO TrailOFF"
+# CLAUDE #1-5 retired: OOM sweep produced unreliable low-RR configs (RR≤1.25)
 _DEFAULT_LAST_USED_PRESET = _CODEX_624_PRESET_1
 _PRESET_RENAMES = {
 }
@@ -4434,6 +4446,14 @@ _REMOVED_PRESET_NAMES = {
     "6/20 CLAUDE #1 ML RR1:3 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
     "6/20 CLAUDE #1 SVD RR1:2 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
     "6/22 CLAUDE #1 ML RR1:3 P0.55 ROFF W1m TrailOFF SesON B4 TF2 MNQx1",
+    # Retired MLC2 preset (strategy has no edge)
+    "06.25 CODEX #1 均值回歸 MNQx1 MLC2 LB30 Band2 SLB4 RR1:4 ASIA+EURO TrailOFF",
+    # Retired CLAUDE #1-5: OOM sweep data was wrong, low-RR configs unprofitable
+    "06.25 CLAUDE #1 Calmar最佳 MNQx1 RR1:1.0 R30 Trail50L5 ASIA B4 TF2",
+    "06.25 CLAUDE #2 回撤最低 MNQx1 RR1:1.0 R50 Trail50L5 ASIA B4 TF2",
+    "06.25 CLAUDE #3 均衡型 MNQx1 RR1:1.75 R70 Trail50L5 ASIA B4 TF2",
+    "06.25 CLAUDE #4 收益最高 MNQx1 RR1:1.5 R50 Trail50L5 ASIA B4 TF2",
+    "06.25 CLAUDE #5 高勝率 MNQx1 RR1:1.25 R40 Trail50L5 ASIA B4 TF2",
 }
 
 
@@ -4472,23 +4492,6 @@ _BUILTIN_PRESETS = {
     _CODEX_624_PRESET_3: _codex_624_preset(rr=1.75, max_risk_ticks=70),
     _CODEX_624_PRESET_4: _codex_624_preset(rr=1.50, max_risk_ticks=50),
     _CODEX_624_PRESET_5: _codex_624_preset(rr=2.50, max_risk_ticks=90, min_prob=0.65),
-    _MLC2_PRESET: {
-        **dict(_DEFAULT_PRESET_PARAMS),
-        "strategy": "ml_consolidation_v2",
-        "contract_id": "CON.F.US.MNQ.U26",
-        "contract_size": 1,
-        "mlc2_lookback": 30,
-        "mlc2_band_ticks": 2.0,
-        "mlc2_sl_buffer_ticks": 4.0,
-        "mlc2_tp_mode": "rr",
-        "mlc2_rr": 4.0,
-        "mlc2_trail_trigger_pct": 0.0,
-        "mlc2_trail_lock_pct": 0.0,
-        "mlc2_session_limit": False,
-        "mlc2_min_score": 0.0,
-        "mlc2_allowed_sessions": ["ASIA", "EURO"],
-        "mlc2_shadow": False,
-    },
 }
 _FIXED_PRESET_NAMES = ()
 

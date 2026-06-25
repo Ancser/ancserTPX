@@ -111,14 +111,15 @@ class MLTrendConfig:
     """Tuneable parameters for one backtest run."""
     lookback: int = 120            # rolling VP window (1m bars)
     band_ticks: float = 4.0        # proximity threshold to VAL/VAH (ticks)
-    sl_buffer_ticks: float = 4.0   # SL beyond 100% range (ticks)
+    sl_buffer_ticks: float = 4.0   # SL beyond reference level (ticks)
+    sl_mode: str = "va"            # "va" = SL at VAL/VAH ± buffer; "range" = SL at 100% range ± buffer
     rsi_period: int = 14
     atr_period: int = 14
     trend_lookback: int = 30
     tick_size: float = 0.25
     tp_mode: str = "poc"           # "poc" = TP at POC; "rr" = fixed RR from SL
     rr: float = 2.0                # only used when tp_mode == "rr"
-    max_risk_ticks: float = 80.0
+    max_risk_ticks: float = 40.0   # tightened from 80
     min_risk_ticks: float = 4.0
 
 

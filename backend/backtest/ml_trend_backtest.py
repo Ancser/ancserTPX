@@ -206,26 +206,29 @@ class MLTrendBacktester:
 
         signal = None
 
+        # SL reference: "va" = VA edge, "range" = 100% range edge
+        use_va_sl = (cfg.sl_mode == "va")
+
         # ── LONG: price at or below VAL + band ──
         if price <= val + band:
             entry = price  # will fill at next bar's open
-            sl = low_100 - buf
+            sl = (val - buf) if use_va_sl else (low_100 - buf)
             tp = poc if cfg.tp_mode == "poc" else entry + abs(entry - sl) * cfg.rr
             signal = self._build_signal(
                 candle, idx, candles, Direction.BUY, entry, sl, tp,
                 val, vah, poc,
-                f"LONG near VAL ({val:.2f}) to POC ({poc:.2f})",
+                f"LONG near VAL ({val:.2f}) SL={'VA' if use_va_sl else '100%'}",
             )
 
         # ── SHORT: price at or above VAH − band ──
         elif price >= vah - band:
             entry = price
-            sl = high_100 + buf
+            sl = (vah + buf) if use_va_sl else (high_100 + buf)
             tp = poc if cfg.tp_mode == "poc" else entry - abs(sl - entry) * cfg.rr
             signal = self._build_signal(
                 candle, idx, candles, Direction.SELL, entry, sl, tp,
                 val, vah, poc,
-                f"SHORT near VAH ({vah:.2f}) to POC ({poc:.2f})",
+                f"SHORT near VAH ({vah:.2f}) SL={'VA' if use_va_sl else '100%'}",
             )
 
         if signal is None:

@@ -184,8 +184,10 @@ class LiveTradingEngine:
                 lookback=int(getattr(self.strategy_params, "mlc2_lookback", 30) or 30),
                 band_ticks=float(getattr(self.strategy_params, "mlc2_band_ticks", 2.0) or 2.0),
                 sl_buffer_ticks=float(getattr(self.strategy_params, "mlc2_sl_buffer_ticks", 4.0) or 4.0),
+                sl_mode=str(getattr(self.strategy_params, "mlc2_sl_mode", "va") or "va"),
                 tp_mode=str(getattr(self.strategy_params, "mlc2_tp_mode", "rr") or "rr"),
                 rr=float(getattr(self.strategy_params, "mlc2_rr", 4.0) or 4.0),
+                max_risk_ticks=float(getattr(self.strategy_params, "mlc2_max_risk_ticks", 40.0) or 40.0),
                 min_score=float(getattr(self.strategy_params, "mlc2_min_score", 0.0) or 0.0),
                 allowed_sessions=tuple(_mlc2_sessions),
             )

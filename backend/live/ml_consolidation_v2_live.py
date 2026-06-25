@@ -113,8 +113,11 @@ class MLConsolidationV2LiveEvaluator:
         lookback: int = 30,
         band_ticks: float = 2.0,
         sl_buffer_ticks: float = 4.0,
+        sl_mode: str = "va",
         tp_mode: str = "rr",
         rr: float = 4.0,
+        max_risk_ticks: float = 40.0,
+        min_risk_ticks: float = 4.0,
         min_score: float = 0.0,
         allowed_sessions=None,
     ):
@@ -122,9 +125,12 @@ class MLConsolidationV2LiveEvaluator:
         self.tick_size = get_tick_size(contract_id)
         self.lookback = max(10, int(lookback))
         self.band_ticks = band_ticks
+        self.sl_mode = sl_mode
         self.sl_buffer_ticks = sl_buffer_ticks
         self.tp_mode = tp_mode          # "poc" | "rr"
         self.rr = rr
+        self.max_risk_ticks = max_risk_ticks
+        self.min_risk_ticks = min_risk_ticks
         self.min_score = min_score
         self.allowed_sessions = allowed_sessions
 
@@ -273,10 +279,12 @@ class MLConsolidationV2LiveEvaluator:
         tp: float = 0.0
         entry = float(price)
 
+        use_va_sl = (self.sl_mode == "va")
+
         # LONG: price 觸及 VAL（close <= val + band）
         if price <= self.val + band:
             direction = Direction.BUY
-            sl = self.low_100 - buf
+            sl = (self.val - buf) if use_va_sl else (self.low_100 - buf)
             risk = entry - sl
             if risk <= 0:
                 return None
@@ -288,7 +296,7 @@ class MLConsolidationV2LiveEvaluator:
         # SHORT: price 觸及 VAH（close >= vah - band）
         elif price >= self.vah - band:
             direction = Direction.SELL
-            sl = self.high_100 + buf
+            sl = (self.vah + buf) if use_va_sl else (self.high_100 + buf)
             risk = sl - entry
             if risk <= 0:
                 return None
@@ -297,6 +305,13 @@ class MLConsolidationV2LiveEvaluator:
             else:
                 tp = entry - risk * self.rr
         else:
+            return None
+
+        # Risk tick filter (match backtest behaviour)
+        risk = abs(entry - sl)
+        risk_t = risk / self.tick_size
+        reward_t = abs(tp - entry) / self.tick_size
+        if risk_t < self.min_risk_ticks or risk_t > self.max_risk_ticks or reward_t < 2:
             return None
 
         # Build features

@@ -378,7 +378,9 @@ class StrategyParams:
     # --- ML Consolidation V2: VA mean reversion (strategy == "ml_consolidation_v2") ---
     mlc2_lookback: int = 30                # rolling VP window (1m bars)
     mlc2_band_ticks: float = 2.0           # proximity to VAL/VAH boundary (ticks)
-    mlc2_sl_buffer_ticks: float = 4.0      # SL beyond 100% range (ticks)
+    mlc2_sl_buffer_ticks: float = 4.0      # SL beyond reference level (ticks)
+    mlc2_sl_mode: str = "va"               # "va" = SL at VA edge; "range" = SL at 100% range edge
+    mlc2_max_risk_ticks: float = 40.0      # reject signals with risk > N ticks
     mlc2_tp_mode: str = "rr"               # "poc" = TP at POC; "rr" = fixed RR
     mlc2_rr: float = 4.0                   # reward:risk ratio (tp_mode=="rr")
     mlc2_trail_trigger_pct: float = 0.0    # 0 = trail OFF
