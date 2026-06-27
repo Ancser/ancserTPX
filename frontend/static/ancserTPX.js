@@ -56,6 +56,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     breakout_confirm_bars: 7,
     one_trade_per_session_direction: true,
     tr_one_trade_per_session: true,
+    tr_allowed_sessions: ['ASIA'],
     // Zone stability is enabled by default; keep this flag for future experiments.
     skip_zone_stability: false,
     conf_band_ticks: 4,
@@ -698,6 +699,9 @@ function collectStrategyParams(mode) {
         full_tp_lock: primary.full_tp_lock,
         one_trade_per_session_direction: true,
         tr_one_trade_per_session: _int('tr-session-limit-' + mode, 1) === 1,
+        tr_allowed_sessions: normalizeAllowedSessions(
+            _mlSelectValue('tr-allowed-sessions-' + mode, 'ASIA')
+        ),
         skip_zone_stability: false,
         breakout_confirm_bars: Math.max(1, Math.min(10, _int('confirm-bars-' + mode, 7))),
     };
@@ -811,6 +815,9 @@ function applyStrategyParams(mode, params) {
     _set('conf-session-limit-' + mode, (p.conf_session_limit === false) ? '0' : '1');
     _set('conf-allowed-sessions-' + mode, allowedSessionsSelectValue(
         p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA']
+    ));
+    _set('tr-allowed-sessions-' + mode, allowedSessionsSelectValue(
+        p.tr_allowed_sessions != null ? p.tr_allowed_sessions : ['ASIA']
     ));
     if (p.conf_model_name) {
         _pendingPresetModelByMode[mode] = p.conf_model_name;
@@ -943,7 +950,8 @@ function buildPresetParamToken(params) {
         ? tfCombo
         : (tfCombo.length ? [tfCombo[0]] : [p.area_timeframe || '5m']);
     const confirm = Math.max(1, Math.min(10, parseInt(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7, 10) || 7));
-    return 'TR' + vaPct + ' ' + tfs.join('/') + ' RR1:' + rr + ' C' + confirm + ' ' + _contractPresetToken(p);
+    const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : ['ASIA']);
+    return 'TR' + vaPct + ' ' + tfs.join('/') + ' RR1:' + rr + ' C' + confirm + ' ' + market + ' ' + _contractPresetToken(p);
 }
 
 function suggestedPresetPurpose(params) {
@@ -1446,7 +1454,8 @@ function decorateParamHelpDots() {
         'trail-trigger-pct': '\u50f9\u683c\u5230\u9054 TP \u7684\u6307\u5b9a\u767e\u5206\u6bd4\u5f8c\u958b\u59cb\u79fb\u52d5\u6b62\u640d\u3002OFF = \u4e0d\u79fb\u52d5\u3002\nTrail trigger percentage.',
         'trail-sl-pct': '\u89f8\u767c\u5f8c\u6b62\u640d\u8981\u79fb\u5230\u7684\u4f4d\u7f6e\uff0c\u76f8\u5c0d\u5165\u5834 / TP \u8a08\u7b97\u3002\nWhere the stop moves after trigger.',
         'full-tp-lock': '\u65e5\u5167\u9054\u5230\u6b64\u7372\u5229\u76ee\u6a19\u5f8c\u9396\u5b9a\uff0c\u4e0d\u518d\u958b\u65b0\u55ae\uff080 = OFF\uff09\u3002\nBlocks new entries after daily profit target.',
-        'tr-session-limit': '\u9650\u5236\u4ea4\u6613\u6642\u6bb5\uff0c\u53ea\u5728\u4e3b\u8981\u5141\u8a31\u6642\u6bb5\u9032\u5834\u3002\nRestricts entries to allowed sessions.',
+        'tr-session-limit': '\u540c\u4e00 Topstep session \u5167\uff0c\u540c\u4e00\u5340\u9593 / \u7a81\u7834\u65b9\u5411\u53ea\u5141\u8a31\u4e00\u6b21\u6210\u4ea4\u6a5f\u6703\uff1b\u672a\u6210\u4ea4\u53d6\u6d88\u6703\u91cb\u653e\u3002\nOne filled opportunity per zone/direction per session.',
+        'tr-allowed-sessions': 'TREND \u5e02\u5834\u76e4\u6bb5\u904e\u6ffe\uff1a\u53ea\u5728\u9078\u5b9a\u76e4\u6bb5\u958b\u65b0\u55ae\uff1bpending \u8de8\u51fa\u76e4\u6bb5\u6703\u53d6\u6d88\u4e26\u91cb\u653e lock\u3002\nTrend market segment filter.',
     };
     const standalone = {
         'username': 'Topstep / ProjectX \u767b\u5165\u90f5\u7bb1\u3002\nTopstep login email.',
@@ -1774,6 +1783,13 @@ async function goLive() {
             + ' band=' + stratParams.mlc2_band_ticks
             + ' rr=' + stratParams.mlc2_rr
             + ' market=' + allowedSessionsLabel(stratParams.mlc2_allowed_sessions), 'info');
+    }
+    if (stratParams.strategy === 'trend') {
+        log('TREND: LIVE TF=' + (stratParams.method === 'overlap' ? stratParams.tf_combo.join('/') : stratParams.area_timeframe)
+            + ' RR1:' + stratParams.rr_ratio
+            + ' C=' + stratParams.breakout_confirm_bars
+            + ' sessionLimit=' + (stratParams.tr_one_trade_per_session ? 'ON' : 'OFF')
+            + ' market=' + allowedSessionsLabel(stratParams.tr_allowed_sessions), 'info');
     }
 
     // Switch the zone filter to LIVE and preselect the timeframe(s) being traded

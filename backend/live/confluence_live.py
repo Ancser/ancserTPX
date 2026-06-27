@@ -216,6 +216,15 @@ class ConfluenceLiveEvaluator:
         risk = abs(market_entry - sig.sl_price)
         if risk <= 0:
             return None
+        risk_ticks = risk / self.tick_size
+        if sig.direction == Direction.BUY and sig.sl_price >= market_entry:
+            return None
+        if sig.direction == Direction.SELL and sig.sl_price <= market_entry:
+            return None
+        if risk_ticks < 5:
+            return None
+        if self.cfg.max_risk_ticks and risk_ticks > self.cfg.max_risk_ticks:
+            return None
         rr = self.cfg.rr
         if sig.direction == Direction.BUY:
             new_tp = market_entry + risk * rr

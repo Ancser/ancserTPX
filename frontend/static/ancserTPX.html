@@ -316,12 +316,26 @@
                     <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
                     <input type="hidden" id="trail-sl-ticks-bt" value="20">
                 </div>
-                <div class="form-group">
-                    <label>SESSION LIMIT</label>
-                    <select id="tr-session-limit-bt">
-                        <option value="1" selected>ON</option>
-                        <option value="0">OFF</option>
-                    </select>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>SESSION LIMIT</label>
+                        <select id="tr-session-limit-bt">
+                            <option value="1" selected>ON</option>
+                            <option value="0">OFF</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>MARKET SESSION</label>
+                        <select id="tr-allowed-sessions-bt">
+                            <option value="">ALL</option>
+                            <option value="ASIA,PRE">ASIA + PRE</option>
+                            <option value="ASIA" selected>ASIA</option>
+                            <option value="PRE">PRE</option>
+                            <option value="EURO">EURO</option>
+                            <option value="RTH">RTH</option>
+                            <option value="AH">AH</option>
+                        </select>
+                    </div>
                 </div>
             </div>
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
@@ -570,12 +584,26 @@
                         <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
                         <input type="hidden" id="trail-sl-ticks-live" value="20">
                     </div>
-                    <div class="form-group">
-                        <label>SESSION LIMIT</label>
-                        <select id="tr-session-limit-live">
-                            <option value="1" selected>ON</option>
-                            <option value="0">OFF</option>
-                        </select>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>SESSION LIMIT</label>
+                            <select id="tr-session-limit-live">
+                                <option value="1" selected>ON</option>
+                                <option value="0">OFF</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>MARKET SESSION</label>
+                            <select id="tr-allowed-sessions-live">
+                                <option value="">ALL</option>
+                                <option value="ASIA,PRE">ASIA + PRE</option>
+                                <option value="ASIA" selected>ASIA</option>
+                                <option value="PRE">PRE</option>
+                                <option value="EURO">EURO</option>
+                                <option value="RTH">RTH</option>
+                                <option value="AH">AH</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
             </div>

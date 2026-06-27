@@ -339,6 +339,7 @@ class StrategyParams:
     # One session, one direction, one order attempt. Keeps live behavior aligned with backtest.
     one_trade_per_session_direction: bool = True
     tr_one_trade_per_session: bool = True   # trend session limit
+    tr_allowed_sessions: Optional[List[str]] = field(default_factory=lambda: ["ASIA"])
     # Session-zone maturity controls
     # Zone stability is enabled by default; set True only for no-stability-wait experiments.
     skip_zone_stability: bool = False

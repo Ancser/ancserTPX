@@ -372,6 +372,23 @@ class ConfluenceBacktester:
         risk = abs(market_entry - sig.sl_price)
         if risk <= 0:
             return False  # degenerate — SL == entry
+        risk_ticks = risk / self.TICK_SIZE
+        if sig.direction == Direction.BUY and sig.sl_price >= market_entry:
+            self._pending = None
+            self._pending_age = 0
+            return False
+        if sig.direction == Direction.SELL and sig.sl_price <= market_entry:
+            self._pending = None
+            self._pending_age = 0
+            return False
+        if risk_ticks < 5:
+            self._pending = None
+            self._pending_age = 0
+            return False
+        if self.signal_cfg.max_risk_ticks and risk_ticks > self.signal_cfg.max_risk_ticks:
+            self._pending = None
+            self._pending_age = 0
+            return False
         rr = self.signal_cfg.rr
         if sig.direction == Direction.BUY:
             new_tp = market_entry + risk * rr

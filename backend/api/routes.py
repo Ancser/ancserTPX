@@ -350,6 +350,9 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         tr_trail_trigger_pct=tr["trail_trigger_pct"],
         tr_trail_enabled=tr["trail_enabled"],
         tr_full_tp_lock=tr["full_tp_lock"],
+        tr_allowed_sessions=_conf_allowed_sessions_list(
+            getattr(req, "tr_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+        ),
         candle_seconds=60,
         contract_id=getattr(req, "contract_id", "CON.F.US.MNQ.M26"),
         contract_size=contract_size,
@@ -518,6 +521,9 @@ class BacktestRequest(BaseModel):
     tr_trail_trigger_pct: Optional[float] = None
     tr_trail_enabled: Optional[bool] = None
     tr_full_tp_lock: Optional[int] = None
+    tr_allowed_sessions: Optional[List[str]] = Field(
+        default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
+    )
     candle_seconds: int = 60
     value_area_pct: float = 0.80
     area_timeframe: str = "5m"
@@ -2900,6 +2906,9 @@ class MLRunRequest(BaseModel):
     tr_trail_trigger_pct: Optional[float] = None
     tr_trail_enabled: Optional[bool] = None
     tr_full_tp_lock: Optional[int] = None
+    tr_allowed_sessions: Optional[List[str]] = Field(
+        default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
+    )
     candle_seconds: int = 60
     value_area_pct: float = 0.80
     area_timeframe: str = "5m"
@@ -3727,6 +3736,9 @@ class LiveStartRequest(BaseModel):
     tr_trail_trigger_pct: Optional[float] = None
     tr_trail_enabled: Optional[bool] = None
     tr_full_tp_lock: Optional[int] = None
+    tr_allowed_sessions: Optional[List[str]] = Field(
+        default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
+    )
     candle_seconds: int = 60
     full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     one_trade_per_session_direction: bool = True
@@ -4380,6 +4392,7 @@ _DEFAULT_PRESET_PARAMS = {
     "tr_trail_trigger_pct": 0.30,
     "tr_trail_enabled": True,
     "tr_full_tp_lock": 0,
+    "tr_allowed_sessions": ["ASIA"],
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.U26",
     "contract_size": 1,
@@ -4434,7 +4447,16 @@ _CODEX_624_PRESET_3 = "06.24 CODEX #3 卡瑪最佳 MNQx1 RR1:1.75 POFF R70 W1m T
 _CODEX_624_PRESET_4 = "06.24 CODEX #4 PNL最高 MNQx1 RR1:1.5 POFF R50 W1m Trail50L5 SesON ASIA B4 TF2"
 _CODEX_624_PRESET_5 = "06.24 CODEX #5 回撤最低 MNQx1 RR1:2.5 P0.65 R90 W1m Trail50L5 SesON ASIA B4 TF2"
 # CLAUDE #1-5 retired: OOM sweep produced unreliable low-RR configs (RR≤1.25)
-_DEFAULT_LAST_USED_PRESET = _CODEX_624_PRESET_1
+_CODEX_626_PRESET_1 = "06.26 CODEX #1 Trend穩定 MNQx1 TF1h RR1:4 C3 SL40 Trail50L10"
+_CODEX_626_PRESET_2 = "06.26 CODEX #2 Trend多單 MNQx1 TF5m RR1:4 C3 SL80 Trail50L10"
+_CODEX_626_PRESET_3 = "06.26 CODEX #3 Trend均衡 MNQx1 TF15m RR1:4 C3 SL40 TrailOFF"
+_CODEX_626_PRESET_4 = "06.26 CODEX #4 RESEARCH Confluence舊最佳 MNQx1 RR1:2.5 P0.65 R90 B4 TF2 Shadow"
+_CODEX_626_PRESET_5 = "06.26 CODEX #5 RESEARCH Confluence低回撤 MNQx1 RR1:1.5 POFF R50 B4 TF2 Shadow"
+_CODEX_626_PRESET_6 = "06.26 CODEX #6 RESEARCH Confluence高TF MNQx1 RR1:1.5 P0.65 R40 B8 TF3 Shadow"
+_CODEX_626_PRESET_7 = "06.26 CODEX #7 RESEARCH MLC2低回撤 MNQx1 LB240 B2 RANGE POC R40 ASIA Shadow"
+_CODEX_626_PRESET_8 = "06.26 CODEX #8 RESEARCH MLC2多單 MNQx1 LB240 B1 RANGE POC R20 PRE Shadow"
+_CODEX_626_PRESET_9 = "06.26 CODEX #9 RESEARCH MLC2寬Band MNQx1 LB240 B4 RANGE POC R40 ASIA Shadow"
+_DEFAULT_LAST_USED_PRESET = _CODEX_626_PRESET_1
 _PRESET_RENAMES = {
 }
 _REMOVED_PRESET_NAMES = {
@@ -4454,6 +4476,13 @@ _REMOVED_PRESET_NAMES = {
     "06.25 CLAUDE #3 均衡型 MNQx1 RR1:1.75 R70 Trail50L5 ASIA B4 TF2",
     "06.25 CLAUDE #4 收益最高 MNQx1 RR1:1.5 R50 Trail50L5 ASIA B4 TF2",
     "06.25 CLAUDE #5 高勝率 MNQx1 RR1:1.25 R40 Trail50L5 ASIA B4 TF2",
+    # Retired 06.24 confluence presets: corrected-market validation on
+    # 2026-06-26 showed unstable/negative May+June splits.
+    _CODEX_624_PRESET_1,
+    _CODEX_624_PRESET_2,
+    _CODEX_624_PRESET_3,
+    _CODEX_624_PRESET_4,
+    _CODEX_624_PRESET_5,
 }
 
 
@@ -4486,12 +4515,147 @@ def _codex_624_preset(
     })
     return params
 
+
+def _codex_626_trend_preset(
+    *,
+    area_timeframe: str,
+    rr: int,
+    confirm_bars: int,
+    sl_ticks: int,
+    trail_enabled: bool,
+    trail_trigger: float = 0.50,
+    trail_ticks: int = 10,
+    contract_id: str = "CON.F.US.MNQ.U26",
+    contract_size: int = 1,
+) -> dict:
+    params = dict(_DEFAULT_PRESET_PARAMS)
+    params.update({
+        "strategy": "trend",
+        "contract_id": contract_id,
+        "contract_size": contract_size,
+        "area_timeframe": area_timeframe,
+        "method": "single",
+        "tf_combo": [],
+        "value_area_pct": 0.80,
+        "rr_ratio": int(rr),
+        "breakout_confirm_bars": int(confirm_bars),
+        "sl_ticks": int(sl_ticks),
+        "tr_sl_ticks": int(sl_ticks),
+        "trail_enabled": bool(trail_enabled),
+        "tr_trail_enabled": bool(trail_enabled),
+        "trail_trigger_pct": float(trail_trigger if trail_enabled else 0.0),
+        "tr_trail_trigger_pct": float(trail_trigger if trail_enabled else 0.0),
+        "trail_sl_ticks": int(trail_ticks if trail_enabled else 0),
+        "tr_trail_sl_ticks": int(trail_ticks if trail_enabled else 0),
+        "full_tp_lock": 0,
+        "tr_full_tp_lock": 0,
+        "tr_allowed_sessions": ["ASIA"],
+        "one_trade_per_session_direction": True,
+        "tr_one_trade_per_session": True,
+    })
+    return params
+
+
+def _codex_626_confluence_research_preset(
+    *,
+    rr: float,
+    max_risk_ticks: int,
+    min_prob: float,
+    band: float,
+    min_tf: int,
+    contract_id: str = "CON.F.US.MNQ.U26",
+    contract_size: int = 1,
+) -> dict:
+    params = _codex_624_preset(
+        rr=rr,
+        max_risk_ticks=max_risk_ticks,
+        min_prob=min_prob,
+        contract_id=contract_id,
+        contract_size=contract_size,
+    )
+    params.update({
+        "strategy": "confluence",
+        "conf_band_ticks": float(band),
+        "conf_min_distinct_tf": int(min_tf),
+        "conf_allowed_sessions": ["ASIA"],
+        "conf_trail_trigger_pct": 0.50,
+        "conf_trail_lock_pct": 0.05,
+        "conf_session_limit": True,
+        # Research-only: corrected-market validation did not pass stability.
+        # Selecting this preset for live logs signals without placing orders.
+        "conf_shadow": True,
+    })
+    return params
+
+
+def _codex_626_mlc2_research_preset(
+    *,
+    lookback: int,
+    band: float,
+    sl_buffer: float,
+    max_risk: float,
+    sessions: list[str],
+    session_limit: bool,
+    contract_id: str = "CON.F.US.MNQ.U26",
+    contract_size: int = 1,
+) -> dict:
+    params = dict(_DEFAULT_PRESET_PARAMS)
+    params.update({
+        "strategy": "ml_consolidation_v2",
+        "contract_id": contract_id,
+        "contract_size": contract_size,
+        "mlc2_lookback": int(lookback),
+        "mlc2_band_ticks": float(band),
+        "mlc2_sl_buffer_ticks": float(sl_buffer),
+        "mlc2_sl_mode": "range",
+        "mlc2_max_risk_ticks": float(max_risk),
+        "mlc2_tp_mode": "poc",
+        "mlc2_rr": 1.0,
+        "mlc2_trail_trigger_pct": 0.50,
+        "mlc2_trail_lock_pct": 0.05,
+        "mlc2_session_limit": bool(session_limit),
+        "mlc2_allowed_sessions": list(sessions),
+        "mlc2_min_score": 0.0,
+        # Research-only: edge is too thin for live.
+        "mlc2_shadow": True,
+    })
+    return params
+
+
 _BUILTIN_PRESETS = {
-    _CODEX_624_PRESET_1: _codex_624_preset(rr=3.0, max_risk_ticks=80),
-    _CODEX_624_PRESET_2: _codex_624_preset(rr=2.75, max_risk_ticks=80),
-    _CODEX_624_PRESET_3: _codex_624_preset(rr=1.75, max_risk_ticks=70),
-    _CODEX_624_PRESET_4: _codex_624_preset(rr=1.50, max_risk_ticks=50),
-    _CODEX_624_PRESET_5: _codex_624_preset(rr=2.50, max_risk_ticks=90, min_prob=0.65),
+    _CODEX_626_PRESET_1: _codex_626_trend_preset(
+        area_timeframe="1h", rr=4, confirm_bars=3, sl_ticks=40,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+    ),
+    _CODEX_626_PRESET_2: _codex_626_trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+    ),
+    _CODEX_626_PRESET_3: _codex_626_trend_preset(
+        area_timeframe="15m", rr=4, confirm_bars=3, sl_ticks=40,
+        trail_enabled=False,
+    ),
+    _CODEX_626_PRESET_4: _codex_626_confluence_research_preset(
+        rr=2.50, max_risk_ticks=90, min_prob=0.65, band=4, min_tf=2,
+    ),
+    _CODEX_626_PRESET_5: _codex_626_confluence_research_preset(
+        rr=1.50, max_risk_ticks=50, min_prob=0.0, band=4, min_tf=2,
+    ),
+    _CODEX_626_PRESET_6: _codex_626_confluence_research_preset(
+        rr=1.50, max_risk_ticks=40, min_prob=0.65, band=8, min_tf=3,
+    ),
+    _CODEX_626_PRESET_7: _codex_626_mlc2_research_preset(
+        lookback=240, band=2, sl_buffer=2, max_risk=40,
+        sessions=["ASIA"], session_limit=True,
+    ),
+    _CODEX_626_PRESET_8: _codex_626_mlc2_research_preset(
+        lookback=240, band=1, sl_buffer=4, max_risk=20,
+        sessions=["PRE"], session_limit=False,
+    ),
+    _CODEX_626_PRESET_9: _codex_626_mlc2_research_preset(
+        lookback=240, band=4, sl_buffer=2, max_risk=40,
+        sessions=["ASIA"], session_limit=True,
+    ),
 }
 _FIXED_PRESET_NAMES = ()
 
@@ -4530,6 +4694,9 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             changed = True
         if normalized_strategy == "confluence" and "conf_allowed_sessions" not in params:
             params["conf_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
+            changed = True
+        if normalized_strategy == "trend" and "tr_allowed_sessions" not in params:
+            params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
             changed = True
 
     for old_name, new_name in _PRESET_RENAMES.items():

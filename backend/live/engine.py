@@ -145,6 +145,10 @@ class LiveTradingEngine:
             getattr(self.strategy_params, "conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
             or None
         )
+        self._tr_allowed_sessions = (
+            getattr(self.strategy_params, "tr_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+            or None
+        )
         self._last_session_block_log: Optional[str] = None
         self._conf_signals_log: List[Dict] = []
         # explain payload (weights x features) of the confluence signal that is
@@ -199,6 +203,7 @@ class LiveTradingEngine:
         self._pending_order_id: Optional[int] = None
         self._pending_signal: Optional[TradeSignal] = None
         self._pending_age: int = 0
+        self._pending_created_at: Optional[datetime] = None
         self._open_position: Optional[Dict] = None
         self._fill_price: Optional[float] = None
         self._sl_order_id: Optional[int] = None
@@ -354,6 +359,12 @@ class LiveTradingEngine:
 
     def _confluence_session_label(self) -> str:
         return allowed_sessions_label(self._conf_allowed_sessions)
+
+    def _trend_session_allowed(self, ts: datetime) -> bool:
+        return is_allowed_session(ts, self._tr_allowed_sessions)
+
+    def _trend_session_label(self) -> str:
+        return allowed_sessions_label(self._tr_allowed_sessions)
 
     @staticmethod
     def _order_id(order: Dict[str, Any]) -> Optional[int]:
@@ -707,6 +718,8 @@ class LiveTradingEngine:
         entry_time: Optional[datetime],
         exit_time: datetime,
         entry_price: Optional[float],
+        exit_price: Optional[float],
+        topstep_pnl: Optional[float],
         sl_price: Optional[float],
         tp_price: Optional[float],
         direction: Optional[str],
@@ -741,6 +754,8 @@ class LiveTradingEngine:
                 "exit_time": exit_time.isoformat() if exit_time else None,
                 "entry_time": entry_time.isoformat() if entry_time else None,
                 "entry_price": entry_price,
+                "exit_price": exit_price,
+                "topstep_pnl": topstep_pnl,
                 "sl_price": sl_price,
                 "tp_price": tp_price,
                 "original_sl_price": original_sl_price or sl_price,
@@ -776,6 +791,8 @@ class LiveTradingEngine:
         conf_payload: Optional[Dict],
         trail_triggered: bool,
         status: str = "closed",
+        exit_price: Optional[float] = None,
+        topstep_pnl: Optional[float] = None,
     ):
         """Append one fully-explainable order record to data/trades.json.
 
@@ -794,11 +811,14 @@ class LiveTradingEngine:
         """
         try:
             filled = status == "closed"
-            won = (exit_reason == "tp") if filled else None
-            # exit price proxy = the bracket level that was hit (matches live_exits)
-            exit_price = None
-            if filled and signal is not None:
-                exit_price = signal.tp_price if won else signal.sl_price
+            if filled and topstep_pnl is not None:
+                won = topstep_pnl > 0
+            else:
+                won = (exit_reason == "tp") if filled else None
+            # Prefer the actual Topstep closing fill price.  Only fall back to
+            # the intended bracket when the broker fill is not yet available.
+            if filled and exit_price is None and signal is not None:
+                exit_price = signal.tp_price if exit_reason == "tp" else signal.sl_price
 
             scorer = getattr(self.confluence, "scorer", None) if self.confluence else None
             cfg = getattr(self.confluence, "cfg", None) if self.confluence else None
@@ -814,6 +834,7 @@ class LiveTradingEngine:
                 "size": self.contract_size,
                 "entry_price": entry_price,
                 "exit_price": exit_price,
+                "topstep_pnl": topstep_pnl,
                 "sl_price": signal.sl_price if signal else None,
                 "tp_price": signal.tp_price if signal else None,
                 "original_sl_price": (
@@ -1236,6 +1257,171 @@ class LiveTradingEngine:
             logger.warning(f"Failed to calc PnL from trades: {e}")
             return 0.0
 
+    @staticmethod
+    def _first_present(row: Dict[str, Any], *keys: str):
+        for key in keys:
+            if key in row and row.get(key) is not None:
+                return row.get(key)
+        return None
+
+    @staticmethod
+    def _coerce_float(value) -> Optional[float]:
+        if value is None or value == "":
+            return None
+        try:
+            return float(str(value).replace(",", "").replace("$", ""))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _coerce_utc_dt(value) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            if isinstance(value, datetime):
+                dt = value
+            else:
+                dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=_UTC_TZ)
+            return dt.astimezone(_UTC_TZ)
+        except (TypeError, ValueError):
+            return None
+
+    def _topstep_fill_time(self, row: Dict[str, Any]) -> Optional[datetime]:
+        return self._coerce_utc_dt(self._first_present(
+            row,
+            "creationTimestamp",
+            "CreationTimestamp",
+            "createdAt",
+            "timestamp",
+            "fillTime",
+        ))
+
+    def _topstep_fill_price(self, row: Dict[str, Any]) -> Optional[float]:
+        price = self._coerce_float(self._first_present(
+            row,
+            "price",
+            "Price",
+            "fillPrice",
+            "averagePrice",
+        ))
+        if price is None:
+            return None
+        return self._round_to_tick(price)
+
+    def _topstep_fill_pnl(self, row: Dict[str, Any]) -> Optional[float]:
+        return self._coerce_float(self._first_present(
+            row,
+            "profitAndLoss",
+            "ProfitAndLoss",
+            "pnl",
+        ))
+
+    def _topstep_trade_contract_matches(self, row: Dict[str, Any]) -> bool:
+        contract = self._first_present(row, "contractId", "ContractId", "contract_id")
+        return not contract or str(contract) == str(self.contract_id)
+
+    async def _latest_topstep_closing_fill(
+        self,
+        *,
+        entry_time: Optional[datetime],
+        attempts: int = 3,
+        delay_seconds: float = 0.4,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the most recent Topstep close fill after this entry.
+
+        Topstep is the source of truth for whether the position actually closed
+        and at what price.  We only use local/market-price heuristics when the
+        broker trade-history endpoint has not published the close yet.
+        """
+        entry_dt = self._coerce_utc_dt(entry_time)
+        min_time = entry_dt - timedelta(seconds=10) if entry_dt else None
+
+        for attempt in range(max(1, attempts)):
+            try:
+                rows = await self.client.get_trade_history(self.account_id, days=2)
+            except Exception as e:
+                self._log_event(f"[TOPSTEP EXIT] trade history 查詢失敗: {e}", "error")
+                rows = []
+
+            candidates: List[tuple[datetime, Dict[str, Any]]] = []
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                if not self._topstep_trade_contract_matches(row):
+                    continue
+                pnl = self._topstep_fill_pnl(row)
+                if pnl is None or abs(pnl) < 1e-9:
+                    continue  # opening fills normally have no realized PnL
+                ts = self._topstep_fill_time(row)
+                if min_time and ts and ts < min_time:
+                    continue
+                candidates.append((ts or datetime.min.replace(tzinfo=_UTC_TZ), row))
+
+            if candidates:
+                candidates.sort(key=lambda item: item[0])
+                return candidates[-1][1]
+
+            if attempt < max(1, attempts) - 1 and delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
+
+        return None
+
+    def _exit_reason_from_topstep_fill(
+        self,
+        close_fill: Optional[Dict[str, Any]],
+        signal: Optional[TradeSignal],
+        forced: Optional[str],
+    ) -> tuple[str, Optional[float], Optional[float], Optional[datetime]]:
+        """Classify close using Topstep fill price first, then pnl fallback."""
+        if close_fill:
+            exit_price = self._topstep_fill_price(close_fill)
+            topstep_pnl = self._topstep_fill_pnl(close_fill)
+            exit_time = self._topstep_fill_time(close_fill)
+        else:
+            exit_price = None
+            topstep_pnl = None
+            exit_time = None
+
+        if forced:
+            return forced, exit_price, topstep_pnl, exit_time
+
+        if signal and exit_price is not None:
+            tp_p = signal.tp_price
+            sl_p = signal.sl_price
+            tick_tol = max(self.tick_size * 1.5, 0.01)
+            tp_dist = abs(exit_price - tp_p)
+            sl_dist = abs(exit_price - sl_p)
+            if tp_dist <= tick_tol and tp_dist <= sl_dist:
+                return "tp", exit_price, topstep_pnl, exit_time
+            if sl_dist <= tick_tol and sl_dist <= tp_dist:
+                return ("trail_sl" if self._trail_sl_triggered else "sl"), exit_price, topstep_pnl, exit_time
+            if tp_dist + tick_tol < sl_dist:
+                return "tp", exit_price, topstep_pnl, exit_time
+            if sl_dist + tick_tol < tp_dist:
+                return ("trail_sl" if self._trail_sl_triggered else "sl"), exit_price, topstep_pnl, exit_time
+
+        if topstep_pnl is not None:
+            if topstep_pnl < 0:
+                return ("trail_sl" if self._trail_sl_triggered else "sl"), exit_price, topstep_pnl, exit_time
+            if topstep_pnl > 0:
+                # With no usable exit price, positive PnL could be TP or a trailed
+                # stop.  Treat TP as the safer default; price-based logic above
+                # handles normal trail-SL cases.
+                return "tp", exit_price, topstep_pnl, exit_time
+
+        # Last-resort compatibility path: no Topstep close fill available yet.
+        if signal and self._last_market_price:
+            sl_p = signal.sl_price
+            tp_p = signal.tp_price
+            mkt = self._last_market_price
+            if abs(mkt - sl_p) < abs(mkt - tp_p):
+                return ("trail_sl" if self._trail_sl_triggered else "sl"), exit_price, topstep_pnl, exit_time
+            return "tp", exit_price, topstep_pnl, exit_time
+
+        return ("trail_sl" if self._trail_sl_triggered else "tp"), exit_price, topstep_pnl, exit_time
+
     async def _refresh_account_snapshot(
         self,
         reason: str = "account",
@@ -1377,6 +1563,7 @@ class LiveTradingEngine:
             "full_tp_counts": dict(self._full_tp_counts),
             "strategy_mode": self.strategy_mode,
             "active_mode": getattr(self.trend_follow, 'active_mode', self.strategy_mode),
+            "trend_allowed_sessions": self._trend_session_label(),
             "strategies": self.strategies,
             "disconnected": self._disconnected,
             "capital": self._capital,
@@ -1392,6 +1579,14 @@ class LiveTradingEngine:
             "confluence_shadow": self._conf_shadow if self.strategy_mode == "confluence" else None,
             "confluence_scorer": (self.confluence.scorer_source if self.confluence else None),
             "confluence_allowed_sessions": self._confluence_session_label() if self.confluence else "ALL",
+            "active_allowed_sessions": (
+                self._confluence_session_label() if self.strategy_mode == "confluence"
+                else (
+                    allowed_sessions_label(getattr(self.strategy_params, "mlc2_allowed_sessions", None) or ["ASIA", "EURO"])
+                    if self.strategy_mode == "ml_consolidation_v2"
+                    else self._trend_session_label()
+                )
+            ),
             "confluence_signals": self._conf_signals_log[-20:] if self.confluence else [],
             # full explainable level universe (per-TF/recency zones + weight + distance)
             "confluence_universe": (
@@ -1672,7 +1867,7 @@ class LiveTradingEngine:
             self.detector.update(c)
             self._update_tf_breakout(c)
             if can_observe_strategy:
-                if self._strategy_breakout_observable():
+                if self._strategy_breakout_observable() and self._trend_session_allowed(c.timestamp):
                     self.trend_follow.observe(
                         c,
                         self.detector.get_recent_zones(),
@@ -1783,6 +1978,8 @@ class LiveTradingEngine:
                 success = await self.client.cancel_order(self.account_id, self._pending_order_id)
                 if success:
                     self._log_event(f"取消掛單 #{self._pending_order_id}")
+                    if self._pending_signal:
+                        self._release_breakout_lock(self._pending_signal)
                 else:
                     self._log_event(f"取消掛單 #{self._pending_order_id} 失敗，保留 session-direction 鎖", "error")
             except Exception as e:
@@ -1799,6 +1996,7 @@ class LiveTradingEngine:
             self._pending_signal = None
             self._pending_conf_payload = None
             self._pending_mlc2_payload = None
+            self._pending_created_at = None
 
         self._log_event("引擎已停止")
 
@@ -1807,7 +2005,7 @@ class LiveTradingEngine:
         if not self._pending_order_id:
             self._log_event("無掛單可取消")
             return False
-        await self._cancel_pending()
+        await self._cancel_pending(release_breakout_lock=True)
         return True
 
     async def _emergency_market_close(self, side: int, reason: str):
@@ -1819,6 +2017,9 @@ class LiveTradingEngine:
         if reason in ("SL_REJECTED", "SL_EXCEPTION"):
             self._force_exit_reason = "trail_sl" if self._trail_sl_triggered else "sl"
         elif reason == "DOUBLE_FILL":
+            self._force_exit_reason = "flatten"
+
+        if reason in ("MARKET_FILL_INVALID", "MARKET_FILL_RISK"):
             self._force_exit_reason = "flatten"
 
         self._log_event(f"[{reason}] 緊急 Market 平倉 side={'SELL' if side == 2 else 'BUY'}")
@@ -1911,6 +2112,7 @@ class LiveTradingEngine:
         self._pending_order_id = None
         self._pending_signal = None
         self._pending_age = 0
+        self._pending_created_at = None
         self._active_signal = None
         self._fill_price = None
         self._trail_sl_triggered = False
@@ -2135,13 +2337,13 @@ class LiveTradingEngine:
                 self._log_event("PT 12:45 收盤平倉")
                 await self.flatten_now()
             if self._pending_order_id:
-                await self._cancel_pending()
+                await self._cancel_pending(release_breakout_lock=True)
             return  # no new trades during flatten, but detector already updated
 
         # ── Pre-flatten: cancel pending (PT 12:30 = UTC 19:30) ──
         if utc_time >= self.PRE_FLATTEN_UTC and utc_time < session_start and self._pending_order_id:
             self._log_event("PT 12:30 收盤前取消掛單")
-            await self._cancel_pending()
+            await self._cancel_pending(release_breakout_lock=True)
 
         # ── Check if pending order filled ──
         if (
@@ -2155,12 +2357,25 @@ class LiveTradingEngine:
             await self._cancel_pending(release_breakout_lock=True)
             return
 
+        if (
+            self.strategy_mode == "trend"
+            and self._pending_order_id
+            and not self._trend_session_allowed(candle.timestamp)
+        ):
+            self._log_event(
+                f"Session filter {self._trend_session_label()}: cancel pending outside allowed segment"
+            )
+            await self._cancel_pending(release_breakout_lock=True)
+            self._reset_breakout_confirmation()
+            return
+
         if self._pending_order_id and not self._open_position:
             filled = await self._check_pending_fill()
             if filled:
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
+                self._pending_created_at = None
                 return
             self._pending_age += 1
             timeout = self.trend_follow.PENDING_TIMEOUT_CANDLES
@@ -2210,6 +2425,15 @@ class LiveTradingEngine:
             return
 
         # ── Strategy evaluation ──
+        if not self._trend_session_allowed(candle.timestamp):
+            label = self._trend_session_label()
+            key = f"trend:{label}"
+            if self._last_session_block_log != key:
+                self._log_event(f"Session filter {label}: skip new Trend entries outside allowed segment")
+                self._last_session_block_log = key
+            self._reset_breakout_confirmation()
+            return
+
         # Evaluate breakout vs the recent 10 reference zones (v1.0.6).
         if not self._strategy_breakout_observable():
             self._reset_breakout_confirmation()
@@ -2264,8 +2488,9 @@ class LiveTradingEngine:
         SHADOW (default): logs the explainable signal (entry/SL/TP/prob + the
         top weighted feature contributions) and records it — places NO orders,
         so we can verify live == backtest with zero risk. When conf_shadow is
-        False it places a one-shot LIMIT order through the SAME order path the
-        trend strategy uses (brackets + session-direction lock honoured).
+        False it places a one-shot MARKET order through the same entry path as
+        the confluence backtest. TopstepX still creates working SL/TP child
+        orders after fill; those are protection orders, not a limit entry.
         """
         if self._open_position or self._pending_order_id:
             return
@@ -2326,13 +2551,17 @@ class LiveTradingEngine:
         if self._conf_shadow:
             return  # log-only: prove live==backtest before risking real orders
 
-        placed = await self._place_order(signal)
+        if getattr(signal, "order_type", "limit") == "market":
+            placed = await self._place_market_entry(signal)
+        else:
+            placed = await self._place_order(signal)
         if placed:
             # carry the explainable payload through to the trade ledger on exit
             self._pending_conf_payload = payload
             self._mark_session_direction_locked(signal)
             self._log_event(
-                f"ORDER PLACED on confluence: {signal.direction.value} {payload['side']} "
+                f"{str(getattr(signal, 'order_type', 'limit')).upper()} ORDER on confluence: "
+                f"{signal.direction.value} {payload['side']} "
                 f"@ {payload['entry']} (prob={payload['prob']:.2f}, score={payload['score']:+.2f})"
             )
 
@@ -2431,6 +2660,91 @@ class LiveTradingEngine:
             {"ticks": tp_ticks, "type": 1},  # Limit
         )
 
+    def _market_risk_limit_ticks(self, signal: TradeSignal) -> Optional[float]:
+        """Runtime max-risk cap for market-entry strategies."""
+        zone_source = str(getattr(signal, "zone_source", "") or "").lower()
+        strategy = str(getattr(getattr(signal, "strategy", None), "value", "") or "").lower()
+
+        if self.strategy_mode == "ml_consolidation_v2" or zone_source == "ml_consolidation_v2" or strategy == "ml_consolidation_v2":
+            cap = getattr(self.strategy_params, "mlc2_max_risk_ticks", None)
+        elif self.strategy_mode == "confluence" or zone_source == "confluence" or strategy == "confluence":
+            cap = getattr(self.strategy_params, "conf_max_risk_ticks", None)
+        else:
+            cap = None
+
+        try:
+            cap_f = float(cap) if cap not in (None, "", 0, "0") else None
+        except (TypeError, ValueError):
+            cap_f = None
+        return cap_f if cap_f and cap_f > 0 else None
+
+    def _planned_rr_for_signal(self, signal: TradeSignal) -> float:
+        """Reward:risk from the original planned entry/SL/TP before market fill slippage."""
+        entry = float(getattr(signal, "original_entry_price", signal.entry_price))
+        sl = float(getattr(signal, "original_sl_price", signal.sl_price))
+        tp = float(getattr(signal, "original_tp_price", signal.tp_price))
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
+        if risk <= 0:
+            return 1.0
+        rr = reward / risk
+        return max(0.1, min(rr, 10.0))
+
+    def _validate_market_signal_geometry(
+        self,
+        signal: TradeSignal,
+        entry_price: Optional[float] = None,
+    ) -> tuple[bool, str]:
+        """Validate SL geometry and max-risk against an intended or actual market fill."""
+        if entry_price is None:
+            entry_price = signal.entry_price
+        try:
+            entry = self._round_to_tick(float(entry_price))
+            sl = self._round_to_tick(float(signal.sl_price))
+        except (TypeError, ValueError):
+            return False, "invalid price"
+
+        if signal.direction == Direction.BUY and sl >= entry:
+            return False, f"BUY SL wrong side: entry={entry:.2f} SL={sl:.2f}"
+        if signal.direction == Direction.SELL and sl <= entry:
+            return False, f"SELL SL wrong side: entry={entry:.2f} SL={sl:.2f}"
+
+        risk_ticks = abs(entry - sl) / self.tick_size
+        if risk_ticks < 5:
+            return False, f"risk too small: {risk_ticks:.0f}t < 5t"
+
+        max_risk = self._market_risk_limit_ticks(signal)
+        if max_risk and risk_ticks > max_risk:
+            return False, f"risk too wide: {risk_ticks:.0f}t > max {max_risk:.0f}t"
+
+        return True, ""
+
+    def _reprice_market_signal_to_fill(self, signal: TradeSignal, fill_price: float) -> tuple[bool, str]:
+        """Rebuild market-entry TP from actual fill while preserving the structural SL."""
+        ok, reason = self._validate_market_signal_geometry(signal, fill_price)
+        if not ok:
+            return False, reason
+
+        old_entry = float(signal.entry_price)
+        old_tp = float(signal.tp_price)
+        rr = self._planned_rr_for_signal(signal)
+        entry = self._round_to_tick(float(fill_price))
+        sl = self._round_to_tick(float(signal.sl_price))
+        risk = abs(entry - sl)
+
+        if signal.direction == Direction.BUY:
+            tp = entry + risk * rr
+        else:
+            tp = entry - risk * rr
+
+        signal.entry_price = entry
+        signal.tp_price = self._round_to_tick(tp)
+        return (
+            True,
+            f"entry {old_entry:.2f}->{signal.entry_price:.2f} | "
+            f"TP {old_tp:.2f}->{signal.tp_price:.2f} | RR={rr:.2f}",
+        )
+
     async def _place_order(self, signal: TradeSignal) -> bool:
         """Place a limit order on the exchange.
 
@@ -2505,6 +2819,7 @@ class LiveTradingEngine:
                 self._pending_order_id = resp.order_id
                 self._pending_signal = signal
                 self._pending_age = 0
+                self._pending_created_at = datetime.utcnow()
                 self._persist_breakout_lock(signal)
                 self._mark_session_direction_locked(signal)
                 self._log_event(
@@ -2532,11 +2847,28 @@ class LiveTradingEngine:
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
+        signal.original_entry_price = signal.entry_price
+        signal.original_sl_price = signal.sl_price
+        signal.original_tp_price = signal.tp_price
+        ok, reason = self._validate_market_signal_geometry(signal, signal.entry_price)
+        if not ok:
+            self._log_event(f"[MARKET BLOCK] {reason}", "error")
+            return False
+        if self._last_market_price:
+            ok, reason = self._validate_market_signal_geometry(signal, self._last_market_price)
+            if not ok:
+                self._log_event(
+                    f"[MARKET BLOCK] current market={self._last_market_price:.2f} | {reason}",
+                    "error",
+                )
+                return False
         protection_fixes = self._normalize_entry_protection(signal)
         if protection_fixes:
             self._log_event("[BRACKET FIX] " + " | ".join(protection_fixes), "warn")
-        signal.original_sl_price = signal.sl_price
-        signal.original_tp_price = signal.tp_price
+        ok, reason = self._validate_market_signal_geometry(signal, signal.entry_price)
+        if not ok:
+            self._log_event(f"[MARKET BLOCK] after bracket normalize: {reason}", "error")
+            return False
 
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "買" if signal.direction == Direction.BUY else "賣"
@@ -2559,6 +2891,7 @@ class LiveTradingEngine:
                 self._pending_order_id = resp.order_id
                 self._pending_signal = signal
                 self._pending_age = 0
+                self._pending_created_at = datetime.utcnow()
                 self._persist_breakout_lock(signal)
                 self._mark_session_direction_locked(signal)
                 self._log_event(
@@ -2772,22 +3105,42 @@ class LiveTradingEngine:
         if not cancelled:
             still_open = await self._pending_order_still_open(oid)
             if still_open is False and not self._open_position:
+                maybe_close = await self._latest_topstep_closing_fill(
+                    entry_time=self._pending_created_at,
+                    attempts=2,
+                    delay_seconds=0.3,
+                )
                 self._log_event(
                     f"取消掛單 #{oid} 失敗，但交易所已無此 open order → "
-                    "清除本地 stale pending（實際成交由 trade_history 對賬）",
+                    +
+                    (
+                        "trade_history 已有 close fill，保留 lock"
+                        if maybe_close
+                        else "未見 Topstep close fill，視為未成交取消並釋放 lock"
+                    ),
                     "warn",
                 )
-                # Do not persist this as `cancelled`: the order may have filled
-                # and closed between sync ticks.  Keep the existing conservative
-                # session lock; a real/maybe-real attempt should not immediately
-                # reopen the same wall.
                 if self._pending_signal:
                     self.trend_follow.notify_order_cancelled()
+                    if release_breakout_lock and not maybe_close:
+                        self._release_breakout_lock(self._pending_signal)
+                    if not maybe_close:
+                        self._persist_trade_record(
+                            exit_reason="cancelled",
+                            entry_time=self._entry_time,
+                            exit_time=datetime.utcnow(),
+                            entry_price=None,
+                            signal=self._pending_signal,
+                            conf_payload=self._pending_conf_payload or self._pending_mlc2_payload,
+                            trail_triggered=False,
+                            status="cancelled",
+                        )
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_conf_payload = None
                 self._pending_mlc2_payload = None
                 self._pending_age = 0
+                self._pending_created_at = None
                 return
             suffix = "（broker 仍列為 open）" if still_open else "（無法確認 broker 狀態）"
             self._log_event(f"取消掛單 #{oid} 3次均失敗{suffix}! 下個 tick 再試", "error")
@@ -2815,6 +3168,7 @@ class LiveTradingEngine:
         self._pending_conf_payload = None
         self._pending_mlc2_payload = None
         self._pending_age = 0
+        self._pending_created_at = None
 
     async def _check_pending_fill(self) -> bool:
         """Backup check: if _sync_position already detected fill, just confirm.
@@ -2831,6 +3185,7 @@ class LiveTradingEngine:
             self._pending_conf_payload = None
             self._pending_mlc2_payload = None
             self._pending_age = 0
+            self._pending_created_at = None
             return True
         return False
 
@@ -2900,6 +3255,37 @@ class LiveTradingEngine:
                             f"不利滑價={adverse_slippage:.2f} pts (${adverse_dollars:.0f})"
                         )
 
+                if (
+                    self._fill_price
+                    and self._pending_signal
+                    and str(getattr(self._pending_signal, "order_type", "limit")).lower() == "market"
+                ):
+                    ok, detail = self._reprice_market_signal_to_fill(self._pending_signal, self._fill_price)
+                    if not ok:
+                        reason_code = "MARKET_FILL_RISK" if "risk too wide" in detail else "MARKET_FILL_INVALID"
+                        close_side = 2 if self._pending_signal.direction == Direction.BUY else 1
+                        self._active_signal = self._pending_signal
+                        self._active_conf_payload = (
+                            self._pending_conf_payload or self._pending_mlc2_payload
+                        )
+                        self._entry_time = datetime.utcnow()
+                        self._position_open_ts = time_mod.time()
+                        self._force_exit_reason = "flatten"
+                        self._log_event(
+                            f"[MARKET FILL BLOCK] fill={self._fill_price:.2f} | {detail} "
+                            f"→ emergency flatten before SL/TP sync",
+                            "error",
+                        )
+                        await self._emergency_market_close(close_side, reason_code)
+                        self._pending_order_id = None
+                        self._pending_signal = None
+                        self._pending_conf_payload = None
+                        self._pending_mlc2_payload = None
+                        self._pending_age = 0
+                        self._pending_created_at = None
+                        return
+                    self._log_event(f"[MARKET REPRICE] {detail}")
+
                 # Record entry trade for chart markers
                 sig_dir = "buy"
                 sig = self._pending_signal
@@ -2957,6 +3343,7 @@ class LiveTradingEngine:
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
+                self._pending_created_at = None
                 self._position_age = 0
                 self._trail_sl_triggered = False
 
@@ -2993,39 +3380,34 @@ class LiveTradingEngine:
 
             # ── Transition 2: Position CLOSED (SL/TP hit) ──
             if was_open and not has_position:
-                pnl_info = ""
-                if self._fill_price:
-                    pnl_info = f" | entry_fill={self._fill_price:.2f}"
-
-                # Exit reason resolution order:
-                #   1. Force-exit flag set by flatten_now / emergency close
-                #   2. Heuristic: closer of SL/TP to last market price wins,
-                #      with SL-side hits reclassified as trail_sl when the
-                #      trail trigger fired earlier in this position.
-                exit_reason = "unknown"
-                forced = self._force_exit_reason
-                if forced:
-                    if forced == "flatten" and self._trail_sl_triggered:
-                        exit_reason = "trail_sl"
-                    else:
-                        exit_reason = forced
-                elif self._active_signal and self._last_market_price:
-                    sl_p = self._active_signal.sl_price
-                    tp_p = self._active_signal.tp_price
-                    mkt = self._last_market_price
-                    if abs(mkt - sl_p) < abs(mkt - tp_p):
-                        exit_reason = "trail_sl" if self._trail_sl_triggered else "sl"
-                    else:
-                        exit_reason = "tp"
-                if exit_reason == "unknown":
-                    exit_reason = "trail_sl" if self._trail_sl_triggered else "tp"
-
-                entry_fill = self._fill_price  # save before clearing
-                exit_time_dt = datetime.utcnow()
-                # Snapshot for persistence before we clear active_signal.
+                # Snapshot before any awaits / cleanup.
                 _sig_for_log = self._active_signal
                 _entry_t = self._entry_time
                 _conf_payload = self._active_conf_payload
+                forced = self._force_exit_reason
+
+                close_fill = await self._latest_topstep_closing_fill(
+                    entry_time=_entry_t,
+                    attempts=3,
+                    delay_seconds=0.4,
+                )
+                (
+                    exit_reason,
+                    actual_exit_price,
+                    topstep_pnl,
+                    topstep_exit_time,
+                ) = self._exit_reason_from_topstep_fill(close_fill, _sig_for_log, forced)
+
+                pnl_info = ""
+                if self._fill_price:
+                    pnl_info = f" | entry_fill={self._fill_price:.2f}"
+                if actual_exit_price is not None:
+                    pnl_info += f" | topstep_exit={actual_exit_price:.2f}"
+                if topstep_pnl is not None:
+                    pnl_info += f" | topstep_pnl=${topstep_pnl:+.2f}"
+
+                entry_fill = self._fill_price  # save before clearing
+                exit_time_dt = topstep_exit_time or datetime.utcnow()
 
                 self._log_event(
                     f"持倉已平 ({exit_reason.upper()} 觸發){pnl_info}"
@@ -3073,6 +3455,7 @@ class LiveTradingEngine:
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
+                self._pending_created_at = None
 
                 await self._sweep_contract_open_orders("close")
 
@@ -3080,6 +3463,8 @@ class LiveTradingEngine:
                     "time": exit_time_dt.isoformat(),
                     "type": "closed",
                     "entry_price": entry_fill,
+                    "exit_price": actual_exit_price,
+                    "topstep_pnl": topstep_pnl,
                     "exit_reason": exit_reason,
                 })
 
@@ -3090,6 +3475,8 @@ class LiveTradingEngine:
                     entry_time=_entry_t,
                     exit_time=exit_time_dt,
                     entry_price=entry_fill,
+                    exit_price=actual_exit_price,
+                    topstep_pnl=topstep_pnl,
                     sl_price=_sig_for_log.sl_price if _sig_for_log else None,
                     tp_price=_sig_for_log.tp_price if _sig_for_log else None,
                     direction=_sig_for_log.direction.value if _sig_for_log else None,
@@ -3116,6 +3503,8 @@ class LiveTradingEngine:
                     signal=_sig_for_log,
                     conf_payload=_conf_payload,
                     trail_triggered=self._trail_sl_triggered,
+                    exit_price=actual_exit_price,
+                    topstep_pnl=topstep_pnl,
                 )
 
                 # Notify strategy with actual exit reason
@@ -3180,7 +3569,7 @@ class LiveTradingEngine:
         self._append_history(candle)
         self._update_tf_breakout(candle)
         if hasattr(self.trend_follow, "observe"):
-            if self._strategy_breakout_observable():
+            if self._strategy_breakout_observable() and self._trend_session_allowed(candle.timestamp):
                 self.trend_follow.observe(
                     candle,
                     self.detector.get_recent_zones(),

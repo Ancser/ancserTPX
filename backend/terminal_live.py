@@ -52,6 +52,7 @@ DEFAULT_PRESET_PARAMS = {
     "tr_trail_trigger_pct": 0.30,
     "tr_trail_enabled": True,
     "tr_full_tp_lock": 0,
+    "tr_allowed_sessions": ["ASIA"],
     "candle_seconds": 60,
     "contract_id": "CON.F.US.MNQ.U26",
     "contract_size": 1,
@@ -267,7 +268,7 @@ def _load_presets_file() -> dict:
             "rr_ratio", "breakout_confirm_bars", "skip_zone_stability",
             "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
             "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
-            "tr_one_trade_per_session",
+            "tr_one_trade_per_session", "tr_allowed_sessions",
             "conf_band_ticks", "conf_min_distinct_tf", "conf_rr", "conf_model_name",
             "conf_wait_minutes", "conf_base_minutes", "conf_min_prob",
             "conf_ev_floor", "conf_rr_grid", "conf_use_scorer",
@@ -285,6 +286,8 @@ def _load_presets_file() -> dict:
         params["value_area_pct"] = 0.80
         if params["strategy"] == "confluence" and "conf_allowed_sessions" not in params:
             params["conf_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
+        if params["strategy"] == "trend" and "tr_allowed_sessions" not in params:
+            params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
         new_name = None
         if str(name).startswith("BR "):
             new_name = "TR " + str(name)[3:]
@@ -554,6 +557,10 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         tr_trail_trigger_pct=tr["trigger"],
         tr_trail_enabled=tr["enabled"],
         tr_full_tp_lock=tr["lock"],
+        tr_allowed_sessions=list(
+            normalize_allowed_sessions(preset.get("tr_allowed_sessions", DEFAULT_ALLOWED_SESSIONS))
+            or []
+        ) or None,
         candle_seconds=int(preset.get("candle_seconds") or 60),
         contract_id=contract_id,
         contract_size=contract_size,

@@ -25,6 +25,9 @@ from backend.db.models import (
     get_point_value, get_tick_size,
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
+from backend.strategy.session_filter import (
+    DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
+)
 from backend.strategy.trend_follow import SessionTrendFollow
 from backend.backtest.intrabar import resolve_same_bar_exit
 
@@ -106,6 +109,7 @@ class BacktestEngine:
         self._pending_order: Optional[TradeSignal] = None
         self._pending_age: int = 0
         self._pending_max_age: int = self.trend_follow.PENDING_TIMEOUT_CANDLES
+        self._pending_lock_key: Optional[tuple[str, str]] = None
         self._trades: List[Trade] = []
         self._equity_curve: List[Tuple[datetime, float]] = []
         self._daily_pnl: Dict[str, float] = {}
@@ -126,6 +130,10 @@ class BacktestEngine:
         )
         self._tr_one_trade_per_session: bool = bool(
             getattr(self.strategy_params, "tr_one_trade_per_session", True)
+        )
+        self._tr_allowed_sessions = (
+            getattr(self.strategy_params, "tr_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+            or None
         )
         self._session_direction_used: set[tuple[str, str]] = set()
         # Active post-breakout trackers (one per recently-entered trade).
@@ -169,6 +177,15 @@ class BacktestEngine:
         except (TypeError, ValueError):
             lock = 0
         return max(0, min(3, lock))
+
+    def _trend_session_allowed(self, ts: datetime) -> bool:
+        return is_allowed_session(ts, self._tr_allowed_sessions)
+
+    def _reset_trend_session_state(self) -> None:
+        if hasattr(self.trend_follow, "reset_breakout_confirmation"):
+            self.trend_follow.reset_breakout_confirmation()
+        else:
+            self.trend_follow.reset()
 
     def _reset_full_tp_counts_for_session(self, utc_dt: datetime) -> None:
         ts_date = _topstep_trade_date(utc_dt)
@@ -276,6 +293,7 @@ class BacktestEngine:
         self._open_position = None
         self._pending_order = None
         self._pending_age = 0
+        self._pending_lock_key = None
         self._trades = []
         self._equity_curve = []
         self._daily_pnl = {}
@@ -358,19 +376,35 @@ class BacktestEngine:
                 self._check_trailing_sl(candle)
                 return  # still open, don't open new
 
+        if (
+            self._pending_order
+            and not self._open_position
+            and not self._trend_session_allowed(candle.timestamp)
+        ):
+            logger.debug(
+                "Trend session filter %s: cancel pending outside allowed segment",
+                allowed_sessions_label(self._tr_allowed_sessions),
+            )
+            self._cancel_pending_order(release_lock=True)
+            self._reset_trend_session_state()
+            return
+
         # ── Check if pending limit order fills on this candle ──
         if self._pending_order and not self._open_position:
             filled = self._check_pending_fill(candle)
             if filled:
                 return
-            # Silent cancel — strategy re-evaluates with latest VAH/VAL next
-            self._pending_order = None
-            self._pending_age = 0
+            # Unfilled pending entry is not a real trade attempt.  Match live:
+            # cancel, release the zone/direction lock, then re-evaluate next.
+            self._cancel_pending_order(release_lock=True)
 
         # ── Strategy evaluation ──
         if not self._open_position and not self._pending_order:
             if self._near_data_end:
                 return   # no new entries near live edge
+            if not self._trend_session_allowed(candle.timestamp):
+                self._reset_trend_session_state()
+                return
 
             if self._zone_timeline is not None:
                 # Fast path: zones already looked up above
@@ -458,12 +492,23 @@ class BacktestEngine:
     def _stop_exit_reason(self) -> ExitReason:
         return ExitReason.TRAIL_SL if self._trail_sl_triggered else ExitReason.SL
 
-    def _cancel_pending_order(self):
-        """Cancel a pending limit order and notify the strategy."""
+    def _cancel_pending_order(self, *, release_lock: bool = True):
+        """Cancel a pending limit order and notify the strategy.
+
+        Session/breakout locks represent *filled* opportunities.  A limit order
+        that never touched is only a working order, so releasing the lock keeps
+        backtest parity with live's Topstep-confirmed pending cancellation.
+        """
         if self._pending_order:
             self.trend_follow.notify_order_cancelled()
+        if release_lock and self._pending_lock_key:
+            zone_id, direction = self._pending_lock_key
+            self._session_direction_used.discard(self._pending_lock_key)
+            if hasattr(self.trend_follow, "unlock_breakout"):
+                self.trend_follow.unlock_breakout(zone_id, direction)
         self._pending_order = None
         self._pending_age = 0
+        self._pending_lock_key = None
 
     @staticmethod
     def _signal_direction_key(signal: TradeSignal) -> str:
@@ -495,6 +540,11 @@ class BacktestEngine:
         """Place a limit order — will fill on a future candle when price touches."""
         self._pending_order = signal
         self._pending_age = 0
+        self._pending_lock_key = (
+            self._session_direction_key(signal, candle)
+            if self._session_limit_flag(signal)
+            else None
+        )
         logger.debug(
             f"掛單: {signal.strategy.value} {signal.direction.value} "
             f"limit @ {signal.entry_price:.2f} | SL={signal.sl_price:.2f} TP={signal.tp_price:.2f}"
@@ -518,6 +568,8 @@ class BacktestEngine:
             self._execute_entry(order, candle)
             self._pending_order = None
             self._pending_age = 0
+            # Filled orders consume the session/direction lock.
+            self._pending_lock_key = None
             # On the ENTRY candle, only check SL — never TP.
             # Reason: limit buy fills when price DROPS to entry.
             # The candle's high might be BEFORE the fill (pre-entry).
