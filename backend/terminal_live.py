@@ -103,7 +103,8 @@ CODEX_624_PRESET_3 = "06.24 CODEX #3 卡瑪最佳 MNQx1 RR1:1.75 POFF R70 W1m Tr
 CODEX_624_PRESET_4 = "06.24 CODEX #4 PNL最高 MNQx1 RR1:1.5 POFF R50 W1m Trail50L5 SesON ASIA B4 TF2"
 CODEX_624_PRESET_5 = "06.24 CODEX #5 回撤最低 MNQx1 RR1:2.5 P0.65 R90 W1m Trail50L5 SesON ASIA B4 TF2"
 MLC2_PRESET = "06.25 CODEX #1 均值回歸 MNQx1 MLC2 LB30 Band2 SLB4 RR1:4 ASIA+EURO TrailOFF"
-DEFAULT_LAST_USED_PRESET = CODEX_624_PRESET_1
+CODEX_626_PRESET_2 = "06.26 CODEX #2 Trend多單 MNQx1 TF5m RR1:4 C3 SL80 Trail50L10"
+DEFAULT_LAST_USED_PRESET = CODEX_626_PRESET_2
 PRESET_RENAMES = {}
 REMOVED_PRESET_NAMES = {
     DEFAULT_PRESET_NAME,
@@ -114,6 +115,20 @@ REMOVED_PRESET_NAMES = {
     "6/20 CLAUDE #1 ML RR1:3 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
     "6/20 CLAUDE #1 SVD RR1:2 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
     "6/22 CLAUDE #1 ML RR1:3 P0.55 ROFF W1m TrailOFF SesON B4 TF2 MNQx1",
+    CODEX_624_PRESET_1,
+    CODEX_624_PRESET_2,
+    CODEX_624_PRESET_3,
+    CODEX_624_PRESET_4,
+    CODEX_624_PRESET_5,
+    MLC2_PRESET,
+    "06.26 CODEX #1 Trend穩定 MNQx1 TF1h RR1:4 C3 SL40 Trail50L10",
+    "06.26 CODEX #3 Trend均衡 MNQx1 TF15m RR1:4 C3 SL40 TrailOFF",
+    "06.26 CODEX #4 RESEARCH Confluence舊最佳 MNQx1 RR1:2.5 P0.65 R90 B4 TF2 Shadow",
+    "06.26 CODEX #5 RESEARCH Confluence低回撤 MNQx1 RR1:1.5 POFF R50 B4 TF2 Shadow",
+    "06.26 CODEX #6 RESEARCH Confluence高TF MNQx1 RR1:1.5 P0.65 R40 B8 TF3 Shadow",
+    "06.26 CODEX #7 RESEARCH MLC2低回撤 MNQx1 LB240 B2 RANGE POC R40 ASIA Shadow",
+    "06.26 CODEX #8 RESEARCH MLC2多單 MNQx1 LB240 B1 RANGE POC R20 PRE Shadow",
+    "06.26 CODEX #9 RESEARCH MLC2寬Band MNQx1 LB240 B4 RANGE POC R40 ASIA Shadow",
 }
 
 
@@ -148,27 +163,30 @@ def _codex_624_preset(
 
 
 BUILTIN_PRESETS = {
-    CODEX_624_PRESET_1: _codex_624_preset(rr=3.0, max_risk_ticks=80),
-    CODEX_624_PRESET_2: _codex_624_preset(rr=2.75, max_risk_ticks=80),
-    CODEX_624_PRESET_3: _codex_624_preset(rr=1.75, max_risk_ticks=70),
-    CODEX_624_PRESET_4: _codex_624_preset(rr=1.50, max_risk_ticks=50),
-    CODEX_624_PRESET_5: _codex_624_preset(rr=2.50, max_risk_ticks=90, min_prob=0.65),
-    MLC2_PRESET: {
+    CODEX_626_PRESET_2: {
         **dict(DEFAULT_PRESET_PARAMS),
-        "strategy": "ml_consolidation_v2",
+        "strategy": "trend",
         "contract_id": "CON.F.US.MNQ.U26",
         "contract_size": 1,
-        "mlc2_lookback": 30,
-        "mlc2_band_ticks": 2.0,
-        "mlc2_sl_buffer_ticks": 4.0,
-        "mlc2_tp_mode": "rr",
-        "mlc2_rr": 4.0,
-        "mlc2_trail_trigger_pct": 0.0,
-        "mlc2_trail_lock_pct": 0.0,
-        "mlc2_session_limit": False,
-        "mlc2_min_score": 0.0,
-        "mlc2_allowed_sessions": ["ASIA", "EURO"],
-        "mlc2_shadow": False,
+        "area_timeframe": "5m",
+        "method": "single",
+        "tf_combo": [],
+        "value_area_pct": 0.80,
+        "rr_ratio": 4,
+        "breakout_confirm_bars": 3,
+        "sl_ticks": 80,
+        "tr_sl_ticks": 80,
+        "trail_enabled": True,
+        "tr_trail_enabled": True,
+        "trail_trigger_pct": 0.50,
+        "tr_trail_trigger_pct": 0.50,
+        "trail_sl_ticks": 10,
+        "tr_trail_sl_ticks": 10,
+        "full_tp_lock": 0,
+        "tr_full_tp_lock": 0,
+        "tr_allowed_sessions": ["ASIA"],
+        "one_trade_per_session_direction": True,
+        "tr_one_trade_per_session": True,
     },
 }
 

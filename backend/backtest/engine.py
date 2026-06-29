@@ -214,8 +214,13 @@ class BacktestEngine:
         max_positive = max(0, self._floor_ticks_to_step(tp_ticks * trigger_pct) - self.TRAIL_TICK_STEP)
         return max(0, min(min(tp_ticks, max_positive), trail_ticks))
 
-    def run(self, candles: List[Candle]) -> BacktestResult:
-        """執行回測 (1m candles)"""
+    def run(self, candles: List[Candle], progress_cb=None) -> BacktestResult:
+        """執行回測 (1m candles)
+
+        progress_cb(current, total, detail) — optional, fired on date change so
+        a caller (routes.py) can report progress to the UI while run() executes
+        inside a worker thread. Kept lightweight; never raises into the loop.
+        """
         logger.info(
             f"開始回測: {len(candles)} 根 K 線, "
             f"初始資金=${self._capital:,.0f}"
@@ -255,6 +260,11 @@ class BacktestEngine:
                         f"[Backtest] {_d} | 進度 {i + 1}/{total} ({(i + 1) * 100 // total}%) "
                         f"| 累計交易 {len(self._trades)} 筆"
                     )
+                    if progress_cb is not None:
+                        try:
+                            progress_cb(i + 1, total, f"{_d} | 交易 {len(self._trades)}")
+                        except Exception:
+                            pass
             self._process_candle(candle)
 
         if self._open_position:

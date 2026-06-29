@@ -2104,6 +2104,18 @@ async def run_backtest(req: BacktestRequest):
     """
     global _historical_candles, _backtest_results
 
+    _strat = str(req.strategy or "").strip().lower()
+    _sess = getattr(req, "tr_allowed_sessions", None) or getattr(req, "conf_allowed_sessions", None)
+    logger.info(
+        "[BACKTEST] strategy=%s  session=%s  TF=%s  RR=%s  SL=%s  confirm=%s",
+        _strat,
+        _sess,
+        getattr(req, "area_timeframe", "?"),
+        getattr(req, "rr_ratio", "?"),
+        getattr(req, "sl_ticks", "?"),
+        getattr(req, "breakout_confirm_bars", "?"),
+    )
+
     if not _historical_candles:
         raise HTTPException(
             status_code=400,
@@ -2111,14 +2123,14 @@ async def run_backtest(req: BacktestRequest):
         )
 
     # v1.0.6: explainable confluence engine (separate, read-only path)
-    if str(req.strategy or "").strip().lower() == "confluence":
+    if _strat == "confluence":
         await _refresh_recent_historical_candles(req.contract_id)
         # Heavy full-history backtest: run in a dedicated child PROCESS so the
         # CPU-bound work never holds the server's GIL — data-fetch / live / chart
         # stay responsive while it computes (falls back to in-thread on failure).
         return await _run_confluence_backtest_proc(req)
 
-    if str(req.strategy or "").strip().lower() in ("ml_consolidation_v2", "ml_consol_v2", "mlc2"):
+    if _strat in ("ml_consolidation_v2", "ml_consol_v2", "mlc2"):
         await _refresh_recent_historical_candles(req.contract_id)
         return await _run_ml_consolidation_v2_backtest(req)
 
@@ -2168,7 +2180,19 @@ async def run_backtest(req: BacktestRequest):
     # Use 1m candles directly (SessionTrendFollow works on 1m)
     candles = sorted(_historical_candles, key=lambda c: c.timestamp) if overlap_mode else list(_historical_candles)
 
-    result = engine.run(candles)
+    # Off-load the CPU-bound candle loop to a worker thread so the event loop
+    # stays responsive — chart, data-fetch, live updates and the progress poll
+    # keep working while a (possibly 100k+ candle) trend backtest computes.
+    # Without this the whole server freezes for the run's duration and the UI
+    # stutters; the freeze grows as the accumulator grows.
+    _update_bt_progress("running", 0, len(candles), "回測中…")
+
+    def _trend_progress(current, total, detail):
+        # Fired from the worker thread on each date change; atomic file write.
+        _update_bt_progress("running", current, total, detail)
+
+    result = await asyncio.to_thread(engine.run, candles, _trend_progress)
+    _update_bt_progress("done", len(candles), len(candles), "完成", status="done")
     _backtest_results.append(result)
 
     # 轉換為回應格式
@@ -4456,7 +4480,7 @@ _CODEX_626_PRESET_6 = "06.26 CODEX #6 RESEARCH Confluence高TF MNQx1 RR1:1.5 P0.
 _CODEX_626_PRESET_7 = "06.26 CODEX #7 RESEARCH MLC2低回撤 MNQx1 LB240 B2 RANGE POC R40 ASIA Shadow"
 _CODEX_626_PRESET_8 = "06.26 CODEX #8 RESEARCH MLC2多單 MNQx1 LB240 B1 RANGE POC R20 PRE Shadow"
 _CODEX_626_PRESET_9 = "06.26 CODEX #9 RESEARCH MLC2寬Band MNQx1 LB240 B4 RANGE POC R40 ASIA Shadow"
-_DEFAULT_LAST_USED_PRESET = _CODEX_626_PRESET_1
+_DEFAULT_LAST_USED_PRESET = _CODEX_626_PRESET_2
 _PRESET_RENAMES = {
 }
 _REMOVED_PRESET_NAMES = {
@@ -4483,6 +4507,14 @@ _REMOVED_PRESET_NAMES = {
     _CODEX_624_PRESET_3,
     _CODEX_624_PRESET_4,
     _CODEX_624_PRESET_5,
+    _CODEX_626_PRESET_1,
+    _CODEX_626_PRESET_3,
+    _CODEX_626_PRESET_4,
+    _CODEX_626_PRESET_5,
+    _CODEX_626_PRESET_6,
+    _CODEX_626_PRESET_7,
+    _CODEX_626_PRESET_8,
+    _CODEX_626_PRESET_9,
 }
 
 
@@ -4623,38 +4655,9 @@ def _codex_626_mlc2_research_preset(
 
 
 _BUILTIN_PRESETS = {
-    _CODEX_626_PRESET_1: _codex_626_trend_preset(
-        area_timeframe="1h", rr=4, confirm_bars=3, sl_ticks=40,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-    ),
     _CODEX_626_PRESET_2: _codex_626_trend_preset(
         area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
         trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-    ),
-    _CODEX_626_PRESET_3: _codex_626_trend_preset(
-        area_timeframe="15m", rr=4, confirm_bars=3, sl_ticks=40,
-        trail_enabled=False,
-    ),
-    _CODEX_626_PRESET_4: _codex_626_confluence_research_preset(
-        rr=2.50, max_risk_ticks=90, min_prob=0.65, band=4, min_tf=2,
-    ),
-    _CODEX_626_PRESET_5: _codex_626_confluence_research_preset(
-        rr=1.50, max_risk_ticks=50, min_prob=0.0, band=4, min_tf=2,
-    ),
-    _CODEX_626_PRESET_6: _codex_626_confluence_research_preset(
-        rr=1.50, max_risk_ticks=40, min_prob=0.65, band=8, min_tf=3,
-    ),
-    _CODEX_626_PRESET_7: _codex_626_mlc2_research_preset(
-        lookback=240, band=2, sl_buffer=2, max_risk=40,
-        sessions=["ASIA"], session_limit=True,
-    ),
-    _CODEX_626_PRESET_8: _codex_626_mlc2_research_preset(
-        lookback=240, band=1, sl_buffer=4, max_risk=20,
-        sessions=["PRE"], session_limit=False,
-    ),
-    _CODEX_626_PRESET_9: _codex_626_mlc2_research_preset(
-        lookback=240, band=4, sl_buffer=2, max_risk=40,
-        sessions=["ASIA"], session_limit=True,
     ),
 }
 _FIXED_PRESET_NAMES = ()

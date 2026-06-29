@@ -3836,6 +3836,17 @@ async function runBacktest() {
     if (!dataOk) { btn.disabled = false; btn.textContent = 'EXECUTE BACKTEST'; return; }
 
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
+    const btBody = buildBacktestBody();
+    const _sess = btBody.tr_allowed_sessions || btBody.conf_allowed_sessions || 'ALL';
+    const _sessLabel = Array.isArray(_sess) ? _sess.join('+') : String(_sess);
+    log('BT PARAMS → strategy=' + (btBody.strategy || '?')
+        + ' session=' + _sessLabel
+        + ' TF=' + (btBody.area_timeframe || '?')
+        + ' RR=1:' + (btBody.rr_ratio || '?')
+        + ' SL=' + (btBody.sl_ticks || '?') + 't'
+        + ' trail=' + (btBody.trail_trigger_pct > 0 ? (btBody.trail_trigger_pct * 100).toFixed(0) + '%' : 'OFF')
+        + ' confirm=' + (btBody.breakout_confirm_bars || '?')
+        , 'info');
     log('Running backtest...', 'info');
     _startBacktestProgress();
 
@@ -3843,7 +3854,7 @@ async function runBacktest() {
         const resp = await fetch(API + '/backtest/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(buildBacktestBody())
+            body: JSON.stringify(btBody)
         });
 
         if (!resp.ok) {
