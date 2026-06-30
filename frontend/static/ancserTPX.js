@@ -2190,7 +2190,8 @@ async function pollLiveStatus() {
                 posEl.style.color = st.position ? 'var(--red)' : 'var(--text2)';
             }
 
-            const pnl = st.daily_pnl || 0;
+            const pnlInfo = liveDisplayedDailyPnl(st);
+            const pnl = pnlInfo.pnl || 0;
             const pnlEl = document.getElementById('live-pnl-text');
             if (pnlEl) {
                 pnlEl.textContent = '$' + (pnl >= 0 ? '+' : '-') + Math.abs(pnl).toFixed(0);
@@ -2203,6 +2204,9 @@ async function pollLiveStatus() {
                 capEl.innerHTML =
                     '$' + Number(st.capital).toLocaleString(undefined, {maximumFractionDigits: 0}) +
                     ' <span style="color:' + pnlColor + ';font-size:10px;">(' + pnlStr + ')</span>';
+                capEl.title = 'Daily PnL source: ' + pnlInfo.source
+                    + ' / Topstep day ' + (pnlInfo.day || '')
+                    + (pnlInfo.count ? (' / ' + pnlInfo.count + ' closes') : '');
             }
             const sigRow = document.getElementById('lv-signal-row');
             if (sigRow) sigRow.style.display = 'none';
@@ -2311,7 +2315,8 @@ async function pollLiveStatus() {
         // st.capital = real balance from API (already includes today's PnL)
         // st.daily_pnl = today's realized PnL from trade history.
         if (st.capital) {
-            const pnl = st.daily_pnl || 0;
+            const pnlInfo = liveDisplayedDailyPnl(st);
+            const pnl = pnlInfo.pnl || 0;
             const pnlStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
             const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
             const counts = st.full_tp_counts || {};
@@ -2329,6 +2334,10 @@ async function pollLiveStatus() {
             document.getElementById('lv-capital').innerHTML =
                 '$' + st.capital.toLocaleString(undefined, {maximumFractionDigits: 0}) +
                 ' <span style="color:' + pnlColor + ';font-size:10px;">(' + pnlStr + ')</span>' + lockBadge + dcBadge;
+            document.getElementById('lv-capital').title =
+                'Daily PnL source: ' + pnlInfo.source
+                + ' / Topstep day ' + (pnlInfo.day || '')
+                + (pnlInfo.count ? (' / ' + pnlInfo.count + ' closes') : '');
 
             // Update account info badge with live balance
             const infoEl = document.getElementById('live-account-info');
@@ -2431,9 +2440,13 @@ async function pollLiveStatus() {
 
         // ── Left panel: PnL ──
         const pnlEl = document.getElementById('live-pnl-text');
-        const pnl = st.daily_pnl || 0;
+        const pnlInfo = liveDisplayedDailyPnl(st);
+        const pnl = pnlInfo.pnl || 0;
         pnlEl.textContent = '$' + (pnl >= 0 ? '+' : '-') + Math.abs(pnl).toFixed(0);
         pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        pnlEl.title = 'Daily PnL source: ' + pnlInfo.source
+            + ' / Topstep day ' + (pnlInfo.day || '')
+            + (pnlInfo.count ? (' / ' + pnlInfo.count + ' closes') : '');
 
         // ── Top bar: Signal row (show on pending signal or position) ──
         const sigRow = document.getElementById('lv-signal-row');
@@ -3413,6 +3426,7 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
         if (data.trades && data.trades.length > 0) {
             const trades = dedupeLiveCompletedTrades(data.trades);
             window._liveCompletedTrades = trades;
+            _calLiveTrades = trades;
             const dedupeMsg = trades.length !== data.trades.length
                 ? ' / ' + trades.length + ' unique'
                 : '';
@@ -3436,6 +3450,7 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
             }
         } else {
             window._liveCompletedTrades = [];
+            _calLiveTrades = [];
             renderExecuteTrades([]);
             drawLiveTradeMarkers([]);
             if (_overlaySyncData) {
@@ -4259,6 +4274,86 @@ function drawLiveTradeMarkers(trades) {
 }
 
 const SESSION_CODES = ['ASIA', 'EURO', 'PRE', 'RTH', 'AH'];
+const TOPSTEP_TRADE_TZ = 'America/Chicago';
+const TOPSTEP_TRADE_DAY_START_HOUR_CT = 17;
+
+function _dateKeyFromUtcParts(y, m, d) {
+    return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
+}
+
+function _timePartsInZone(date, timeZone) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        hour12: false,
+        hourCycle: 'h23',
+    }).formatToParts(date);
+    const out = {};
+    parts.forEach(p => { if (p.type !== 'literal') out[p.type] = p.value; });
+    return {
+        year: parseInt(out.year, 10),
+        month: parseInt(out.month, 10),
+        day: parseInt(out.day, 10),
+        hour: parseInt(out.hour, 10),
+    };
+}
+
+function topstepTradeDateKey(value) {
+    const d = value instanceof Date ? value : new Date(value);
+    if (!d || isNaN(d.getTime())) return null;
+    const p = _timePartsInZone(d, TOPSTEP_TRADE_TZ);
+    if (![p.year, p.month, p.day, p.hour].every(Number.isFinite)) return null;
+    const shifted = new Date(Date.UTC(
+        p.year,
+        p.month - 1,
+        p.day + (p.hour >= TOPSTEP_TRADE_DAY_START_HOUR_CT ? 1 : 0)
+    ));
+    return _dateKeyFromUtcParts(
+        shifted.getUTCFullYear(),
+        shifted.getUTCMonth() + 1,
+        shifted.getUTCDate()
+    );
+}
+
+function tradeRealizedDayKey(trade) {
+    const iso = trade && (trade.exit_time || trade.entry_time);
+    return iso ? topstepTradeDateKey(iso) : null;
+}
+
+function liveDisplayedDailyPnl(st) {
+    const day = (st && st.topstep_trade_date) || topstepTradeDateKey(new Date());
+    const combined = [
+        ...((window._liveCompletedTrades || [])),
+        ...((_calLiveTrades || [])),
+    ];
+    const trades = dedupeLiveCompletedTrades(combined);
+    if (day && trades.length) {
+        let pnl = 0;
+        let count = 0;
+        trades.forEach(t => {
+            if (tradeRealizedDayKey(t) !== day) return;
+            pnl += Number(t.pnl || 0);
+            count += 1;
+        });
+        if (count > 0) {
+            return {
+                pnl: pnl,
+                source: 'frontend trade history net',
+                day: day,
+                count: count,
+            };
+        }
+    }
+    return {
+        pnl: Number((st && st.daily_pnl) || 0),
+        source: (st && st.daily_pnl_source) || 'live status',
+        day: day || (st && st.topstep_trade_date) || '',
+        count: 0,
+    };
+}
 
 function getSessionCodeFromDate(d) {
     if (!d || isNaN(d.getTime())) return null;
@@ -4331,8 +4426,8 @@ function _computeTradeStats(trades) {
     const daily = {};
     // Sort chronologically for equity curve / max DD
     const sorted = [...trades].sort((a,b) => {
-        const ta = a.entry_time ? new Date(a.entry_time).getTime() : 0;
-        const tb = b.entry_time ? new Date(b.entry_time).getTime() : 0;
+        const ta = (a.exit_time || a.entry_time) ? new Date(a.exit_time || a.entry_time).getTime() : 0;
+        const tb = (b.exit_time || b.entry_time) ? new Date(b.exit_time || b.entry_time).getTime() : 0;
         return ta - tb;
     });
 
@@ -4348,9 +4443,8 @@ function _computeTradeStats(trades) {
         if (dd > maxDD) maxDD = dd;
         if (p > 0) wins.push(p);
         else if (p < 0) losses.push(p);
-        if (t.entry_time) {
-            const d = new Date(t.entry_time);
-            const key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+        const key = tradeRealizedDayKey(t);
+        if (key) {
             daily[key] = (daily[key] || 0) + p;
         }
     }
@@ -4419,9 +4513,7 @@ function _alignBacktestToLiveDays(backtestTrades, liveStats) {
     const liveDates = new Set(Object.keys(liveStats.daily_pnl));
     if (liveDates.size === 0) return backtestTrades;
     return backtestTrades.filter(t => {
-        if (!t.entry_time) return false;
-        const d = new Date(t.entry_time);
-        const key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+        const key = tradeRealizedDayKey(t);
         return liveDates.has(key);
     });
 }
@@ -4793,7 +4885,9 @@ function renderExecuteTrades(trades) {
     };
 
     tbody.innerHTML = sorted.map((t) => {
-        const grossPnl = t.pnl || 0;   // TopstepX profitAndLoss = gross P&L (before commission/fees)
+        const grossPnl = (t.gross_pnl != null)
+            ? Number(t.gross_pnl)
+            : Number(t.pnl || 0) + Number(t.commission || 0) + Number(t.fees || 0);
         const commission = (t.commission != null) ? t.commission : 1.0;
         const fees = (t.fees != null) ? t.fees : 2.80;
         const pnlClass = grossPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
@@ -5066,7 +5160,7 @@ function renderPnlCurve() {
     let cum = 0;
     const pts = done.map(t => {
         cum += (t.pnl || 0);
-        return { cum, day: String(t.exit_time || t.entry_time).slice(0, 10) };
+        return { cum, day: tradeRealizedDayKey(t) || String(t.exit_time || t.entry_time).slice(0, 10) };
     });
 
     // End-of-day settled equity (last cum of each day)
@@ -5180,17 +5274,20 @@ function updateClock() {
 // same rule the existing metrics use (computeMetrics groups by new Date(entry).
 // getDate()), so the calendar agrees with the trade tables.
 // ════════════════════════════════════════════════════════════════════════
-let _calMonth = (function () { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); })();
+let _calMonth = (function () {
+    const key = topstepTradeDateKey(new Date());
+    const parts = key ? key.split('-').map(Number) : [];
+    return parts.length === 3
+        ? new Date(parts[0], parts[1] - 1, 1)
+        : (function () { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); })();
+})();
 let _calLiveTrades = null;
 
 function _calDateKey(d) {
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 function _calKeyFromTrade(t) {
-    if (!t || !t.entry_time) return null;
-    const d = new Date(t.entry_time);
-    if (isNaN(d.getTime())) return null;
-    return _calDateKey(d);
+    return tradeRealizedDayKey(t);
 }
 function _calFmtMoney(v) {
     return (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -5223,6 +5320,7 @@ async function _calFetchLive(force) {
         const resp = await fetch(API + '/live/trade-history' + (force ? '?refresh=true' : ''));
         const data = await resp.json();
         _calLiveTrades = _calDedupeLive(data.trades || []);
+        window._liveCompletedTrades = _calLiveTrades;
     } catch (e) {
         _calLiveTrades = _calLiveTrades || [];
     }
@@ -5232,8 +5330,14 @@ function calShiftMonth(delta) {
     renderCalendar();
 }
 function calGoToday() {
-    const d = new Date();
-    _calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+    const key = topstepTradeDateKey(new Date());
+    const parts = key ? key.split('-').map(Number) : [];
+    if (parts.length === 3) {
+        _calMonth = new Date(parts[0], parts[1] - 1, 1);
+    } else {
+        const d = new Date();
+        _calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+    }
     renderCalendar();
 }
 async function renderCalendar(force) {
@@ -5248,7 +5352,7 @@ async function renderCalendar(force) {
     const first = new Date(y, m, 1);
     const startIdx = first.getDay();                    // Sunday-first column (0=Sun..6=Sat)
     const daysInMonth = new Date(y, m + 1, 0).getDate();
-    const todayKey = _calDateKey(new Date());
+    const todayKey = topstepTradeDateKey(new Date()) || _calDateKey(new Date());
 
     const grid = document.getElementById('cal-grid');
     if (!grid) return;

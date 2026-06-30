@@ -534,7 +534,7 @@ _CONTRACT_SPECS = {
     "NQ":  {"point_value": 20.0, "tick_size": 0.25, "label": "NQ (Mini)",
             "commission_rt": 1.00, "fees_rt": 2.80},
     "MNQ": {"point_value": 2.0,  "tick_size": 0.25, "label": "MNQ (Micro)",
-            "commission_rt": 0.74, "fees_rt": 0.46},   # MNQ Micro RT ≈ $1.20
+            "commission_rt": 0.50, "fees_rt": 0.74},   # MNQ Micro RT ≈ $1.24
 }
 
 
@@ -571,14 +571,14 @@ def get_contract_label(contract_id: str) -> str:
 
 
 def get_commission_rt(contract_id: str) -> float:
-    """Per-contract round-turn commission. NQ ≈ $1.00, MNQ ≈ $0.74."""
+    """Per-contract round-turn commission. NQ ≈ $1.00, MNQ ≈ $0.50."""
     sym = _extract_symbol(contract_id)
     spec = _CONTRACT_SPECS.get(sym)
     return float(spec["commission_rt"]) if spec else 1.00
 
 
 def get_fees_rt(contract_id: str) -> float:
-    """Per-contract round-turn exchange/regulatory fees. NQ ≈ $2.80, MNQ ≈ $0.46."""
+    """Per-contract round-turn exchange/regulatory fees. NQ ≈ $2.80, MNQ ≈ $0.74."""
     sym = _extract_symbol(contract_id)
     spec = _CONTRACT_SPECS.get(sym)
     return float(spec["fees_rt"]) if spec else 2.80

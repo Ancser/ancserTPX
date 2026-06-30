@@ -26,6 +26,7 @@ from backend.db.models import (
     Candle, TradeSignal, OrderRequest, OrderResponse,
     ConsolidationZone, Direction, StrategyType, ZoneStatus, BarUnit,
     StrategyParams, get_point_value, get_tick_size,
+    get_commission_rt, get_fees_rt,
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.session_filter import (
@@ -220,6 +221,7 @@ class LiveTradingEngine:
         self._entry_time: Optional[datetime] = None  # when current position opened (UTC)
         self._force_exit_reason: Optional[str] = None  # set by flatten_now / emergency close
         self._daily_pnl: float = 0.0
+        self._daily_pnl_source: str = "trade history"
         self._today: str = ""
         self._full_tp_lock: int = max(
             int(getattr(self.strategy_params, "full_tp_lock", 0) or 0),
@@ -1210,7 +1212,7 @@ class LiveTradingEngine:
         except Exception as e:
             logger.warning(f"Failed to release breakout lock: {e}")
 
-    async def _calc_pnl_from_trades(self, *, emit_log: bool = True) -> float:
+    async def _calc_pnl_from_trades(self, *, emit_log: bool = True) -> Optional[float]:
         """Fallback: sum today's realized PnL from trade history.
 
         Uses the same field names as routes.py _parse_fill:
@@ -1234,6 +1236,17 @@ class LiveTradingEngine:
                     pnl_raw = t.get("pnl")
                 if not pnl_raw or float(pnl_raw) == 0:
                     continue  # opening fill, no PnL
+                contract_id = (
+                    t.get("contractId")
+                    or t.get("ContractId")
+                    or self.contract_id
+                    or ""
+                )
+                try:
+                    qty = max(1, int(abs(float(t.get("size") or t.get("Size") or 1))))
+                except (TypeError, ValueError):
+                    qty = 1
+                costs = (get_commission_rt(contract_id) + get_fees_rt(contract_id)) * qty
 
                 # Timestamp field
                 ts_str = (
@@ -1250,7 +1263,7 @@ class LiveTradingEngine:
                     ct = ts.astimezone(_CT)
                     trade_date = (ct + timedelta(days=1)).strftime("%Y-%m-%d") if ct.hour >= 17 else ct.strftime("%Y-%m-%d")
                     if trade_date == today:
-                        total_pnl += float(pnl_raw)
+                        total_pnl += float(pnl_raw) - costs
                         count += 1
                 except (ValueError, TypeError):
                     continue
@@ -1259,7 +1272,7 @@ class LiveTradingEngine:
             return total_pnl
         except Exception as e:
             logger.warning(f"Failed to calc PnL from trades: {e}")
-            return 0.0
+            return None
 
     @staticmethod
     def _first_present(row: Dict[str, Any], *keys: str):
@@ -1461,18 +1474,20 @@ class LiveTradingEngine:
                 if balance is not None:
                     self._capital = as_float(balance, self._capital)
 
-                daily = first_present(account, "dailyPnl", "dailyPnL", "pnl", "PnL")
                 open_pnl = first_present(account, "openPnl", "openPnL", "unrealizedPnl", "unrealizedPnL")
                 closed_pnl = first_present(account, "closedPnl", "closedPnL", "realizedPnl", "realizedPnL")
-                source = "account"
-                if daily is not None:
-                    self._daily_pnl = as_float(daily)
-                    source = "account dailyPnl"
+                history_pnl = await self._calc_pnl_from_trades(emit_log=emit_log)
+                source = "trade history (Topstep day)"
+                if history_pnl is not None:
+                    self._daily_pnl = history_pnl
                 elif open_pnl is not None or closed_pnl is not None:
                     self._daily_pnl = as_float(open_pnl) + as_float(closed_pnl)
+                    source = "account open+closed PnL"
                 else:
-                    self._daily_pnl = await self._calc_pnl_from_trades(emit_log=emit_log)
-                    source = "trade history"
+                    daily = first_present(account, "dailyPnl", "dailyPnL", "pnl", "PnL")
+                    self._daily_pnl = as_float(daily)
+                    source = "account dailyPnl"
+                self._daily_pnl_source = source
 
                 self._last_account_refresh = time_mod.time()
                 if emit_log:
@@ -1559,6 +1574,8 @@ class LiveTradingEngine:
                 )
             ),
             "daily_pnl": self._daily_pnl,
+            "daily_pnl_source": self._daily_pnl_source,
+            "topstep_trade_date": self._get_topstep_trade_date(),
             "tp_locked": self._any_full_tp_locked(),
             "full_tp_lock": self._full_tp_lock,
             "full_tp_count": self._full_tp_count,
@@ -1843,7 +1860,7 @@ class LiveTradingEngine:
             return
 
         self._running = True
-        self._today = datetime.utcnow().strftime("%Y-%m-%d")
+        self._today = self._get_topstep_trade_date()
         self._daily_pnl = 0.0
         self._trades = []
         self._log = []
@@ -2244,9 +2261,7 @@ class LiveTradingEngine:
         now = datetime.utcnow()
 
         # Reset daily counters at CT 17:00 (CME new session = TopStep day boundary)
-        aware_now = now.replace(tzinfo=_UTC_TZ)
-        ct_now = aware_now.astimezone(_CT)
-        ts_date = (ct_now + timedelta(days=1)).strftime("%Y-%m-%d") if ct_now.hour >= 17 else ct_now.strftime("%Y-%m-%d")
+        ts_date = self._get_topstep_trade_date()
         if ts_date != self._today:
             self._today = ts_date
             # API's closedPnl/openPnl reset automatically at CME day boundary

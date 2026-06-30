@@ -4365,6 +4365,46 @@ def _normalize_topstep_fill(t: dict) -> dict:
     }
 
 
+def _fill_qty(value) -> int:
+    try:
+        return max(1, int(abs(float(value or 1))))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _round_turn_costs(contract_id: str, size) -> tuple[float, float]:
+    qty = _fill_qty(size)
+    return get_commission_rt(contract_id) * qty, get_fees_rt(contract_id) * qty
+
+
+def _ensure_net_trade_pnl(trades: List[dict]) -> List[dict]:
+    """Migrate older cached live rows where pnl was gross price P/L."""
+    out = []
+    for row in trades or []:
+        if not isinstance(row, dict):
+            continue
+        r = dict(row)
+        old_commission = float(r.get("commission") or 0.0)
+        old_fees = float(r.get("fees") or 0.0)
+        if r.get("gross_pnl") is not None:
+            gross = float(r.get("gross_pnl") or 0.0)
+        elif r.get("pnl_is_net"):
+            gross = float(r.get("pnl") or 0.0) + old_commission + old_fees
+        else:
+            gross = float(r.get("pnl") or 0.0)
+        commission, fees = _round_turn_costs(
+            str(r.get("contract_id") or ""),
+            r.get("size") or r.get("contracts") or 1,
+        )
+        r["gross_pnl"] = round(gross, 2)
+        r["pnl"] = round(gross - commission - fees, 2)
+        r["commission"] = round(commission, 2)
+        r["fees"] = round(fees, 2)
+        r["pnl_is_net"] = True
+        out.append(r)
+    return out
+
+
 def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
     """Pair opening fills with closing fills into round-trip trades per
     (account_id, contract_id) using FIFO. Unpaired fills become single-point
@@ -4404,15 +4444,17 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 _gross_pnl = (_xp - _ep) * _pt * _sz
             else:
                 _gross_pnl = (_ep - _xp) * _pt * _sz
+            _commission, _fees = _round_turn_costs(_cid, _sz)
+            _net_pnl = _gross_pnl - _commission - _fees
             # Prefer the engine-recorded reason; fall back to pnl sign only when
             # we have nothing better (e.g. trades that pre-date the exit log).
             exit_rec = _lookup_exit_record(exit_idx, f.get("account_id"), _cid, f.get("time") or "")
             reason = (exit_rec or {}).get("exit_reason")
             if not reason:
-                reason = "tp" if _gross_pnl >= 0 else "sl"
-            elif reason == "tp" and _gross_pnl < 0:
+                reason = "tp" if _net_pnl >= 0 else "sl"
+            elif reason == "tp" and _net_pnl < 0:
                 reason = "sl"
-            elif reason == "sl" and _gross_pnl > 0:
+            elif reason == "sl" and _net_pnl > 0:
                 reason = "tp"
             trades.append({
                 "trade_id": str(opener["fill_id"]) + "_" + str(f["fill_id"]),
@@ -4422,9 +4464,11 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 "exit_price": f["price"],
                 "entry_time": opener["time"],
                 "exit_time": f["time"],
-                "pnl": round(_gross_pnl, 2),  # gross P&L from price movement
-                "commission": 1.0,
-                "fees": 2.80,
+                "gross_pnl": round(_gross_pnl, 2),
+                "pnl": round(_net_pnl, 2),  # net P&L after commission + fees
+                "pnl_is_net": True,
+                "commission": round(_commission, 2),
+                "fees": round(_fees, 2),
                 "exit_reason": reason,
                 "account_id": f.get("account_id"),
                 "contract_id": _cid,
@@ -4436,7 +4480,11 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
             exit_rec = _lookup_exit_record(
                 exit_idx, f.get("account_id"), f.get("contract_id") or "", f.get("time") or ""
             )
-            reason = (exit_rec or {}).get("exit_reason") or ("tp" if (f["pnl"] or 0) >= 0 else "sl")
+            _cid = f.get("contract_id") or ""
+            _commission, _fees = _round_turn_costs(_cid, f.get("size") or 1)
+            _gross_pnl = float(f["pnl"] or 0)
+            _net_pnl = _gross_pnl - _commission - _fees
+            reason = (exit_rec or {}).get("exit_reason") or ("tp" if _net_pnl >= 0 else "sl")
             trades.append({
                 "trade_id": str(f["fill_id"]),
                 "direction": f["direction"],
@@ -4445,9 +4493,11 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
                 "exit_price": f["price"],
                 "entry_time": f["time"],
                 "exit_time": f["time"],
-                "pnl": round(float(f["pnl"] or 0), 2),  # use API pnl; no paired prices
-                "commission": 1.0,
-                "fees": 2.80,
+                "gross_pnl": round(_gross_pnl, 2),
+                "pnl": round(_net_pnl, 2),  # use API pnl minus costs; no paired prices
+                "pnl_is_net": True,
+                "commission": round(_commission, 2),
+                "fees": round(_fees, 2),
                 "exit_reason": reason,
                 "account_id": f.get("account_id"),
                 "contract_id": f.get("contract_id"),
@@ -4488,7 +4538,7 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
     )
 
     if not refresh:
-        cached = _load_trade_history_cache()
+        cached = _ensure_net_trade_pnl(_load_trade_history_cache())
         if cached:
             if filter_acc_id:
                 cached = [t for t in cached if t.get("account_id") == filter_acc_id]
@@ -4500,7 +4550,7 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
             }
 
     if not _topstepx_client:
-        cached = _load_trade_history_cache()
+        cached = _ensure_net_trade_pnl(_load_trade_history_cache())
         if filter_acc_id:
             cached = [t for t in cached if t.get("account_id") == filter_acc_id]
         return {
@@ -4550,7 +4600,7 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
 
     except Exception as e:
         logger.error(f"[TRADE HISTORY] failed: {e}")
-        cached = _load_trade_history_cache()
+        cached = _ensure_net_trade_pnl(_load_trade_history_cache())
         if filter_acc_id:
             cached = [t for t in cached if t.get("account_id") == filter_acc_id]
         return {
