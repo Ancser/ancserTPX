@@ -40,7 +40,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]   # backend/ml/ -> project root
 sys.path.insert(0, str(ROOT))
 
 from backend.db.models import get_tick_size
@@ -52,10 +52,10 @@ from backend.strategy.confluence_features import (
 )
 from backend.strategy.confluence_scorer import ConfluenceScorer, save_model_version
 from backend.backtest.confluence_backtest import build_zone_timeline
-from scripts.confluence_common import (
+from backend.ml.confluence_common import (
     CONTRACT_ID, MODEL_DIR, resolve_candles, timeframes_for_base,
 )
-from scripts.confluence_label import (
+from backend.ml.confluence_label import (
     simulate_outcomes, uniqueness_weights, walk_forward_oos,
 )
 

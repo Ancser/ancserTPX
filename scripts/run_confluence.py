@@ -44,7 +44,7 @@ from backend.strategy.confluence import ConfluenceConfig
 from backend.backtest.confluence_backtest import (
     ConfluenceBacktester, ConfluenceBacktestConfig, WAIT_MINUTES_CHOICES,
 )
-from scripts.confluence_common import CONTRACT_ID, OUT_DIR, resolve_candles
+from backend.ml.confluence_common import CONTRACT_ID, OUT_DIR, resolve_candles
 
 
 def _best_signal_cfg() -> ConfluenceConfig:

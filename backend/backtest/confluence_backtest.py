@@ -43,7 +43,7 @@ from backend.strategy.consolidation import (
 )
 from backend.strategy.confluence import (
     ConfluenceConfig, evaluate_confluence, evaluate_confluence_scored, gate_signals,
-    ConfluenceSignal, snapshot_zones_by_tf, cluster_wall_id,
+    ConfluenceSignal, snapshot_zones_by_tf, cluster_wall_id, cluster_sl_reference_tf,
 )
 from backend.strategy.confluence_features import CONTEXT_WINDOW
 from backend.strategy.session_filter import (
@@ -427,6 +427,7 @@ class ConfluenceBacktester:
                 "weight": round(cl.total_weight, 2),
                 "tfs": cl.distinct_tfs,
                 "largest_tf": cl.largest_tf,
+                "risk_tf": cluster_sl_reference_tf(cl, self.signal_cfg),
                 "wall_id": cluster_wall_id(cl),
                 "labels": cl.labels,
                 "primary_zone": {

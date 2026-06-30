@@ -21,3 +21,6 @@ aiosqlite>=0.21                  # Async SQLite
 python-dotenv>=1.0
 pydantic>=2.10
 pydantic-settings>=2.7
+
+# Desktop window (native, no Chrome — uses Edge WebView2 on Windows 11)
+pywebview>=5.3

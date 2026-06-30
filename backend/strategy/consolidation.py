@@ -44,6 +44,7 @@
 """
 
 from __future__ import annotations
+import copy
 import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -955,7 +956,15 @@ class ClockBucketZoneDetector:
 # Multi-timeframe OVERLAP Zone Detector (live mirror of backtest)
 # ══════════════════════════════════════════════════════════
 
-def _synthesize_overlap_zone(actives: List[ConsolidationZone], tfs) -> ConsolidationZone:
+def _normalize_overlap_trade_tf(value: str) -> str:
+    return "smallest" if str(value or "").strip().lower() == "smallest" else "merged"
+
+
+def _synthesize_overlap_zone(
+    actives: List[ConsolidationZone],
+    tfs,
+    overlap_trade_tf: str = "merged",
+) -> ConsolidationZone:
     """Average the overlapping reference zones into one synthetic zone.
 
     Mirrors backend.api.routes._synthesize_merged_zone EXACTLY so live overlap
@@ -963,6 +972,15 @@ def _synthesize_overlap_zone(actives: List[ConsolidationZone], tfs) -> Consolida
     (VAH/VAL/POC) are the mean across timeframes; the VP histogram is summed so
     the lowest-volume-node SL still works.
     """
+    ids = [str(z.zone_id) for z in actives]
+    if _normalize_overlap_trade_tf(overlap_trade_tf) == "smallest":
+        zone = copy.copy(actives[0])
+        zone.candles = []
+        zone.zone_id = "OS:" + "+".join(tfs) + ":" + "+".join(ids)
+        zone.parent_zone_id = "+".join(ids)
+        zone.timeframe = tfs[0]
+        return zone
+
     n = len(actives)
     vah = sum(z.vah_80 for z in actives) / n
     val = sum(z.val_80 for z in actives) / n
@@ -971,7 +989,7 @@ def _synthesize_overlap_zone(actives: List[ConsolidationZone], tfs) -> Consolida
     for z in actives:
         for p, v in (z.profile or {}).items():
             profile[p] = profile.get(p, 0) + v
-    zid = "M:" + "+".join(str(z.zone_id) for z in actives)
+    zid = "M:" + "+".join(ids)
     return ConsolidationZone(
         zone_id=zid,
         formed_at=actives[-1].formed_at,
@@ -1004,6 +1022,7 @@ class OverlapZoneDetector:
         value_area_pct: float = 0.80,
         tick_size: float = 0.25,
         max_recent: int = 10,
+        overlap_trade_tf: str = "merged",
     ):
         order = {tf: i for i, tf in enumerate(AREA_TIMEFRAME_MINUTES.keys())}
         tfs = [t for t in tf_combo if t in AREA_TIMEFRAME_MINUTES]
@@ -1016,6 +1035,7 @@ class OverlapZoneDetector:
         self.value_area_pct = value_area_pct
         self.tick_size = tick_size
         self.max_recent = max_recent
+        self.overlap_trade_tf = _normalize_overlap_trade_tf(overlap_trade_tf)
 
         self._detectors: List[ClockBucketZoneDetector] = [
             ClockBucketZoneDetector(
@@ -1049,7 +1069,7 @@ class OverlapZoneDetector:
         if lo <= hi:
             key = tuple(a.zone_id for a in actives)
             if key != self._last_key:
-                mz = _synthesize_overlap_zone(actives, self.tfs)
+                mz = _synthesize_overlap_zone(actives, self.tfs, self.overlap_trade_tf)
                 self._merged_active = mz
                 self._last_key = key
                 self._merged_history.append(mz)
@@ -1101,6 +1121,7 @@ def build_zone_detector(
     tick_size: float = 0.25,
     max_recent: int = 10,
     tf_combo: Optional[List[str]] = None,
+    overlap_trade_tf: str = "merged",
 ):
     """Factory: returns a zone detector keyed by the selected method.
 
@@ -1116,6 +1137,7 @@ def build_zone_detector(
             value_area_pct=value_area_pct,
             tick_size=tick_size,
             max_recent=max_recent,
+            overlap_trade_tf=overlap_trade_tf,
         )
     if len(valid_combo) == 1:
         area_timeframe = valid_combo[0]

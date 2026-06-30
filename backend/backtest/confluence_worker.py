@@ -171,6 +171,10 @@ def run_job(ckey, candles_or_none, params: dict, progress=None) -> dict:
     sig_cfg.rr_grid = tuple(rr_grid) if rr_grid else None
     sig_cfg.enable_breakout = bool(p.get("conf_enable_breakout", False))
     sig_cfg.max_risk_ticks = p.get("conf_max_risk_ticks") or None
+    sig_cfg.sl_reference_tf = (
+        "smallest" if str(p.get("conf_sl_reference_tf") or "").lower() == "smallest"
+        else "largest"
+    )
 
     run_cfg = ConfluenceBacktestConfig(
         wait_minutes=int(p.get("conf_wait_minutes", 1) or 1), min_score=min_score,
@@ -208,6 +212,7 @@ def run_job(ckey, candles_or_none, params: dict, progress=None) -> dict:
     symbol_label = "/" + bt_cfg.symbol
     trades = []
     for t in result.trades:
+        meta = t.meta or {}
         trades.append({
             "trade_id": t.trade_id,
             "strategy": "confluence",
@@ -228,6 +233,13 @@ def run_job(ckey, candles_or_none, params: dict, progress=None) -> dict:
             "exit_reason": t.exit_reason.value if t.exit_reason else None,
             "zone_id": t.zone_id,
             "zone_source": getattr(t, "zone_source", "confluence"),
+            "mode": meta.get("mode"),
+            "side": meta.get("side"),
+            "largest_tf": meta.get("largest_tf"),
+            "risk_tf": meta.get("risk_tf"),
+            "wall_id": meta.get("wall_id"),
+            "labels": meta.get("labels") or [],
+            "primary_zone": meta.get("primary_zone"),
             "vol_ratio": getattr(t, "vol_ratio", 0.0),
             "is_big_trend": getattr(t, "is_big_trend", False),
         })

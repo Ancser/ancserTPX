@@ -22,16 +22,17 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.7d">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.7o">
 </head>
 <body>
 
 <div class="header">
     <h1><span style="color:var(--amber);">ancser</span>TPX 
         <span style="font-size:10px;color:rgba(255,255,255,0.5);font-weight:normal;text-shadow:0 0 6px rgba(255,255,255,0.3);letter-spacing:2px;margin-left:2px;">
-        1.0.7a
+        1.0.8
         </span></h1>
     <div class="header-tabs">
+        <div class="tab" data-tab="calendar">Data</div>
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live Monitor</div>
     </div>
@@ -230,6 +231,13 @@
                         <input type="hidden" id="conf-trail-trigger-bt" value="0.5">
                         <button type="button" class="toggle-field on" id="conf-trail-trigger-btn-bt" onclick="toggleTrailTrigger('bt')">50%</button>
                     </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>SL REF TF</label>
+                        <select id="conf-slref-bt" onchange="updateMlParamSummary('bt')">
+                            <option value="largest" selected>LARGEST</option>
+                            <option value="smallest">SMALLEST</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
@@ -269,6 +277,16 @@
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="1h" onchange="onTfSelectionChange('bt')"> 1h</label>
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="4h" onchange="onTfSelectionChange('bt')"> 4h</label>
                         </div>
+                    </div>
+                </div>
+                <div class="form-row" id="tr-overlap-trade-row-bt">
+                    <div class="form-group" style="flex:1;">
+                        <label>TRADE ZONE</label>
+                        <select id="tr-overlap-trade-tf-bt" onchange="onOverlapTradeTfChange('bt')" disabled>
+                            <option value="merged" selected>Merged overlap</option>
+                            <option value="smallest">Smallest selected TF</option>
+                        </select>
+                        <div id="tr-overlap-trade-hint-bt" style="font-size:10px;color:var(--text3);margin-top:4px;">JUDGE 5m / OVERLAP OFF / TRADE 5m</div>
                     </div>
                 </div>
                 <div class="form-row">
@@ -498,6 +516,13 @@
                             <input type="hidden" id="conf-trail-trigger-live" value="0.5">
                             <button type="button" class="toggle-field on" id="conf-trail-trigger-btn-live" onclick="toggleTrailTrigger('live')">50%</button>
                         </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>SL REF TF</label>
+                            <select id="conf-slref-live" onchange="updateMlParamSummary('live')">
+                                <option value="largest" selected>LARGEST</option>
+                                <option value="smallest">SMALLEST</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group" style="flex:1;">
@@ -537,11 +562,21 @@
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="1h" onchange="onTfSelectionChange('live')"> 1h</label>
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="4h" onchange="onTfSelectionChange('live')"> 4h</label>
                             </div>
-                        </div>
                     </div>
-                    <div class="form-row">
-                        <div class="form-group" style="flex:1;">
-                            <label>AREA %</label>
+                </div>
+                <div class="form-row" id="tr-overlap-trade-row-live">
+                    <div class="form-group" style="flex:1;">
+                        <label>TRADE ZONE</label>
+                        <select id="tr-overlap-trade-tf-live" onchange="onOverlapTradeTfChange('live')" disabled>
+                            <option value="merged" selected>Merged overlap</option>
+                            <option value="smallest">Smallest selected TF</option>
+                        </select>
+                        <div id="tr-overlap-trade-hint-live" style="font-size:10px;color:var(--text3);margin-top:4px;">JUDGE 5m / OVERLAP OFF / TRADE 5m</div>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>AREA %</label>
                             <select id="area-pct-live" onchange="onAreaConfigChange('live')">
                                 <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
                                 <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
@@ -766,7 +801,38 @@
     </div>
 </div>
 
-    <script src="/static/ancserTPX.js?v=1.0.7d&nyzone=20260624&sweepbt=1&rr025=1"></script>
+<!-- ── Calendar comparison view (Backtest vs Live, monthly) ──────────────── -->
+<div id="calendar-view" class="hidden">
+    <div class="cal-banner">
+        <div class="cal-nav">
+            <button class="cal-navbtn" id="cal-prev" onclick="calShiftMonth(-1)">‹</button>
+            <span id="cal-month-label">—</span>
+            <button class="cal-navbtn" id="cal-next" onclick="calShiftMonth(1)">›</button>
+            <button class="cal-todaybtn" id="cal-today" onclick="calGoToday()">Today</button>
+            <button class="cal-todaybtn" id="cal-refresh" onclick="renderCalendar(true)" title="Re-fetch live trade history">⟳ Live</button>
+        </div>
+        <div class="cal-summary">
+            <div class="cal-sum-item">
+                <span class="cal-sum-label">BACKTEST P/L</span>
+                <span class="cal-sum-val" id="cal-bt-total">—</span>
+            </div>
+            <div class="cal-sum-item">
+                <span class="cal-sum-label">LIVE P/L</span>
+                <span class="cal-sum-val" id="cal-live-total">—</span>
+            </div>
+            <div class="cal-sum-item">
+                <span class="cal-sum-label">DIFF vs BT</span>
+                <span class="cal-sum-val" id="cal-diff">—</span>
+            </div>
+        </div>
+    </div>
+    <div class="cal-weekhead">
+        <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span class="cal-weekhead-sum">Week</span>
+    </div>
+    <div id="cal-grid" class="cal-grid"></div>
+</div>
+
+    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=7&tradezone=1"></script>
 </body>
 </html>
 

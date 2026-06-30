@@ -229,6 +229,14 @@ def _normalize_conf_rr(value, default: float = 1.0) -> float:
     return round(max(1.0, min(6.0, rr)), 2)
 
 
+def _normalize_conf_sl_reference_tf(value) -> str:
+    return "smallest" if str(value or "").strip().lower() == "smallest" else "largest"
+
+
+def _normalize_tr_overlap_trade_tf(value) -> str:
+    return "smallest" if str(value or "").strip().lower() == "smallest" else "merged"
+
+
 def _strategy_leg_params(req, prefix: str) -> dict:
     tp_raw = getattr(req, f"{prefix}_tp_ticks", None)
     sl_raw = getattr(req, f"{prefix}_sl_ticks", None)
@@ -318,6 +326,9 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         conf_use_scorer=bool(getattr(req, "conf_use_scorer", True)),
         conf_enable_breakout=bool(getattr(req, "conf_enable_breakout", False)),
         conf_max_risk_ticks=getattr(req, "conf_max_risk_ticks", None),
+        conf_sl_reference_tf=_normalize_conf_sl_reference_tf(
+            getattr(req, "conf_sl_reference_tf", "largest")
+        ),
         conf_allowed_sessions=_conf_allowed_sessions_list(
             getattr(req, "conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
         ),
@@ -366,6 +377,9 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         rr_ratio=_normalize_rr_ratio(getattr(req, "rr_ratio", 2)),
         method=str(getattr(req, "method", "single") or "single").lower(),
         tf_combo=[t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES],
+        tr_overlap_trade_tf=_normalize_tr_overlap_trade_tf(
+            getattr(req, "tr_overlap_trade_tf", "merged")
+        ),
     )
 
 # ── 臨時存儲（後續改用 SQLite）──────────────────────────
@@ -541,6 +555,7 @@ class BacktestRequest(BaseModel):
     # overlapping VAH/VAL of the timeframes in tf_combo (reproduces an ML overlap row).
     method: str = "single"
     tf_combo: Optional[List[str]] = None
+    tr_overlap_trade_tf: str = "merged"   # "merged"=average overlap zone, "smallest"=trade smallest TF zone
     # v1.0.6: confluence (explainable ML scorer) backtest. When strategy=="confluence"
     # the multi-timeframe weighted-level engine is used instead of the trend engine.
     conf_band_ticks: float = 4.0          # level-cluster band width (ticks)
@@ -554,6 +569,7 @@ class BacktestRequest(BaseModel):
     conf_use_scorer: bool = True          # True=trained JSON, False=heuristic prior
     conf_enable_breakout: bool = False    # include breakout-retrace candidate (False=momentum+reversion only)
     conf_max_risk_ticks: Optional[int] = None  # drop signals with SL > N ticks (None=no cap)
+    conf_sl_reference_tf: str = "largest" # "largest"=original, "smallest"=lowest contributing TF anchors SL/TP
     conf_allowed_sessions: Optional[List[str]] = Field(
         default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
     )
@@ -617,6 +633,10 @@ class TradeResponse(BaseModel):
     mode: Optional[str] = None
     side: Optional[str] = None
     largest_tf: Optional[str] = None
+    risk_tf: Optional[str] = None
+    decision_tfs: List[str] = Field(default_factory=list)
+    overlap_tfs: List[str] = Field(default_factory=list)
+    trade_tf: Optional[str] = None
     wall_id: Optional[str] = None
     labels: List[str] = Field(default_factory=list)
     primary_zone: Optional[Dict[str, Any]] = None
@@ -1506,6 +1526,9 @@ def _run_confluence_backtest(req: BacktestRequest, progress_callback=None) -> Ba
     sig_cfg.rr_grid = None
     sig_cfg.enable_breakout = bool(getattr(req, "conf_enable_breakout", False))
     sig_cfg.max_risk_ticks = getattr(req, "conf_max_risk_ticks", None)
+    sig_cfg.sl_reference_tf = _normalize_conf_sl_reference_tf(
+        getattr(req, "conf_sl_reference_tf", "largest")
+    )
     run_cfg = ConfluenceBacktestConfig(
         wait_minutes=req.conf_wait_minutes, min_score=min_score,
         base_minutes=base, timeframes=timeframes,
@@ -1567,6 +1590,10 @@ def _run_confluence_backtest(req: BacktestRequest, progress_callback=None) -> Ba
             mode=meta.get("mode"),
             side=meta.get("side"),
             largest_tf=meta.get("largest_tf"),
+            risk_tf=meta.get("risk_tf"),
+            decision_tfs=meta.get("decision_tfs") or [],
+            overlap_tfs=meta.get("overlap_tfs") or [],
+            trade_tf=meta.get("trade_tf"),
             wall_id=meta.get("wall_id"),
             labels=meta.get("labels") or [],
             primary_zone=meta.get("primary_zone"),
@@ -1620,7 +1647,7 @@ class ConfluenceTrainRequest(BaseModel):
 def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dict:
     """Blocking trainer (run in a threadpool). Standardized on 1m base — fits a
     logistic scorer on forward-scan labels and writes confluence_scorer.json.
-    Reuses the SAME collect()/evaluate_and_meta() as scripts/train_confluence.py
+    Reuses the SAME collect()/evaluate_and_meta() as backend/ml/train_confluence.py
     so the web result is identical to the CLI trainer (drop-constant fit,
     time-series-CV C, uniqueness weighting, embargoed walk-forward OOS)."""
     from datetime import datetime as _dt
@@ -1629,7 +1656,7 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
     from backend.strategy.confluence_scorer import ConfluenceScorer
     from backend.strategy.consolidation import timeframes_for_base
     from backend.backtest.confluence_backtest import build_zone_timeline
-    from scripts.train_confluence import collect, evaluate_and_meta
+    from backend.ml.train_confluence import collect, evaluate_and_meta
 
     base = 1  # standardized base
     timeframes = timeframes_for_base(base)
@@ -1692,7 +1719,7 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
 
     sweep_result = None
     try:
-        from scripts.train_confluence import sweep_probability_threshold
+        from backend.ml.train_confluence import sweep_probability_threshold
         full_tl = build_zone_timeline(candles, timeframes, tick, MAX_RECENCY_DEPTH)
         rows, best_idx = sweep_probability_threshold(
             candles, full_tl, scorer, cfg, req.contract_id,
@@ -1853,7 +1880,7 @@ def _retrain_model_sync(candles, req: "ModelRetrainRequest") -> dict:
     from backend.strategy.confluence_scorer import ConfluenceScorer, save_model_version
     from backend.strategy.consolidation import timeframes_for_base
     from backend.backtest.confluence_backtest import build_zone_timeline
-    from scripts.train_confluence import collect, evaluate_and_meta
+    from backend.ml.train_confluence import collect, evaluate_and_meta
 
     base = 1
     timeframes = timeframes_for_base(base)
@@ -1911,7 +1938,7 @@ def _retrain_model_sync(candles, req: "ModelRetrainRequest") -> dict:
 
     sweep_result = None
     try:
-        from scripts.train_confluence import sweep_probability_threshold
+        from backend.ml.train_confluence import sweep_probability_threshold
         sweep_tl = build_zone_timeline(candles, timeframes, tick, MAX_RECENCY_DEPTH)
         rows, best_idx = sweep_probability_threshold(
             candles, sweep_tl, scorer, cfg, req.contract_id,
@@ -2160,16 +2187,29 @@ async def run_backtest(req: BacktestRequest):
     method = str(getattr(req, "method", "single") or "single").lower()
     tf_combo = tuple(t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES)
     overlap_mode = method == "overlap" and len(tf_combo) >= 2
+    overlap_trade_tf = _normalize_tr_overlap_trade_tf(
+        getattr(strategy_params, "tr_overlap_trade_tf", "merged")
+    )
 
     _overlap_zone_timeline = None
     if overlap_mode:
         ordered = [tf for tf in ML_TIMEFRAMES if tf in tf_combo]
         _ov_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
-        _ov_timelines = [
-            _precompute_zone_timeline(_ov_candles, value_area_pct, False, tf)
-            for tf in ordered
-        ]
-        _overlap_zone_timeline = _merge_zone_timelines(_ov_timelines, tuple(ordered))
+        # Emit progress BEFORE the (slow, uncached-on-first-run) detector pass so
+        # the UI shows "building zone timeline…" instead of the previous run's
+        # stale "done" while this churns over full history.
+        _update_bt_progress(
+            "building zone timeline", 0, len(_ov_candles),
+            f"{len(ordered)} timeframe(s) over {len(_ov_candles)} candles",
+        )
+        def _build_overlap_timeline():
+            return _get_merged_zone_timeline(
+                _ov_candles, value_area_pct, False, tuple(ordered), overlap_trade_tf,
+            )
+
+        # Off-load to a worker thread so the event loop (and the progress poll)
+        # stays responsive while the detector pass churns over full history.
+        _overlap_zone_timeline = await asyncio.to_thread(_build_overlap_timeline)
 
     engine = BacktestEngine(
         config,
@@ -2223,6 +2263,10 @@ async def run_backtest(req: BacktestRequest):
             mode=meta.get("mode"),
             side=meta.get("side"),
             largest_tf=meta.get("largest_tf"),
+            risk_tf=meta.get("risk_tf"),
+            decision_tfs=meta.get("decision_tfs") or [],
+            overlap_tfs=meta.get("overlap_tfs") or [],
+            trade_tf=meta.get("trade_tf"),
             wall_id=meta.get("wall_id"),
             labels=meta.get("labels") or [],
             primary_zone=meta.get("primary_zone"),
@@ -2253,7 +2297,8 @@ async def run_backtest(req: BacktestRequest):
             try:
                 vp = vp_calc.calculate(z.candles)
                 sorted_levels = sorted(vp.profile.items())
-                max_vol = max(vp.profile.values()) if vp.profile else 1
+                # guard: empty profile OR all-zero volumes → avoid /0
+                max_vol = (max(vp.profile.values()) if vp.profile else 0) or 1
                 profile_data = [
                     {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
                     for p, v in sorted_levels
@@ -2262,12 +2307,16 @@ async def run_backtest(req: BacktestRequest):
                 profile_data = []
         elif getattr(z, "profile", None):
             # Merged/slim zones carry a precomputed histogram instead of candles.
-            prof = z.profile or {}
-            max_vol = max(prof.values()) if prof else 1
-            profile_data = [
-                {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
-                for p, v in sorted(prof.items())
-            ]
+            try:
+                prof = z.profile or {}
+                # guard: empty profile OR all-zero volumes → avoid /0
+                max_vol = (max(prof.values()) if prof else 0) or 1
+                profile_data = [
+                    {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
+                    for p, v in sorted(prof.items())
+                ]
+            except Exception:
+                profile_data = []
 
         # Zone is mature only if it actually reached maturity during its lifetime
         is_mature = getattr(z, 'mature', False)
@@ -2365,6 +2414,7 @@ _BACKTEST_CSV_COLUMNS = [
     "sl_price", "tp_price", "original_sl_price", "original_tp_price",
     "exit_reason", "pnl", "commission", "fees",
     "zone_id", "zone_source", "vol_ratio", "is_big_trend",
+    "decision_tfs", "overlap_tfs", "trade_tf",
 ]
 
 
@@ -2701,8 +2751,8 @@ def _save_conf_combo_artifacts(req: BaseModel, ranked: List[dict], total: int,
     with json_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2, default=str, allow_nan=False)
 
-    cols = ["rank", "rr_ratio", "conf_enable_breakout", "conf_trail_trigger_pct",
-            "conf_trail_lock_pct", "conf_full_tp_lock", "conf_session_limit",
+    cols = ["rank", "rr_ratio", "conf_enable_breakout", "conf_sl_reference_tf",
+            "conf_trail_trigger_pct", "conf_trail_lock_pct", "conf_full_tp_lock", "conf_session_limit",
             "total_trades", "wins", "losses", "win_rate", "total_pnl",
             "max_drawdown", "profit_factor", "calmar_ratio", "expectancy",
             "avg_win", "avg_loss"]
@@ -2721,16 +2771,17 @@ def _save_conf_combo_artifacts(req: BaseModel, ranked: List[dict], total: int,
         f"- Saved JSON: `{json_path}`",
         f"- Saved CSV: `{csv_path}`",
         "",
-        "| Rank | RR | Breakout | TrailTrig | Lock | FullTPLock | Session | Trades | Win% | PnL | MaxDD | PF | Calmar |",
-        "| ---: | ---: | :---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Rank | RR | Breakout | SLRef | TrailTrig | Lock | FullTPLock | Session | Trades | Win% | PnL | MaxDD | PF | Calmar |",
+        "| ---: | ---: | :---: | :---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for r in [x for x in ranked if not x.get("error")][:25]:
         lines.append(
-            "| {rank} | 1:{rr} | {brk} | {trig}% | {lock}% | {ftl} | {ses} | {trades} | "
+            "| {rank} | 1:{rr} | {brk} | {slref} | {trig}% | {lock}% | {ftl} | {ses} | {trades} | "
             "{win}% | ${pnl} | ${dd} | {pf} | {calmar} |".format(
                 rank=r.get("rank", ""),
                 rr=r.get("rr_ratio", ""),
                 brk="ON" if r.get("conf_enable_breakout") else "off",
+                slref=r.get("conf_sl_reference_tf", "largest"),
                 trig=round(float(r.get("conf_trail_trigger_pct", 0) or 0) * 100),
                 lock=round(float(r.get("conf_trail_lock_pct", 0) or 0) * 100),
                 ftl=r.get("conf_full_tp_lock", 0) or "off",
@@ -2914,6 +2965,101 @@ def _precompute_zone_timeline(
         })
 
     return timeline
+
+
+# ── Overlap-mode zone-timeline cache (trend backtest speedup) ─────────────────
+# The detector pass above is the slow part (~minutes over full history) and
+# depends ONLY on candle data + value-area + area timeframe — NOT on RR / SL /
+# session / confirm. So re-running the trend backtest with different params on
+# the SAME data can reuse it (mirrors the confluence path's _get_conf_timeline).
+# Keyed per timeframe; the whole cache is dropped when the candle set changes
+# (new fetch), so stale data never gets reused.
+_zone_timeline_cache: dict = {}
+_zone_timeline_cache_sig = None
+_merged_zone_timeline_cache: dict = {}
+_merged_zone_timeline_cache_sig = None
+_MERGED_ZONE_TIMELINE_CACHE_MAX = 4
+
+
+def _candles_sig(candles):
+    return (len(candles),
+            candles[0].timestamp if candles else None,
+            candles[-1].timestamp if candles else None)
+
+
+def _get_precomputed_zone_timeline(candles, value_area_pct, skip_zone_stability,
+                                   area_timeframe):
+    """Cached wrapper around _precompute_zone_timeline (per area_timeframe)."""
+    global _zone_timeline_cache, _zone_timeline_cache_sig
+    sig = _candles_sig(candles)
+    if sig != _zone_timeline_cache_sig:
+        _zone_timeline_cache = {}            # candle set changed → invalidate all
+        _zone_timeline_cache_sig = sig
+    key = (_normalize_value_area_pct(value_area_pct), bool(skip_zone_stability),
+           _normalize_area_timeframe(area_timeframe))
+    cached = _zone_timeline_cache.get(key)
+    if cached is not None:
+        logger.info(f"[Trend] reusing cached zone timeline tf={key[2]} "
+                    f"({len(candles)} candles) — skipped rebuild")
+        return cached
+    import time as _t
+    _t0 = _t.perf_counter()
+    logger.info(f"[Trend] building zone timeline tf={key[2]} over {len(candles)} candles…")
+    timeline = _precompute_zone_timeline(
+        candles, value_area_pct, skip_zone_stability, area_timeframe,
+    )
+    logger.info(f"[Trend] zone timeline tf={key[2]} built in {_t.perf_counter() - _t0:.1f}s")
+    _zone_timeline_cache[key] = timeline
+    return timeline
+
+
+def _get_merged_zone_timeline(candles, value_area_pct, skip_zone_stability,
+                              tfs, overlap_trade_tf):
+    """Cached merged overlap timeline for Trend overlap backtests.
+
+    Per-TF timelines are already cached; this also caches the full merged result
+    so rerunning the same TF combo/risk settings avoids the O(N candles) merge.
+    """
+    global _merged_zone_timeline_cache, _merged_zone_timeline_cache_sig
+    sig = _candles_sig(candles)
+    if sig != _merged_zone_timeline_cache_sig:
+        _merged_zone_timeline_cache = {}
+        _merged_zone_timeline_cache_sig = sig
+
+    ordered = tuple(tf for tf in ML_TIMEFRAMES if tf in set(tfs or ()))
+    key = (
+        _normalize_value_area_pct(value_area_pct),
+        bool(skip_zone_stability),
+        ordered,
+        _normalize_tr_overlap_trade_tf(overlap_trade_tf),
+    )
+    cached = _merged_zone_timeline_cache.get(key)
+    if cached is not None:
+        logger.info(
+            "[Trend] reusing cached merged overlap timeline tf=%s trade=%s (%s candles)",
+            "+".join(ordered),
+            key[3],
+            len(candles),
+        )
+        return cached
+
+    import time as _t
+    _t0 = _t.perf_counter()
+    timelines = [
+        _get_precomputed_zone_timeline(candles, value_area_pct, skip_zone_stability, tf)
+        for tf in ordered
+    ]
+    merged = _merge_zone_timelines(timelines, ordered, key[3])
+    logger.info(
+        "[Trend] merged overlap timeline tf=%s trade=%s built in %.1fs",
+        "+".join(ordered),
+        key[3],
+        _t.perf_counter() - _t0,
+    )
+    _merged_zone_timeline_cache[key] = merged
+    while len(_merged_zone_timeline_cache) > _MERGED_ZONE_TIMELINE_CACHE_MAX:
+        _merged_zone_timeline_cache.pop(next(iter(_merged_zone_timeline_cache)))
+    return merged
 
 
 class MLRunRequest(BaseModel):
@@ -3105,12 +3251,22 @@ def _ml_timeframe_combos() -> list:
     return combos
 
 
-def _synthesize_merged_zone(actives, tfs):
+def _synthesize_merged_zone(actives, tfs, overlap_trade_tf: str = "merged"):
     """Average the overlapping reference zones into one synthetic zone.
     Entry levels (VAH/VAL/POC) are the mean across timeframes; the VP
     histogram is summed so the lowest-volume-node SL still works.
     """
     from backend.db.models import ConsolidationZone, ZoneStatus
+    import copy
+    ids = [str(z.zone_id) for z in actives]
+    if _normalize_tr_overlap_trade_tf(overlap_trade_tf) == "smallest":
+        zone = copy.copy(actives[0])
+        zone.candles = []
+        zone.zone_id = "OS:" + "+".join(tfs) + ":" + "+".join(ids)
+        zone.parent_zone_id = "+".join(ids)
+        zone.timeframe = tfs[0]
+        return zone
+
     n = len(actives)
     vah = sum(z.vah_80 for z in actives) / n
     val = sum(z.val_80 for z in actives) / n
@@ -3119,7 +3275,7 @@ def _synthesize_merged_zone(actives, tfs):
     for z in actives:
         for p, v in (z.profile or {}).items():
             profile[p] = profile.get(p, 0) + v
-    zid = "M:" + "+".join(str(z.zone_id) for z in actives)
+    zid = "M:" + "+".join(ids)
     return ConsolidationZone(
         zone_id=zid,
         formed_at=actives[-1].formed_at,
@@ -3134,7 +3290,7 @@ def _synthesize_merged_zone(actives, tfs):
     )
 
 
-def _merge_zone_timelines(timelines: list, tfs: tuple) -> list:
+def _merge_zone_timelines(timelines: list, tfs: tuple, overlap_trade_tf: str = "merged") -> list:
     """Combine per-timeframe timelines into one merged timeline.
     A merged reference zone exists at a candle only when ALL timeframes in the
     combo have an active zone whose value areas overlap (intersection non-empty).
@@ -3161,7 +3317,7 @@ def _merge_zone_timelines(timelines: list, tfs: tuple) -> list:
             key = tuple(a.zone_id for a in actives)
             entry = _syn_cache.get(key)
             if entry is None:
-                mz = _synthesize_merged_zone(actives, tfs)
+                mz = _synthesize_merged_zone(actives, tfs, overlap_trade_tf)
                 entry = {"active": mz, "recent": [mz], "mature": True, "overlap": len(actives)}
                 _syn_cache[key] = entry
             merged.append(entry)
@@ -3253,6 +3409,7 @@ def _run_ml_combo(candles, config, zone_timeline, rr, tf_combo,
 def _run_conf_combo(candles, timeline, scorer, tick, base_minutes, timeframes,
                     band_ticks, min_distinct_tf, min_prob, ev_floor, wait_minutes,
                     trail_lock_pct, contract_id, contract_size, bt_cfg_kwargs,
+                    req_data,
                     rr, enable_breakout, trail_trigger_pct, full_tp_lock,
                     session_limit) -> dict:
     """Run ONE confluence Model+Style combination on the shared (read-only) zone
@@ -3287,6 +3444,9 @@ def _run_conf_combo(candles, timeline, scorer, tick, base_minutes, timeframes,
         "contract_id": contract_id,
         "contract_size": contract_size,
         "conf_enable_breakout": bool(enable_breakout),
+        "conf_sl_reference_tf": _normalize_conf_sl_reference_tf(
+            req_data.get("conf_sl_reference_tf", "largest")
+        ),
         "conf_trail_trigger_pct": float(trail_trigger_pct),
         "conf_trail_lock_pct": float(trail_lock_pct),
         "conf_full_tp_lock": int(full_tp_lock),
@@ -3308,6 +3468,9 @@ def _run_conf_combo(candles, timeline, scorer, tick, base_minutes, timeframes,
         sig_cfg.rr_grid = None
         sig_cfg.enable_breakout = bool(enable_breakout)
         sig_cfg.max_risk_ticks = req_data.get("conf_max_risk_ticks") or None
+        sig_cfg.sl_reference_tf = _normalize_conf_sl_reference_tf(
+            req_data.get("conf_sl_reference_tf", "largest")
+        )
         run_cfg = ConfluenceBacktestConfig(
             wait_minutes=wait_minutes, min_score=min_score,
             base_minutes=base_minutes, timeframes=timeframes,
@@ -3392,6 +3555,7 @@ async def conf_combo_run(req: ConfComboRunRequest):
 
     candles = sorted(_historical_candles, key=lambda c: c.timestamp)
     scorer = resolve_scorer(bool(req.conf_use_scorer), None)
+    req_data = _request_payload(req)
 
     bt_cfg_kwargs = dict(
         initial_capital=req.initial_capital,
@@ -3441,6 +3605,7 @@ async def conf_combo_run(req: ConfComboRunRequest):
                 req.conf_band_ticks, req.conf_min_distinct_tf,
                 req.conf_min_prob, req.conf_ev_floor, req.conf_wait_minutes,
                 trail_lock_pct, contract_id, contract_size, bt_cfg_kwargs,
+                req_data,
                 rr, enable_breakout, trail_trigger_pct, full_tp_lock, session_limit,
             )
             for (rr, enable_breakout, trail_trigger_pct, full_tp_lock, session_limit) in combos
@@ -3472,6 +3637,7 @@ async def conf_combo_run(req: ConfComboRunRequest):
         "min_prob": req.conf_min_prob,
         "ev_floor": req.conf_ev_floor,
         "trail_lock_pct": trail_lock_pct,
+        "sl_reference_tf": _normalize_conf_sl_reference_tf(req.conf_sl_reference_tf),
         "timeframes": list(timeframes),
         "base_minutes": base,
         "contract": f"{bt_symbol}@{contract_size}",
@@ -3745,6 +3911,7 @@ class LiveStartRequest(BaseModel):
     # overlapping VAH/VAL of the timeframes in tf_combo (mirrors backtest/ML).
     method: str = "single"
     tf_combo: Optional[List[str]] = None
+    tr_overlap_trade_tf: str = "merged"   # "merged"=average overlap zone, "smallest"=trade smallest TF zone
     # Strategy params
     strategy: str = "confluence"
     tp_ticks: int = 200
@@ -3783,6 +3950,7 @@ class LiveStartRequest(BaseModel):
     conf_use_scorer: bool = True
     conf_enable_breakout: bool = False
     conf_max_risk_ticks: Optional[int] = None
+    conf_sl_reference_tf: str = "largest"
     conf_allowed_sessions: Optional[List[str]] = Field(
         default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
     )
@@ -4138,6 +4306,7 @@ def _decision_fields_from_exit_record(rec: Optional[dict]) -> dict:
         "mode": rec.get("mode"),
         "side": rec.get("side"),
         "largest_tf": rec.get("largest_tf"),
+        "risk_tf": rec.get("risk_tf"),
         "wall_id": rec.get("wall_id"),
         "labels": rec.get("labels") or [],
         "primary_zone": rec.get("primary_zone"),
@@ -4427,6 +4596,7 @@ _DEFAULT_PRESET_PARAMS = {
     "area_timeframe": "5m",
     "method": "single",
     "tf_combo": [],
+    "tr_overlap_trade_tf": "merged",
     "rr_ratio": 2,
     "breakout_confirm_bars": 7,
     "skip_zone_stability": False,
@@ -4442,6 +4612,7 @@ _DEFAULT_PRESET_PARAMS = {
     "conf_use_scorer": True,
     "conf_enable_breakout": False,
     "conf_max_risk_ticks": 80,
+    "conf_sl_reference_tf": "largest",
     "conf_allowed_sessions": ["ASIA"],
     "conf_trail_trigger_pct": 0.50,
     "conf_trail_lock_pct": 0.05,
@@ -4480,7 +4651,10 @@ _CODEX_626_PRESET_6 = "06.26 CODEX #6 RESEARCH Confluence高TF MNQx1 RR1:1.5 P0.
 _CODEX_626_PRESET_7 = "06.26 CODEX #7 RESEARCH MLC2低回撤 MNQx1 LB240 B2 RANGE POC R40 ASIA Shadow"
 _CODEX_626_PRESET_8 = "06.26 CODEX #8 RESEARCH MLC2多單 MNQx1 LB240 B1 RANGE POC R20 PRE Shadow"
 _CODEX_626_PRESET_9 = "06.26 CODEX #9 RESEARCH MLC2寬Band MNQx1 LB240 B4 RANGE POC R40 ASIA Shadow"
-_DEFAULT_LAST_USED_PRESET = _CODEX_626_PRESET_2
+_CODEX_630_PRESET_1 = "06.30 CODEX #1 Trend低損 MNQx1 TF5m RR1:6 C2 SL80 Trail50L10 SesON FT2"
+_CODEX_630_PRESET_3 = "06.30 CODEX #3 Trend重合5m30m小TF MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
+_CODEX_630_PRESET_4 = "06.30 CODEX #4 Trend重合30m1h小TF MNQx1 TF30m+1h Trade30m RR1:7 C4 SL80 Trail50L10 SesON FT0"
+_DEFAULT_LAST_USED_PRESET = _CODEX_630_PRESET_1
 _PRESET_RENAMES = {
 }
 _REMOVED_PRESET_NAMES = {
@@ -4538,6 +4712,7 @@ def _codex_624_preset(
         "conf_rr": float(rr),
         "conf_min_prob": float(min_prob),
         "conf_max_risk_ticks": int(max_risk_ticks),
+        "conf_sl_reference_tf": "largest",
         "conf_band_ticks": 4.0,
         "conf_min_distinct_tf": 2,
         "conf_allowed_sessions": ["ASIA"],
@@ -4557,21 +4732,35 @@ def _codex_626_trend_preset(
     trail_enabled: bool,
     trail_trigger: float = 0.50,
     trail_ticks: int = 10,
+    full_tp_lock: int = 0,
+    method: str = "single",
+    tf_combo: Optional[list[str]] = None,
+    overlap_trade_tf: str = "merged",
+    session_limit: bool = True,
     contract_id: str = "CON.F.US.MNQ.U26",
     contract_size: int = 1,
 ) -> dict:
     params = dict(_DEFAULT_PRESET_PARAMS)
+    tp_ticks = int(sl_ticks) * int(rr)
+    method = "overlap" if str(method or "").lower() == "overlap" else "single"
+    combo = [t for t in (tf_combo or []) if t in ML_TIMEFRAMES]
+    if method != "overlap" or len(combo) < 2:
+        combo = []
+        method = "single"
     params.update({
         "strategy": "trend",
         "contract_id": contract_id,
         "contract_size": contract_size,
         "area_timeframe": area_timeframe,
-        "method": "single",
-        "tf_combo": [],
+        "method": method,
+        "tf_combo": combo,
+        "tr_overlap_trade_tf": _normalize_tr_overlap_trade_tf(overlap_trade_tf),
         "value_area_pct": 0.80,
         "rr_ratio": int(rr),
         "breakout_confirm_bars": int(confirm_bars),
+        "tp_ticks": tp_ticks,
         "sl_ticks": int(sl_ticks),
+        "tr_tp_ticks": tp_ticks,
         "tr_sl_ticks": int(sl_ticks),
         "trail_enabled": bool(trail_enabled),
         "tr_trail_enabled": bool(trail_enabled),
@@ -4579,11 +4768,11 @@ def _codex_626_trend_preset(
         "tr_trail_trigger_pct": float(trail_trigger if trail_enabled else 0.0),
         "trail_sl_ticks": int(trail_ticks if trail_enabled else 0),
         "tr_trail_sl_ticks": int(trail_ticks if trail_enabled else 0),
-        "full_tp_lock": 0,
-        "tr_full_tp_lock": 0,
+        "full_tp_lock": int(full_tp_lock),
+        "tr_full_tp_lock": int(full_tp_lock),
         "tr_allowed_sessions": ["ASIA"],
         "one_trade_per_session_direction": True,
-        "tr_one_trade_per_session": True,
+        "tr_one_trade_per_session": bool(session_limit),
     })
     return params
 
@@ -4609,6 +4798,7 @@ def _codex_626_confluence_research_preset(
         "strategy": "confluence",
         "conf_band_ticks": float(band),
         "conf_min_distinct_tf": int(min_tf),
+        "conf_sl_reference_tf": "largest",
         "conf_allowed_sessions": ["ASIA"],
         "conf_trail_trigger_pct": 0.50,
         "conf_trail_lock_pct": 0.05,
@@ -4655,6 +4845,23 @@ def _codex_626_mlc2_research_preset(
 
 
 _BUILTIN_PRESETS = {
+    _CODEX_630_PRESET_1: _codex_626_trend_preset(
+        area_timeframe="5m", rr=6, confirm_bars=2, sl_ticks=80,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+        full_tp_lock=2,
+    ),
+    _CODEX_630_PRESET_3: _codex_626_trend_preset(
+        area_timeframe="5m", rr=6, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+        full_tp_lock=2, method="overlap", tf_combo=["5m", "30m"],
+        overlap_trade_tf="smallest", session_limit=False,
+    ),
+    _CODEX_630_PRESET_4: _codex_626_trend_preset(
+        area_timeframe="30m", rr=7, confirm_bars=4, sl_ticks=80,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+        full_tp_lock=0, method="overlap", tf_combo=["30m", "1h"],
+        overlap_trade_tf="smallest", session_limit=True,
+    ),
     _CODEX_626_PRESET_2: _codex_626_trend_preset(
         area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
         trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
@@ -4700,6 +4907,9 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             changed = True
         if normalized_strategy == "trend" and "tr_allowed_sessions" not in params:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
+            changed = True
+        if normalized_strategy == "trend" and "tr_overlap_trade_tf" not in params:
+            params["tr_overlap_trade_tf"] = "merged"
             changed = True
 
     for old_name, new_name in _PRESET_RENAMES.items():

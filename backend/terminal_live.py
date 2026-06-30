@@ -63,6 +63,7 @@ DEFAULT_PRESET_PARAMS = {
     "area_timeframe": "5m",
     "method": "single",
     "tf_combo": [],
+    "tr_overlap_trade_tf": "merged",
     "rr_ratio": 2,
     "breakout_confirm_bars": 7,
     "skip_zone_stability": False,
@@ -78,6 +79,7 @@ DEFAULT_PRESET_PARAMS = {
     "conf_use_scorer": True,
     "conf_enable_breakout": False,
     "conf_max_risk_ticks": 80,
+    "conf_sl_reference_tf": "largest",
     "conf_allowed_sessions": ["ASIA"],
     "conf_trail_trigger_pct": 0.50,
     "conf_trail_lock_pct": 0.05,
@@ -104,7 +106,10 @@ CODEX_624_PRESET_4 = "06.24 CODEX #4 PNL最高 MNQx1 RR1:1.5 POFF R50 W1m Trail5
 CODEX_624_PRESET_5 = "06.24 CODEX #5 回撤最低 MNQx1 RR1:2.5 P0.65 R90 W1m Trail50L5 SesON ASIA B4 TF2"
 MLC2_PRESET = "06.25 CODEX #1 均值回歸 MNQx1 MLC2 LB30 Band2 SLB4 RR1:4 ASIA+EURO TrailOFF"
 CODEX_626_PRESET_2 = "06.26 CODEX #2 Trend多單 MNQx1 TF5m RR1:4 C3 SL80 Trail50L10"
-DEFAULT_LAST_USED_PRESET = CODEX_626_PRESET_2
+CODEX_630_PRESET_1 = "06.30 CODEX #1 Trend低損 MNQx1 TF5m RR1:6 C2 SL80 Trail50L10 SesON FT2"
+CODEX_630_PRESET_3 = "06.30 CODEX #3 Trend重合5m30m小TF MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
+CODEX_630_PRESET_4 = "06.30 CODEX #4 Trend重合30m1h小TF MNQx1 TF30m+1h Trade30m RR1:7 C4 SL80 Trail50L10 SesON FT0"
+DEFAULT_LAST_USED_PRESET = CODEX_630_PRESET_1
 PRESET_RENAMES = {}
 REMOVED_PRESET_NAMES = {
     DEFAULT_PRESET_NAME,
@@ -152,6 +157,7 @@ def _codex_624_preset(
         "conf_rr": float(rr),
         "conf_min_prob": float(min_prob),
         "conf_max_risk_ticks": int(max_risk_ticks),
+        "conf_sl_reference_tf": "largest",
         "conf_band_ticks": 4.0,
         "conf_min_distinct_tf": 2,
         "conf_allowed_sessions": ["ASIA"],
@@ -162,32 +168,72 @@ def _codex_624_preset(
     return params
 
 
-BUILTIN_PRESETS = {
-    CODEX_626_PRESET_2: {
+def _trend_preset(
+    *,
+    area_timeframe: str,
+    rr: int,
+    confirm_bars: int,
+    sl_ticks: int,
+    trail_enabled: bool,
+    full_tp_lock: int = 0,
+    method: str = "single",
+    tf_combo: Optional[list[str]] = None,
+    overlap_trade_tf: str = "merged",
+    session_limit: bool = True,
+) -> Dict[str, Any]:
+    tp_ticks = int(rr) * int(sl_ticks)
+    method = "overlap" if method == "overlap" and tf_combo and len(tf_combo) >= 2 else "single"
+    return {
         **dict(DEFAULT_PRESET_PARAMS),
         "strategy": "trend",
         "contract_id": "CON.F.US.MNQ.U26",
         "contract_size": 1,
-        "area_timeframe": "5m",
-        "method": "single",
-        "tf_combo": [],
+        "area_timeframe": area_timeframe,
+        "method": method,
+        "tf_combo": list(tf_combo or []) if method == "overlap" else [],
+        "tr_overlap_trade_tf": "smallest" if overlap_trade_tf == "smallest" else "merged",
         "value_area_pct": 0.80,
-        "rr_ratio": 4,
-        "breakout_confirm_bars": 3,
-        "sl_ticks": 80,
-        "tr_sl_ticks": 80,
-        "trail_enabled": True,
-        "tr_trail_enabled": True,
-        "trail_trigger_pct": 0.50,
-        "tr_trail_trigger_pct": 0.50,
-        "trail_sl_ticks": 10,
-        "tr_trail_sl_ticks": 10,
-        "full_tp_lock": 0,
-        "tr_full_tp_lock": 0,
+        "rr_ratio": int(rr),
+        "breakout_confirm_bars": int(confirm_bars),
+        "tp_ticks": tp_ticks,
+        "tr_tp_ticks": tp_ticks,
+        "sl_ticks": int(sl_ticks),
+        "tr_sl_ticks": int(sl_ticks),
+        "trail_enabled": bool(trail_enabled),
+        "tr_trail_enabled": bool(trail_enabled),
+        "trail_trigger_pct": 0.50 if trail_enabled else 0.0,
+        "tr_trail_trigger_pct": 0.50 if trail_enabled else 0.0,
+        "trail_sl_ticks": 10 if trail_enabled else 0,
+        "tr_trail_sl_ticks": 10 if trail_enabled else 0,
+        "full_tp_lock": int(full_tp_lock),
+        "tr_full_tp_lock": int(full_tp_lock),
         "tr_allowed_sessions": ["ASIA"],
         "one_trade_per_session_direction": True,
-        "tr_one_trade_per_session": True,
-    },
+        "tr_one_trade_per_session": bool(session_limit),
+    }
+
+
+BUILTIN_PRESETS = {
+    CODEX_630_PRESET_1: _trend_preset(
+        area_timeframe="5m", rr=6, confirm_bars=2, sl_ticks=80,
+        trail_enabled=True, full_tp_lock=2,
+    ),
+    CODEX_630_PRESET_3: _trend_preset(
+        area_timeframe="5m", rr=6, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, full_tp_lock=2,
+        method="overlap", tf_combo=["5m", "30m"],
+        overlap_trade_tf="smallest", session_limit=False,
+    ),
+    CODEX_630_PRESET_4: _trend_preset(
+        area_timeframe="30m", rr=7, confirm_bars=4, sl_ticks=80,
+        trail_enabled=True, full_tp_lock=0,
+        method="overlap", tf_combo=["30m", "1h"],
+        overlap_trade_tf="smallest", session_limit=True,
+    ),
+    CODEX_626_PRESET_2: _trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, full_tp_lock=0,
+    ),
 }
 
 logging.basicConfig(
@@ -283,6 +329,7 @@ def _load_presets_file() -> dict:
             "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
             "contract_size", "full_tp_lock", "one_trade_per_session_direction",
             "value_area_pct", "area_timeframe", "method", "tf_combo",
+            "tr_overlap_trade_tf",
             "rr_ratio", "breakout_confirm_bars", "skip_zone_stability",
             "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
             "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
@@ -290,7 +337,7 @@ def _load_presets_file() -> dict:
             "conf_band_ticks", "conf_min_distinct_tf", "conf_rr", "conf_model_name",
             "conf_wait_minutes", "conf_base_minutes", "conf_min_prob",
             "conf_ev_floor", "conf_rr_grid", "conf_use_scorer",
-            "conf_enable_breakout", "conf_max_risk_ticks", "conf_trail_trigger_pct",
+            "conf_enable_breakout", "conf_max_risk_ticks", "conf_sl_reference_tf", "conf_trail_trigger_pct",
             "conf_trail_lock_pct", "conf_full_tp_lock",
             "conf_session_limit", "conf_allowed_sessions", "conf_shadow",
             "mlc2_lookback", "mlc2_band_ticks", "mlc2_sl_buffer_ticks",
@@ -585,6 +632,10 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         area_timeframe=area_timeframe,
         method=method,
         tf_combo=tf_combo,
+        tr_overlap_trade_tf=(
+            "smallest" if str(preset.get("tr_overlap_trade_tf") or "").lower() == "smallest"
+            else "merged"
+        ),
         rr_ratio=rr_ratio,
         breakout_confirm_bars=confirm_bars,
         full_tp_lock=primary["lock"],
@@ -603,6 +654,10 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         conf_use_scorer=bool(preset.get("conf_use_scorer", True)),
         conf_enable_breakout=bool(preset.get("conf_enable_breakout", False)),
         conf_max_risk_ticks=_conf_optional_int("conf_max_risk_ticks"),
+        conf_sl_reference_tf=(
+            "smallest" if str(preset.get("conf_sl_reference_tf") or "").lower() == "smallest"
+            else "largest"
+        ),
         conf_allowed_sessions=list(
             normalize_allowed_sessions(preset.get("conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS))
             or []

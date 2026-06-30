@@ -3,7 +3,7 @@ import unittest
 
 from backend.backtest.intrabar import resolve_same_bar_exit
 from backend.db.models import Candle, Direction
-from scripts.confluence_label import simulate_outcomes
+from backend.ml.confluence_label import simulate_outcomes
 
 
 def candle(ts, open_, high, low, close=None):

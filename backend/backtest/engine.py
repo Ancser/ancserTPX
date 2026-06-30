@@ -86,6 +86,9 @@ class BacktestEngine:
         _va_pct = float(getattr(self.strategy_params, "value_area_pct", 0.80) or 0.80)
         self.config.value_area_pct = _va_pct
         _area_tf = getattr(self.strategy_params, "area_timeframe", "5m") or "5m"
+        _method = str(getattr(self.strategy_params, "method", "single") or "single").lower()
+        _tf_combo = list(getattr(self.strategy_params, "tf_combo", None) or [])
+        _overlap_combo = _tf_combo if _method == "overlap" and len(_tf_combo) >= 2 else None
 
         # Clock-bucket zone detector — keeps the recent 10 reference zones.
         # (skipped when a pre-computed zone_timeline is provided)
@@ -94,6 +97,8 @@ class BacktestEngine:
             value_area_pct=_va_pct,
             tick_size=self.TICK_SIZE,
             max_recent=10,
+            tf_combo=_overlap_combo,
+            overlap_trade_tf=getattr(self.strategy_params, "tr_overlap_trade_tf", "merged"),
         )
         # Only the trend strategy remains.
         self.strategy_mode = "trend"
@@ -612,6 +617,7 @@ class BacktestEngine:
             vol_ratio=signal.vol_ratio,
             is_big_trend=signal.is_big_trend,
             breakout_range=signal.breakout_range,
+            meta=dict(getattr(signal, "meta", None) or {}),
         )
         self._open_position = trade
         self._trail_sl_triggered = False

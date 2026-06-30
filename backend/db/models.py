@@ -210,6 +210,7 @@ class TradeSignal:
     is_big_trend: bool = False
     breakout_range: Optional[float] = None  # |H100-VAH| or |VAL-L100|, for TP recalc
     order_type: str = "limit"         # "limit" | "market"
+    meta: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def sl_points(self) -> float:
@@ -351,6 +352,7 @@ class StrategyParams:
     # timeframes' value areas to overlap (identical to backtest/ML overlap sweep).
     method: str = "single"                 # "single" | "overlap"
     tf_combo: List[str] = field(default_factory=list)  # overlap timeframes, e.g. ["5m","15m"]
+    tr_overlap_trade_tf: str = "merged"    # "merged" original overlap zone | "smallest" trade smallest TF zone
     # SL/TP model (v1.0.6): SL = lowest-volume node between POC and VAH/VAL;
     # TP = entry ± rr_ratio × SL-distance. rr_ratio selectable 1..6. No fixed ticks.
     rr_ratio: int = 2                      # reward:risk multiple (1..6)
@@ -369,6 +371,7 @@ class StrategyParams:
     conf_use_scorer: bool = True           # True=trained JSON, False=heuristic prior
     conf_enable_breakout: bool = False     # include breakout-retrace candidate (False=momentum+reversion only)
     conf_max_risk_ticks: Optional[int] = None  # optional risk-width cap; None/0 = off
+    conf_sl_reference_tf: str = "largest"  # "largest" original behavior, "smallest" tightens SL/TP basis
     conf_allowed_sessions: Optional[List[str]] = field(default_factory=lambda: ["ASIA", "PRE"])
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---
     conf_trail_trigger_pct: float = 0.50   # optimized: fire after 50% of TP distance

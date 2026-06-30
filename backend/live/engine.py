@@ -120,6 +120,7 @@ class LiveTradingEngine:
             tick_size=self.tick_size,
             max_recent=10,
             tf_combo=overlap_combo,
+            overlap_trade_tf=getattr(self.strategy_params, "tr_overlap_trade_tf", "merged"),
         )
         # Strategy mode: "trend" (default, 1.0.6) or "confluence" (v1.0.6 ML).
         # The trend object is ALWAYS built so legacy state/helpers keep working;
@@ -170,6 +171,7 @@ class LiveTradingEngine:
                 use_scorer=bool(getattr(self.strategy_params, "conf_use_scorer", True)),
                 enable_breakout=bool(getattr(self.strategy_params, "conf_enable_breakout", False)),
                 max_risk_ticks=getattr(self.strategy_params, "conf_max_risk_ticks", None),
+                sl_reference_tf=getattr(self.strategy_params, "conf_sl_reference_tf", "largest"),
             )
         # ML Consolidation V2: VA mean reversion strategy
         self.mlc2_evaluator = None
@@ -765,6 +767,7 @@ class LiveTradingEngine:
                 "mode": conf_payload.get("mode") if conf_payload else None,
                 "side": conf_payload.get("side") if conf_payload else None,
                 "largest_tf": conf_payload.get("largest_tf") if conf_payload else None,
+                "risk_tf": conf_payload.get("risk_tf") if conf_payload else None,
                 "wall_id": conf_payload.get("wall_id") if conf_payload else None,
                 "labels": conf_payload.get("labels") if conf_payload else [],
                 "primary_zone": conf_payload.get("primary_zone") if conf_payload else None,
@@ -862,6 +865,7 @@ class LiveTradingEngine:
                     "cluster_weight": conf_payload.get("weight"),
                     "tfs": conf_payload.get("tfs"),
                     "largest_tf": conf_payload.get("largest_tf"),
+                    "risk_tf": conf_payload.get("risk_tf"),
                     "wall_id": conf_payload.get("wall_id"),
                     "labels": conf_payload.get("labels"),
                     "primary_zone": conf_payload.get("primary_zone"),
@@ -1521,6 +1525,7 @@ class LiveTradingEngine:
                 "mode": sig_payload.get("mode"),
                 "side": sig_payload.get("side"),
                 "largest_tf": sig_payload.get("largest_tf"),
+                "risk_tf": sig_payload.get("risk_tf"),
                 "wall_id": sig_payload.get("wall_id"),
                 "labels": sig_payload.get("labels") or [],
                 "primary_zone": sig_payload.get("primary_zone"),
@@ -3311,6 +3316,7 @@ class LiveTradingEngine:
                     "mode": conf_payload.get("mode"),
                     "side": conf_payload.get("side"),
                     "largest_tf": conf_payload.get("largest_tf"),
+                    "risk_tf": conf_payload.get("risk_tf"),
                     "wall_id": conf_payload.get("wall_id"),
                     "labels": conf_payload.get("labels") or [],
                     "primary_zone": conf_payload.get("primary_zone"),

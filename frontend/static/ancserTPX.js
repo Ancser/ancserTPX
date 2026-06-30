@@ -51,6 +51,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     contract_size: 3,
     value_area_pct: 0.80,
     area_timeframe: '5m',
+    tr_overlap_trade_tf: 'merged',
     rr_ratio: 2,
     full_tp_lock: 0,
     breakout_confirm_bars: 7,
@@ -70,6 +71,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     conf_use_scorer: true,
     conf_enable_breakout: false,
     conf_max_risk_ticks: null,
+    conf_sl_reference_tf: 'largest',
     conf_allowed_sessions: ['ASIA'],
     conf_trail_trigger_pct: 0.50,
     conf_trail_lock_pct: 0.05,
@@ -329,6 +331,7 @@ function onRrChange(mode) {
 // areas overlap. Single uses one AREA TF zone.
 // Timeframe checkbox changed → re-detect zones at the new area TF and redraw.
 function onTfSelectionChange(mode) {
+    updateOverlapTradeTfControl(mode);
     syncZoneFilterUI();
     onAreaConfigChange(mode);
     refreshTfZones(true);
@@ -346,6 +349,71 @@ function setOverlapTfCombo(mode, combo) {
     document.querySelectorAll('.overlap-tf-chk-' + mode).forEach(c => {
         c.checked = set.has(c.value);
     });
+}
+
+function normalizeTrendOverlapTradeTf(value) {
+    return String(value || '').trim().toLowerCase() === 'smallest' ? 'smallest' : 'merged';
+}
+
+function trendTfUsage(params) {
+    const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
+    const combo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
+    const method = (p.method || (combo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
+    const tfs = (method === 'overlap' && combo.length >= 2)
+        ? combo
+        : [String(p.area_timeframe || combo[0] || '5m')];
+    const isOverlap = method === 'overlap' && tfs.length >= 2;
+    const tradeMode = normalizeTrendOverlapTradeTf(p.tr_overlap_trade_tf);
+    const trade = isOverlap
+        ? (tradeMode === 'smallest' ? tfs[0] : 'merged:' + tfs.join('+'))
+        : tfs[0];
+    return {
+        judge: tfs.join('+'),
+        overlap: isOverlap ? tfs.join('+') : 'OFF',
+        trade: trade,
+    };
+}
+
+function trendTfUsageText(params) {
+    const u = trendTfUsage(params);
+    return 'judge=' + u.judge + ' overlap=' + u.overlap + ' trade=' + u.trade;
+}
+
+function updateOverlapTradeTfControl(mode) {
+    const sel = document.getElementById('tr-overlap-trade-tf-' + mode);
+    const hint = document.getElementById('tr-overlap-trade-hint-' + mode);
+    if (!sel && !hint) return;
+    const tfs = readOverlapTfCombo(mode);
+    const isOverlap = tfs.length >= 2;
+    if (sel) {
+        sel.disabled = !isOverlap;
+        const mergedOpt = Array.from(sel.options).find(o => o.value === 'merged');
+        const smallestOpt = Array.from(sel.options).find(o => o.value === 'smallest');
+        if (mergedOpt) mergedOpt.textContent = isOverlap ? ('Merged overlap (' + tfs.join('+') + ')') : 'Merged overlap';
+        if (smallestOpt) smallestOpt.textContent = isOverlap ? ('Smallest selected TF (' + tfs[0] + ')') : 'Smallest selected TF';
+    }
+    const params = {
+        method: isOverlap ? 'overlap' : 'single',
+        tf_combo: isOverlap ? tfs : [],
+        area_timeframe: tfs[0] || '5m',
+        tr_overlap_trade_tf: sel ? sel.value : 'merged',
+    };
+    const u = trendTfUsage(params);
+    if (hint) {
+        hint.textContent = 'JUDGE ' + u.judge + ' / OVERLAP ' + u.overlap + ' / TRADE ' + u.trade;
+        hint.style.color = isOverlap ? 'var(--text2)' : 'var(--text3)';
+    }
+}
+
+function onOverlapTradeTfChange(mode) {
+    const sel = document.getElementById('tr-overlap-trade-tf-' + mode);
+    const value = normalizeTrendOverlapTradeTf(sel && sel.value);
+    if (!_appliedStrategyParamsByMode[mode]) {
+        _appliedStrategyParamsByMode[mode] = Object.assign({}, DEFAULT_STRATEGY_PARAMS);
+    }
+    _appliedStrategyParamsByMode[mode].tr_overlap_trade_tf = value;
+    if (sel) sel.value = value;
+    updateOverlapTradeTfControl(mode);
 }
 
 function normalizeStrategyName(value) {
@@ -379,7 +447,10 @@ function updateStrategyParamVisibility(mode) {
     // ML Confluence params — shown only in confluence mode
     show('ml-params-' + mode, isML);
     if (isML) onRrModeChange(mode);
-    if (!isML && !isMLC2) updateTrailBounds(mode);
+    if (!isML && !isMLC2) {
+        updateOverlapTradeTfControl(mode);
+        updateTrailBounds(mode);
+    }
 }
 
 // RR mode toggle: "固定" shows the single-RR select; "變動" shows the RR-grid
@@ -456,6 +527,7 @@ function updateMlParamSummary(mode) {
     const band = parseInt(_mlSelectValue('conf-band-' + mode, '4'), 10) || 4;
     const minTf = parseInt(_mlSelectValue('conf-mintf-' + mode, '2'), 10) || 2;
     const maxRisk = parseInt(_mlSelectValue('conf-maxrisk-' + mode, '0'), 10) || 0;
+    const slRef = _mlSelectValue('conf-slref-' + mode, 'largest') === 'smallest' ? 'smallest' : 'largest';
     const trigger = parseFloat(_mlSelectValue('conf-trail-trigger-' + mode, '0')) || 0;
     const lockPct = parseFloat(_mlSelectValue('conf-trail-lock-' + mode, '0.05')) || 0.05;
     const sessionOn = _mlSelectValue('conf-session-limit-' + mode, '1') !== '0';
@@ -469,7 +541,7 @@ function updateMlParamSummary(mode) {
     el.innerHTML =
         'PARAMS: 1m base · wait 1m · B' + band + ' · ' + minTf + 'TF · RR1:' + _fmtConfRr(rr) +
         ' · minProb ' + prob + ' · EV ' + ev + ' · maxRisk ' + risk + ' · breakout off.<br>' +
-        'RISK: ' + trail + ' · session limit ' + (sessionOn ? 'ON' : 'OFF') +
+        'RISK: SLref ' + slRef + ' · ' + trail + ' · session limit ' + (sessionOn ? 'ON' : 'OFF') +
         ' · market ' + marketSession + ' · size follows top selector.';
 }
 
@@ -602,6 +674,7 @@ function collectConfluenceParams(mode) {
             return el ? el.value === '1' : false;
         })(),
         conf_max_risk_ticks: iv('conf-maxrisk-' + mode, 0) || null,
+        conf_sl_reference_tf: (_mlSelectValue('conf-slref-' + mode, 'largest') === 'smallest') ? 'smallest' : 'largest',
         conf_allowed_sessions: normalizeAllowedSessions(
             _mlSelectValue('conf-allowed-sessions-' + mode, 'ASIA')
         ),
@@ -673,6 +746,10 @@ function collectStrategyParams(mode) {
     const method = tfs.length >= 2 ? 'overlap' : 'single';
     const tfCombo = method === 'overlap' ? tfs : [];
     const areaTimeframe = tfs[0];
+    const overlapTradeEl = document.getElementById('tr-overlap-trade-tf-' + mode);
+    const overlapTradeTf = normalizeTrendOverlapTradeTf(
+        (overlapTradeEl && overlapTradeEl.value) || applied.tr_overlap_trade_tf
+    );
     const params = {
         strategy: strategy,
         method: method,
@@ -695,6 +772,7 @@ function collectStrategyParams(mode) {
         contract_size: normalizeContractSize(contractId, sizeEl ? sizeEl.value : 3),
         value_area_pct: _float('area-pct-' + mode, 0.80),
         area_timeframe: areaTimeframe,
+        tr_overlap_trade_tf: overlapTradeTf,
         rr_ratio: Math.max(1, Math.min(6, _int('rr-ratio-' + mode, 2))),
         full_tp_lock: primary.full_tp_lock,
         one_trade_per_session_direction: true,
@@ -734,6 +812,7 @@ function applyStrategyParams(mode, params) {
     _appliedStrategyParamsByMode[mode] = Object.assign({}, p);
     _set('strategy-' + mode, p.strategy);
     _set('area-pct-' + mode, (p.value_area_pct != null ? Number(p.value_area_pct) : 0.80).toFixed(2));
+    _set('tr-overlap-trade-tf-' + mode, normalizeTrendOverlapTradeTf(p.tr_overlap_trade_tf));
     const cidEl = document.getElementById('contract-' + mode);
     if (cidEl) {
         const wanted = p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id;
@@ -805,6 +884,7 @@ function applyStrategyParams(mode, params) {
     _set('conf-rrmode-' + mode, 'fixed');
     _set('conf-breakout-' + mode, (p.conf_enable_breakout === false) ? '0' : '1');
     _set('conf-maxrisk-' + mode, String(p.conf_max_risk_ticks != null ? p.conf_max_risk_ticks : 0));
+    _set('conf-slref-' + mode, p.conf_sl_reference_tf === 'smallest' ? 'smallest' : 'largest');
     // STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original.
     // OFF option value is "0" (not "0.00"); only non-zero needs the 2-decimal form.
     const _pct = (v) => { const n = Number(v) || 0; return n === 0 ? '0' : n.toFixed(2); };
@@ -832,6 +912,7 @@ function applyStrategyParams(mode, params) {
         ? tfCombo
         : [String(p.area_timeframe || '5m')];
     setOverlapTfCombo(mode, selectedTfs);
+    updateOverlapTradeTfControl(mode);
 
     updateStrategyParamVisibility(mode);
     syncZoneFilterUI();
@@ -917,11 +998,13 @@ function buildPresetParamToken(params) {
             : 'TrailOFF';
         const sessionLimit = p.conf_session_limit === false ? 'SesOFF' : 'SesON';
         const market = allowedSessionsLabel(p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA']);
+        const slRef = p.conf_sl_reference_tf === 'smallest' ? 'SLsmall' : 'SLlarge';
         return [
             _contractPresetToken(p),
             'RR1:' + _fmtConfRr(p.conf_rr != null ? p.conf_rr : 1.0),
             _probToken(p.conf_min_prob),
             risk,
+            slRef,
             'W1m',
             trail,
             sessionLimit,
@@ -951,7 +1034,9 @@ function buildPresetParamToken(params) {
         : (tfCombo.length ? [tfCombo[0]] : [p.area_timeframe || '5m']);
     const confirm = Math.max(1, Math.min(10, parseInt(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7, 10) || 7));
     const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : ['ASIA']);
-    return 'TR' + vaPct + ' ' + tfs.join('/') + ' RR1:' + rr + ' C' + confirm + ' ' + market + ' ' + _contractPresetToken(p);
+    const overlapTrade = method === 'overlap' && p.tr_overlap_trade_tf === 'smallest' ? 'TradeSmall' : '';
+    return ['TR' + vaPct, tfs.join('/'), overlapTrade, 'RR1:' + rr, 'C' + confirm, market, _contractPresetToken(p)]
+        .filter(Boolean).join(' ');
 }
 
 function suggestedPresetPurpose(params) {
@@ -1448,6 +1533,7 @@ function decorateParamHelpDots() {
         'conf-allowed-sessions': '\u5e02\u5834\u76e4\u6bb5\u904e\u6ffe\uff1a\u53ea\u5728\u9078\u5b9a\u76e4\u6bb5\u958b\u65b0\u55ae\u3002ASIA \u662f\u76ee\u524d\u8f03\u7a69\u7684\u9810\u8a2d\u3002\nMarket segment filter.',
         'overlap-tf': '\u53c3\u8207\u532f\u805a\u7684\u6642\u9593\u6846\u3002\u9078 1 = \u55ae\u4e00\u6846\uff1b\u9078 2+ = \u8de8\u6846\u91cd\u758a\u532f\u805a\u3002\nTimeframes feeding confluence.',
         // TREND
+        'tr-overlap-trade-tf': 'TREND overlap trade zone: merged = synthetic averaged overlap; smallest = trade the smallest selected timeframe zone.',
         'area-pct': 'TREND\uff1a\u5340\u9593\u5224\u5b9a\u7684\u9762\u7a4d\u6bd4\u4f8b\u9580\u6abb\uff0c\u8d8a\u9ad8\u8d8a\u56b4\u683c\u3002\nTREND range-area threshold.',
         'confirm-bars': 'TREND\uff1a\u7a81\u7834\u5f8c\u9700\u8981\u9023\u7e8c\u78ba\u8a8d\u7684 K \u7dda\u6578\uff0c\u8d8a\u591a\u8d8a\u4fdd\u5b88\u3002\nConfirmation bars after breakout.',
         'rr-ratio': 'TREND\uff1a\u6b62\u76c8\u8207\u6b62\u640d\u7684\u6bd4\u4f8b\uff08TP:SL\uff09\u3002\nTake-profit to stop-loss ratio.',
@@ -1520,6 +1606,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const metricsPanel = document.getElementById('metrics-panel');
             const livePanel = document.getElementById('live-panel');
             const liveTopBar = document.getElementById('live-top-bar');
+            const calView = document.getElementById('calendar-view');
+            const mainEl = document.querySelector('.main');
+            // Calendar is a full-page overlay; any non-calendar tab restores .main.
+            if (tab === 'calendar') {
+                if (mainEl) mainEl.style.display = 'none';
+                if (calView) calView.classList.remove('hidden');
+                liveTopBar.style.display = 'none';
+                renderCalendar();
+                return;
+            }
+            if (mainEl) mainEl.style.display = '';
+            if (calView) calView.classList.add('hidden');
             if (tab === 'backtest') {
                 backtestPanels.classList.remove('hidden');
                 if (metricsPanel.style.display === 'block') metricsPanel.classList.remove('hidden');
@@ -1774,6 +1872,7 @@ async function goLive() {
         log('ML CONFLUENCE: LIVE (places orders) base=1m ' + gateTxt
             + ' ' + rrTxt + ' band=' + stratParams.conf_band_ticks
             + ' minTF=' + stratParams.conf_min_distinct_tf
+            + ' SLref=' + (stratParams.conf_sl_reference_tf || 'largest')
             + ' market=' + allowedSessionsLabel(stratParams.conf_allowed_sessions), 'info');
     }
     if (stratParams.strategy === 'ml_consolidation_v2') {
@@ -1785,7 +1884,7 @@ async function goLive() {
             + ' market=' + allowedSessionsLabel(stratParams.mlc2_allowed_sessions), 'info');
     }
     if (stratParams.strategy === 'trend') {
-        log('TREND: LIVE TF=' + (stratParams.method === 'overlap' ? stratParams.tf_combo.join('/') : stratParams.area_timeframe)
+        log('TREND: LIVE ' + trendTfUsageText(stratParams)
             + ' RR1:' + stratParams.rr_ratio
             + ' C=' + stratParams.breakout_confirm_bars
             + ' sessionLimit=' + (stratParams.tr_one_trade_per_session ? 'ON' : 'OFF')
@@ -3841,9 +3940,10 @@ async function runBacktest() {
     const _sessLabel = Array.isArray(_sess) ? _sess.join('+') : String(_sess);
     log('BT PARAMS → strategy=' + (btBody.strategy || '?')
         + ' session=' + _sessLabel
-        + ' TF=' + (btBody.area_timeframe || '?')
+        + ' ' + (btBody.strategy === 'trend' ? trendTfUsageText(btBody) : ('TF=' + (btBody.area_timeframe || '?')))
         + ' RR=1:' + (btBody.rr_ratio || '?')
         + ' SL=' + (btBody.sl_ticks || '?') + 't'
+        + (btBody.conf_sl_reference_tf ? (' SLref=' + btBody.conf_sl_reference_tf) : '')
         + ' trail=' + (btBody.trail_trigger_pct > 0 ? (btBody.trail_trigger_pct * 100).toFixed(0) + '%' : 'OFF')
         + ' confirm=' + (btBody.breakout_confirm_bars || '?')
         , 'info');
@@ -3874,6 +3974,7 @@ async function runBacktest() {
         renderChart(backtestData);
         renderMetrics(backtestData.metrics, backtestData.trades);
         renderTrades(backtestData.trades);
+        _saveBacktestCache(backtestData);   // persist for next app restart
         if (!document.getElementById('btab-pnl').classList.contains('hidden')) renderPnlCurve();
         await refreshTradeHistoryForCurrentAccount(true);
         succeeded = true;
@@ -4114,6 +4215,7 @@ function updateLiveWorkingDecision(sig, isLong, sigSL, sigTP) {
         mode: sig.mode,
         side: sig.side,
         largest_tf: sig.largest_tf,
+        risk_tf: sig.risk_tf,
         labels: sig.labels || [],
         primary_zone: sig.primary_zone,
     };
@@ -5068,4 +5170,222 @@ function updateClock() {
     const now = new Date();
     document.getElementById('clock').textContent = now.toLocaleTimeString('en-US', {hour12:false});
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// Calendar comparison view (Backtest vs Live, monthly)
+// ────────────────────────────────────────────────────────────────────────
+// Backtest daily data comes from the LAST backtest result already in memory
+// (`backtestData.trades`). Live daily data comes from /api/live/trade-history
+// (deduped to one row per signal). Both bucket by the LOCAL entry date — the
+// same rule the existing metrics use (computeMetrics groups by new Date(entry).
+// getDate()), so the calendar agrees with the trade tables.
+// ════════════════════════════════════════════════════════════════════════
+let _calMonth = (function () { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); })();
+let _calLiveTrades = null;
+
+function _calDateKey(d) {
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function _calKeyFromTrade(t) {
+    if (!t || !t.entry_time) return null;
+    const d = new Date(t.entry_time);
+    if (isNaN(d.getTime())) return null;
+    return _calDateKey(d);
+}
+function _calFmtMoney(v) {
+    return (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function _calAgg(trades) {
+    const map = {};
+    for (const t of (trades || [])) {
+        const k = _calKeyFromTrade(t);
+        if (!k) continue;
+        if (!map[k]) map[k] = { pnl: 0, n: 0 };
+        map[k].pnl += (t.pnl || 0);
+        map[k].n += 1;
+    }
+    return map;
+}
+function _calDedupeLive(trades) {
+    // Collapse multi-account copies → one row per (entry-second, price, dir).
+    const seen = new Set(), out = [];
+    for (const t of (trades || [])) {
+        const key = (t.entry_time || '').slice(0, 19) + '|' + t.entry_price + '|' + t.direction;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(t);
+    }
+    return out;
+}
+async function _calFetchLive(force) {
+    if (_calLiveTrades && !force) return;
+    try {
+        const resp = await fetch(API + '/live/trade-history' + (force ? '?refresh=true' : ''));
+        const data = await resp.json();
+        _calLiveTrades = _calDedupeLive(data.trades || []);
+    } catch (e) {
+        _calLiveTrades = _calLiveTrades || [];
+    }
+}
+function calShiftMonth(delta) {
+    _calMonth = new Date(_calMonth.getFullYear(), _calMonth.getMonth() + delta, 1);
+    renderCalendar();
+}
+function calGoToday() {
+    const d = new Date();
+    _calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+    renderCalendar();
+}
+async function renderCalendar(force) {
+    await _calFetchLive(force);
+    const bt = _calAgg(backtestData ? backtestData.trades : []);
+    const live = _calAgg(_calLiveTrades);
+    const month = _calMonth, y = month.getFullYear(), m = month.getMonth();
+
+    const lbl = document.getElementById('cal-month-label');
+    if (lbl) lbl.textContent = month.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+
+    const first = new Date(y, m, 1);
+    const startIdx = first.getDay();                    // Sunday-first column (0=Sun..6=Sat)
+    const daysInMonth = new Date(y, m + 1, 0).getDate();
+    const todayKey = _calDateKey(new Date());
+
+    const grid = document.getElementById('cal-grid');
+    if (!grid) return;
+    grid.innerHTML = '';
+
+    // Monthly totals over ALL days (independent of cell layout).
+    let btTotal = 0, liveTotal = 0;
+    for (let day = 1; day <= daysInMonth; day++) {
+        const key = _calDateKey(new Date(y, m, day));
+        if (bt[key]) btTotal += bt[key].pnl;
+        if (live[key]) liveTotal += live[key].pnl;
+    }
+
+    const totalCells = startIdx + daysInMonth;
+    const rows = Math.ceil(totalCells / 7);
+    let weekNo = 0;
+
+    for (let row = 0; row < rows; row++) {
+        weekNo++;
+        // Pre-sum this week's in-month days (all 7 cols, incl. Saturday).
+        let wkBt = 0, wkBtN = 0, wkLv = 0, wkLvN = 0, wkHasBt = false, wkHasLv = false;
+        for (let col = 0; col < 7; col++) {
+            const dn = row * 7 + col - startIdx + 1;
+            if (dn < 1 || dn > daysInMonth) continue;
+            const key = _calDateKey(new Date(y, m, dn));
+            const b = bt[key], l = live[key];
+            if (b) { wkBt += b.pnl; wkBtN += b.n; wkHasBt = true; }
+            if (l) { wkLv += l.pnl; wkLvN += l.n; wkHasLv = true; }
+        }
+        for (let col = 0; col < 7; col++) {
+            const dn = row * 7 + col - startIdx + 1;
+            const inMonth = dn >= 1 && dn <= daysInMonth;
+
+            // Saturday column (index 6) = weekly summary cell.
+            if (col === 6) {
+                const cell = document.createElement('div');
+                cell.className = 'cal-cell cal-week';
+                if (wkHasBt) cell.classList.add(wkBt >= 0 ? 'cal-bt-pos' : 'cal-bt-neg');
+                const btCls = wkHasBt ? (wkBt > 0 ? 'cal-pos' : (wkBt < 0 ? 'cal-neg' : 'cal-zero')) : 'cal-zero';
+                const lvCls = wkHasLv ? (wkLv > 0 ? 'cal-pos' : (wkLv < 0 ? 'cal-neg' : 'cal-zero')) : 'cal-zero';
+                cell.innerHTML =
+                    '<div class="cal-week-label">Week ' + weekNo + '</div>' +
+                    '<div class="cal-bt ' + btCls + '">' + (wkHasBt ? _calFmtMoney(wkBt) : '·') + '</div>' +
+                    '<div class="cal-bt-sub">' + (wkBtN ? wkBtN + ' trades' : '') + '</div>' +
+                    '<div class="cal-live">' +
+                      '<span class="' + lvCls + '">' + (wkLvN ? _calFmtMoney(wkLv) : '·') + '</span>' +
+                    '</div>';
+                grid.appendChild(cell);
+                continue;
+            }
+
+            if (!inMonth) {
+                const c = document.createElement('div');
+                c.className = 'cal-cell cal-empty';
+                grid.appendChild(c);
+                continue;
+            }
+
+            const key = _calDateKey(new Date(y, m, dn));
+            const b = bt[key], l = live[key];
+            const cell = document.createElement('div');
+            cell.className = 'cal-cell';
+            if (key === todayKey) cell.classList.add('cal-today');
+            if (b) cell.classList.add(b.pnl >= 0 ? 'cal-bt-pos' : 'cal-bt-neg');
+            const btCls = b ? (b.pnl > 0 ? 'cal-pos' : (b.pnl < 0 ? 'cal-neg' : 'cal-zero')) : 'cal-zero';
+            const lvCls = l ? (l.pnl > 0 ? 'cal-pos' : (l.pnl < 0 ? 'cal-neg' : 'cal-zero')) : 'cal-zero';
+            cell.innerHTML =
+                '<div class="cal-daynum">' + dn + '</div>' +
+                '<div class="cal-bt ' + btCls + '">' + (b ? _calFmtMoney(b.pnl) : '·') + '</div>' +
+                '<div class="cal-bt-sub">' + (b ? b.n + ' trades' : '') + '</div>' +
+                '<div class="cal-live">' +
+                  '<span class="' + lvCls + '">' + (l ? _calFmtMoney(l.pnl) : '·') + '</span>' +
+                '</div>';
+            grid.appendChild(cell);
+        }
+    }
+
+    const btEl = document.getElementById('cal-bt-total');
+    const lvEl = document.getElementById('cal-live-total');
+    const dfEl = document.getElementById('cal-diff');
+    if (btEl) { btEl.textContent = _calFmtMoney(btTotal); btEl.className = 'cal-sum-val ' + (btTotal >= 0 ? 'cal-pos' : 'cal-neg'); }
+    if (lvEl) { lvEl.textContent = _calFmtMoney(liveTotal); lvEl.className = 'cal-sum-val ' + (liveTotal >= 0 ? 'cal-pos' : 'cal-neg'); }
+    if (dfEl) {
+        if (Math.abs(btTotal) > 0.0001) {
+            const pct = ((liveTotal - btTotal) / Math.abs(btTotal)) * 100;
+            dfEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+            dfEl.className = 'cal-sum-val ' + (pct >= 0 ? 'cal-pos' : 'cal-neg');
+        } else {
+            dfEl.textContent = '—';
+            dfEl.className = 'cal-sum-val cal-zero';
+        }
+    }
+    const status = document.getElementById('cal-status');
+    if (status) {
+        const btN = backtestData && backtestData.trades ? backtestData.trades.length : 0;
+        const lvN = (_calLiveTrades || []).length;
+        status.textContent = btN
+            ? (btN + ' backtest trades · ' + lvN + ' live trades loaded')
+            : 'run a backtest first to populate the BT side · ' + lvN + ' live trades loaded';
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Persist the last backtest result across app restarts (localStorage).
+// We keep a TRIMMED copy (metrics + trades + daily_pnl) — enough to redraw the
+// performance panel and the Data calendar — without storing the heavy candle/
+// chart payload.  Restored on page load so reopening the app shows the last run.
+// ════════════════════════════════════════════════════════════════════════
+const _BT_CACHE_KEY = 'ancserTPX.lastBacktest.v1';
+function _saveBacktestCache(d) {
+    if (!d || !d.metrics) return;
+    try {
+        localStorage.setItem(_BT_CACHE_KEY, JSON.stringify({
+            metrics: d.metrics,
+            trades: d.trades || [],
+            daily_pnl: d.daily_pnl || null,
+            preset_name: d.preset_name || null,
+            bt_span: d.bt_span || null,
+            saved_at: new Date().toISOString()
+        }));
+    } catch (e) { /* quota / serialization — ignore, cache is best-effort */ }
+}
+function _restoreBacktestCache() {
+    let raw;
+    try { raw = localStorage.getItem(_BT_CACHE_KEY); } catch (e) { return; }
+    if (!raw) return;
+    let d;
+    try { d = JSON.parse(raw); } catch (e) { return; }
+    if (!d || !d.metrics) return;
+    backtestData = d;                       // feeds the Data calendar (uses .trades)
+    try { renderMetrics(d.metrics, d.trades || []); } catch (e) {}
+    try { renderTrades(d.trades || []); } catch (e) {}
+    try {
+        log('Restored last backtest (' + (d.metrics.total_trades || (d.trades || []).length) +
+            ' trades) from cache · ' + (d.saved_at ? d.saved_at.slice(0, 16).replace('T', ' ') : ''), 'info');
+    } catch (e) {}
+}
+// Script tag is at end of <body>, so the DOM is already parsed here.
+_restoreBacktestCache();
 

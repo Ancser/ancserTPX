@@ -24,7 +24,7 @@ from backend.strategy.confluence_features import CONTEXT_WINDOW
 from backend.backtest.confluence_backtest import build_zone_timeline
 from backend.backtest.intrabar import resolve_same_bar_exit
 from backend.strategy.consolidation import timeframes_for_base
-from scripts.confluence_common import load_store
+from backend.ml.confluence_common import load_store
 
 CONTRACT = "CON.F.US.MNQ.M26"
 TICK = get_tick_size(CONTRACT)

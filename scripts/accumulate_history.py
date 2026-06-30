@@ -40,7 +40,7 @@ load_dotenv(ROOT / ".env")
 
 from backend.broker.topstepx import TopstepXClient
 from backend.db.models import BarUnit
-from scripts.confluence_common import (
+from backend.ml.confluence_common import (
     env_bool, load_store, merge_into_store, store_path,
 )
 

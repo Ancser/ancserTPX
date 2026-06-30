@@ -32,9 +32,10 @@ the current price and the chosen `direction_mode`:
 
 Both modes are search dimensions — the optimizer tests each and reports results.
 
-SL = the lowest-volume node within the LARGEST contributing timeframe's
+SL = the lowest-volume node within the selected contributing timeframe's
 VAH->POC (resistance/VAH cluster) or VAL->POC (support/VAL cluster) span.
-TP = entry +/- RR * |entry - SL|.
+By default the reference is the LARGEST contributing timeframe; research runs
+can switch it to the SMALLEST contributing timeframe. TP = entry +/- RR * |entry - SL|.
 """
 
 from __future__ import annotations
@@ -146,6 +147,10 @@ class ConfluenceConfig:
     enable_breakout: bool = False
     max_risk_ticks: Optional[int] = None
     bands: Tuple[int, ...] = VA_BAND_PCTS
+    # Which contributing timeframe supplies the structural SL span. "largest"
+    # preserves the original production behavior; "smallest" tightens the
+    # reference to the lowest timeframe in the cluster, with TP following from RR.
+    sl_reference_tf: str = "largest"
 
     def auto_modes(self) -> Tuple[str, ...]:
         """The candidate modes for the auto (scored) path, honouring
@@ -167,6 +172,8 @@ class Cluster:
     distinct_tfs: List[str]
     largest_tf: str
     largest_tf_minutes: int
+    smallest_tf: str = ""
+    smallest_tf_minutes: int = 0
     primary_zone_id: str = ""
     primary_zone_vah_80: float = 0.0
     primary_zone_val_80: float = 0.0
@@ -306,6 +313,7 @@ def _build_cluster(side: str, group: List[Level], cfg: ConfluenceConfig) -> Clus
     else:
         price = sum(lv.price for lv in group) / len(group)
     largest = max(group, key=lambda l: l.tf_minutes)
+    smallest = min(group, key=lambda l: l.tf_minutes)
     distinct = sorted({lv.tf for lv in group}, key=lambda t: AREA_TIMEFRAME_MINUTES.get(t, 0))
     return Cluster(
         side=side,
@@ -315,6 +323,8 @@ def _build_cluster(side: str, group: List[Level], cfg: ConfluenceConfig) -> Clus
         distinct_tfs=distinct,
         largest_tf=largest.tf,
         largest_tf_minutes=largest.tf_minutes,
+        smallest_tf=smallest.tf,
+        smallest_tf_minutes=smallest.tf_minutes,
         primary_zone_id=largest.zone_id,
         primary_zone_vah_80=largest.zone_vah_80,
         primary_zone_val_80=largest.zone_val_80,
@@ -354,12 +364,21 @@ def _entry_price(cluster: Cluster, current_price: float, cfg: ConfluenceConfig,
     return cluster.price
 
 
-def _sl_from_largest_tf(
+def cluster_sl_reference_tf(cluster: Cluster, cfg: ConfluenceConfig) -> str:
+    """Return the cluster timeframe used for structural SL geometry."""
+    ref = str(getattr(cfg, "sl_reference_tf", "largest") or "largest").strip().lower()
+    if ref == "smallest":
+        return getattr(cluster, "smallest_tf", None) or cluster.largest_tf
+    return cluster.largest_tf
+
+
+def _sl_from_reference_tf(
     cluster: Cluster,
     direction: Direction,
     zones_by_tf: Dict[str, List[ConsolidationZone]],
+    cfg: ConfluenceConfig,
 ) -> Optional[float]:
-    """Lowest-volume node in the largest contributing TF's stop span.
+    """Lowest-volume node in the selected contributing TF's stop span.
 
     The span depends on whether the trade goes INTO the cluster (stop on the
     inner / POC side) or FADES it (stop on the outer / 100%-extreme side):
@@ -371,10 +390,11 @@ def _sl_from_largest_tf(
 
     Falls back to the span's outer edge if the histogram has no node there.
     """
-    zones = zones_by_tf.get(cluster.largest_tf) or []
+    ref_tf = cluster_sl_reference_tf(cluster, cfg)
+    zones = zones_by_tf.get(ref_tf) or []
     if not zones:
         return None
-    zone = zones[-1]  # newest completed zone of the largest TF
+    zone = zones[-1]  # newest completed zone of the selected reference TF
     poc = zone.poc
 
     if cluster.side == "VAH":
@@ -392,6 +412,15 @@ def _sl_from_largest_tf(
     return node if node is not None else fallback
 
 
+def _sl_from_largest_tf(
+    cluster: Cluster,
+    direction: Direction,
+    zones_by_tf: Dict[str, List[ConsolidationZone]],
+) -> Optional[float]:
+    """Backward-compatible helper for callers that expect original behavior."""
+    return _sl_from_reference_tf(cluster, direction, zones_by_tf, ConfluenceConfig())
+
+
 def build_signal(
     cluster: Cluster,
     current_price: float,
@@ -403,7 +432,7 @@ def build_signal(
         return None
 
     entry = _entry_price(cluster, current_price, cfg, direction)
-    sl = _sl_from_largest_tf(cluster, direction, zones_by_tf)
+    sl = _sl_from_reference_tf(cluster, direction, zones_by_tf, cfg)
     if sl is None:
         return None
 
@@ -577,7 +606,7 @@ def _breakout_geometry(cluster, current_price, zones_by_tf, cfg, recent_candles)
             return None
         direction = Direction.SELL
         entry = level - 0.5 * (level - extreme)
-    sl = _sl_from_largest_tf(cluster, direction, zones_by_tf)
+    sl = _sl_from_reference_tf(cluster, direction, zones_by_tf, cfg)
     if sl is None:
         return None
     risk = abs(entry - sl)
@@ -606,7 +635,7 @@ def _signal_geometry(cluster, current_price, zones_by_tf, mode, cfg, recent_cand
     if direction is None:
         return None
     entry = _entry_price(cluster, current_price, cfg, direction)
-    sl = _sl_from_largest_tf(cluster, direction, zones_by_tf)
+    sl = _sl_from_reference_tf(cluster, direction, zones_by_tf, cfg)
     if sl is None:
         return None
     risk = abs(entry - sl)

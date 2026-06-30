@@ -42,7 +42,7 @@ from backend.strategy.consolidation import (
 )
 from backend.strategy.confluence import (
     ConfluenceConfig, MAX_RECENCY_DEPTH, evaluate_confluence_scored, gate_signals,
-    snapshot_zones_by_tf, cluster_wall_id,
+    snapshot_zones_by_tf, cluster_wall_id, cluster_sl_reference_tf,
 )
 from backend.strategy.confluence_scorer import (
     ConfluenceScorer, default_scorer_path, resolve_scorer,
@@ -71,6 +71,7 @@ class ConfluenceLiveEvaluator:
         scorer_path: Optional[str] = None,
         enable_breakout: bool = False,
         max_risk_ticks: Optional[int] = None,
+        sl_reference_tf: str = "largest",
     ):
         self.contract_id = contract_id
         self.tick_size = get_tick_size(contract_id)
@@ -92,6 +93,9 @@ class ConfluenceLiveEvaluator:
         self.cfg.rr_grid = None
         self.cfg.enable_breakout = bool(enable_breakout)
         self.cfg.max_risk_ticks = max_risk_ticks
+        self.cfg.sl_reference_tf = (
+            "smallest" if str(sl_reference_tf or "").lower() == "smallest" else "largest"
+        )
         self.modes = self.cfg.auto_modes()
 
         # probability gate -> raw logit (score) threshold
@@ -319,6 +323,7 @@ class ConfluenceLiveEvaluator:
             "tfs": cl.distinct_tfs,
             "tf_weights": tf_weights,
             "largest_tf": cl.largest_tf,
+            "risk_tf": cluster_sl_reference_tf(cl, self.cfg),
             "wall_id": cluster_wall_id(cl),
             "labels": cl.labels,
             "primary_zone": {

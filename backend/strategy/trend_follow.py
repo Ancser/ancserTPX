@@ -18,7 +18,7 @@ the SessionTrendFollow docstring for the state machine.
 
 from __future__ import annotations
 import logging
-from typing import List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from backend.db.models import (
     Candle, ConsolidationZone, TradeSignal, StrategyParams,
     Direction, StrategyType,
@@ -55,6 +55,9 @@ class SessionTrendFollow:
         self.SL_TICKS = getattr(p, "tr_sl_ticks", p.sl_ticks)
         self.PENDING_TIMEOUT_CANDLES = 1
         self.CONFIRM_BARS = max(1, int(getattr(p, 'breakout_confirm_bars', 1) or 1))
+        self.area_timeframe = str(getattr(p, "area_timeframe", "5m") or "5m")
+        self.method = str(getattr(p, "method", "single") or "single").lower()
+        self.tf_combo = [str(t) for t in (getattr(p, "tf_combo", None) or []) if t]
 
         self._state = "idle"  # idle | watching | confirmed | in_trade
         self._breakout_direction: Optional[str] = None
@@ -271,6 +274,47 @@ class SessionTrendFollow:
             f"zone={zone.zone_id}"
         )
 
+        trade_tf = str(getattr(zone, "timeframe", "") or self.area_timeframe)
+        decision_tfs = (
+            list(self.tf_combo)
+            if self.method == "overlap" and len(self.tf_combo) >= 2
+            else [self.area_timeframe]
+        )
+        overlap_tfs = list(self.tf_combo) if self.method == "overlap" and len(self.tf_combo) >= 2 else []
+        primary_zone: Dict[str, Any] = {
+            "tf": trade_tf,
+            "zone_id": getattr(zone, "zone_id", "") or "",
+            "poc": getattr(zone, "poc", None),
+            "vah_80": getattr(zone, "vah_80", None),
+            "val_80": getattr(zone, "val_80", None),
+            "high_100": getattr(zone, "high_100", None),
+            "low_100": getattr(zone, "low_100", None),
+            "formed_at": (
+                zone.formed_at.isoformat()
+                if getattr(zone, "formed_at", None) else None
+            ),
+            "left_at": (
+                zone.left_at.isoformat()
+                if getattr(zone, "left_at", None) else None
+            ),
+        }
+        meta = {
+            "strategy_family": "trend",
+            "mode": self.method,
+            "side": "VAH" if direction == "up" else "VAL",
+            "decision_tfs": decision_tfs,
+            "overlap_tfs": overlap_tfs,
+            "trade_tf": trade_tf,
+            "largest_tf": trade_tf,
+            "wall_id": f"{trade_tf}:{zone.zone_id}:{direction}",
+            "labels": [
+                "judge:" + "/".join(decision_tfs),
+                "overlap:" + ("/".join(overlap_tfs) if overlap_tfs else "off"),
+                "trade:" + trade_tf,
+            ],
+            "primary_zone": primary_zone,
+        }
+
         return TradeSignal(
             strategy=StrategyType.TREND_FOLLOW,
             direction=trade_dir,
@@ -285,6 +329,7 @@ class SessionTrendFollow:
             ),
             timestamp=candle.timestamp,
             breakout_range=abs(zone.high_100 - zone.vah_80) if direction == "up" else abs(zone.val_80 - zone.low_100),
+            meta=meta,
         )
 
     def notify_trade_closed(self, exit_reason: str):

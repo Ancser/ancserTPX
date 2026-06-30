@@ -55,7 +55,7 @@ from backend.strategy.confluence_scorer import (
 )
 from backend.strategy.consolidation import timeframes_for_base
 from backend.backtest.confluence_backtest import build_zone_timeline
-from scripts.confluence_common import load_store
+from backend.ml.confluence_common import load_store
 
 
 CONTRACT = "CON.F.US.MNQ.M26"

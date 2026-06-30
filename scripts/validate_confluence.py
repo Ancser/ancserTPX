@@ -44,7 +44,7 @@ from backend.strategy.confluence_scorer import ConfluenceScorer
 from backend.backtest.confluence_backtest import (
     ConfluenceBacktester, ConfluenceBacktestConfig, build_zone_timeline,
 )
-from scripts.confluence_common import (
+from backend.ml.confluence_common import (
     CONTRACT_ID, MODEL_DIR, OUT_DIR, resolve_candles, timeframes_for_base,
 )
 from scripts.confluence_report import export_trades_csv, plot_trades
