@@ -1943,7 +1943,7 @@ async function goLive() {
             statusEl.textContent = '僅監控';
         } else {
             engineStarted = true;
-            log('????????? ? ??????', 'success');
+            log('交易引擎啟動成功 ✓ 開始運行', 'success'); // 1.0.8: 修復原亂碼字串
             refreshTfZones(true);
             setTimeout(() => refreshLiveZoneOverlay(stratParams), 0);
         }
@@ -1964,7 +1964,7 @@ async function goLive() {
         if (stopBtn) stopBtn.disabled = true;
         const flattenBtn = document.getElementById('btn-flatten');
         if (flattenBtn) flattenBtn.disabled = true;
-        log('????????? ? ??????', 'success');
+        log('交易引擎啟動成功 ✓ 開始運行', 'success'); // 1.0.8: 修復原亂碼字串
     } else {
         const dot = document.getElementById('live-status-dot');
         if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }

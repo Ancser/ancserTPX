@@ -31,6 +31,10 @@ Volume Profile 計算引擎
 from typing import Dict, List, Tuple
 from backend.db.models import Candle, VolumeProfileResult
 
+# 1.0.8: single source of truth — 原本 confluence.py 另有一份重複定義。
+# Value-area 百分位帶 (POC 向外擴展涵蓋 20/40/60/80/100% 成交量)。
+VA_BAND_PCTS = (20, 40, 60, 80, 100)
+
 
 class VolumeProfileCalculator:
     """
@@ -103,7 +107,7 @@ class VolumeProfileCalculator:
         )
 
     # value-area percentages that make up the confluence level universe
-    VA_BAND_PCTS = (20, 40, 60, 80, 100)
+    VA_BAND_PCTS = VA_BAND_PCTS  # 1.0.8: 引用模組級單一來源
 
     def _calculate_value_area_bands(
         self,

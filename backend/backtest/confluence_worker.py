@@ -28,7 +28,7 @@ import json
 import sys
 import time as _time
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 

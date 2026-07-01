@@ -2642,7 +2642,11 @@ class LiveTradingEngine:
 
     @staticmethod
     def _round_to_tick(price: float) -> float:
-        """Round price to nearest NQ tick (0.25)."""
+        """Round price to nearest NQ tick (0.25).
+
+        1.0.8: 刻意保留使用模組全域 TICK_SIZE(=0.25)。符合 TopstepX NQ/MNQ 下單
+        規範（兩者最小跳動皆 0.25），維持既有下單行為，不改為 self.tick_size。
+        """
         return round(round(price / TICK_SIZE) * TICK_SIZE, 2)
 
     def _normalize_entry_protection(self, signal: TradeSignal) -> List[str]:

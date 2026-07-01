@@ -45,6 +45,7 @@ from typing import Dict, List, Optional, Tuple
 
 from backend.db.models import ConsolidationZone, Direction
 from backend.strategy.consolidation import AREA_TIMEFRAME_MINUTES
+from backend.strategy.volume_profile import VA_BAND_PCTS  # 1.0.8: 去重, 單一來源
 
 
 # ── tunables (the optimizer overrides these via ConfluenceConfig) ──
@@ -66,7 +67,6 @@ MAX_RECENCY_DEPTH = 3  # generations back per TF: {0, -1, -2, -3}
 # survives the drop-constant guard and grabs a runaway weight.
 MIN_RISK_TICKS = 5
 
-VA_BAND_PCTS = (20, 40, 60, 80, 100)
 SIDES = ("VAH", "VAL")
 
 
@@ -410,15 +410,6 @@ def _sl_from_reference_tf(
 
     node = zone.lowest_volume_price_between(lo, hi)
     return node if node is not None else fallback
-
-
-def _sl_from_largest_tf(
-    cluster: Cluster,
-    direction: Direction,
-    zones_by_tf: Dict[str, List[ConsolidationZone]],
-) -> Optional[float]:
-    """Backward-compatible helper for callers that expect original behavior."""
-    return _sl_from_reference_tf(cluster, direction, zones_by_tf, ConfluenceConfig())
 
 
 def build_signal(
