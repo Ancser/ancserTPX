@@ -86,17 +86,7 @@ DEFAULT_PRESET_PARAMS = {
     "conf_full_tp_lock": 0,
     "conf_session_limit": True,
     "conf_shadow": False,
-    "mlc2_lookback": 30,
-    "mlc2_band_ticks": 2.0,
-    "mlc2_sl_buffer_ticks": 4.0,
-    "mlc2_tp_mode": "rr",
-    "mlc2_rr": 4.0,
-    "mlc2_trail_trigger_pct": 0.0,
-    "mlc2_trail_lock_pct": 0.0,
-    "mlc2_session_limit": False,
-    "mlc2_min_score": 0.0,
-    "mlc2_allowed_sessions": ["ASIA", "EURO"],
-    "mlc2_shadow": False,
+    # 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 }
 CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
 CODEX_624_PRESET_1 = "06.24 CODEX #1 穩健測試 MNQx1 RR1:3 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2"
@@ -323,7 +313,8 @@ def _load_presets_file() -> dict:
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        params["strategy"] = strategy if strategy in {"confluence", "ml_consolidation_v2"} else "trend"
+        # 1.0.8: mlc2 已移除 — 舊 preset 一律歸一化為 trend
+        params["strategy"] = strategy if strategy == "confluence" else "trend"
         allowed_keys = {
             "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
             "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
@@ -340,10 +331,7 @@ def _load_presets_file() -> dict:
             "conf_enable_breakout", "conf_max_risk_ticks", "conf_sl_reference_tf", "conf_trail_trigger_pct",
             "conf_trail_lock_pct", "conf_full_tp_lock",
             "conf_session_limit", "conf_allowed_sessions", "conf_shadow",
-            "mlc2_lookback", "mlc2_band_ticks", "mlc2_sl_buffer_ticks",
-            "mlc2_tp_mode", "mlc2_rr", "mlc2_trail_trigger_pct",
-            "mlc2_trail_lock_pct", "mlc2_session_limit", "mlc2_min_score",
-            "mlc2_allowed_sessions", "mlc2_shadow",
+            # 1.0.8: 移除 mlc2_* allowed keys(ml_consolidation_v2 已刪除)
         }
         for key in list(params.keys()):
             if key not in allowed_keys:

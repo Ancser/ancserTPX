@@ -121,7 +121,7 @@
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
                         <option value="trend">TREND</option>
                         <option value="confluence" selected>ML Confluence</option>
-                        <option value="ml_consolidation_v2">ML Consolidation V2</option>
+                        <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
                 </div>
             </div>
@@ -406,7 +406,7 @@
                         <select id="strategy-live" onchange="onStrategyChange('live')">
                             <option value="trend">TREND</option>
                             <option value="confluence" selected>ML Confluence</option>
-                            <option value="ml_consolidation_v2">ML Consolidation V2</option>
+                            <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
                     </div>
                 </div>
@@ -726,7 +726,7 @@
             <div class="bottom-tabs">
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
-                <div class="bottom-tab" data-btab="learn">LEARN RESULT</div>
+                <!-- 1.0.8: 移除 LEARN RESULT 分頁(ML sweep 結果板塊已刪除) -->
                 <div class="bottom-tab" data-btab="pnl">PNL CURVE</div>
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
@@ -777,14 +777,7 @@
                         </table>
                     </div>
                 </div>
-                <div id="btab-learn" class="hidden">
-                    <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;border-bottom:1px solid var(--border);">
-                        <span style="font-size:11px;color:var(--cyan);font-weight:600;letter-spacing:0.5px;">LEARN RESULT · 已訓練模型</span>
-                        <button id="btn-refresh-learn" onclick="loadLearnResult()" style="font-size:10px;padding:2px 8px;cursor:pointer;">刷新</button>
-                        <span id="learn-result-hint" style="font-size:10px;color:var(--text3);"></span>
-                    </div>
-                    <div id="learn-result-body" style="padding:8px 10px;overflow-y:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;"></div>
-                </div>
+                <!-- 1.0.8: 移除 LEARN RESULT 面板(btab-learn) -->
                 <div id="btab-pnl" class="hidden">
                     <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;border-bottom:1px solid var(--border);">
                         <span style="font-size:11px;color:var(--cyan);font-weight:600;letter-spacing:0.5px;">PNL CURVE · $2K 移動回撤線 (Topstep trailing DD)</span>

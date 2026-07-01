@@ -127,7 +127,8 @@ class LiveTradingEngine:
         # The trend object is ALWAYS built so legacy state/helpers keep working;
         # confluence only adds a parallel evaluator and diverges at signal time.
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "trend") or "trend").lower()
-        if self.strategy_mode not in ("confluence", "ml_consolidation_v2"):
+        # 1.0.8: mlc2 (ml_consolidation_v2) 已移除;僅 trend / confluence
+        if self.strategy_mode != "confluence":
             self.strategy_mode = "trend"
         self.trend_follow = SessionTrendFollow(params=self.strategy_params)
         if self.strategy_mode == "confluence":
@@ -174,30 +175,7 @@ class LiveTradingEngine:
                 max_risk_ticks=getattr(self.strategy_params, "conf_max_risk_ticks", None),
                 sl_reference_tf=getattr(self.strategy_params, "conf_sl_reference_tf", "largest"),
             )
-        # ML Consolidation V2: VA mean reversion strategy
-        self.mlc2_evaluator = None
-        self._mlc2_shadow = bool(getattr(self.strategy_params, "mlc2_shadow", False))
-        self._mlc2_signals_log: List[Dict] = []
-        self._pending_mlc2_payload: Optional[Dict] = None
-        self._active_mlc2_payload: Optional[Dict] = None
-        if self.strategy_mode == "ml_consolidation_v2":
-            from backend.live.ml_consolidation_v2_live import MLConsolidationV2LiveEvaluator
-            _mlc2_sessions = (
-                getattr(self.strategy_params, "mlc2_allowed_sessions", None)
-                or ["ASIA", "EURO"]
-            )
-            self.mlc2_evaluator = MLConsolidationV2LiveEvaluator(
-                contract_id=contract_id,
-                lookback=int(getattr(self.strategy_params, "mlc2_lookback", 30) or 30),
-                band_ticks=float(getattr(self.strategy_params, "mlc2_band_ticks", 2.0) or 2.0),
-                sl_buffer_ticks=float(getattr(self.strategy_params, "mlc2_sl_buffer_ticks", 4.0) or 4.0),
-                sl_mode=str(getattr(self.strategy_params, "mlc2_sl_mode", "va") or "va"),
-                tp_mode=str(getattr(self.strategy_params, "mlc2_tp_mode", "rr") or "rr"),
-                rr=float(getattr(self.strategy_params, "mlc2_rr", 4.0) or 4.0),
-                max_risk_ticks=float(getattr(self.strategy_params, "mlc2_max_risk_ticks", 40.0) or 40.0),
-                min_score=float(getattr(self.strategy_params, "mlc2_min_score", 0.0) or 0.0),
-                allowed_sessions=tuple(_mlc2_sessions),
-            )
+        # 1.0.8: 移除 ML Consolidation V2 (mlc2) live evaluator 與相關狀態
         self.strategies = [self.strategy_mode]
 
         # Live state
@@ -1519,7 +1497,6 @@ class LiveTradingEngine:
         sig = self._pending_signal or self._active_signal
         sig_payload = (
             self._pending_conf_payload
-            or self._pending_mlc2_payload
             or self._active_conf_payload
             or {}
         )
@@ -1558,20 +1535,12 @@ class LiveTradingEngine:
             "trail_trigger_pct": (
                 float(getattr(self.strategy_params, "conf_trail_trigger_pct", 0.0) or 0.0)
                 if self.strategy_mode == "confluence"
-                else (
-                    float(getattr(self.strategy_params, "mlc2_trail_trigger_pct", 0.0) or 0.0)
-                    if self.strategy_mode == "ml_consolidation_v2"
-                    else self._strategy_trigger_pct(StrategyType.TREND_FOLLOW)
-                )
+                else self._strategy_trigger_pct(StrategyType.TREND_FOLLOW)
             ),
             "trail_lock_pct": (
                 float(getattr(self.strategy_params, "conf_trail_lock_pct", 0.0) or 0.0)
                 if self.strategy_mode == "confluence"
-                else (
-                    float(getattr(self.strategy_params, "mlc2_trail_lock_pct", 0.0) or 0.0)
-                    if self.strategy_mode == "ml_consolidation_v2"
-                    else None
-                )
+                else None
             ),
             "daily_pnl": self._daily_pnl,
             "daily_pnl_source": self._daily_pnl_source,
@@ -1603,11 +1572,7 @@ class LiveTradingEngine:
             "confluence_allowed_sessions": self._confluence_session_label() if self.confluence else "ALL",
             "active_allowed_sessions": (
                 self._confluence_session_label() if self.strategy_mode == "confluence"
-                else (
-                    allowed_sessions_label(getattr(self.strategy_params, "mlc2_allowed_sessions", None) or ["ASIA", "EURO"])
-                    if self.strategy_mode == "ml_consolidation_v2"
-                    else self._trend_session_label()
-                )
+                else self._trend_session_label()
             ),
             "confluence_signals": self._conf_signals_log[-20:] if self.confluence else [],
             # full explainable level universe (per-TF/recency zones + weight + distance)
@@ -1620,9 +1585,7 @@ class LiveTradingEngine:
             "confluence_candidate": (
                 self.confluence.top_candidate() if self.confluence else None
             ),
-            "mlc2_mode": self.strategy_mode == "ml_consolidation_v2",
-            "mlc2_shadow": self._mlc2_shadow if self.strategy_mode == "ml_consolidation_v2" else None,
-            "mlc2_signals": self._mlc2_signals_log[-20:] if self.mlc2_evaluator else [],
+            # 1.0.8: 移除 mlc2_mode / mlc2_shadow / mlc2_signals 狀態欄位
         }
 
     def _get_zone_phase(self) -> str:
@@ -1910,14 +1873,7 @@ class LiveTradingEngine:
                 f"{'SHADOW (log-only)' if self._conf_shadow else 'LIVE (places orders)'}"
             )
 
-        if self.mlc2_evaluator is not None:
-            self.mlc2_evaluator.warmup(historical_candles)
-            self._log_event(
-                f"[ml_consol_v2] warm-up {len(historical_candles)} bars | "
-                f"LB={self.mlc2_evaluator.lookback} Band={self.mlc2_evaluator.band_ticks} "
-                f"RR={self.mlc2_evaluator.rr} | "
-                f"{'SHADOW (log-only)' if self._mlc2_shadow else 'LIVE (places orders)'}"
-            )
+        # 1.0.8: 移除 mlc2 warm-up 分支
 
         self._candles_processed = len(historical_candles)
         self._all_candles = list(historical_candles)
@@ -2011,13 +1967,12 @@ class LiveTradingEngine:
                     exit_reason="cancelled", entry_time=self._entry_time,
                     exit_time=datetime.utcnow(), entry_price=None,
                     signal=self._pending_signal,
-                    conf_payload=self._pending_conf_payload or self._pending_mlc2_payload,
+                    conf_payload=self._pending_conf_payload,
                     trail_triggered=False, status="cancelled",
                 )
             self._pending_order_id = None
             self._pending_signal = None
             self._pending_conf_payload = None
-            self._pending_mlc2_payload = None
             self._pending_created_at = None
 
         self._log_event("引擎已停止")
@@ -2332,8 +2287,7 @@ class LiveTradingEngine:
         self.detector.update(candle)
         if self.confluence is not None:
             self.confluence.update(candle)
-        if self.mlc2_evaluator is not None:
-            self.mlc2_evaluator.update(candle)
+        # 1.0.8: 移除 mlc2_evaluator.update
         self._append_history(candle)
         self._update_tf_breakout(candle)
 
@@ -2439,10 +2393,7 @@ class LiveTradingEngine:
             await self._evaluate_confluence(candle)
             return
 
-        # ── ML Consolidation V2: VA mean reversion ──
-        if self.strategy_mode == "ml_consolidation_v2" and self.mlc2_evaluator is not None:
-            await self._evaluate_ml_consolidation_v2(candle)
-            return
+        # 1.0.8: 移除 ML Consolidation V2 (mlc2) 信號分派
 
         # ── Strategy evaluation ──
         if not self._trend_session_allowed(candle.timestamp):
@@ -2589,54 +2540,7 @@ class LiveTradingEngine:
         """Recent explainable confluence signals (for the live chart / API)."""
         return list(self._conf_signals_log)
 
-    async def _evaluate_ml_consolidation_v2(self, candle: Candle):
-        """ML Consolidation V2: VA mean reversion with market orders.
-
-        LONG near VAL, SHORT near VAH, targeting POC or fixed RR.
-        """
-        if self._open_position or self._pending_order_id:
-            return
-
-        payload = self.mlc2_evaluator.explain(candle)
-        if not payload:
-            return
-
-        signal = self.mlc2_evaluator.evaluate(candle)
-        if signal is None:
-            return
-
-        if self._session_direction_is_locked(signal):
-            return
-
-        dir_cn = "做多" if signal.direction == Direction.BUY else "做空"
-        basis = (
-            f"ML-Consol-V2: {dir_cn} "
-            f"@ {payload['entry']:.2f} SL={payload['sl']:.2f} TP={payload['tp']:.2f}"
-            f"｜VAL={payload.get('val', 0):.2f} VAH={payload.get('vah', 0):.2f} "
-            f"POC={payload.get('poc', 0):.2f}"
-            f"｜prob={payload.get('prob', 0.5):.0%} score={payload.get('score', 0):+.2f}"
-        )
-        self._log_event(("【SHADOW】" if self._mlc2_shadow else "") + basis)
-        payload["basis"] = basis
-        self._mlc2_signals_log.append(payload)
-        if len(self._mlc2_signals_log) > 200:
-            self._mlc2_signals_log = self._mlc2_signals_log[-100:]
-
-        if self._mlc2_shadow:
-            return
-
-        placed = await self._place_market_entry(signal)
-        if placed:
-            self._pending_mlc2_payload = payload
-            self._mark_session_direction_locked(signal)
-            self._log_event(
-                f"MARKET ORDER on ML-Consol-V2: {signal.direction.value} "
-                f"@ {payload['entry']:.2f}"
-            )
-
-    def get_ml_consolidation_v2_signals(self) -> List[Dict]:
-        """Recent ML Consolidation V2 signals (for the live chart / API)."""
-        return list(self._mlc2_signals_log)
+    # 1.0.8: 移除 _evaluate_ml_consolidation_v2 + get_ml_consolidation_v2_signals (mlc2 策略已刪除)
 
     # ── Order Management ──────────────────────────────────
 
@@ -2689,9 +2593,8 @@ class LiveTradingEngine:
         zone_source = str(getattr(signal, "zone_source", "") or "").lower()
         strategy = str(getattr(getattr(signal, "strategy", None), "value", "") or "").lower()
 
-        if self.strategy_mode == "ml_consolidation_v2" or zone_source == "ml_consolidation_v2" or strategy == "ml_consolidation_v2":
-            cap = getattr(self.strategy_params, "mlc2_max_risk_ticks", None)
-        elif self.strategy_mode == "confluence" or zone_source == "confluence" or strategy == "confluence":
+        # 1.0.8: 移除 mlc2 分支(ml_consolidation_v2 已刪除)
+        if self.strategy_mode == "confluence" or zone_source == "confluence" or strategy == "confluence":
             cap = getattr(self.strategy_params, "conf_max_risk_ticks", None)
         else:
             cap = None
@@ -3155,14 +3058,13 @@ class LiveTradingEngine:
                             exit_time=datetime.utcnow(),
                             entry_price=None,
                             signal=self._pending_signal,
-                            conf_payload=self._pending_conf_payload or self._pending_mlc2_payload,
+                            conf_payload=self._pending_conf_payload,
                             trail_triggered=False,
                             status="cancelled",
                         )
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_conf_payload = None
-                self._pending_mlc2_payload = None
                 self._pending_age = 0
                 self._pending_created_at = None
                 return
@@ -3182,7 +3084,7 @@ class LiveTradingEngine:
                 exit_time=datetime.utcnow(),
                 entry_price=None,
                 signal=self._pending_signal,
-                conf_payload=self._pending_conf_payload or self._pending_mlc2_payload,
+                conf_payload=self._pending_conf_payload,
                 trail_triggered=False,
                 status="cancelled",
             )
@@ -3190,7 +3092,6 @@ class LiveTradingEngine:
         self._pending_order_id = None
         self._pending_signal = None
         self._pending_conf_payload = None
-        self._pending_mlc2_payload = None
         self._pending_age = 0
         self._pending_created_at = None
 
@@ -3207,7 +3108,6 @@ class LiveTradingEngine:
             self._pending_order_id = None
             self._pending_signal = None
             self._pending_conf_payload = None
-            self._pending_mlc2_payload = None
             self._pending_age = 0
             self._pending_created_at = None
             return True
@@ -3290,7 +3190,7 @@ class LiveTradingEngine:
                         close_side = 2 if self._pending_signal.direction == Direction.BUY else 1
                         self._active_signal = self._pending_signal
                         self._active_conf_payload = (
-                            self._pending_conf_payload or self._pending_mlc2_payload
+                            self._pending_conf_payload
                         )
                         self._entry_time = datetime.utcnow()
                         self._position_open_ts = time_mod.time()
@@ -3304,7 +3204,6 @@ class LiveTradingEngine:
                         self._pending_order_id = None
                         self._pending_signal = None
                         self._pending_conf_payload = None
-                        self._pending_mlc2_payload = None
                         self._pending_age = 0
                         self._pending_created_at = None
                         return
@@ -3315,7 +3214,7 @@ class LiveTradingEngine:
                 sig = self._pending_signal
                 if sig:
                     sig_dir = sig.direction.value
-                conf_payload = self._pending_conf_payload or self._pending_mlc2_payload or {}
+                conf_payload = self._pending_conf_payload or {}
                 self._trades.append({
                     "time": datetime.utcnow().isoformat(),
                     "type": "entry",
@@ -3359,10 +3258,9 @@ class LiveTradingEngine:
                 # Save signal for SL/TP retry, then clear pending state
                 self._active_signal = self._pending_signal  # keep for SL/TP reference
                 self._active_conf_payload = (
-                    self._pending_conf_payload or self._pending_mlc2_payload
+                    self._pending_conf_payload
                 )  # carry the "why"
                 self._pending_conf_payload = None
-                self._pending_mlc2_payload = None
                 self._entry_time = datetime.utcnow()
                 self._force_exit_reason = None
                 self._pending_order_id = None
@@ -3589,8 +3487,7 @@ class LiveTradingEngine:
         self.detector.update(candle)
         if self.confluence is not None:
             self.confluence.update(candle)
-        if self.mlc2_evaluator is not None:
-            self.mlc2_evaluator.update(candle)
+        # 1.0.8: 移除 mlc2_evaluator.update
         self._append_history(candle)
         self._update_tf_breakout(candle)
         if hasattr(self.trend_follow, "observe"):

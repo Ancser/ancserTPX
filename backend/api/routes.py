@@ -3,9 +3,9 @@
 # 文件: backend/api/routes.py
 # 狀態: v1.0.6
 # 功能 / Features:
-#   - FastAPI REST routes for config, historical candles, backtest, machine learning,
+#   - FastAPI REST routes for config, historical candles, backtest,
 #     live engine, presets, and trade history.
-#   - Machine Learning uses /backtest/ml-run|full-results|full-progress.
+#   - 1.0.8: 移除 ML sweep / conf-combo / ml_consolidation_v2 相關端點與機制。
 #   - Presets preserve both trend and confluence strategy parameters.
 #   - Value Area is locked to 80%; live/latest-candle routes use completed 1m bars.
 # ============================================================
@@ -41,10 +41,9 @@ from backend.strategy.volume_profile import VolumeProfileCalculator
 from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, normalize_allowed_sessions,
 )
-from backend.backtest.ml_trend_backtest import (
-    MLTrendBacktester, MLTrendBacktestConfig, precompute_vp_timeline,
-)
-from backend.strategy.ml_trend import MLTrendConfig
+# 1.0.8: 移除 ml_trend / ml_consolidation_v2 (mlc2) 相關 import
+#        (MLTrendBacktester / MLTrendBacktestConfig / precompute_vp_timeline / MLTrendConfig)
+#        mlc2 策略已整批刪除,僅保留 trend + confluence。
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -201,14 +200,9 @@ def _normalize_area_timeframe(value) -> str:
     return tf if tf in AREA_TIMEFRAME_CHOICES else "5m"
 
 
-def _normalize_value_area_pct(value) -> float:
-    try:
-        pct = float(value)
-    except (TypeError, ValueError):
-        return 0.80
-    if pct > 1.0:           # accept percent form (e.g. 80 -> 0.80)
-        pct = pct / 100.0
-    return max(0.50, min(0.95, pct))
+# 1.0.8: 移除重複的 _normalize_value_area_pct clamp 版本(原在此)。
+# 原本此處的 clamp(0.50-0.95) 版會 shadow 上面 line 85 的 return-0.80 版,
+# 導致「鎖 80」實際失效。刪除後全域統一由 line 85 的 lock-80 版本提供。
 
 
 def _normalize_rr_ratio(value, default: int = 2) -> int:
@@ -306,10 +300,9 @@ def _conf_allowed_sessions_list(val) -> Optional[List[str]]:
 def _build_strategy_params_from_request(req, contract_size: int) -> StrategyParams:
     # v1.0.6: "confluence" selects the explainable ML engine; anything else is trend.
     raw_strat = str(getattr(req, "strategy", "confluence") or "").strip().lower()
+    # 1.0.8: mlc2 (ml_consolidation_v2) 已移除;僅 confluence / trend。
     if raw_strat == "confluence":
         strategy = "confluence"
-    elif raw_strat in ("ml_consolidation_v2", "ml_consol_v2", "mlc2"):
-        strategy = "ml_consolidation_v2"
     else:
         strategy = _normalize_strategy_name(raw_strat)
     tr = _strategy_leg_params(req, "tr")
@@ -337,19 +330,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         conf_full_tp_lock=int(getattr(req, "conf_full_tp_lock", 0) or 0),
         conf_session_limit=bool(getattr(req, "conf_session_limit", True)),
         conf_shadow=bool(getattr(req, "conf_shadow", False)),
-        mlc2_lookback=int(getattr(req, "mlc2_lookback", 30) or 30),
-        mlc2_band_ticks=float(getattr(req, "mlc2_band_ticks", 2.0) or 2.0),
-        mlc2_sl_buffer_ticks=float(getattr(req, "mlc2_sl_buffer_ticks", 4.0) or 4.0),
-        mlc2_sl_mode=str(getattr(req, "mlc2_sl_mode", "va") or "va"),
-        mlc2_max_risk_ticks=float(getattr(req, "mlc2_max_risk_ticks", 40.0) or 40.0),
-        mlc2_tp_mode=str(getattr(req, "mlc2_tp_mode", "rr") or "rr"),
-        mlc2_rr=float(getattr(req, "mlc2_rr", 4.0) or 4.0),
-        mlc2_trail_trigger_pct=float(getattr(req, "mlc2_trail_trigger_pct", 0.0) or 0.0),
-        mlc2_trail_lock_pct=float(getattr(req, "mlc2_trail_lock_pct", 0.0) or 0.0),
-        mlc2_session_limit=bool(getattr(req, "mlc2_session_limit", False)),
-        mlc2_min_score=float(getattr(req, "mlc2_min_score", 0.0) or 0.0),
-        mlc2_allowed_sessions=list(getattr(req, "mlc2_allowed_sessions", None) or ["ASIA", "EURO"]),
-        mlc2_shadow=bool(getattr(req, "mlc2_shadow", False)),
+        # 1.0.8: 移除 mlc2_* 參數(ml_consolidation_v2 策略已刪除)
         tp_ticks=tr["tp_ticks"],
         sl_ticks=tr["sl_ticks"],
         trail_sl_ticks=tr["trail_sl_ticks"],
@@ -578,22 +559,7 @@ class BacktestRequest(BaseModel):
     conf_trail_lock_pct: float = 0.05     # optimized: lock +5% of TP distance
     conf_full_tp_lock: int = 0            # 0 = OFF; stop new entries after N full-TP exits/session
     conf_session_limit: bool = True       # live-style one trade per zone+direction/session
-    # --- ML Consolidation V2 params (strategy="ml_consolidation_v2") ---
-    mlc2_lookback: int = 30              # rolling VP window (1m bars)
-    mlc2_band_ticks: float = 2.0         # proximity to VAL/VAH boundary (ticks)
-    mlc2_sl_buffer_ticks: float = 4.0    # SL beyond reference level (ticks)
-    mlc2_sl_mode: str = "va"             # "va" = SL at VA edge; "range" = SL at 100% range edge
-    mlc2_max_risk_ticks: float = 40.0    # reject signals with risk > N ticks
-    mlc2_tp_mode: str = "rr"             # "poc" = TP at POC; "rr" = fixed RR
-    mlc2_rr: float = 4.0                # reward:risk ratio
-    mlc2_trail_trigger_pct: float = 0.0  # 0 = trail OFF
-    mlc2_trail_lock_pct: float = 0.0     # locked SL fraction
-    mlc2_session_limit: bool = False     # one trade per session
-    mlc2_min_score: float = 0.0          # ML scorer gate
-    mlc2_allowed_sessions: Optional[List[str]] = Field(
-        default_factory=lambda: ["ASIA", "EURO"]
-    )
-    mlc2_shadow: bool = False            # shadow mode (log only)
+    # 1.0.8: 移除 ML Consolidation V2 (mlc2_*) 請求欄位 — 該策略已刪除
 
 
 class FetchHistoricalRequest(BaseModel):
@@ -1975,148 +1941,7 @@ async def confluence_model_retrain(req: ModelRetrainRequest):
 
 
 
-async def _run_ml_consolidation_v2_backtest(req: BacktestRequest) -> BacktestResponse:
-    """Backtest ML Consolidation V2: Value Area mean reversion."""
-    candles = sorted(_historical_candles, key=lambda c: c.timestamp)
-    _update_bt_progress(
-        "mlc2_vp", 0, len(candles),
-        f"MLC2 rolling VP over {len(candles)} candles",
-    )
-    contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
-    tick = get_tick_size(req.contract_id)
-
-    # ── params from request / preset ──
-    lookback = int(getattr(req, "mlc2_lookback", 30) or 30)
-    band = float(getattr(req, "mlc2_band_ticks", 2.0) or 2.0)
-    sl_buf = float(getattr(req, "mlc2_sl_buffer_ticks", 4.0) or 4.0)
-    sl_mode = str(getattr(req, "mlc2_sl_mode", "va") or "va")
-    max_risk = float(getattr(req, "mlc2_max_risk_ticks", 40.0) or 40.0)
-    tp_mode = str(getattr(req, "mlc2_tp_mode", "rr") or "rr")
-    rr = float(getattr(req, "mlc2_rr", 4.0) or 4.0)
-    trail_trig = float(getattr(req, "mlc2_trail_trigger_pct", 0.0) or 0.0)
-    trail_lock = float(getattr(req, "mlc2_trail_lock_pct", 0.0) or 0.0)
-    session_limit = bool(getattr(req, "mlc2_session_limit", False))
-    min_score = float(getattr(req, "mlc2_min_score", 0.0) or 0.0)
-    sessions = getattr(req, "mlc2_allowed_sessions", None) or ["ASIA", "EURO"]
-    if isinstance(sessions, str):
-        sessions = [s.strip() for s in sessions.split(",") if s.strip()]
-
-    sig_cfg = MLTrendConfig(
-        lookback=lookback, band_ticks=band, sl_buffer_ticks=sl_buf,
-        sl_mode=sl_mode, tick_size=tick, tp_mode=tp_mode, rr=rr,
-        max_risk_ticks=max_risk,
-    )
-    run_cfg = MLTrendBacktestConfig(
-        trail_trigger_pct=trail_trig,
-        trail_lock_pct=trail_lock,
-        one_trade_per_session=session_limit,
-        allowed_sessions=tuple(sessions),
-        min_score=min_score,
-    )
-    bt_cfg = BacktestConfig(
-        initial_capital=float(req.initial_capital or 50000.0),
-        symbol=_extract_symbol(req.contract_id),
-        commission_rt=get_commission_rt(req.contract_id),
-        fees_rt=get_fees_rt(req.contract_id),
-    )
-
-    # Pre-compute VP timeline (heavy, but same as sweep scripts)
-    vp_tl = precompute_vp_timeline(candles, lookback, tick, recalc_interval=5)
-    _update_bt_progress(
-        "mlc2_run", len(candles), len(candles),
-        f"MLC2 replaying signals",
-    )
-
-    bt = MLTrendBacktester(
-        signal_cfg=sig_cfg, run_cfg=run_cfg,
-        contract_id=req.contract_id,
-        contract_size=contract_size,
-        bt_config=bt_cfg,
-    )
-    result = bt.run(candles, vp_timeline=vp_tl)
-
-    # ── convert to response format ──
-    symbol_label = "/" + _extract_symbol(req.contract_id)
-    trades_resp: List[TradeResponse] = []
-    for idx, t in enumerate(result.trades, 1):
-        contracts = int(t.contracts or 1)
-        side = "VAL" if t.direction == Direction.BUY else "VAH"
-        meta = t.meta or {}
-        labels = ["long" if t.direction == Direction.BUY else "short"]
-        trades_resp.append(TradeResponse(
-            trade_id=t.trade_id or f"MLC2_{idx:05d}",
-            strategy="ml_consolidation_v2",
-            symbol=symbol_label,
-            size=contracts,
-            direction=t.direction.value if hasattr(t.direction, "value") else str(t.direction),
-            entry_price=t.entry_price,
-            entry_time=t.entry_time.isoformat() if t.entry_time else "",
-            exit_price=t.exit_price,
-            exit_time=t.exit_time.isoformat() if t.exit_time else None,
-            sl_price=t.original_sl_price or t.sl_price,
-            tp_price=t.original_tp_price or t.tp_price,
-            original_sl_price=t.original_sl_price,
-            original_tp_price=t.original_tp_price,
-            pnl=t.pnl or 0.0,
-            commission=t.commission or 0.0,
-            fees=t.fees or 0.0,
-            exit_reason=t.exit_reason.value if hasattr(t.exit_reason, "value") else str(t.exit_reason or ""),
-            zone_id="ml_consol_v2",
-            zone_source="ml_consolidation_v2",
-            mode="reversion",
-            side=side,
-            largest_tf=f"LB{lookback}",
-            wall_id="ml_consol_v2",
-            labels=labels,
-            primary_zone=None,
-            vol_ratio=None,
-            is_big_trend=False,
-        ))
-
-    m = result.metrics
-    metrics_resp = MetricsResponse(
-        total_trades=m.total_trades,
-        wins=m.wins,
-        losses=m.losses,
-        win_rate=m.win_rate,
-        avg_win=m.avg_win,
-        avg_loss=m.avg_loss,
-        avg_rr_ratio=m.avg_rr_ratio,
-        expectancy=m.expectancy,
-        max_drawdown=m.max_drawdown,
-        max_drawdown_pct=m.max_drawdown_pct,
-        calmar_ratio=m.calmar_ratio,
-        profit_factor=m.profit_factor,
-        max_consecutive_losses=m.max_consecutive_losses,
-        total_pnl=m.total_pnl,
-        total_gain=getattr(m, "total_gain", 0.0),
-        total_loss=getattr(m, "total_loss", 0.0),
-        daily_pnl=m.daily_pnl or {},
-        weekly_stats=_weekly_stats(m.daily_pnl or {}),
-        trend_follow=None,
-    )
-
-    equity = []
-    eq = float(req.initial_capital or 50000.0)
-    for t in result.trades:
-        eq += float(t.pnl or 0.0)
-        ts_ms = t.exit_time.timestamp() * 1000 if t.exit_time else (
-            t.entry_time.timestamp() * 1000 if t.entry_time else 0
-        )
-        equity.append([ts_ms, round(eq, 2)])
-
-    resp = BacktestResponse(
-        metrics=metrics_resp,
-        trades=trades_resp,
-        zones=[],
-        equity_curve=equity,
-    )
-    _backtest_results.append(resp)
-    _update_bt_progress(
-        "complete", len(candles), len(candles),
-        f"{len(trades_resp)} trades", status="complete",
-    )
-    return resp
+# 1.0.8: 移除 _run_ml_consolidation_v2_backtest (mlc2 回測入口,已隨策略刪除)
 
 
 @router.post("/backtest/run", response_model=BacktestResponse)
@@ -2157,9 +1982,7 @@ async def run_backtest(req: BacktestRequest):
         # stay responsive while it computes (falls back to in-thread on failure).
         return await _run_confluence_backtest_proc(req)
 
-    if _strat in ("ml_consolidation_v2", "ml_consol_v2", "mlc2"):
-        await _refresh_recent_historical_candles(req.contract_id)
-        return await _run_ml_consolidation_v2_backtest(req)
+    # 1.0.8: 移除 mlc2 (ml_consolidation_v2) 回測分派
 
     await _refresh_recent_historical_candles(req.contract_id)
 
@@ -2498,13 +2321,7 @@ async def list_backtests():
     ]
 
 
-# ── Machine Learning: Run all SL/TP/Trail combinations ────────────────
-
-_ml_results_cache: List[dict] = []
-_ml_progress: dict = {"current": 0, "total": 0, "stage": ""}
-
-import threading as _threading
-_ml_progress_lock = _threading.Lock()
+# 1.0.8: 移除 ML sweep 狀態快取 (_ml_results_cache/_ml_progress)
 
 
 def _request_payload(model: BaseModel) -> dict:
@@ -2513,55 +2330,7 @@ def _request_payload(model: BaseModel) -> dict:
     return model.dict()
 
 
-def _json_safe(value):
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(v) for v in value]
-    return value
-
-
-def _ml_total_loss(r: dict) -> float:
-    if r.get("total_loss") is not None:
-        try:
-            return float(r.get("total_loss") or 0)
-        except (TypeError, ValueError):
-            return 0.0
-    try:
-        return float(r.get("avg_loss") or 0) * float(r.get("losses") or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _ml_profit_factor(r: dict) -> float:
-    """Profit Factor = gross gain / gross loss. Falls back to gain/|loss| when
-    the stored profit_factor is missing (older rows)."""
-    pf = r.get("profit_factor")
-    if pf is not None:
-        try:
-            return float(pf)
-        except (TypeError, ValueError):
-            pass
-    try:
-        gain = abs(float(r.get("total_gain") or 0))
-    except (TypeError, ValueError):
-        gain = 0.0
-    loss = abs(_ml_total_loss(r))
-    if loss > 0:
-        return gain / loss
-    return 999.0 if gain > 0 else 0.0
-
-
-def _ml_valid_trade_range(r: dict) -> bool:
-    # New ML model (v1.0.6) has no fixed SL/TP ticks; every non-errored run is valid.
-    return isinstance(r, dict) and not r.get("error")
-
-
-def _enrich_ml_result(r: dict) -> dict:
-    # Profit Factor + all metrics are already populated by the backtest run.
-    return r
+# 1.0.8: 移除 _json_safe + ML 排序/篩選 helper (_ml_total_loss/_ml_profit_factor/_ml_valid_trade_range/_enrich_ml_result)
 
 
 def _weekly_stats(daily_pnl: Dict[str, float]) -> dict:
@@ -2618,297 +2387,7 @@ def _weekly_stats(daily_pnl: Dict[str, float]) -> dict:
     }
 
 
-# Columns written to data/machinelearning/ml_results.csv (Phase 8: all metrics).
-_ML_CSV_COLUMNS = [
-    "rank", "method", "tf_label", "tf_combo", "overlap_count", "overlap_pct",
-    "rr_ratio", "area_timeframe", "value_area_pct", "contract_id",
-    "contract_size", "total_trades", "wins", "losses", "win_rate",
-    "total_pnl", "total_gain", "total_loss",
-    "max_drawdown", "calmar_ratio", "profit_factor", "avg_rr_ratio",
-    "avg_win", "avg_loss", "consistency_pct", "max_day_pct",
-    "weekly_count", "weekly_mean", "weekly_std", "weekly_cv",
-    "weekly_min", "weekly_max", "weekly_range", "positive_weeks",
-    "weekly_consistency", "weekly_pnls", "pass_max_dd", "error",
-]
-
-
-def _ml_csv_row(r: dict) -> dict:
-    """Flatten one ML result into the CSV column set (stringify list fields)."""
-    row = {}
-    for col in _ML_CSV_COLUMNS:
-        val = r.get(col, "")
-        if col == "tf_combo" and isinstance(val, (list, tuple)):
-            val = "+".join(str(x) for x in val)
-        elif col == "weekly_pnls" and isinstance(val, (list, tuple)):
-            val = ";".join(str(x) for x in val)
-        elif val is None:
-            val = ""
-        row[col] = val
-    return row
-
-
-def _save_ml_artifacts(req: BaseModel, ranked: List[dict], total_combinations: int) -> dict:
-    """Persist the latest Machine learning run in AI-readable JSON + compact Markdown."""
-    data_dir = Path(__file__).resolve().parents[2] / "data" / "machinelearning"
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    generated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    json_path = data_dir / "ml_latest.json"
-    md_path = data_dir / "ml_summary.md"
-    csv_path = data_dir / "ml_results.csv"
-
-    payload = {
-        "kind": "ml_results",
-        "generated_at": generated_at,
-        "total_combinations": total_combinations,
-        "request": _json_safe(_request_payload(req)),
-        "results": _json_safe(ranked),
-        "top_results": _json_safe(ranked[:50]),
-    }
-    with json_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2, default=str, allow_nan=False)
-
-    # Phase 8: complete CSV with every metric + weekly variation, all combos.
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=_ML_CSV_COLUMNS, extrasaction="ignore")
-        writer.writeheader()
-        for r in ranked:
-            writer.writerow(_ml_csv_row(_enrich_ml_result(r)))
-
-    lines = [
-        "# Machine Learning Summary",
-        "",
-        f"- Generated: {generated_at}",
-        f"- Total combinations: {total_combinations}",
-        f"- Saved JSON: `{json_path}`",
-        f"- Saved CSV: `{csv_path}`",
-        "",
-        "| Rank | Method | Timeframes | Overlap | RR | Trades | Win% | Final PnL | Max DD | PF | Calmar | Wk Std | Wk CV |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    for r in [_enrich_ml_result(r) for r in ranked if not r.get("error")][:25]:
-        win_pct = round(float(r.get("win_rate", 0) or 0) * 100, 1)
-        tf_combo = r.get("tf_combo")
-        if isinstance(tf_combo, (list, tuple)):
-            tf_combo = "+".join(str(x) for x in tf_combo)
-        lines.append(
-            "| {rank} | {method} | {tf} | {overlap} | 1:{rr} | {trades} | {win}% | ${pnl} | ${dd} | "
-            "{pf} | {calmar} | {wstd} | {wcv} |".format(
-                rank=r.get("rank", ""),
-                method=r.get("method", ""),
-                tf=r.get("tf_label", tf_combo or ""),
-                overlap=r.get("overlap_count", ""),
-                rr=r.get("rr_ratio", ""),
-                trades=r.get("total_trades", ""),
-                win=win_pct,
-                pnl=r.get("total_pnl", ""),
-                dd=r.get("max_drawdown", ""),
-                pf=r.get("profit_factor", ""),
-                calmar=r.get("calmar_ratio", ""),
-                wstd=r.get("weekly_std", ""),
-                wcv=r.get("weekly_cv", ""),
-            )
-        )
-    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    return {
-        "json": str(json_path),
-        "summary": str(md_path),
-        "csv": str(csv_path),
-        "generated_at": generated_at,
-    }
-
-
-def _save_conf_combo_artifacts(req: BaseModel, ranked: List[dict], total: int,
-                               held: dict) -> dict:
-    """Persist the COMBINATION (confluence Model+Style sweep) in AI-readable
-    JSON + Markdown + CSV. Each row carries the explicit knob values (RR /
-    breakout / trail / lock / full-tp / session) plus full metrics so an AI can
-    diagnose which combination hurts win-rate/PnL without re-running."""
-    data_dir = Path(__file__).resolve().parents[2] / "data" / "machinelearning"
-    data_dir.mkdir(parents=True, exist_ok=True)
-
-    generated_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    json_path = data_dir / "combination_latest.json"
-    md_path = data_dir / "combination_summary.md"
-    csv_path = data_dir / "combination_results.csv"
-
-    payload = {
-        "kind": "confluence_combination",
-        "generated_at": generated_at,
-        "total_combinations": total,
-        "held_constant": _json_safe(held),
-        "grid": {
-            "rr": list(CONF_COMBO_RR),
-            "enable_breakout": list(CONF_COMBO_BREAKOUT),
-            "trail_trigger_pct": list(CONF_COMBO_TRAIL_TRIGGER),
-            "full_tp_lock": list(CONF_COMBO_FULL_TP_LOCK),
-            "session_limit": list(CONF_COMBO_SESSION),
-        },
-        "request": _json_safe(_request_payload(req)),
-        "results": _json_safe(ranked),
-    }
-    with json_path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2, default=str, allow_nan=False)
-
-    cols = ["rank", "rr_ratio", "conf_enable_breakout", "conf_sl_reference_tf",
-            "conf_trail_trigger_pct", "conf_trail_lock_pct", "conf_full_tp_lock", "conf_session_limit",
-            "total_trades", "wins", "losses", "win_rate", "total_pnl",
-            "max_drawdown", "profit_factor", "calmar_ratio", "expectancy",
-            "avg_win", "avg_loss"]
-    with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
-        writer.writeheader()
-        for r in ranked:
-            writer.writerow({k: r.get(k, "") for k in cols})
-
-    lines = [
-        "# Confluence COMBINATION Sweep",
-        "",
-        f"- Generated: {generated_at}",
-        f"- Total combinations: {total}",
-        f"- Held constant: {held}",
-        f"- Saved JSON: `{json_path}`",
-        f"- Saved CSV: `{csv_path}`",
-        "",
-        "| Rank | RR | Breakout | SLRef | TrailTrig | Lock | FullTPLock | Session | Trades | Win% | PnL | MaxDD | PF | Calmar |",
-        "| ---: | ---: | :---: | :---: | ---: | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    for r in [x for x in ranked if not x.get("error")][:25]:
-        lines.append(
-            "| {rank} | 1:{rr} | {brk} | {slref} | {trig}% | {lock}% | {ftl} | {ses} | {trades} | "
-            "{win}% | ${pnl} | ${dd} | {pf} | {calmar} |".format(
-                rank=r.get("rank", ""),
-                rr=r.get("rr_ratio", ""),
-                brk="ON" if r.get("conf_enable_breakout") else "off",
-                slref=r.get("conf_sl_reference_tf", "largest"),
-                trig=round(float(r.get("conf_trail_trigger_pct", 0) or 0) * 100),
-                lock=round(float(r.get("conf_trail_lock_pct", 0) or 0) * 100),
-                ftl=r.get("conf_full_tp_lock", 0) or "off",
-                ses="ON" if r.get("conf_session_limit") else "off",
-                trades=r.get("total_trades", ""),
-                win=round(float(r.get("win_rate", 0) or 0) * 100, 1),
-                pnl=r.get("total_pnl", ""),
-                dd=r.get("max_drawdown", ""),
-                pf=r.get("profit_factor", ""),
-                calmar=r.get("calmar_ratio", ""),
-            )
-        )
-    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    return {
-        "json": str(json_path),
-        "summary": str(md_path),
-        "csv": str(csv_path),
-        "generated_at": generated_at,
-    }
-
-
-def _ml_sort_value(r: dict, col: str):
-    col = (col or "calmar").lower()
-    if col == "rank":
-        return r.get("rank") or 0
-    if col == "strategy":
-        return str(r.get("strategy") or "").lower()
-    if col == "contract":
-        return _extract_symbol(str(r.get("contract_id") or "")).lower()
-    if col == "size":
-        return r.get("contract_size") or 0
-    if col == "area":
-        return r.get("value_area_pct") or 0
-    if col == "method":
-        return str(r.get("method") or "").lower()
-    if col == "tf":
-        tf = r.get("tf_label")
-        if not tf:
-            combo = r.get("tf_combo")
-            tf = "+".join(combo) if isinstance(combo, (list, tuple)) else ""
-        return str(tf).lower()
-    if col == "overlap":
-        return r.get("overlap_count") or 0
-    if col == "rr":
-        return r.get("rr_ratio") or 0
-    if col == "wk_std":
-        return r.get("weekly_std") or 0
-    if col == "wk_cv":
-        return r.get("weekly_cv") or 0
-    if col == "trades":
-        return r.get("total_trades") or 0
-    if col == "win_rate":
-        return r.get("win_rate") or 0
-    if col == "pnl":
-        return r.get("total_pnl") or 0
-    if col == "max_dd":
-        return r.get("max_drawdown") or 0
-    if col in ("pf", "profit_factor", "lwr", "loss_to_final_ratio", "loss_final_ratio"):
-        return _ml_profit_factor(r)
-    if col == "best_day":
-        vals = list((r.get("daily_pnl") or {}).values())
-        return max(vals) if vals else 0
-    if col == "worst_day":
-        vals = list((r.get("daily_pnl") or {}).values())
-        return min(vals) if vals else 0
-    return r.get("calmar_ratio") or 0
-
-
-def _sorted_ml_results(
-    results: list,
-    sort_col: str = "calmar",
-    sort_dir: str = "desc",
-    limit: int = ML_DISPLAY_LIMIT,
-) -> list:
-    try:
-        limit = max(1, min(int(limit or ML_DISPLAY_LIMIT), 1000))
-    except (TypeError, ValueError):
-        limit = ML_DISPLAY_LIMIT
-    reverse = (sort_dir or "desc").lower() != "asc"
-    valid = [
-        _enrich_ml_result(r)
-        for r in (results or [])
-        if isinstance(r, dict) and not r.get("error") and _ml_valid_trade_range(r)
-    ]
-    errors = [
-        r for r in (results or [])
-        if isinstance(r, dict) and r.get("error") and _ml_valid_trade_range(r)
-    ]
-    sorted_valid = sorted(
-        valid,
-        key=lambda r: (_ml_sort_value(r, sort_col), -(r.get("rank") or 0)),
-        reverse=reverse,
-    )
-    return (sorted_valid + errors)[:limit]
-
-
-def _load_ml_artifact(
-    sort_col: str = "calmar",
-    sort_dir: str = "desc",
-    limit: int = ML_DISPLAY_LIMIT,
-) -> dict:
-    """Load the latest persisted Machine learning display payload."""
-    json_path = Path(__file__).resolve().parents[2] / "data" / "machinelearning" / "ml_latest.json"
-    if not json_path.exists():
-        return {"results": [], "artifact": None}
-    try:
-        with json_path.open("r", encoding="utf-8") as f:
-            payload = json.load(f)
-        all_results = payload.get("results") or payload.get("top_results") or []
-        results = _sorted_ml_results(all_results, sort_col, sort_dir, limit)
-        return {
-            "results": results,
-            "total_combinations": payload.get("total_combinations", len(all_results)),
-            "shown": len(results),
-            "sort_col": sort_col,
-            "sort_dir": sort_dir,
-            "generated_at": payload.get("generated_at", ""),
-            "artifact": {
-                "json": str(json_path),
-                "summary": str(json_path.with_name("ml_summary.md")),
-                "generated_at": payload.get("generated_at", ""),
-            },
-        }
-    except Exception as e:
-        logger.warning(f"[Machine Learning] Could not load latest artifact: {e}")
-        return {"results": [], "artifact": None}
+# 1.0.8: 移除 ML CSV 匯出 + artifact 儲存 + 排序/載入 (_ml_csv_row/_save_ml_artifacts/_save_conf_combo_artifacts/_ml_sort_value/_sorted_ml_results/_load_ml_artifact)
 
 
 def _precompute_zone_timeline(
@@ -3062,53 +2541,8 @@ def _get_merged_zone_timeline(candles, value_area_pct, skip_zone_stability,
     return merged
 
 
-class MLRunRequest(BaseModel):
-    strategy: str = "trend"
-    tp_ticks: int = 200
-    sl_ticks: int = 50
-    trail_sl_ticks: int = 10
-    trail_sl_pct: Optional[float] = 0.05
-    trail_trigger_pct: float = 0.30
-    tr_tp_ticks: Optional[int] = None
-    tr_sl_ticks: Optional[int] = None
-    tr_trail_sl_ticks: Optional[int] = None
-    tr_trail_sl_pct: Optional[float] = None
-    tr_trail_trigger_pct: Optional[float] = None
-    tr_trail_enabled: Optional[bool] = None
-    tr_full_tp_lock: Optional[int] = None
-    tr_allowed_sessions: Optional[List[str]] = Field(
-        default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
-    )
-    candle_seconds: int = 60
-    value_area_pct: float = 0.80
-    area_timeframe: str = "5m"
-    rr_ratio: int = 2                     # default RR; ML sweeps 1..6
-    initial_capital: float = 50000.0
-    start_date: str = ""
-    end_date: str = ""
-    # v1.0.6: contract / size / trail switch — keep parity with BacktestRequest
-    contract_id: str = "CON.F.US.MNQ.M26"
-    contract_size: int = 3
-    trail_enabled: bool = True
-    full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
-    one_trade_per_session_direction: bool = True
-    tr_one_trade_per_session: bool = True
-    # Zone stability is enabled by default; keep this flag for future experiments.
-    skip_zone_stability: bool = False
-    fixed_params: List[str] = Field(default_factory=list)
-    breakout_confirm_bars: int = 7
+# 1.0.8: 移除 MLRunRequest / ConfComboRunRequest 請求模型
 
-
-class ConfComboRunRequest(BacktestRequest):
-    """COMBINATION sweep for the ML confluence strategy. Inherits every conf_*
-    knob from BacktestRequest (held at panel values); adds the backtest range.
-    The 240-run grid varies RR × breakout × trail-trigger × full-tp-lock × session."""
-    start_date: str = ""
-    end_date: str = ""
-
-
-
-# ── ML multi-timeframe overlap sweep helpers (v1.0.6) ──────────────────────
 
 ML_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h")
 ML_RR_VALUES = tuple(range(1, 7))   # 1:1 .. 1:6
@@ -3118,24 +2552,7 @@ ML_RR_VALUES = tuple(range(1, 7))   # 1:1 .. 1:6
 # 6 × 2 × 4 × 3 × 2 = 288 runs. Structural MODEL knobs (band / min-distinct-tf /
 # min-prob / ev-floor / timeframes / trail-lock) are HELD at the panel values;
 # only the suspects that move win-rate/edge are swept.
-CONF_COMBO_RR = tuple(float(rr) for rr in range(1, 7))
-CONF_COMBO_BREAKOUT = (True, False)
-CONF_COMBO_TRAIL_TRIGGER = (0.0, 0.30, 0.50, 0.70)
-CONF_COMBO_FULL_TP_LOCK = (0, 1, 2)
-CONF_COMBO_SESSION = (True, False)
-
-
-def _ml_timeframe_combos() -> list:
-    """All non-empty subsets of ML_TIMEFRAMES (singles + every overlap combo).
-    Ordered by combo size then timeframe order — singles first, then pairs, …
-    """
-    from itertools import combinations
-    order = {tf: i for i, tf in enumerate(ML_TIMEFRAMES)}
-    combos = []
-    for k in range(1, len(ML_TIMEFRAMES) + 1):
-        for c in combinations(ML_TIMEFRAMES, k):
-            combos.append(tuple(sorted(c, key=lambda t: order[t])))
-    return combos
+# 1.0.8: 移除 CONF_COMBO_* 掃描網格 + _ml_timeframe_combos
 
 
 def _synthesize_merged_zone(actives, tfs, overlap_trade_tf: str = "merged"):
@@ -3213,551 +2630,10 @@ def _merge_zone_timelines(timelines: list, tfs: tuple, overlap_trade_tf: str = "
     return merged
 
 
-def _run_ml_combo(candles, config, zone_timeline, rr, tf_combo,
-                  contract_id, contract_size, breakout_confirm_bars,
-                  full_tp_lock, trail_trigger_pct, trail_enabled,
-                  one_trade_per_session_direction, tr_one_trade_per_session,
-                  fallback_sl_ticks: int = 50) -> dict:
-    """Run one (timeframe-combo × RR) machine-learning backtest on a pre-built
-    (merged) zone timeline. SL = lowest-volume node, TP = RR × SL (handled by
-    the strategy); the fixed ticks here are only the SL fallback / nominal TP.
-    """
-    from backend.backtest.engine import BacktestEngine
-    from backend.db.models import StrategyParams
-
-    method = "overlap" if len(tf_combo) > 1 else "single"
-    tf_label = "+".join(tf_combo)
-    nominal_tp = max(1, fallback_sl_ticks * rr)
-    sp = StrategyParams(
-        strategy="trend",
-        sl_ticks=fallback_sl_ticks, tp_ticks=nominal_tp,
-        tr_sl_ticks=fallback_sl_ticks, tr_tp_ticks=nominal_tp,
-        trail_trigger_pct=trail_trigger_pct, trail_enabled=bool(trail_enabled),
-        tr_trail_trigger_pct=trail_trigger_pct, tr_trail_enabled=bool(trail_enabled),
-        full_tp_lock=full_tp_lock, tr_full_tp_lock=full_tp_lock,
-        contract_id=contract_id,
-        contract_size=_normalize_contract_size(contract_id, contract_size),
-        one_trade_per_session_direction=bool(one_trade_per_session_direction),
-        tr_one_trade_per_session=bool(tr_one_trade_per_session),
-        breakout_confirm_bars=max(1, int(breakout_confirm_bars or 7)),
-        area_timeframe=tf_combo[0],
-        value_area_pct=getattr(config, "value_area_pct", 0.80),
-        rr_ratio=_normalize_rr_ratio(rr),
-    )
-    overlap_hits = sum(1 for e in zone_timeline if e.get("overlap"))
-    overlap_pct = round(overlap_hits / max(1, len(zone_timeline)), 3)
-    base = {
-        "method": method,
-        "tf_combo": list(tf_combo),
-        "tf_label": tf_label,
-        "overlap_count": len(tf_combo),
-        "overlap_pct": overlap_pct,
-        "rr_ratio": _normalize_rr_ratio(rr),
-        "contract_id": contract_id,
-        "contract_size": _normalize_contract_size(contract_id, contract_size),
-        "value_area_pct": getattr(config, "value_area_pct", 0.80),
-        "full_tp_lock": full_tp_lock,
-    }
-    try:
-        engine = BacktestEngine(config=config, strategy_params=sp, zone_timeline=zone_timeline,
-                                record_equity=False)
-        result = engine.run(candles)
-        m = result.metrics
-        base.update({
-            "total_trades": m.total_trades,
-            "wins": m.wins,
-            "losses": m.losses,
-            "win_rate": round(m.win_rate, 4),
-            "total_pnl": round(m.total_pnl, 2),
-            "total_gain": round(getattr(m, "total_gain", 0.0), 2),
-            "total_loss": round(getattr(m, "total_loss", 0.0), 2),
-            "max_drawdown": round(m.max_drawdown, 2),
-            "calmar_ratio": round(m.calmar_ratio, 3),
-            "profit_factor": round(m.profit_factor, 3),
-            "avg_rr_ratio": round(getattr(m, "avg_rr_ratio", 0.0), 3),
-            "daily_pnl": m.daily_pnl,
-            "avg_win": round(m.avg_win, 2),
-            "avg_loss": round(m.avg_loss, 2),
-        })
-    except Exception as e:
-        base["error"] = str(e)
-    finally:
-        with _ml_progress_lock:
-            _ml_progress["current"] += 1
-            _cur = _ml_progress["current"]
-            _tot = _ml_progress["total"]
-        # Console progress: log every 10 combos (and the final one) so the run is
-        # visible in the terminal alongside the frontend progress bar.
-        if _tot and (_cur % 10 == 0 or _cur == _tot):
-            logger.info(f"[Machine Learning] progress {_cur}/{_tot} ({_cur * 100 // _tot}%)")
-    return base
+# 1.0.8: 移除 ML/conf-combo 單組回測 worker (_run_ml_combo/_run_conf_combo)
 
 
-def _run_conf_combo(candles, timeline, scorer, tick, base_minutes, timeframes,
-                    band_ticks, min_distinct_tf, min_prob, ev_floor, wait_minutes,
-                    trail_lock_pct, contract_id, contract_size, bt_cfg_kwargs,
-                    req_data,
-                    rr, enable_breakout, trail_trigger_pct, full_tp_lock,
-                    session_limit) -> dict:
-    """Run ONE confluence Model+Style combination on the shared (read-only) zone
-    timeline. The expensive zone detection is done ONCE upstream; this just
-    re-clusters + re-simulates with the swept knobs. Returns a result dict with
-    the same metric keys as _run_ml_combo plus explicit conf_* knob fields."""
-    import math
-    from backend.strategy.confluence import ConfluenceConfig
-    from backend.backtest.confluence_backtest import (
-        ConfluenceBacktester, ConfluenceBacktestConfig,
-    )
-    from backend.db.models import BacktestConfig
-
-    bits = ["BRK" if enable_breakout else "noBRK"]
-    if trail_trigger_pct > 0:
-        bits.append(f"TR{int(round(trail_trigger_pct * 100))}")
-        if trail_lock_pct > 0:
-            bits.append(f"L{int(round(trail_lock_pct * 100))}")
-    if full_tp_lock > 0:
-        bits.append(f"FTL{full_tp_lock}")
-    bits.append("SES" if session_limit else "noSES")
-    sess_filter = allowed_sessions_label(req_data.get("conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS))
-    if sess_filter != "ALL":
-        bits.append(sess_filter)
-
-    base = {
-        "method": "conf",
-        "tf_combo": list(timeframes),
-        "tf_label": " · ".join(bits),
-        "overlap_count": len(timeframes),
-        "rr_ratio": rr,
-        "contract_id": contract_id,
-        "contract_size": contract_size,
-        "conf_enable_breakout": bool(enable_breakout),
-        "conf_sl_reference_tf": _normalize_conf_sl_reference_tf(
-            req_data.get("conf_sl_reference_tf", "largest")
-        ),
-        "conf_trail_trigger_pct": float(trail_trigger_pct),
-        "conf_trail_lock_pct": float(trail_lock_pct),
-        "conf_full_tp_lock": int(full_tp_lock),
-        "conf_session_limit": bool(session_limit),
-        "conf_allowed_sessions": _conf_allowed_sessions_list(
-            req_data.get("conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
-        ),
-        "full_tp_lock": int(full_tp_lock),
-    }
-    try:
-        min_score = 0.0
-        if min_prob and 0.0 < min_prob < 1.0:
-            min_score = math.log(min_prob / (1.0 - min_prob))
-        sig_cfg = ConfluenceConfig(band_ticks=band_ticks,
-                                   min_distinct_tf=min_distinct_tf, rr=rr)
-        sig_cfg.direction_mode = "auto"
-        sig_cfg.tick_size = tick
-        sig_cfg.ev_floor = ev_floor
-        sig_cfg.rr_grid = None
-        sig_cfg.enable_breakout = bool(enable_breakout)
-        sig_cfg.max_risk_ticks = req_data.get("conf_max_risk_ticks") or None
-        sig_cfg.sl_reference_tf = _normalize_conf_sl_reference_tf(
-            req_data.get("conf_sl_reference_tf", "largest")
-        )
-        run_cfg = ConfluenceBacktestConfig(
-            wait_minutes=wait_minutes, min_score=min_score,
-            base_minutes=base_minutes, timeframes=timeframes,
-            one_trade_per_session_direction=bool(session_limit),
-            trail_trigger_pct=float(trail_trigger_pct),
-            trail_lock_pct=float(trail_lock_pct),
-            full_tp_lock=int(full_tp_lock),
-            allowed_sessions=tuple(_conf_allowed_sessions_list(
-                req_data.get("conf_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
-            ) or ()),
-        )
-        bt = ConfluenceBacktester(
-            signal_cfg=sig_cfg, run_cfg=run_cfg, contract_id=contract_id,
-            contract_size=contract_size, bt_config=BacktestConfig(**bt_cfg_kwargs),
-            scorer=scorer,
-        )
-        result = bt.run(candles, zones_timeline=timeline)
-        m = result.metrics
-        base.update({
-            "total_trades": m.total_trades,
-            "wins": m.wins,
-            "losses": m.losses,
-            "win_rate": round(m.win_rate, 4),
-            "total_pnl": round(m.total_pnl, 2),
-            "total_gain": round(getattr(m, "total_gain", 0.0), 2),
-            "total_loss": round(getattr(m, "total_loss", 0.0), 2),
-            "max_drawdown": round(m.max_drawdown, 2),
-            "calmar_ratio": round(m.calmar_ratio, 3),
-            "profit_factor": round(m.profit_factor, 3),
-            "expectancy": round(getattr(m, "expectancy", 0.0), 3),
-            "avg_rr_ratio": round(getattr(m, "avg_rr_ratio", 0.0), 3),
-            "daily_pnl": m.daily_pnl or {},
-            "avg_win": round(m.avg_win, 2),
-            "avg_loss": round(m.avg_loss, 2),
-        })
-    except Exception as e:
-        base["error"] = str(e)
-    finally:
-        with _ml_progress_lock:
-            _ml_progress["current"] += 1
-            _cur = _ml_progress["current"]
-            _tot = _ml_progress["total"]
-        if _tot and (_cur % 10 == 0 or _cur == _tot):
-            logger.info(f"[Combination] progress {_cur}/{_tot} ({_cur * 100 // _tot}%)")
-    return base
-
-
-@router.post("/backtest/conf-combo-run")
-async def conf_combo_run(req: ConfComboRunRequest):
-    """COMBINATION: sweep the confluence Model+Style grid (288 runs) and rank.
-
-    Build the zone timeline ONCE (depends only on timeframes/tick), then reuse it
-    across every combo. Structural MODEL knobs (band / min-distinct-tf / min-prob
-    / ev-floor / timeframes / trail-lock) are HELD at the request values; the grid
-    varies RR × breakout × trail-trigger × full-tp-lock × session. Reuses the same
-    progress bar as ml-run and writes an AI-readable artifact."""
-    global _ml_results_cache
-
-    if not _historical_candles:
-        raise HTTPException(400, "No candles loaded — fetch historical data first")
-
-    await _refresh_recent_historical_candles(req.contract_id)
-
-    import asyncio
-    import os
-    import time as _time
-    from concurrent.futures import ThreadPoolExecutor
-    from itertools import product
-    from backend.db.models import BacktestConfig
-    from backend.strategy.consolidation import timeframes_for_base
-    from backend.strategy.confluence import MAX_RECENCY_DEPTH
-    from backend.strategy.confluence_scorer import resolve_scorer
-    from backend.backtest.confluence_backtest import build_zone_timeline
-
-    contract_id = req.contract_id or "CON.F.US.MNQ.M26"
-    contract_size = _normalize_contract_size(contract_id, req.contract_size)
-    bt_symbol = _extract_symbol(contract_id)
-    tick = get_tick_size(contract_id)
-    base = max(1, int(req.conf_base_minutes or 1))
-    timeframes = timeframes_for_base(base)
-    trail_lock_pct = float(getattr(req, "conf_trail_lock_pct", 0.05) or 0.0)
-
-    candles = sorted(_historical_candles, key=lambda c: c.timestamp)
-    scorer = resolve_scorer(bool(req.conf_use_scorer), None)
-    req_data = _request_payload(req)
-
-    bt_cfg_kwargs = dict(
-        initial_capital=req.initial_capital,
-        symbol=bt_symbol,
-        commission_rt=get_commission_rt(contract_id),
-        fees_rt=get_fees_rt(contract_id),
-    )
-
-    loop = asyncio.get_running_loop()
-
-    # ── Phase 1: build the (shared, read-only) zone timeline ONCE ──
-    _ml_progress["current"] = 0
-    _ml_progress["total"] = 0
-    _ml_progress["stage"] = f"building zone timeline ({len(timeframes)} TFs over {len(candles)} candles)…"
-    logger.info(f"[Combination] building zone timeline over {len(candles)} candles…")
-    _t0 = _time.perf_counter()
-    timeline = await loop.run_in_executor(
-        None, build_zone_timeline, candles, timeframes, tick, MAX_RECENCY_DEPTH,
-    )
-    logger.info(f"[Combination] zone timeline built in {_time.perf_counter() - _t0:.1f}s")
-
-    # ── Phase 2: enumerate the 240-combo grid ──
-    combos = list(product(
-        CONF_COMBO_RR, CONF_COMBO_BREAKOUT, CONF_COMBO_TRAIL_TRIGGER,
-        CONF_COMBO_FULL_TP_LOCK, CONF_COMBO_SESSION,
-    ))
-    _ml_progress["stage"] = "running backtests"
-    _ml_progress["total"] = len(combos)
-
-    _cpu = os.cpu_count() or 4
-    _n = len(candles)
-    if _n > 400_000:
-        WORKERS = min(_cpu, 4)
-    elif _n > 200_000:
-        WORKERS = min(_cpu, 8)
-    elif _n > 100_000:
-        WORKERS = min(_cpu, 16)
-    else:
-        WORKERS = min(_cpu, 32)
-    logger.info(f"[Combination] {len(combos)} runs over {_n} candles using {WORKERS} workers")
-
-    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        tasks = [
-            loop.run_in_executor(
-                executor, _run_conf_combo,
-                candles, timeline, scorer, tick, base, timeframes,
-                req.conf_band_ticks, req.conf_min_distinct_tf,
-                req.conf_min_prob, req.conf_ev_floor, req.conf_wait_minutes,
-                trail_lock_pct, contract_id, contract_size, bt_cfg_kwargs,
-                req_data,
-                rr, enable_breakout, trail_trigger_pct, full_tp_lock, session_limit,
-            )
-            for (rr, enable_breakout, trail_trigger_pct, full_tp_lock, session_limit) in combos
-        ]
-        results = await asyncio.gather(*tasks)
-
-    # Rank by Calmar, tie-break total PnL then lower drawdown (same as ml-run).
-    _ml_progress["stage"] = "ranking results"
-    ranked_source = sorted(
-        results,
-        key=lambda r: (
-            float(r.get("calmar_ratio", 0) or 0) if not r.get("error") else -999999.0,
-            float(r.get("total_pnl", 0) or 0),
-            -abs(float(r.get("max_drawdown", 0) or 0)),
-        ),
-        reverse=True,
-    )
-    ranked = []
-    for rank, r in enumerate(ranked_source, start=1):
-        r["rank"] = rank
-        r["pass_max_dd"] = r.get("max_drawdown", 9999) < 3000
-        r.update(_weekly_stats(r.get("daily_pnl") or {}))
-        ranked.append(r)
-
-    _ml_results_cache = ranked
-    held = {
-        "band_ticks": req.conf_band_ticks,
-        "min_distinct_tf": req.conf_min_distinct_tf,
-        "min_prob": req.conf_min_prob,
-        "ev_floor": req.conf_ev_floor,
-        "trail_lock_pct": trail_lock_pct,
-        "sl_reference_tf": _normalize_conf_sl_reference_tf(req.conf_sl_reference_tf),
-        "timeframes": list(timeframes),
-        "base_minutes": base,
-        "contract": f"{bt_symbol}@{contract_size}",
-        "range": f"{req.start_date or '?'} → {req.end_date or '?'}",
-    }
-    artifact = _save_conf_combo_artifacts(req, ranked, len(combos), held)
-    logger.info(f"[Combination] Done. Top: {ranked[0] if ranked else 'none'}")
-    logger.info(f"[Combination] AI-readable results saved: {artifact}")
-    display_results = _sorted_ml_results(ranked, "calmar", "desc", ML_DISPLAY_LIMIT)
-    _ml_progress["stage"] = ""
-
-    return _json_safe({
-        "total_combinations": len(combos),
-        "results": display_results,
-        "shown": len(display_results),
-        "held_constant": held,
-        "artifact": artifact,
-    })
-
-
-@router.post("/backtest/ml-run")
-async def ml_run(req: MLRunRequest):
-    """Run all SL/TP/Trail combinations and rank results.
-    Optimisations:
-      1. Zone timeline pre-computed ONCE — all combos skip expensive zone detection
-      2. ProcessPoolExecutor — true CPU parallelism, bypasses GIL
-    """
-    global _ml_results_cache
-
-    if not _historical_candles:
-        raise HTTPException(400, "No candles loaded — fetch historical data first")
-
-    await _refresh_recent_historical_candles(req.contract_id)
-
-    import asyncio
-    import os
-    from concurrent.futures import ThreadPoolExecutor
-    from backend.db.models import BacktestConfig
-
-    value_area_pct = _normalize_value_area_pct(req.value_area_pct)
-    contract_id = req.contract_id or "CON.F.US.MNQ.M26"
-    contract_size = _normalize_contract_size(contract_id, req.contract_size)
-    bt_symbol = _extract_symbol(contract_id)
-    full_tp_lock = max(0, min(3, int(req.full_tp_lock or 0)))
-    trail_trigger_pct = _normalize_trail_trigger_pct(req.trail_trigger_pct)
-    trail_enabled = bool(req.trail_enabled) and trail_trigger_pct > 0
-    breakout_confirm_bars = max(1, int(req.breakout_confirm_bars or 7))
-
-    config_base = BacktestConfig(
-        initial_capital=req.initial_capital,
-        start_date=req.start_date,
-        end_date=req.end_date,
-        symbol=bt_symbol,
-        commission_rt=get_commission_rt(contract_id),
-        fees_rt=get_fees_rt(contract_id),
-        value_area_pct=value_area_pct,
-    )
-
-    # Sort ONCE here — both the zone precompute and each combo engine.run()
-    # must see candles in the same chronological order so that _zi indices align.
-    candles = sorted(_historical_candles, key=lambda c: c.timestamp)
-
-    loop = asyncio.get_running_loop()
-
-    import time as _time
-
-    # ── Phase 1: pre-compute a zone timeline per timeframe (5 detectors) ──
-    # This phase + Phase 2 run BEFORE the sweep and used to be silent, so on
-    # large datasets the UI looked frozen at 0/0. Report stage + per-timeframe
-    # timing so the console and progress bar show it is preparing, not stuck.
-    logger.info(
-        f"[Machine Learning] Pre-computing {len(ML_TIMEFRAMES)} per-timeframe "
-        f"zone timelines over {len(candles)} candles…"
-    )
-    _ml_progress["current"] = 0
-    _ml_progress["total"] = 0
-    tf_timelines = {}
-    for _idx, tf in enumerate(ML_TIMEFRAMES, start=1):
-        _ml_progress["stage"] = f"preparing zone timelines ({_idx}/{len(ML_TIMEFRAMES)}: {tf})"
-        _t0 = _time.perf_counter()
-        tf_timelines[tf] = await loop.run_in_executor(
-            None, _precompute_zone_timeline, candles, value_area_pct, False, tf,
-        )
-        logger.info(
-            f"[Machine Learning] zone timeline {tf} done ({_idx}/{len(ML_TIMEFRAMES)}) "
-            f"in {_time.perf_counter() - _t0:.1f}s"
-        )
-
-    # ── Phase 2: build merged timelines for every timeframe combination ──
-    #   Method 1 = single timeframe; Method 2 = overlap of 2..5 timeframes.
-    tf_combos = _ml_timeframe_combos()
-    _ml_progress["stage"] = f"building {len(tf_combos)} timeframe combos…"
-    logger.info(f"[Machine Learning] building {len(tf_combos)} merged timeframe timelines…")
-    _t0 = _time.perf_counter()
-    merged_timelines = {}
-    for combo in tf_combos:
-        merged_timelines[combo] = await loop.run_in_executor(
-            None, _merge_zone_timelines,
-            [tf_timelines[tf] for tf in combo], combo,
-        )
-    logger.info(
-        f"[Machine Learning] merged timelines built in {_time.perf_counter() - _t0:.1f}s — "
-        f"{len(tf_combos)} timeframe combos × {len(ML_RR_VALUES)} RR "
-        f"= {len(tf_combos) * len(ML_RR_VALUES)} runs"
-    )
-
-    # ── Phase 3: sweep (timeframe-combo × RR) ──
-    combos = [(combo, rr) for combo in tf_combos for rr in ML_RR_VALUES]
-    _ml_progress["stage"] = "running backtests"
-    _ml_progress["current"] = 0
-    _ml_progress["total"] = len(combos)
-
-    # Scale worker count DOWN as the dataset grows. Each parallel combo holds its
-    # own trade list / breakout trackers / daily-pnl over the full candle range;
-    # on full-range data (hundreds of thousands of 1m bars) running 32 at once is
-    # what drove RAM to ~97% and froze the machine. Fewer workers = lower peak RAM.
-    _cpu = os.cpu_count() or 4
-    _n = len(candles)
-    if _n > 400_000:
-        WORKERS = min(_cpu, 4)
-    elif _n > 200_000:
-        WORKERS = min(_cpu, 8)
-    elif _n > 100_000:
-        WORKERS = min(_cpu, 16)
-    else:
-        WORKERS = min(_cpu, 32)
-    logger.info(
-        f"[Machine Learning] {len(combos)} runs over {_n} candles using {WORKERS} workers"
-    )
-    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        tasks = [
-            loop.run_in_executor(
-                executor, _run_ml_combo,
-                candles,
-                BacktestConfig(
-                    strategies=["trend"],
-                    initial_capital=config_base.initial_capital,
-                    start_date=config_base.start_date,
-                    end_date=config_base.end_date,
-                    symbol=bt_symbol,
-                    commission_rt=get_commission_rt(contract_id),
-                    fees_rt=get_fees_rt(contract_id),
-                    value_area_pct=value_area_pct,
-                ),
-                merged_timelines[combo],
-                rr,
-                combo,
-                contract_id, contract_size, breakout_confirm_bars,
-                full_tp_lock, trail_trigger_pct, trail_enabled,
-                bool(req.one_trade_per_session_direction),
-                bool(getattr(req, "tr_one_trade_per_session", True)),
-            )
-            for (combo, rr) in combos
-        ]
-        results = await asyncio.gather(*tasks)
-
-    # Rank by Calmar directly. Tie-break with total PnL, then lower drawdown.
-    _ml_progress["stage"] = "ranking results"
-    ranked_source = sorted(
-        results,
-        key=lambda r: (
-            float(r.get("calmar_ratio", 0) or 0) if not r.get("error") else -999999.0,
-            float(r.get("total_pnl", 0) or 0),
-            -abs(float(r.get("max_drawdown", 0) or 0)),
-        ),
-        reverse=True,
-    )
-
-    ranked = []
-    for rank, r in enumerate(ranked_source, start=1):
-        r["rank"] = rank
-        r["pass_max_dd"] = r.get("max_drawdown", 9999) < 3000
-        daily = r.get("daily_pnl", {})
-        if daily and r.get("total_pnl", 0) > 0:
-            pos_days = sum(1 for v in daily.values() if v > 0)
-            r["consistency_pct"] = round(pos_days / len(daily), 3)
-            max_day = max(daily.values())
-            r["max_day_pct"] = round(max_day / r["total_pnl"] * 100, 1) if r["total_pnl"] > 0 else 0
-        else:
-            r["consistency_pct"] = 0
-            r["max_day_pct"] = 0
-        # Phase 8: week-to-week variation metrics.
-        r.update(_weekly_stats(r.get("daily_pnl") or {}))
-        ranked.append(r)
-
-    _ml_results_cache = ranked
-    artifact = _save_ml_artifacts(req, ranked, len(combos))
-    logger.info(f"[Machine Learning] Done. Top result: {ranked[0] if ranked else 'none'}")
-    logger.info(f"[Machine Learning] AI-readable results saved: {artifact}")
-    display_results = _sorted_ml_results(
-        ranked, "calmar", "desc", ML_DISPLAY_LIMIT
-    )
-    _ml_progress["stage"] = ""
-
-    return _json_safe({
-        "total_combinations": len(combos),
-        "results": display_results,
-        "shown": len(display_results),
-        "artifact": artifact,
-    })
-
-
-@router.get("/backtest/ml-results")
-async def get_ml_results(
-    sort_col: str = "calmar",
-    sort_dir: str = "desc",
-    limit: int = ML_DISPLAY_LIMIT,
-):
-    """Return cached Machine learning results from last run."""
-    if _ml_results_cache:
-        results = _sorted_ml_results(
-            _ml_results_cache, sort_col, sort_dir, limit
-        )
-        return _json_safe({
-            "results": results,
-            "total_combinations": len(_ml_results_cache),
-            "shown": len(results),
-            "sort_col": sort_col,
-            "sort_dir": sort_dir,
-            "source": "cache",
-        })
-    payload = _load_ml_artifact(sort_col, sort_dir, limit)
-    payload["source"] = "artifact"
-    return _json_safe(payload)
-
-
-@router.get("/backtest/ml-progress")
-async def get_ml_progress():
-    """Return current Machine learning progress (current / total combos done)."""
-    return dict(_ml_progress)
-
-
-_bt_progress_file_cache: dict = {"data": None, "read_at": 0.0}
+# 1.0.8: 移除 conf-combo-run / ml-run / ml-results / ml-progress 端點
 
 
 @router.get("/backtest/progress")
@@ -3847,22 +2723,7 @@ class LiveStartRequest(BaseModel):
     conf_full_tp_lock: int = 0
     conf_session_limit: bool = True
     conf_shadow: bool = False
-    # --- ML Consolidation V2 params ---
-    mlc2_lookback: int = 30
-    mlc2_band_ticks: float = 2.0
-    mlc2_sl_buffer_ticks: float = 4.0
-    mlc2_sl_mode: str = "va"
-    mlc2_max_risk_ticks: float = 40.0
-    mlc2_tp_mode: str = "rr"
-    mlc2_rr: float = 4.0
-    mlc2_trail_trigger_pct: float = 0.0
-    mlc2_trail_lock_pct: float = 0.0
-    mlc2_session_limit: bool = False
-    mlc2_min_score: float = 0.0
-    mlc2_allowed_sessions: Optional[List[str]] = Field(
-        default_factory=lambda: ["ASIA", "EURO"]
-    )
-    mlc2_shadow: bool = False
+    # 1.0.8: 移除 ML Consolidation V2 (mlc2_*) 欄位 — 該策略已刪除
 
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
@@ -4556,19 +3417,7 @@ _DEFAULT_PRESET_PARAMS = {
     "conf_full_tp_lock": 0,
     "conf_session_limit": True,
     "conf_shadow": False,
-    "mlc2_lookback": 30,
-    "mlc2_band_ticks": 2.0,
-    "mlc2_sl_buffer_ticks": 4.0,
-    "mlc2_sl_mode": "va",
-    "mlc2_max_risk_ticks": 40.0,
-    "mlc2_tp_mode": "rr",
-    "mlc2_rr": 4.0,
-    "mlc2_trail_trigger_pct": 0.0,
-    "mlc2_trail_lock_pct": 0.0,
-    "mlc2_session_limit": False,
-    "mlc2_min_score": 0.0,
-    "mlc2_allowed_sessions": ["ASIA", "EURO"],
-    "mlc2_shadow": False,
+    # 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 }
 
 _CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
@@ -4747,38 +3596,7 @@ def _codex_626_confluence_research_preset(
     return params
 
 
-def _codex_626_mlc2_research_preset(
-    *,
-    lookback: int,
-    band: float,
-    sl_buffer: float,
-    max_risk: float,
-    sessions: list[str],
-    session_limit: bool,
-    contract_id: str = "CON.F.US.MNQ.U26",
-    contract_size: int = 1,
-) -> dict:
-    params = dict(_DEFAULT_PRESET_PARAMS)
-    params.update({
-        "strategy": "ml_consolidation_v2",
-        "contract_id": contract_id,
-        "contract_size": contract_size,
-        "mlc2_lookback": int(lookback),
-        "mlc2_band_ticks": float(band),
-        "mlc2_sl_buffer_ticks": float(sl_buffer),
-        "mlc2_sl_mode": "range",
-        "mlc2_max_risk_ticks": float(max_risk),
-        "mlc2_tp_mode": "poc",
-        "mlc2_rr": 1.0,
-        "mlc2_trail_trigger_pct": 0.50,
-        "mlc2_trail_lock_pct": 0.05,
-        "mlc2_session_limit": bool(session_limit),
-        "mlc2_allowed_sessions": list(sessions),
-        "mlc2_min_score": 0.0,
-        # Research-only: edge is too thin for live.
-        "mlc2_shadow": True,
-    })
-    return params
+# 1.0.8: 移除 _codex_626_mlc2_research_preset(零呼叫者;mlc2 策略已刪除)
 
 
 _BUILTIN_PRESETS = {
@@ -4832,7 +3650,8 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        normalized_strategy = strategy if strategy in {"confluence", "ml_consolidation_v2"} else "trend"
+        # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend
+        normalized_strategy = strategy if strategy == "confluence" else "trend"
         if params.get("strategy") != normalized_strategy:
             params["strategy"] = normalized_strategy
             changed = True

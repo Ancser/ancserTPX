@@ -77,17 +77,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     conf_trail_lock_pct: 0.05,
     conf_full_tp_lock: 0,
     conf_session_limit: true,
-    mlc2_lookback: 30,
-    mlc2_band_ticks: 2.0,
-    mlc2_sl_buffer_ticks: 4.0,
-    mlc2_tp_mode: 'rr',
-    mlc2_rr: 4.0,
-    mlc2_trail_trigger_pct: 0.0,
-    mlc2_trail_lock_pct: 0.0,
-    mlc2_session_limit: false,
-    mlc2_min_score: 0.0,
-    mlc2_allowed_sessions: ['ASIA', 'EURO'],
-    mlc2_shadow: false,
+    // 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 };
 
 const _appliedStrategyParamsByMode = {
@@ -419,7 +409,7 @@ function onOverlapTradeTfChange(mode) {
 function normalizeStrategyName(value) {
     const v = String(value || '').trim().toLowerCase();
     if (v === 'confluence') return 'confluence';
-    if (v === 'ml_consolidation_v2' || v === 'ml_consol_v2' || v === 'mlc2') return 'ml_consolidation_v2';
+    // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 策略映射
     return 'trend';
 }
 
@@ -436,18 +426,17 @@ function updateStrategyParamVisibility(mode) {
         (document.getElementById('strategy-' + mode) || {}).value
     );
     const isML = strategy === 'confluence';
-    const isMLC2 = strategy === 'ml_consolidation_v2';
     const show = (id, on) => {
         const el = document.getElementById(id);
         if (el) el.style.display = on ? '' : 'none';
     };
-    // trend-only controls — hidden in ML / MLC2 mode.
-    show('tr-params-' + mode, !isML && !isMLC2);
-    show('overlap-tf-row-' + mode, !isML && !isMLC2);
+    // trend-only controls — hidden in ML mode.
+    show('tr-params-' + mode, !isML);
+    show('overlap-tf-row-' + mode, !isML);
     // ML Confluence params — shown only in confluence mode
     show('ml-params-' + mode, isML);
     if (isML) onRrModeChange(mode);
-    if (!isML && !isMLC2) {
+    if (!isML) {
         updateOverlapTradeTfControl(mode);
         updateTrailBounds(mode);
     }
@@ -783,23 +772,7 @@ function collectStrategyParams(mode) {
         skip_zone_stability: false,
         breakout_confirm_bars: Math.max(1, Math.min(10, _int('confirm-bars-' + mode, 7))),
     };
-    if (strategy === 'ml_consolidation_v2') {
-        Object.assign(params, {
-            mlc2_lookback: parseInt(applied.mlc2_lookback != null ? applied.mlc2_lookback : 30, 10) || 30,
-            mlc2_band_ticks: Number(applied.mlc2_band_ticks != null ? applied.mlc2_band_ticks : 2.0) || 2.0,
-            mlc2_sl_buffer_ticks: Number(applied.mlc2_sl_buffer_ticks != null ? applied.mlc2_sl_buffer_ticks : 4.0) || 4.0,
-            mlc2_tp_mode: String(applied.mlc2_tp_mode || 'rr'),
-            mlc2_rr: Number(applied.mlc2_rr != null ? applied.mlc2_rr : 4.0) || 4.0,
-            mlc2_trail_trigger_pct: Number(applied.mlc2_trail_trigger_pct || 0),
-            mlc2_trail_lock_pct: Number(applied.mlc2_trail_lock_pct || 0),
-            mlc2_session_limit: !!applied.mlc2_session_limit,
-            mlc2_min_score: Number(applied.mlc2_min_score || 0),
-            mlc2_allowed_sessions: normalizeAllowedSessions(
-                applied.mlc2_allowed_sessions != null ? applied.mlc2_allowed_sessions : ['ASIA', 'EURO']
-            ),
-            mlc2_shadow: !!applied.mlc2_shadow,
-        });
-    }
+    // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 參數區塊
     return params;
 }
 
@@ -1013,18 +986,7 @@ function buildPresetParamToken(params) {
             'TF' + Number(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2),
         ].join(' ');
     }
-    if (normalizeStrategyName(p.strategy) === 'ml_consolidation_v2') {
-        return [
-            _contractPresetToken(p),
-            'MLC2',
-            'LB' + Number(p.mlc2_lookback != null ? p.mlc2_lookback : 30),
-            'Band' + Number(p.mlc2_band_ticks != null ? p.mlc2_band_ticks : 2),
-            'SLB' + Number(p.mlc2_sl_buffer_ticks != null ? p.mlc2_sl_buffer_ticks : 4),
-            'RR1:' + _fmtConfRr(p.mlc2_rr != null ? p.mlc2_rr : 4),
-            allowedSessionsLabel(p.mlc2_allowed_sessions != null ? p.mlc2_allowed_sessions : ['ASIA', 'EURO']),
-            Number(p.mlc2_trail_trigger_pct || 0) > 0 ? 'TrailON' : 'TrailOFF',
-        ].join(' ');
-    }
+    // 1.0.8: 移除 ml_consolidation_v2 (mlc2) preset 標籤
     const vaPct = Math.round((p.value_area_pct != null ? Number(p.value_area_pct) : 0.80) * 100);
     const rr = Math.max(1, Math.min(6, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
     const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
@@ -1041,7 +1003,6 @@ function buildPresetParamToken(params) {
 
 function suggestedPresetPurpose(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
-    if (normalizeStrategyName(p.strategy) === 'ml_consolidation_v2') return '均值回歸';
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = Number(p.conf_max_risk_ticks || 0);
         const prob = Number(p.conf_min_prob || 0);
@@ -1637,12 +1598,11 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
             t.classList.add('active');
             const tab = t.dataset.btab;
-            ['trades','execute','learn','pnl','log'].forEach(id => {
+            ['trades','execute','pnl','log'].forEach(id => {
                 const panel = document.getElementById('btab-' + id);
                 if (panel) panel.classList.toggle('hidden', id !== tab);
             });
             if (tab === 'log') scrollSystemLogToBottom();
-            if (tab === 'learn') loadLearnResult();
             if (tab === 'pnl') renderPnlCurve();
         };
     });
@@ -1875,14 +1835,7 @@ async function goLive() {
             + ' SLref=' + (stratParams.conf_sl_reference_tf || 'largest')
             + ' market=' + allowedSessionsLabel(stratParams.conf_allowed_sessions), 'info');
     }
-    if (stratParams.strategy === 'ml_consolidation_v2') {
-        stratParams.mlc2_shadow = false;
-        log('ML CONSOLIDATION V2: LIVE (places orders) '
-            + 'LB=' + stratParams.mlc2_lookback
-            + ' band=' + stratParams.mlc2_band_ticks
-            + ' rr=' + stratParams.mlc2_rr
-            + ' market=' + allowedSessionsLabel(stratParams.mlc2_allowed_sessions), 'info');
-    }
+    // 1.0.8: 移除 ml_consolidation_v2 (mlc2) live start 記錄
     if (stratParams.strategy === 'trend') {
         log('TREND: LIVE ' + trendTfUsageText(stratParams)
             + ' RR1:' + stratParams.rr_ratio
@@ -2253,20 +2206,18 @@ async function pollLiveStatus() {
         // ── Top bar: ML (confluence) decision-basis banner ──
         const confRow = document.getElementById('lv-confluence-row');
         if (confRow) {
-            const isMlc2 = !!st.mlc2_mode;
-            const sigs = isMlc2 ? (st.mlc2_signals || []) : (st.confluence_signals || []);
-            if ((st.confluence_mode || isMlc2) && sigs.length) {
+            // 1.0.8: 移除 mlc2 分支,只保留 confluence
+            const sigs = st.confluence_signals || [];
+            if (st.confluence_mode && sigs.length) {
                 const last = sigs[sigs.length - 1];
                 const basis = last.basis || (
                     (last.mode ? '[' + last.mode + '] ' : '') + (last.direction || '') + ' ' + (last.side || '')
                     + ' entry=' + last.entry + ' sl=' + last.sl + ' tp=' + last.tp
                     + ' prob=' + (last.prob != null ? last.prob.toFixed(2) : '?')
                 );
-                const tag = st.confluence_shadow ? 'SHADOW · ' : '';
-                const scorer = st.confluence_scorer ? (' · scorer=' + st.confluence_scorer) : '';
-                const bannerTag = (isMlc2 ? st.mlc2_shadow : st.confluence_shadow) ? 'SHADOW · ' : '';
-                const bannerScorer = (!isMlc2 && st.confluence_scorer) ? (' · scorer=' + st.confluence_scorer) : '';
-                document.getElementById('lv-conf-basis').textContent = bannerTag + (isMlc2 ? 'MLC2 · ' : '') + basis + bannerScorer;
+                const bannerTag = st.confluence_shadow ? 'SHADOW · ' : '';
+                const bannerScorer = st.confluence_scorer ? (' · scorer=' + st.confluence_scorer) : '';
+                document.getElementById('lv-conf-basis').textContent = bannerTag + basis + bannerScorer;
                 confRow.style.display = 'flex';
             } else {
                 confRow.style.display = 'none';
@@ -2354,7 +2305,7 @@ async function pollLiveStatus() {
         // MODE = execution/sub-mode, kept distinct from STRAT (no duplication).
         //   ML (confluence): 影子(不下單) vs 實盤  ← shadow gate
         //   Trend: the active sub-mode, only when it differs from the strategy name
-        const isMLmode = (st.strategy_mode === 'confluence') || st.confluence_mode || st.mlc2_mode;
+        const isMLmode = (st.strategy_mode === 'confluence') || st.confluence_mode;
         let modeText, modeColor;
         if (isMLmode) {
             modeText = st.confluence_shadow ? '影子(不下單)' : '實盤';
@@ -2376,7 +2327,7 @@ async function pollLiveStatus() {
         // ── Phase — both top bar and left panel ──
         let phaseText = st.phase || '--';
         const phaseDisplayText = phaseText + (st.tp_locked ? ' TPLOCK' : '');
-        const isMLStatus = (st.strategy_mode === 'confluence') || st.confluence_mode || st.mlc2_mode;
+        const isMLStatus = (st.strategy_mode === 'confluence') || st.confluence_mode;
         const panelPhaseEl = document.getElementById('live-position-text');
         if (panelPhaseEl) {
             panelPhaseEl.textContent = phaseDisplayText;
@@ -5032,74 +4983,7 @@ function _fmtTs(s) {
     catch (e) { return s; }
 }
 
-function _renderScorerCard(title, model) {
-    if (!model) return '<div style="margin-bottom:14px;color:var(--text3);">' + title + ': （尚未訓練）</div>';
-    if (model.error) return '<div style="margin-bottom:14px;color:var(--red);">' + title + ' 讀取失敗: ' + model.error + '</div>';
-    const m = model.meta || {};
-    const dropped = m.dropped_features || [];
-    const top = model.weights || [];
-    const rrIsTop = top.length && top[0].name === 'rr';
-    const warn = rrIsTop
-        ? '<div style="color:var(--red);font-weight:600;margin:4px 0;">⚠ rr 是最大權重 → 模型異常（server 可能用到舊程式碼，請重啟後重新 LEARN）</div>'
-        : '';
-    const kv = (label, val, cls) =>
-        '<span style="margin-right:14px;">' + label + ': <b style="color:' + (cls || 'var(--text1)') + ';">' + val + '</b></span>';
-
-    let meta = '<div style="margin:4px 0 6px;line-height:1.7;">';
-    meta += kv('è¨“ç·´æ™‚é–“', _fmtTs(m.trained_at));
-    meta += kv('來源', m.source || '--');
-    meta += '<br>';
-    meta += kv('æ•¸æ“šæ™‚é–“æ®µ', _fmtTs(m.data_start) + ' → ' + _fmtTs(m.data_end));
-    meta += '<br>';
-    meta += kv('樣本', (m.n_samples != null ? m.n_samples.toLocaleString() : '--'));
-    meta += kv('勝率', (m.train_win_rate != null ? (m.train_win_rate * 100).toFixed(1) + '%' : '--'));
-    meta += kv('train AUC', (m.train_auc != null ? m.train_auc.toFixed(3) : '--'));
-    meta += kv('OOS AUC', (m.oos_auc != null ? m.oos_auc.toFixed(3) : '--'), 'var(--cyan)');
-    meta += kv('OOS Brier', (m.oos_brier != null ? m.oos_brier.toFixed(3) : '--'));
-    meta += kv('C', (m.C != null ? (+m.C).toFixed(3) : '--'));
-    meta += '<br>';
-    meta += kv('RR', (m.rr_grid ? ('grid ' + m.rr_grid.join('/')) : (m.cfg && m.cfg.rr != null ? m.cfg.rr : '--')));
-    meta += kv('TFs', (m.timeframes || []).join('/'));
-    meta += kv('dropped', dropped.length ? dropped.join(', ') : '無', dropped.length ? 'var(--amber)' : 'var(--text3)');
-    meta += '</div>';
-
-    let rows = '';
-    for (const w of top) {
-        const pos = w.weight >= 0;
-        const isRr = w.name === 'rr';
-        rows += '<tr style="' + (isRr && rrIsTop ? 'background:rgba(255,80,80,0.12);' : '') + '">'
-            + '<td style="padding:2px 10px 2px 0;color:var(--text2);">' + w.name + '</td>'
-            + '<td style="padding:2px 0;text-align:right;font-weight:600;color:' + (pos ? 'var(--green)' : 'var(--red)') + ';">'
-            + (pos ? '+' : '') + w.weight.toFixed(4) + '</td></tr>';
-    }
-    const biasRow = '<tr><td style="padding:2px 10px 2px 0;color:var(--text3);">(bias)</td>'
-        + '<td style="padding:2px 0;text-align:right;color:var(--text3);">'
-        + (model.bias != null ? (model.bias >= 0 ? '+' : '') + (+model.bias).toFixed(4) : '--') + '</td></tr>';
-
-    return '<div style="margin-bottom:18px;">'
-        + '<div style="color:var(--cyan);font-weight:600;margin-bottom:2px;">' + title + '</div>'
-        + warn + meta
-        + '<table style="border-collapse:collapse;min-width:240px;">' + rows + biasRow + '</table>'
-        + '<div style="color:var(--text3);font-size:10px;margin-top:4px;">' + (model.path || '') + '</div>'
-        + '</div>';
-}
-
-async function loadLearnResult() {
-    const body = document.getElementById('learn-result-body');
-    const hint = document.getElementById('learn-result-hint');
-    if (!body) return;
-    if (hint) hint.textContent = '載入中…';
-    try {
-        const resp = await fetch(API + '/confluence/scorer');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        body.innerHTML = _renderScorerCard('LATEST production model', data.fixed);
-        if (hint) hint.textContent = '';
-    } catch (e) {
-        body.innerHTML = '<div style="color:var(--red);">讀取失敗: ' + e.message + '</div>';
-        if (hint) hint.textContent = '';
-    }
-}
+// 1.0.8: 移除 LEARN RESULT 面板 (_renderScorerCard + loadLearnResult)
 
 // ── PNL CURVE tab: cumulative equity + Topstep $2K trailing-DD line ──
 // The DD line starts $2000 below break-even and trails UP only as each day's
