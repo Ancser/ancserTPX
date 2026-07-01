@@ -1735,19 +1735,21 @@ function getMarketSession() {
         return { label: 'CLOSED', color: 'var(--text3)' };
     }
 
-    // 開盤 09:30-16:00 ET
-    if (etMinutes >= 9 * 60 + 30 && etMinutes < 16 * 60) {
-        return { label: 'NORMAL', color: 'var(--green)' };
-    }
-
-    // 盤後 16:00-17:00 ET
-    if (etMinutes >= 16 * 60 && etMinutes < 17 * 60) {
-        return { label: 'AFTER', color: 'var(--cyan)' };
-    }
-
-    // 盤前 18:00-09:30 ET (overnight)
-    return { label: 'PRE', color: 'var(--amber)' };
+    // 1.0.8: 市場開盤時,改用與全 App 一致的交易盤段分類 (ASIA/EURO/PRE/RTH/AH),
+    // 而非舊的 NORMAL/AFTER/PRE 市場狀態,避免與策略 allowed_sessions / 圖表底色命名衝突。
+    const code = getSessionCodeFromDate(now);
+    const color = SESSION_BADGE_COLORS[code] || 'var(--amber)';
+    return { label: code, color };
 }
+
+// 1.0.8: 交易盤段徽章配色 (對齊 getSessionCodeFromDate 的 5 個代碼)
+const SESSION_BADGE_COLORS = {
+    ASIA: 'var(--amber)',
+    EURO: 'var(--cyan)',
+    PRE:  '#c491ff',
+    RTH:  'var(--green)',
+    AH:   'var(--text3)',
+};
 
 function updateLiveTopBar() {
     const session = getMarketSession();

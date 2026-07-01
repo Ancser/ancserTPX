@@ -1340,6 +1340,8 @@ _bt_progress_state = {
     "status": "idle", "stage": "", "current": 0, "total": 0,
     "detail": "", "updated_at": 0.0,
 }
+# 1.0.8: 還原 progress 檔案讀取快取（B 批次清理時誤刪其定義，導致 /backtest/progress NameError）
+_bt_progress_file_cache = {"data": None, "read_at": 0.0}
 
 
 def _update_bt_progress(stage: str, current: int = 0, total: int = 0,
@@ -3649,6 +3651,10 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
     for name, params in list(presets.items()):
         if not isinstance(params, dict):
             continue
+        if str(name).startswith("07.01 CODEX #1 RESEARCH"):
+            presets.pop(name, None)
+            changed = True
+            continue
         strategy = str(params.get("strategy") or "").lower()
         # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend
         normalized_strategy = strategy if strategy == "confluence" else "trend"
@@ -3798,6 +3804,3 @@ async def delete_preset_body(req: PresetDeleteRequest):
 async def delete_preset(name: str):
     """刪除 preset"""
     return _delete_preset_by_name(name)
-
-
-

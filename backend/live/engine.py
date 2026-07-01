@@ -1708,13 +1708,8 @@ class LiveTradingEngine:
         else:
             self.trend_follow.reset()
 
-    def _all_tf_breakout_required(self) -> bool:
-        return len(self._tf_detectors()) > 1
-
-    def _strategy_breakout_observable(self) -> bool:
-        if not self._all_tf_breakout_required():
-            return True
-        return self._tf_breakout_summary()[4]
+    # 1.0.8: 移除 _all_tf_breakout_required / _strategy_breakout_observable
+    # (all-TF 同方向突破 gate 已停用,live 對齊 backtest;per-TF 突破追蹤仍保留給 UI PHASE 顯示)
 
     def _get_confluence_phase(self) -> str:
         """ML (confluence) status line for the top-bar — every parameter in
@@ -1852,7 +1847,8 @@ class LiveTradingEngine:
             self.detector.update(c)
             self._update_tf_breakout(c)
             if can_observe_strategy:
-                if self._strategy_breakout_observable() and self._trend_session_allowed(c.timestamp):
+                # 1.0.8: 移除 all-TF breakout gate,只保留 session 過濾(對齊 backtest)
+                if self._trend_session_allowed(c.timestamp):
                     self.trend_follow.observe(
                         c,
                         self.detector.get_recent_zones(),
@@ -2405,11 +2401,10 @@ class LiveTradingEngine:
             self._reset_breakout_confirmation()
             return
 
+        # 1.0.8: 移除「所有 TF 同方向突破」gate — live 與 backtest 對齊。
+        # (回測未含此 gate;A/B 測試證實 gate 對 overlap preset #3 幾乎毀掉績效。
+        #  突破判定改由 trend_follow.evaluate 對交易 zone 判斷,live == backtest。)
         # Evaluate breakout vs the recent 10 reference zones (v1.0.6).
-        if not self._strategy_breakout_observable():
-            self._reset_breakout_confirmation()
-            return
-
         eval_zones = self.detector.get_recent_zones()
         eval_mature = self.detector.is_zone_mature
 
@@ -3491,7 +3486,8 @@ class LiveTradingEngine:
         self._append_history(candle)
         self._update_tf_breakout(candle)
         if hasattr(self.trend_follow, "observe"):
-            if self._strategy_breakout_observable() and self._trend_session_allowed(candle.timestamp):
+            # 1.0.8: 移除 all-TF breakout gate,只保留 session 過濾(對齊 backtest)
+            if self._trend_session_allowed(candle.timestamp):
                 self.trend_follow.observe(
                     candle,
                     self.detector.get_recent_zones(),
