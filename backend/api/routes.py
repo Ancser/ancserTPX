@@ -82,8 +82,16 @@ def _normalize_trade_ticks(value, default: int) -> int:
 
 
 def _normalize_value_area_pct(value=None, default: float = 0.80) -> float:
-    """v1.0.6 locks every route to 80% Value Area."""
-    return 0.80
+    """1.0.8: 開放 70%/80% 兩檔 VA(CLAUDE 系列 preset 用 70% 較窄邊界);
+    其餘任何值一律吸附到最近的允許檔,無法解析則回 default(80%)。"""
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return default
+    if pct > 1:
+        pct = pct / 100.0
+    allowed = (0.70, 0.80)
+    return min(allowed, key=lambda x: abs(x - pct))
 
 
 def _normalize_trail_trigger_pct(value) -> float:
@@ -3442,7 +3450,11 @@ _CODEX_626_PRESET_9 = "06.26 CODEX #9 RESEARCH MLC2寬Band MNQx1 LB240 B4 RANGE 
 _CODEX_630_PRESET_1 = "06.30 CODEX #1 Trend低損 MNQx1 TF5m RR1:6 C2 SL80 Trail50L10 SesON FT2"
 _CODEX_630_PRESET_3 = "06.30 CODEX #3 Trend重合5m30m小TF MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
 _CODEX_630_PRESET_4 = "06.30 CODEX #4 Trend重合30m1h小TF MNQx1 TF30m+1h Trade30m RR1:7 C4 SL80 Trail50L10 SesON FT0"
-_DEFAULT_LAST_USED_PRESET = _CODEX_630_PRESET_1
+# 1.0.8: CLAUDE 系列 = VA70/80 x RR 全掃排行榜前段(rank #2/#4/#5)。移除 CODEX #1。
+_CLAUDE_701_PRESET_1 = "07.01 CLAUDE #1 單5m VA70 MNQx1 TF5m RR1:4 C3 SL80 Trail50L10 SesON"
+_CLAUDE_701_PRESET_2 = "07.01 CLAUDE #2 重合30m1h小TF VA70 MNQx1 TF30m+1h Trade30m RR1:6 C4 SL80 Trail50L10 SesON"
+_CLAUDE_701_PRESET_3 = "07.01 CLAUDE #3 重合5m30m小TF VA80 MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
+_DEFAULT_LAST_USED_PRESET = _CLAUDE_701_PRESET_1
 _PRESET_RENAMES = {
 }
 _REMOVED_PRESET_NAMES = {
@@ -3477,6 +3489,8 @@ _REMOVED_PRESET_NAMES = {
     _CODEX_626_PRESET_7,
     _CODEX_626_PRESET_8,
     _CODEX_626_PRESET_9,
+    # 1.0.8: 依使用者要求移除 CODEX #1(改用 CLAUDE 系列)
+    _CODEX_630_PRESET_1,
 }
 
 
@@ -3525,6 +3539,7 @@ def _codex_626_trend_preset(
     tf_combo: Optional[list[str]] = None,
     overlap_trade_tf: str = "merged",
     session_limit: bool = True,
+    value_area_pct: float = 0.80,  # 1.0.8: 可調 VA(70% 較窄邊界),供 CLAUDE 系列 preset 使用
     contract_id: str = "CON.F.US.MNQ.U26",
     contract_size: int = 1,
 ) -> dict:
@@ -3543,7 +3558,7 @@ def _codex_626_trend_preset(
         "method": method,
         "tf_combo": combo,
         "tr_overlap_trade_tf": _normalize_tr_overlap_trade_tf(overlap_trade_tf),
-        "value_area_pct": 0.80,
+        "value_area_pct": float(value_area_pct),
         "rr_ratio": int(rr),
         "breakout_confirm_bars": int(confirm_bars),
         "tp_ticks": tp_ticks,
@@ -3602,10 +3617,25 @@ def _codex_626_confluence_research_preset(
 
 
 _BUILTIN_PRESETS = {
-    _CODEX_630_PRESET_1: _codex_626_trend_preset(
-        area_timeframe="5m", rr=6, confirm_bars=2, sl_ticks=80,
+    # 1.0.8: CLAUDE #1 = rank #2(單5m VA70 RR4:+7218 PF1.47 Calmar9.1 win36%)
+    _CLAUDE_701_PRESET_1: _codex_626_trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
         trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-        full_tp_lock=2,
+        value_area_pct=0.70,
+    ),
+    # 1.0.8: CLAUDE #2 = rank #4(重合30m1h小TF VA70 RR6:+6134 PF2.06 Calmar10.0)
+    _CLAUDE_701_PRESET_2: _codex_626_trend_preset(
+        area_timeframe="30m", rr=6, confirm_bars=4, sl_ticks=80,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+        full_tp_lock=0, method="overlap", tf_combo=["30m", "1h"],
+        overlap_trade_tf="smallest", session_limit=True, value_area_pct=0.70,
+    ),
+    # 1.0.8: CLAUDE #3 = rank #5(重合5m30m小TF VA80 RR6:+6087 PF1.94 Calmar10.6)
+    _CLAUDE_701_PRESET_3: _codex_626_trend_preset(
+        area_timeframe="5m", rr=6, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+        full_tp_lock=2, method="overlap", tf_combo=["5m", "30m"],
+        overlap_trade_tf="smallest", session_limit=False, value_area_pct=0.80,
     ),
     _CODEX_630_PRESET_3: _codex_626_trend_preset(
         area_timeframe="5m", rr=6, confirm_bars=3, sl_ticks=80,
@@ -3661,8 +3691,10 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         if params.get("strategy") != normalized_strategy:
             params["strategy"] = normalized_strategy
             changed = True
-        if params.get("value_area_pct") != 0.80:
-            params["value_area_pct"] = 0.80
+        # 1.0.8: 吸附到 70/80 兩檔而非硬鎖 80,保留 CLAUDE 系列的 70% 設定
+        _va = _normalize_value_area_pct(params.get("value_area_pct"))
+        if params.get("value_area_pct") != _va:
+            params["value_area_pct"] = _va
             changed = True
         if normalized_strategy == "confluence" and "conf_allowed_sessions" not in params:
             params["conf_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)

@@ -99,7 +99,11 @@ CODEX_626_PRESET_2 = "06.26 CODEX #2 Trend多單 MNQx1 TF5m RR1:4 C3 SL80 Trail5
 CODEX_630_PRESET_1 = "06.30 CODEX #1 Trend低損 MNQx1 TF5m RR1:6 C2 SL80 Trail50L10 SesON FT2"
 CODEX_630_PRESET_3 = "06.30 CODEX #3 Trend重合5m30m小TF MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
 CODEX_630_PRESET_4 = "06.30 CODEX #4 Trend重合30m1h小TF MNQx1 TF30m+1h Trade30m RR1:7 C4 SL80 Trail50L10 SesON FT0"
-DEFAULT_LAST_USED_PRESET = CODEX_630_PRESET_1
+# 1.0.8: CLAUDE 系列 = VA70/80 x RR 全掃排行榜前段(rank #2/#4/#5)。移除 CODEX #1。
+CLAUDE_701_PRESET_1 = "07.01 CLAUDE #1 單5m VA70 MNQx1 TF5m RR1:4 C3 SL80 Trail50L10 SesON"
+CLAUDE_701_PRESET_2 = "07.01 CLAUDE #2 重合30m1h小TF VA70 MNQx1 TF30m+1h Trade30m RR1:6 C4 SL80 Trail50L10 SesON"
+CLAUDE_701_PRESET_3 = "07.01 CLAUDE #3 重合5m30m小TF VA80 MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
+DEFAULT_LAST_USED_PRESET = CLAUDE_701_PRESET_1
 PRESET_RENAMES = {}
 REMOVED_PRESET_NAMES = {
     DEFAULT_PRESET_NAME,
@@ -170,6 +174,7 @@ def _trend_preset(
     tf_combo: Optional[list[str]] = None,
     overlap_trade_tf: str = "merged",
     session_limit: bool = True,
+    value_area_pct: float = 0.80,  # 1.0.8: 可調 VA(70% 較窄邊界),供 CLAUDE 系列 preset 使用
 ) -> Dict[str, Any]:
     tp_ticks = int(rr) * int(sl_ticks)
     method = "overlap" if method == "overlap" and tf_combo and len(tf_combo) >= 2 else "single"
@@ -182,7 +187,7 @@ def _trend_preset(
         "method": method,
         "tf_combo": list(tf_combo or []) if method == "overlap" else [],
         "tr_overlap_trade_tf": "smallest" if overlap_trade_tf == "smallest" else "merged",
-        "value_area_pct": 0.80,
+        "value_area_pct": float(value_area_pct),
         "rr_ratio": int(rr),
         "breakout_confirm_bars": int(confirm_bars),
         "tp_ticks": tp_ticks,
@@ -204,9 +209,24 @@ def _trend_preset(
 
 
 BUILTIN_PRESETS = {
-    CODEX_630_PRESET_1: _trend_preset(
-        area_timeframe="5m", rr=6, confirm_bars=2, sl_ticks=80,
+    # 1.0.8: CLAUDE #1 = rank #2(單5m VA70 RR4:+7218 PF1.47 Calmar9.1 win36%)
+    CLAUDE_701_PRESET_1: _trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, value_area_pct=0.70,
+    ),
+    # 1.0.8: CLAUDE #2 = rank #4(重合30m1h小TF VA70 RR6:+6134 PF2.06 Calmar10.0)
+    CLAUDE_701_PRESET_2: _trend_preset(
+        area_timeframe="30m", rr=6, confirm_bars=4, sl_ticks=80,
+        trail_enabled=True, full_tp_lock=0,
+        method="overlap", tf_combo=["30m", "1h"],
+        overlap_trade_tf="smallest", session_limit=True, value_area_pct=0.70,
+    ),
+    # 1.0.8: CLAUDE #3 = rank #5(重合5m30m小TF VA80 RR6:+6087 PF1.94 Calmar10.6)
+    CLAUDE_701_PRESET_3: _trend_preset(
+        area_timeframe="5m", rr=6, confirm_bars=3, sl_ticks=80,
         trail_enabled=True, full_tp_lock=2,
+        method="overlap", tf_combo=["5m", "30m"],
+        overlap_trade_tf="smallest", session_limit=False, value_area_pct=0.80,
     ),
     CODEX_630_PRESET_3: _trend_preset(
         area_timeframe="5m", rr=6, confirm_bars=3, sl_ticks=80,
@@ -336,7 +356,7 @@ def _load_presets_file() -> dict:
         for key in list(params.keys()):
             if key not in allowed_keys:
                 params.pop(key, None)
-        params["value_area_pct"] = 0.80
+        params["value_area_pct"] = _normalize_value_area_pct(params.get("value_area_pct"))  # 1.0.8: 保留 70/80
         if params["strategy"] == "confluence" and "conf_allowed_sessions" not in params:
             params["conf_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
         if params["strategy"] == "trend" and "tr_allowed_sessions" not in params:
@@ -392,7 +412,15 @@ def _normalize_trail_trigger_pct(value: Any) -> float:
 
 
 def _normalize_value_area_pct(value: Any) -> float:
-    return 0.80
+    # 1.0.8: 開放 70%/80% 兩檔 VA(CLAUDE 系列用 70%);其餘吸附最近檔,無法解析回 80%
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return 0.80
+    if pct > 1:
+        pct = pct / 100.0
+    allowed = (0.70, 0.80)
+    return min(allowed, key=lambda x: abs(x - pct))
 
 
 def _normalize_trail_pct(value: Any) -> Optional[float]:
