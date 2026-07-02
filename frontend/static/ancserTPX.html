@@ -120,6 +120,7 @@
                     <label>STRATEGY</label>
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
                         <option value="trend">TREND</option>
+                        <option value="fade">FADE 前日VA回歸</option><!-- 1.0.8 -->
                         <option value="confluence" selected>ML Confluence</option>
                         <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
@@ -275,6 +276,9 @@
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="30m" onchange="onTfSelectionChange('bt')"> 30m</label>
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="1h" onchange="onTfSelectionChange('bt')"> 1h</label>
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="4h" onchange="onTfSelectionChange('bt')"> 4h</label>
+                            <!-- 1.0.8: 0.15.5 式整段 session 生長區間,與其他 TF 互斥 -->
+                            <label class="tf-chk" title="整段 session 生長區間 (0.15.5) — 與其他 TF 互斥"><input type="checkbox" class="overlap-tf-chk-bt" value="session" onchange="onTfSelectionChange('bt')"> SESSION</label>
+                            <label class="tf-chk" id="tf-day-chip-bt" style="display:none;" title="FADE 前日VA回歸 — 固定使用前一整個交易日"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
                         </div>
                     </div>
                 </div>
@@ -309,6 +313,23 @@
                 <input type="hidden" id="sl-ticks-bt" value="50">
                 <span id="sl-ticks-bt-val" style="display:none">50</span>
                 <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
+                <!-- 1.0.8: EXIT MODE = RISK 第一項;日虧斷路器獨立一行 -->
+                <div class="form-group">
+                    <label>EXIT MODE</label>
+                    <select id="tr-exit-mode-bt" onchange="onExitModeChange('bt')">
+                        <option value="tp" selected>TP 固定</option>
+                        <option value="ladder">LADDER 階梯滾動</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>日虧斷路器 <span class="lbl-hint">(當日虧 N 單停新單,0=OFF)</span></label>
+                    <select id="tr-daily-stop-bt">
+                        <option value="0" selected>OFF</option>
+                        <option value="1">1</option><option value="2">2</option>
+                        <option value="3">3</option><option value="4">4</option>
+                        <option value="5">5</option><option value="6">6</option>
+                    </select>
+                </div>
                 <div class="form-group">
                     <label>RR RATIO <span id="rr-ratio-bt-val" style="color:var(--accent)">1:2</span></label>
                     <select id="rr-ratio-bt" onchange="onRrChange('bt')">
@@ -355,6 +376,7 @@
                     </div>
                 </div>
             </div>
+
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
                 <div id="backtest-progress-wrap" style="display:none;margin-top:1px;">
@@ -404,6 +426,7 @@
                         <label>STRATEGY</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
                             <option value="trend">TREND</option>
+                            <option value="fade">FADE 前日VA回歸</option><!-- 1.0.8 -->
                             <option value="confluence" selected>ML Confluence</option>
                             <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
@@ -559,6 +582,9 @@
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="30m" onchange="onTfSelectionChange('live')"> 30m</label>
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="1h" onchange="onTfSelectionChange('live')"> 1h</label>
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="4h" onchange="onTfSelectionChange('live')"> 4h</label>
+                                <!-- 1.0.8: 0.15.5 式整段 session 生長區間,與其他 TF 互斥 -->
+                                <label class="tf-chk" title="整段 session 生長區間 (0.15.5) — 與其他 TF 互斥"><input type="checkbox" class="overlap-tf-chk-live" value="session" onchange="onTfSelectionChange('live')"> SESSION</label>
+                            <label class="tf-chk" id="tf-day-chip-live" style="display:none;" title="FADE 前日VA回歸 — 固定使用前一整個交易日"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
                             </div>
                     </div>
                 </div>
@@ -593,6 +619,23 @@
                     <input type="hidden" id="sl-ticks-live" value="50">
                     <span id="sl-ticks-live-val" style="display:none">50</span>
                     <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
+                <!-- 1.0.8: EXIT MODE = RISK 第一項;日虧斷路器獨立一行 -->
+                <div class="form-group">
+                    <label>EXIT MODE</label>
+                    <select id="tr-exit-mode-live" onchange="onExitModeChange('live')">
+                        <option value="tp" selected>TP 固定</option>
+                        <option value="ladder">LADDER 階梯滾動</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>日虧斷路器 <span class="lbl-hint">(當日虧 N 單停新單,0=OFF)</span></label>
+                    <select id="tr-daily-stop-live">
+                        <option value="0" selected>OFF</option>
+                        <option value="1">1</option><option value="2">2</option>
+                        <option value="3">3</option><option value="4">4</option>
+                        <option value="5">5</option><option value="6">6</option>
+                    </select>
+                </div>
                     <div class="form-group">
                         <label>RR RATIO <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
                         <select id="rr-ratio-live" onchange="onRrChange('live')">
@@ -639,6 +682,7 @@
                         </div>
                     </div>
                 </div>
+
             </div>
             <div class="panel">
                 <div class="panel-title">ACCOUNT</div>
@@ -722,6 +766,7 @@
         <div class="bottom-panel" id="bottom-panel">
             <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
             <div class="bottom-tabs">
+                <div class="bottom-tab" data-btab="sweep">SWEEP</div><!-- 1.0.8 -->
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
                 <!-- 1.0.8: 移除 LEARN RESULT 分頁(ML sweep 結果板塊已刪除) -->
@@ -729,6 +774,10 @@
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
+                <div id="btab-sweep" class="hidden"><!-- 1.0.8: 高效參數掃描結果(啟動自動載入上次) -->
+                    <div id="sweep-meta" style="padding:6px 10px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text3);">尚無 sweep 結果</div>
+                    <div class="trade-table-wrap" id="sweep-results-wrap"></div>
+                </div>
                 <div id="btab-trades">
                     <div class="trade-table-wrap">
                         <table>
@@ -823,9 +872,8 @@
     <div id="cal-grid" class="cal-grid"></div>
 </div>
 
-    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=7&tradezone=1&topstepday=1&netpnl=2&mktsess=1&trendclean=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=7&tradezone=1&topstepday=1&netpnl=2&mktsess=1&trendclean=1&sesstf=1&fable=1&chartfix=1&uifix=2&sweep=3"></script>
 </body>
 </html>
-
 
 

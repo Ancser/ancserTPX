@@ -26,6 +26,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.db.models import (
+    current_quarterly_contract_id, normalize_contract_id_to_front,  # 1.0.8: 自動換月
     BacktestConfig, BarUnit, Candle, Direction, StrategyParams,
     get_point_value, get_contract_label, get_tick_size,
     get_commission_rt, get_fees_rt, _extract_symbol,
@@ -54,7 +55,7 @@ def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default)
 
 
-MNQ_SIZE_CHOICES = (1, 3, 5, 10)
+MNQ_SIZE_CHOICES = (1, 2, 3, 5, 10)  # 1.0.8: +2 (FABLE Fade x2)
 TRAIL_TICK_STEP = 5
 ML_TRAIL_PCT_CHOICES = (
     0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
@@ -196,11 +197,12 @@ def _trail_grid_for(sl_ticks: int, tp_ticks: int, trigger_pct: float) -> List[Tu
 
 
 def _normalize_strategy_name(value: str) -> str:
-    return "trend"
+    # 1.0.8: +fade(前日 VA 回歸);confluence 由呼叫端先行判斷
+    return "fade" if str(value or "").strip().lower() == "fade" else "trend"
 
 
 
-AREA_TIMEFRAME_CHOICES = ("5m", "15m", "30m", "1h", "4h")
+AREA_TIMEFRAME_CHOICES = ("5m", "15m", "30m", "1h", "4h", "session")  # 1.0.8: +session 生長區間
 
 
 def _normalize_area_timeframe(value) -> str:
@@ -354,13 +356,20 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             getattr(req, "tr_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
         ),
         candle_seconds=60,
-        contract_id=getattr(req, "contract_id", "CON.F.US.MNQ.M26"),
+        contract_id=normalize_contract_id_to_front(getattr(req, "contract_id", "") or current_quarterly_contract_id("MNQ")),  # 1.0.8: 自動換月
         contract_size=contract_size,
         full_tp_lock=tr["full_tp_lock"],
         one_trade_per_session_direction=bool(getattr(req, "one_trade_per_session_direction", True)),
         tr_one_trade_per_session=bool(getattr(req, "tr_one_trade_per_session", True)),
         skip_zone_stability=False,
         breakout_confirm_bars=max(1, int(getattr(req, "breakout_confirm_bars", 7) or 7)),
+        # 1.0.8: ladder 出場 + 日虧斷路器
+        tr_exit_mode=(
+            "ladder"
+            if str(getattr(req, "tr_exit_mode", "tp") or "tp").lower() == "ladder"
+            else "tp"
+        ),
+        tr_daily_loss_stop=max(0, min(9, int(getattr(req, "tr_daily_loss_stop", 0) or 0))),
         area_timeframe=_normalize_area_timeframe(getattr(req, "area_timeframe", "5m")),
         value_area_pct=_normalize_value_area_pct(getattr(req, "value_area_pct", 0.80)),
         rr_ratio=_normalize_rr_ratio(getattr(req, "rr_ratio", 2)),
@@ -531,6 +540,8 @@ class BacktestRequest(BaseModel):
     value_area_pct: float = 0.80
     area_timeframe: str = "5m"
     rr_ratio: int = 2                     # reward:risk multiple (1..6)
+    tr_exit_mode: str = "tp"              # 1.0.8: "tp" 固定 TP | "ladder" 階梯滾動
+    tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF)
     # Contract & sizing (defaults to 3× Micro NQ)
     contract_id: str = "CON.F.US.MNQ.M26"
     contract_size: int = 3
@@ -1006,17 +1017,19 @@ async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
     sorted_candles = sorted(base_candles, key=lambda c: c.timestamp)
 
     if getattr(req, "all_timeframes", False):
+        # 1.0.8: +session 生長區間,圖表 TF filter 勾 SESSION 時才有 zone 可畫
+        _all_tfs = ML_TIMEFRAMES + ("session",)
         zone_list = await asyncio.to_thread(
             _detect_zones_sync,
             sorted_candles,
-            ML_TIMEFRAMES,
+            _all_tfs,
             value_area_pct,
         )
         return {
             "zones": zone_list,
             "count": len(zone_list),
             "area_timeframe": "all",
-            "timeframes": list(ML_TIMEFRAMES),
+            "timeframes": list(_all_tfs),
         }
 
     area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "5m"))
@@ -1992,6 +2005,306 @@ async def run_backtest(req: BacktestRequest):
         # stay responsive while it computes (falls back to in-thread on failure).
         return await _run_confluence_backtest_proc(req)
 
+    return await _run_trend_backtest(req)
+
+
+async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
+    """Run the trend backtest path and always return BacktestResponse."""
+    global _historical_candles, _backtest_results
+
+    await _refresh_recent_historical_candles(req.contract_id)
+
+    # v1.0.6: derive symbol + per-contract fees from the chosen contract_id so
+    # the trade journal shows /MNQ when MNQ is selected and 10xMNQ doesn't get
+    # stuck paying 10x the NQ Mini fee schedule.
+    contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
+    value_area_pct = _normalize_value_area_pct(req.value_area_pct)
+    strategy_name = _normalize_strategy_name(req.strategy)
+
+    bt_symbol = _extract_symbol(req.contract_id)
+    config = BacktestConfig(
+        strategies=[strategy_name],
+        initial_capital=req.initial_capital,
+        symbol=bt_symbol,
+        commission_rt=get_commission_rt(req.contract_id),
+        fees_rt=get_fees_rt(req.contract_id),
+        value_area_pct=value_area_pct,
+    )
+
+    strategy_params = _build_strategy_params_from_request(req, contract_size)
+
+    method = str(getattr(req, "method", "single") or "single").lower()
+    tf_combo = tuple(t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES)
+    overlap_mode = method == "overlap" and len(tf_combo) >= 2
+    overlap_trade_tf = _normalize_tr_overlap_trade_tf(
+        getattr(strategy_params, "tr_overlap_trade_tf", "merged")
+    )
+
+    zone_timeline = None
+    if overlap_mode:
+        ordered = [tf for tf in ML_TIMEFRAMES if tf in tf_combo]
+        ov_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+        _update_bt_progress(
+            "building zone timeline", 0, len(ov_candles),
+            f"{len(ordered)} timeframe(s) over {len(ov_candles)} candles",
+        )
+
+        def _build_overlap_timeline():
+            return _get_merged_zone_timeline(
+                ov_candles, value_area_pct, False, tuple(ordered), overlap_trade_tf,
+            )
+
+        zone_timeline = await asyncio.to_thread(_build_overlap_timeline)
+    elif str(getattr(strategy_params, "area_timeframe", "5m") or "5m").lower() != "session":
+        sg_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+        _update_bt_progress(
+            "building zone timeline", 0, len(sg_candles),
+            f"single {strategy_params.area_timeframe} over {len(sg_candles)} candles",
+        )
+        zone_timeline = await asyncio.to_thread(
+            _get_precomputed_zone_timeline,
+            sg_candles, value_area_pct, False, strategy_params.area_timeframe,
+        )
+
+    engine = BacktestEngine(
+        config,
+        strategy_params=strategy_params,
+        zone_timeline=zone_timeline,
+    )
+
+    candles = (
+        sorted(_historical_candles, key=lambda c: c.timestamp)
+        if zone_timeline is not None
+        else list(_historical_candles)
+    )
+
+    _update_bt_progress("running", 0, len(candles), "回測中...")
+
+    def _trend_progress(current, total, detail):
+        _update_bt_progress("running", current, total, detail)
+
+    result = await asyncio.to_thread(engine.run, candles, _trend_progress)
+    _update_bt_progress("done", len(candles), len(candles), "完成", status="done")
+    _backtest_results.append(result)
+
+    trades_resp = []
+    symbol_label = "/" + config.symbol
+    for t in result.trades:
+        meta = getattr(t, "meta", None) or {}
+        trades_resp.append(TradeResponse(
+            trade_id=t.trade_id,
+            strategy=t.strategy.value,
+            symbol=symbol_label,
+            size=t.contracts,
+            direction=t.direction.value,
+            entry_price=t.entry_price,
+            entry_time=t.entry_time.isoformat(),
+            exit_price=t.exit_price,
+            exit_time=t.exit_time.isoformat() if t.exit_time else None,
+            sl_price=t.sl_price,
+            tp_price=t.tp_price,
+            original_sl_price=getattr(t, "original_sl_price", None) or t.sl_price,
+            original_tp_price=getattr(t, "original_tp_price", None) or t.tp_price,
+            pnl=t.pnl,
+            commission=t.commission,
+            fees=t.fees,
+            exit_reason=t.exit_reason.value if t.exit_reason else None,
+            zone_id=t.zone_id,
+            zone_source=getattr(t, "zone_source", None),
+            mode=meta.get("mode"),
+            side=meta.get("side"),
+            largest_tf=meta.get("largest_tf"),
+            risk_tf=meta.get("risk_tf"),
+            decision_tfs=meta.get("decision_tfs") or [],
+            overlap_tfs=meta.get("overlap_tfs") or [],
+            trade_tf=meta.get("trade_tf"),
+            wall_id=meta.get("wall_id"),
+            labels=meta.get("labels") or [],
+            primary_zone=meta.get("primary_zone"),
+            vol_ratio=t.vol_ratio,
+            is_big_trend=t.is_big_trend,
+        ))
+
+    if overlap_mode and zone_timeline:
+        seen_ids = set()
+        merged_zones = []
+        for entry in zone_timeline:
+            mz = entry.get("active")
+            if mz is not None and mz.zone_id not in seen_ids:
+                seen_ids.add(mz.zone_id)
+                merged_zones.append(mz)
+        result_zones = merged_zones
+    else:
+        result_zones = result.zones
+
+    zones_resp = []
+    vp_calc = VolumeProfileCalculator(tick_size=0.25, value_area_pct=value_area_pct)
+    for z in result_zones:
+        profile_data = None
+        if z.candles:
+            try:
+                vp = vp_calc.calculate(z.candles)
+                max_vol = (max(vp.profile.values()) if vp.profile else 0) or 1
+                profile_data = [
+                    {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
+                    for p, v in sorted(vp.profile.items())
+                ]
+            except Exception:
+                profile_data = []
+        elif getattr(z, "profile", None):
+            try:
+                prof = z.profile or {}
+                max_vol = (max(prof.values()) if prof else 0) or 1
+                profile_data = [
+                    {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
+                    for p, v in sorted(prof.items())
+                ]
+            except Exception:
+                profile_data = []
+
+        zones_resp.append(ZoneResponse(
+            zone_id=z.zone_id,
+            formed_at=z.formed_at.isoformat(),
+            left_at=z.left_at.isoformat() if z.left_at else None,
+            poc=z.poc,
+            vah_80=z.vah_80,
+            val_80=z.val_80,
+            high_100=z.high_100,
+            low_100=z.low_100,
+            total_volume=z.total_volume,
+            duration_minutes=z.duration_minutes,
+            num_candles=z.num_candles,
+            status=z.status.value,
+            exit_direction=z.exit_direction,
+            profile=profile_data,
+            timeframe=getattr(z, "timeframe", "1m"),
+            parent_zone_id=getattr(z, "parent_zone_id", None),
+            mature=getattr(z, "mature", False),
+            va_curve=getattr(z, "va_curve", None) or None,
+        ))
+
+    m = result.metrics
+
+    def _sub_resp(sm):
+        if not sm:
+            return None
+        return SubMetricsResponse(
+            total_trades=sm.total_trades, wins=sm.wins, losses=sm.losses,
+            win_rate=sm.win_rate, avg_win=sm.avg_win, avg_loss=sm.avg_loss,
+            avg_rr_ratio=sm.avg_rr_ratio, total_pnl=sm.total_pnl,
+            profit_factor=sm.profit_factor,
+        )
+
+    metrics_resp = MetricsResponse(
+        total_trades=m.total_trades,
+        wins=m.wins,
+        losses=m.losses,
+        win_rate=m.win_rate,
+        avg_win=m.avg_win,
+        avg_loss=m.avg_loss,
+        avg_rr_ratio=m.avg_rr_ratio,
+        expectancy=m.expectancy,
+        max_drawdown=m.max_drawdown,
+        max_drawdown_pct=m.max_drawdown_pct,
+        calmar_ratio=m.calmar_ratio,
+        profit_factor=m.profit_factor,
+        max_consecutive_losses=m.max_consecutive_losses,
+        total_pnl=m.total_pnl,
+        total_gain=getattr(m, "total_gain", 0.0),
+        total_loss=getattr(m, "total_loss", 0.0),
+        daily_pnl=m.daily_pnl or {},
+        post_breakout_sample_size=getattr(m, "post_breakout_sample_size", 0),
+        post_breakout_avg_max_fav_ticks=getattr(m, "post_breakout_avg_max_fav_ticks", 0.0),
+        post_breakout_avg_max_adv_ticks=getattr(m, "post_breakout_avg_max_adv_ticks", 0.0),
+        post_breakout_tp_clean=getattr(m, "post_breakout_tp_clean", 0),
+        post_breakout_tp_after_trail=getattr(m, "post_breakout_tp_after_trail", 0),
+        post_breakout_tp_after_sl=getattr(m, "post_breakout_tp_after_sl", 0),
+        current_zone_trades=getattr(m, "current_zone_trades", 0),
+        current_zone_wins=getattr(m, "current_zone_wins", 0),
+        current_zone_win_rate=getattr(m, "current_zone_win_rate", 0.0),
+        current_zone_avg_pnl=getattr(m, "current_zone_avg_pnl", 0.0),
+        current_zone_total_pnl=getattr(m, "current_zone_total_pnl", 0.0),
+        weekly_stats=_weekly_stats(m.daily_pnl or {}),
+        trend_follow=_sub_resp(m.trend_follow_metrics),
+    )
+
+    equity = [
+        [ts.timestamp() * 1000, val]
+        for ts, val in result.equity_curve
+    ]
+
+    try:
+        _write_backtest_csv(req, config, strategy_params, method, tf_combo,
+                            trades_resp, metrics_resp)
+    except Exception as exc:
+        logger.warning("Backtest CSV export failed: %s", exc)
+
+    return BacktestResponse(
+        metrics=metrics_resp,
+        trades=trades_resp,
+        zones=zones_resp,
+        equity_curve=equity,
+    )
+
+
+# ── 1.0.8: 高效參數掃描(0.15.0 sweep 回歸版,timeline 快路徑)────────
+_SWEEP_RESULTS_FILE = Path("data") / "sweep_results.json"
+_sweep_running = False
+
+
+@router.post("/backtest/sweep")
+async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
+    """跑完整 5m trend 參數掃描(144 變體,~7 分鐘),結果持久化供 SWEEP 分頁。"""
+    global _sweep_running
+    if _sweep_running:
+        raise HTTPException(400, "Sweep 已在執行中")
+    if not _historical_candles:
+        raise HTTPException(400, "無歷史資料 — 請先 CONNECT / 載入資料")
+
+    from backend.backtest.sweep import run_trend_sweep
+
+    _sweep_running = True
+    try:
+        await _refresh_recent_historical_candles(req.contract_id)
+        contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
+        base = _build_strategy_params_from_request(req, contract_size)
+        candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+        _update_bt_progress("sweeping", 0, 1, "preparing")
+
+        def _progress(cur, total, detail):
+            _update_bt_progress("sweeping", cur, total, detail)
+
+        results = await asyncio.to_thread(run_trend_sweep, candles, base, _progress)
+        results.sort(key=lambda r: -r.get("score", 0.0))
+        payload = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "candles": len(candles),
+            "range": [
+                candles[0].timestamp.isoformat(),
+                candles[-1].timestamp.isoformat(),
+            ],
+            "results": results,
+        }
+        _SWEEP_RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _SWEEP_RESULTS_FILE.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        _update_bt_progress("done", 1, 1, "sweep 完成", status="done")
+        return payload
+    finally:
+        _sweep_running = False
+
+
+@router.get("/backtest/sweep/results")
+async def get_backtest_sweep_results():
+    """回傳最近一次 sweep 結果(啟動時 SWEEP 分頁自動載入)。"""
+    try:
+        if _SWEEP_RESULTS_FILE.exists():
+            return json.loads(_SWEEP_RESULTS_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"read sweep results failed: {e}")
+    return {"results": [], "created_at": None}
+
     # 1.0.8: 移除 mlc2 (ml_consolidation_v2) 回測分派
 
     await _refresh_recent_historical_candles(req.contract_id)
@@ -2043,6 +2356,19 @@ async def run_backtest(req: BacktestRequest):
         # Off-load to a worker thread so the event loop (and the progress poll)
         # stays responsive while the detector pass churns over full history.
         _overlap_zone_timeline = await asyncio.to_thread(_build_overlap_timeline)
+    elif str(getattr(strategy_params, "area_timeframe", "5m") or "5m").lower() != "session":
+        # 1.0.8: 單 TF 也走快取 zone timeline(detector 只跑一次,之後同 TF+VA
+        # 的回測秒回;實測引擎迴圈 ~2s vs 全程 ~150s)。session 生長 zone 會
+        # 持續變異,不適用快照 → 維持引擎內建 detector 路徑。
+        _sg_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+        _update_bt_progress(
+            "building zone timeline", 0, len(_sg_candles),
+            f"single {strategy_params.area_timeframe} over {len(_sg_candles)} candles",
+        )
+        _overlap_zone_timeline = await asyncio.to_thread(
+            _get_precomputed_zone_timeline,
+            _sg_candles, value_area_pct, False, strategy_params.area_timeframe,
+        )
 
     engine = BacktestEngine(
         config,
@@ -2051,7 +2377,12 @@ async def run_backtest(req: BacktestRequest):
     )
 
     # Use 1m candles directly (SessionTrendFollow works on 1m)
-    candles = sorted(_historical_candles, key=lambda c: c.timestamp) if overlap_mode else list(_historical_candles)
+    # 1.0.8: timeline 模式引擎跳過內部排序 → 供給已排序列表(索引對齊)
+    candles = (
+        sorted(_historical_candles, key=lambda c: c.timestamp)
+        if _overlap_zone_timeline is not None
+        else list(_historical_candles)
+    )
 
     # Off-load the CPU-bound candle loop to a worker thread so the event loop
     # stays responsive — chart, data-fetch, live updates and the progress poll
@@ -2680,6 +3011,8 @@ class LiveStartRequest(BaseModel):
     value_area_pct: float = 0.80
     area_timeframe: str = "5m"
     rr_ratio: int = 2                     # reward:risk multiple (1..6)
+    tr_exit_mode: str = "tp"              # 1.0.8: "tp" 固定 TP | "ladder" 階梯滾動
+    tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF)
     # v1.0.6: "single" = one area timeframe; "overlap" = enter at the AVERAGE
     # overlapping VAH/VAL of the timeframes in tf_combo (mirrors backtest/ML).
     method: str = "single"
@@ -3395,7 +3728,7 @@ _DEFAULT_PRESET_PARAMS = {
     "tr_full_tp_lock": 0,
     "tr_allowed_sessions": ["ASIA"],
     "candle_seconds": 60,
-    "contract_id": "CON.F.US.MNQ.U26",
+    "contract_id": current_quarterly_contract_id("MNQ"),  # 1.0.8: 自動換月
     "contract_size": 1,
     "full_tp_lock": 0,
     "one_trade_per_session_direction": True,
@@ -3454,8 +3787,26 @@ _CODEX_630_PRESET_4 = "06.30 CODEX #4 Trend重合30m1h小TF MNQx1 TF30m+1h Trade
 _CLAUDE_701_PRESET_1 = "07.01 CLAUDE #1 單5m VA70 MNQx1 TF5m RR1:4 C3 SL80 Trail50L10 SesON"
 _CLAUDE_701_PRESET_2 = "07.01 CLAUDE #2 重合30m1h小TF VA70 MNQx1 TF30m+1h Trade30m RR1:6 C4 SL80 Trail50L10 SesON"
 _CLAUDE_701_PRESET_3 = "07.01 CLAUDE #3 重合5m30m小TF VA80 MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
-_DEFAULT_LAST_USED_PRESET = _CLAUDE_701_PRESET_1
+# 1.0.8: FABLE 系列 = 雙引擎組合(ladder 出場 + 日虧斷路器 + FADE 前日VA回歸)。
+# 回測 2.5 月:#1組合 +7549/DD489;#2組合 +10773/DD998;#3組合 +5525/DD498(最差日 -165)。
+_FABLE_702_PRESET_1 = "07.02 FABLE #1 Trend 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON"
+_FABLE_702_PRESET_2 = "07.02 FABLE #2 Trend 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON"
+_FABLE_702_PRESET_3 = "07.02 FABLE #3 Trend 低回撤 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON"
+_FABLE_702_FADE_X2 = "07.02 FABLE #4 Fade MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)"
+_FABLE_702_FADE_X1 = "07.02 FABLE #5 Fade MNQx1 SL80 TP=POC Trail50 全時段 (配#3)"
+_DEFAULT_LAST_USED_PRESET = _FABLE_702_PRESET_1
 _PRESET_RENAMES = {
+    # 1.0.8: FABLE 改名(動量書→Trend、Fade 編號 #4/#5)
+    "07.02 FABLE #1 動量書 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON":
+        "07.02 FABLE #1 Trend 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON",
+    "07.02 FABLE #2 動量書 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON":
+        "07.02 FABLE #2 Trend 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON",
+    "07.02 FABLE #3 動量書 最小最差日 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON":
+        "07.02 FABLE #3 Trend 低回撤 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON",
+    "07.02 FABLE Fade前日VAL接多 MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)":
+        "07.02 FABLE #4 Fade MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)",
+    "07.02 FABLE Fade前日VAL接多 MNQx1 SL80 TP=POC Trail50 全時段 (配#3)":
+        "07.02 FABLE #5 Fade MNQx1 SL80 TP=POC Trail50 全時段 (配#3)",
 }
 _REMOVED_PRESET_NAMES = {
     _DEFAULT_PRESET_NAME,
@@ -3500,7 +3851,7 @@ def _codex_624_preset(
     max_risk_ticks: int,
     min_prob: float = 0.0,
     trail_trigger: float = 0.50,
-    contract_id: str = "CON.F.US.MNQ.U26",
+    contract_id: str = "",  # 1.0.8: 空 = 開機時取前月季約
     contract_size: int = 1,
 ) -> dict:
     params = dict(_DEFAULT_PRESET_PARAMS)
@@ -3540,7 +3891,9 @@ def _codex_626_trend_preset(
     overlap_trade_tf: str = "merged",
     session_limit: bool = True,
     value_area_pct: float = 0.80,  # 1.0.8: 可調 VA(70% 較窄邊界),供 CLAUDE 系列 preset 使用
-    contract_id: str = "CON.F.US.MNQ.U26",
+    exit_mode: str = "tp",         # 1.0.8: "tp" 固定 TP | "ladder" 無 TP 階梯滾動
+    daily_loss_stop: int = 0,      # 1.0.8: 日虧 N 單斷路器(0=OFF)
+    contract_id: str = "",  # 1.0.8: 空 = 開機時取前月季約
     contract_size: int = 1,
 ) -> dict:
     params = dict(_DEFAULT_PRESET_PARAMS)
@@ -3550,8 +3903,11 @@ def _codex_626_trend_preset(
     if method != "overlap" or len(combo) < 2:
         combo = []
         method = "single"
+    contract_id = contract_id or current_quarterly_contract_id("MNQ")  # 1.0.8
     params.update({
         "strategy": "trend",
+        "tr_exit_mode": "ladder" if exit_mode == "ladder" else "tp",
+        "tr_daily_loss_stop": int(daily_loss_stop),
         "contract_id": contract_id,
         "contract_size": contract_size,
         "area_timeframe": area_timeframe,
@@ -3587,7 +3943,7 @@ def _codex_626_confluence_research_preset(
     min_prob: float,
     band: float,
     min_tf: int,
-    contract_id: str = "CON.F.US.MNQ.U26",
+    contract_id: str = "",  # 1.0.8: 空 = 開機時取前月季約
     contract_size: int = 1,
 ) -> dict:
     params = _codex_624_preset(
@@ -3616,7 +3972,56 @@ def _codex_626_confluence_research_preset(
 # 1.0.8: 移除 _codex_626_mlc2_research_preset(零呼叫者;mlc2 策略已刪除)
 
 
+# 1.0.8: FADE 前日 VA 回歸 preset(策略 = fade,買前日 VAL → TP 前日 POC)
+def _fable_fade_preset(*, contract_size: int = 1) -> dict:
+    params = dict(_DEFAULT_PRESET_PARAMS)
+    params.update({
+        "strategy": "fade",
+        "contract_id": current_quarterly_contract_id("MNQ"),  # 1.0.8: 自動換月
+        "contract_size": int(contract_size),
+        "value_area_pct": 0.80,
+        "sl_ticks": 80,
+        "tr_sl_ticks": 80,          # 回測證實 fade 的 SL 不可收窄
+        "tp_ticks": 160,            # 名義值;實際 TP = 前日 POC(策略內定)
+        "tr_tp_ticks": 160,
+        "trail_enabled": True,
+        "tr_trail_enabled": True,
+        "trail_trigger_pct": 0.50,
+        "tr_trail_trigger_pct": 0.50,
+        "trail_sl_ticks": 10,
+        "tr_trail_sl_ticks": 10,
+        "full_tp_lock": 0,
+        "tr_full_tp_lock": 0,
+        "one_trade_per_session_direction": False,   # 每日一次由策略自管
+        "tr_one_trade_per_session": False,
+        "tr_allowed_sessions": ["ASIA", "EURO", "PRE", "RTH", "AH"],  # 全時段
+        "area_timeframe": "5m",     # detector 照跑(僅供圖表),策略不用 zone
+        "method": "single",
+        "tf_combo": [],
+    })
+    return params
+
+
 _BUILTIN_PRESETS = {
+    # 1.0.8: FABLE 動量書(CLAUDE #1 進場 + ladder 出場 + 日虧斷路器)
+    _FABLE_702_PRESET_1: _codex_626_trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+        value_area_pct=0.70, exit_mode="ladder", daily_loss_stop=4,
+    ),
+    _FABLE_702_PRESET_2: _codex_626_trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+        value_area_pct=0.70, exit_mode="ladder", daily_loss_stop=0,
+    ),
+    _FABLE_702_PRESET_3: _codex_626_trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
+        value_area_pct=0.70, exit_mode="ladder", daily_loss_stop=3,
+    ),
+    # 1.0.8: FABLE Fade 書(前日 VAL 接多 → 前日 POC;x2 配 #1/#2,x1 配 #3)
+    _FABLE_702_FADE_X2: _fable_fade_preset(contract_size=2),
+    _FABLE_702_FADE_X1: _fable_fade_preset(contract_size=1),
     # 1.0.8: CLAUDE #1 = rank #2(單5m VA70 RR4:+7218 PF1.47 Calmar9.1 win36%)
     _CLAUDE_701_PRESET_1: _codex_626_trend_preset(
         area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
@@ -3686,8 +4091,13 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             changed = True
             continue
         strategy = str(params.get("strategy") or "").lower()
-        # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend
-        normalized_strategy = strategy if strategy == "confluence" else "trend"
+        # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend;+fade 放行
+        normalized_strategy = strategy if strategy in ("confluence", "fade") else "trend"
+        # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
+        _cid_new = normalize_contract_id_to_front(params.get("contract_id") or "")
+        if _cid_new != params.get("contract_id"):
+            params["contract_id"] = _cid_new
+            changed = True
         if params.get("strategy") != normalized_strategy:
             params["strategy"] = normalized_strategy
             changed = True

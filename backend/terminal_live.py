@@ -22,7 +22,10 @@ from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 
 from backend.broker.topstepx import TopstepXClient
-from backend.db.models import BarUnit, StrategyParams, _extract_symbol
+from backend.db.models import (
+    BarUnit, StrategyParams, _extract_symbol,
+    current_quarterly_contract_id, normalize_contract_id_to_front,  # 1.0.8: 自動換月
+)
 from backend.live.engine import LiveTradingEngine
 from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, normalize_allowed_sessions
 
@@ -30,7 +33,7 @@ from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, normalize_
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 PRESETS_FILE = ROOT / "data" / "presets.json"
-MNQ_SIZE_CHOICES = (1, 3, 5, 10)
+MNQ_SIZE_CHOICES = (1, 2, 3, 5, 10)  # 1.0.8: +2 (FABLE Fade x2)
 TRAIL_TICK_STEP = 5
 # Keep in sync with backend.api.routes.ML_TIMEFRAMES so terminal honours the
 # same area-timeframe / overlap selections the web UI saves into presets.
@@ -54,7 +57,7 @@ DEFAULT_PRESET_PARAMS = {
     "tr_full_tp_lock": 0,
     "tr_allowed_sessions": ["ASIA"],
     "candle_seconds": 60,
-    "contract_id": "CON.F.US.MNQ.U26",
+    "contract_id": current_quarterly_contract_id("MNQ"),  # 1.0.8: 自動換月
     "contract_size": 1,
     "full_tp_lock": 0,
     "one_trade_per_session_direction": True,
@@ -103,8 +106,28 @@ CODEX_630_PRESET_4 = "06.30 CODEX #4 Trend重合30m1h小TF MNQx1 TF30m+1h Trade3
 CLAUDE_701_PRESET_1 = "07.01 CLAUDE #1 單5m VA70 MNQx1 TF5m RR1:4 C3 SL80 Trail50L10 SesON"
 CLAUDE_701_PRESET_2 = "07.01 CLAUDE #2 重合30m1h小TF VA70 MNQx1 TF30m+1h Trade30m RR1:6 C4 SL80 Trail50L10 SesON"
 CLAUDE_701_PRESET_3 = "07.01 CLAUDE #3 重合5m30m小TF VA80 MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
-DEFAULT_LAST_USED_PRESET = CLAUDE_701_PRESET_1
-PRESET_RENAMES = {}
+# 1.0.8: FABLE 系列 = 雙引擎組合(ladder 出場 + 日虧斷路器 + FADE 前日VA回歸)。
+# 回測 2.5 月:#1組合 +7549/DD489;#2組合 +10773/DD998;#3組合 +5525/DD498(最差日 -165)。
+# 動量書與 Fade 書分屬兩個帳號並行(engine 一次一倉)。
+FABLE_702_PRESET_1 = "07.02 FABLE #1 Trend 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON"
+FABLE_702_PRESET_2 = "07.02 FABLE #2 Trend 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON"
+FABLE_702_PRESET_3 = "07.02 FABLE #3 Trend 低回撤 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON"
+FABLE_702_FADE_X2 = "07.02 FABLE #4 Fade MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)"
+FABLE_702_FADE_X1 = "07.02 FABLE #5 Fade MNQx1 SL80 TP=POC Trail50 全時段 (配#3)"
+DEFAULT_LAST_USED_PRESET = FABLE_702_PRESET_1
+PRESET_RENAMES = {
+    # 1.0.8: FABLE 改名(動量書→Trend、Fade 編號 #4/#5)
+    "07.02 FABLE #1 動量書 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON":
+        "07.02 FABLE #1 Trend 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON",
+    "07.02 FABLE #2 動量書 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON":
+        "07.02 FABLE #2 Trend 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON",
+    "07.02 FABLE #3 動量書 最小最差日 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON":
+        "07.02 FABLE #3 Trend 低回撤 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON",
+    "07.02 FABLE Fade前日VAL接多 MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)":
+        "07.02 FABLE #4 Fade MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)",
+    "07.02 FABLE Fade前日VAL接多 MNQx1 SL80 TP=POC Trail50 全時段 (配#3)":
+        "07.02 FABLE #5 Fade MNQx1 SL80 TP=POC Trail50 全時段 (配#3)",
+}
 REMOVED_PRESET_NAMES = {
     DEFAULT_PRESET_NAME,
     "ML CONFLUENCE MNQx3 DEFAULT",
@@ -175,13 +198,17 @@ def _trend_preset(
     overlap_trade_tf: str = "merged",
     session_limit: bool = True,
     value_area_pct: float = 0.80,  # 1.0.8: 可調 VA(70% 較窄邊界),供 CLAUDE 系列 preset 使用
+    exit_mode: str = "tp",         # 1.0.8: "tp" 固定 TP | "ladder" 無 TP 階梯滾動
+    daily_loss_stop: int = 0,      # 1.0.8: 日虧 N 單斷路器(0=OFF)
 ) -> Dict[str, Any]:
     tp_ticks = int(rr) * int(sl_ticks)
     method = "overlap" if method == "overlap" and tf_combo and len(tf_combo) >= 2 else "single"
     return {
         **dict(DEFAULT_PRESET_PARAMS),
         "strategy": "trend",
-        "contract_id": "CON.F.US.MNQ.U26",
+        "tr_exit_mode": "ladder" if exit_mode == "ladder" else "tp",
+        "tr_daily_loss_stop": int(daily_loss_stop),
+        "contract_id": current_quarterly_contract_id("MNQ"),  # 1.0.8: 自動換月
         "contract_size": 1,
         "area_timeframe": area_timeframe,
         "method": method,
@@ -208,7 +235,55 @@ def _trend_preset(
     }
 
 
+# 1.0.8: FADE 前日 VA 回歸 preset(策略 = fade,買前日 VAL → TP 前日 POC)
+def _fade_preset(*, contract_size: int = 1) -> Dict[str, Any]:
+    return {
+        **dict(DEFAULT_PRESET_PARAMS),
+        "strategy": "fade",
+        "contract_id": current_quarterly_contract_id("MNQ"),  # 1.0.8: 自動換月
+        "contract_size": int(contract_size),
+        "value_area_pct": 0.80,
+        "sl_ticks": 80,
+        "tr_sl_ticks": 80,          # 回測證實 fade 的 SL 不可收窄
+        "tp_ticks": 160,            # 名義值;實際 TP = 前日 POC(策略內定)
+        "tr_tp_ticks": 160,
+        "trail_enabled": True,
+        "tr_trail_enabled": True,
+        "trail_trigger_pct": 0.50,
+        "tr_trail_trigger_pct": 0.50,
+        "trail_sl_ticks": 10,
+        "tr_trail_sl_ticks": 10,
+        "full_tp_lock": 0,
+        "tr_full_tp_lock": 0,
+        "one_trade_per_session_direction": False,   # 每日一次由策略自管
+        "tr_one_trade_per_session": False,
+        "tr_allowed_sessions": ["ASIA", "EURO", "PRE", "RTH", "AH"],  # 全時段
+        "area_timeframe": "5m",     # detector 照跑(僅供圖表),策略不用 zone
+        "method": "single",
+        "tf_combo": [],
+    }
+
+
 BUILTIN_PRESETS = {
+    # 1.0.8: FABLE 動量書(CLAUDE #1 進場 + ladder 出場 + 日虧斷路器)
+    FABLE_702_PRESET_1: _trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, value_area_pct=0.70,
+        exit_mode="ladder", daily_loss_stop=4,
+    ),
+    FABLE_702_PRESET_2: _trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, value_area_pct=0.70,
+        exit_mode="ladder", daily_loss_stop=0,
+    ),
+    FABLE_702_PRESET_3: _trend_preset(
+        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
+        trail_enabled=True, value_area_pct=0.70,
+        exit_mode="ladder", daily_loss_stop=3,
+    ),
+    # 1.0.8: FABLE Fade 書(前日 VAL 接多 → 前日 POC;x2 配 #1/#2,x1 配 #3)
+    FABLE_702_FADE_X2: _fade_preset(contract_size=2),
+    FABLE_702_FADE_X1: _fade_preset(contract_size=1),
     # 1.0.8: CLAUDE #1 = rank #2(單5m VA70 RR4:+7218 PF1.47 Calmar9.1 win36%)
     CLAUDE_701_PRESET_1: _trend_preset(
         area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
@@ -333,14 +408,17 @@ def _load_presets_file() -> dict:
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        # 1.0.8: mlc2 已移除 — 舊 preset 一律歸一化為 trend
-        params["strategy"] = strategy if strategy == "confluence" else "trend"
+        # 1.0.8: mlc2 已移除 — 舊 preset 一律歸一化為 trend;+fade 放行
+        params["strategy"] = strategy if strategy in ("confluence", "fade") else "trend"
+        # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
+        params["contract_id"] = normalize_contract_id_to_front(params.get("contract_id") or "")
         allowed_keys = {
             "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
             "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
             "contract_size", "full_tp_lock", "one_trade_per_session_direction",
             "value_area_pct", "area_timeframe", "method", "tf_combo",
             "tr_overlap_trade_tf",
+            "tr_exit_mode", "tr_daily_loss_stop",  # 1.0.8: ladder 出場 + 日虧斷路器
             "rr_ratio", "breakout_confirm_bars", "skip_zone_stability",
             "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
             "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
@@ -573,12 +651,15 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
     # Zone selection (v1.0.6) — keep terminal in sync with the web flow so an
     # OVERLAP or non-5m area-timeframe preset runs the same detector here.
     area_timeframe = str(preset.get("area_timeframe") or "5m").lower()
-    if area_timeframe not in ML_TIMEFRAMES:
+    # 1.0.8: "session" = 0.15.5 式整個-session 生長 zone(與其他 TF 互斥,強制 single)
+    if area_timeframe != "session" and area_timeframe not in ML_TIMEFRAMES:
         area_timeframe = "5m"
     method = str(preset.get("method") or "single").lower()
-    if method != "overlap":
+    if method != "overlap" or area_timeframe == "session":
         method = "single"
     tf_combo = [t for t in (preset.get("tf_combo") or []) if t in ML_TIMEFRAMES]
+    if area_timeframe == "session":
+        tf_combo = []
     try:
         rr_ratio = int(preset.get("rr_ratio", DEFAULT_PRESET_PARAMS["rr_ratio"]) or 2)
     except (TypeError, ValueError):
@@ -591,8 +672,9 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
     confirm_bars = max(1, min(10, confirm_bars))
 
     # v1.0.6: confluence (explainable ML) mode — driven by preset["strategy"].
+    # 1.0.8: +fade(前日 VA 回歸)
     strategy_mode = str(preset.get("strategy") or "confluence").lower()
-    if strategy_mode != "confluence":
+    if strategy_mode not in ("confluence", "fade"):
         strategy_mode = "trend"
 
     def _conf_float(key, default):
@@ -645,6 +727,11 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         candle_seconds=int(preset.get("candle_seconds") or 60),
         contract_id=contract_id,
         contract_size=contract_size,
+        # 1.0.8 BUGFIX: 之前漏傳 → StrategyParams 永遠用預設 0.80,
+        # 引擎(live/backtest 皆讀 params.value_area_pct)VA70 preset 實際跑 80。
+        value_area_pct=_normalize_value_area_pct(
+            preset.get("value_area_pct", DEFAULT_PRESET_PARAMS["value_area_pct"])
+        ),
         area_timeframe=area_timeframe,
         method=method,
         tf_combo=tf_combo,
@@ -654,6 +741,11 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         ),
         rr_ratio=rr_ratio,
         breakout_confirm_bars=confirm_bars,
+        # 1.0.8: 出場模式 + 日虧斷路器
+        tr_exit_mode=(
+            "ladder" if str(preset.get("tr_exit_mode") or "tp").lower() == "ladder" else "tp"
+        ),
+        tr_daily_loss_stop=max(0, min(9, _conf_int("tr_daily_loss_stop", 0))),
         full_tp_lock=primary["lock"],
         one_trade_per_session_direction=bool(preset.get("one_trade_per_session_direction", True)),
         tr_one_trade_per_session=bool(preset.get("tr_one_trade_per_session", True)),

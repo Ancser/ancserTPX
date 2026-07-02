@@ -33,6 +33,9 @@ from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
 )
 from backend.strategy.trend_follow import SessionTrendFollow
+from backend.strategy.fade import PrevDayFade  # 1.0.8: FADE 前日 VA 回歸策略
+from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
+from backend.backtest.engine import _topstep_trade_date  # 1.0.8: K線時間→交易日(fade 分日)
 from backend.broker.topstepx import TopstepXClient, order_error_meaning
 
 logger = logging.getLogger(__name__)
@@ -123,14 +126,33 @@ class LiveTradingEngine:
             tf_combo=overlap_combo,
             overlap_trade_tf=getattr(self.strategy_params, "tr_overlap_trade_tf", "merged"),
         )
-        # Strategy mode: "trend" (default, 1.0.6) or "confluence" (v1.0.6 ML).
-        # The trend object is ALWAYS built so legacy state/helpers keep working;
-        # confluence only adds a parallel evaluator and diverges at signal time.
+        # Strategy mode: "trend" (default, 1.0.6), "confluence" (v1.0.6 ML),
+        # or "fade" (1.0.8 前日 VA 回歸). The trend-slot object is ALWAYS built so
+        # legacy state/helpers keep working; fade 直接替換該槽位(介面相容)。
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "trend") or "trend").lower()
-        # 1.0.8: mlc2 (ml_consolidation_v2) 已移除;僅 trend / confluence
-        if self.strategy_mode != "confluence":
+        # 1.0.8: mlc2 (ml_consolidation_v2) 已移除;trend / confluence / fade
+        if self.strategy_mode not in ("confluence", "fade"):
             self.strategy_mode = "trend"
-        self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+        if self.strategy_mode == "fade":
+            self.trend_follow = PrevDayFade(params=self.strategy_params)
+        else:
+            self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+        # 1.0.8: fade 前日 VP 計算器(僅 fade 模式使用)
+        self._fade_vp = VolumeProfileCalculator(self.tick_size, value_area_pct)
+        # 1.0.8: 出場模式 "tp"(現行)| "ladder"(無 TP 階梯滾動,trend 專用)
+        self._tr_exit_mode = (
+            "ladder"
+            if str(getattr(self.strategy_params, "tr_exit_mode", "tp") or "tp").lower() == "ladder"
+            else "tp"
+        )
+        self.LADDER_TRIGGER_R = 2.0       # 浮盈 2R 啟動(SL→entry)
+        self.LADDER_GAP_R = 2.0           # 恆落後峰值整數 R 2R
+        self.LADDER_FAR_TP_TICKS = 2000   # ladder 模式 TP bracket 推遠(500pt,永遠打不到)
+        self._ladder_max_r: float = 0.0
+        self._ladder_lock_r: Optional[float] = None
+        # 1.0.8: 日虧斷路器 — 當日虧損單數達 N 停新單(0=OFF)
+        self._tr_daily_loss_stop = max(0, int(getattr(self.strategy_params, "tr_daily_loss_stop", 0) or 0))
+        self._daily_loss_count: int = 0
         if self.strategy_mode == "confluence":
             try:
                 conf_wait = int(getattr(self.strategy_params, "conf_wait_minutes", 1) or 1)
@@ -636,7 +658,8 @@ class LiveTradingEngine:
             # sub-detectors (rebuilt during warm-up); it has no flat
             # _completed_zones list to restore into, so skip the snapshot.
             if not hasattr(self.detector, "_completed_zones"):
-                self._log_event("Overlap 模式 — 略過 zone 快照 (即時由各 TF 重建)")
+                # 1.0.8: overlap 與 session 生長 zone 皆無 _completed_zones,warm-up 重建
+                self._log_event("Overlap/Session 模式 — 略過 zone 快照 (由 warm-up K 線重建)")
                 return False
 
             active_id = data.get("active_zone_id")
@@ -764,6 +787,50 @@ class LiveTradingEngine:
         except Exception as e:
             logger.warning(f"Failed to persist exit record: {e}")
 
+    def _register_param_snapshot(self) -> Optional[str]:
+        """1.0.8: 永久參數快照庫 — data/strategy_snapshots.jsonl(append-only)。
+
+        引擎啟動時把完整 StrategyParams + 策略模式/合約/手數做 canonical JSON,
+        取 sha1 前 12 碼當 snapshot_id;同配置只存一次。交易記錄引用該 id →
+        即使 preset 之後被刪/改名,每一筆單當時的完整參數永遠可查。
+        """
+        try:
+            import dataclasses
+            import hashlib
+            core = {
+                "strategy_mode": self.strategy_mode,
+                "contract_id": self.contract_id,
+                "contract_size": self.contract_size,
+                "tr_exit_mode": self._tr_exit_mode,
+                "tr_daily_loss_stop": self._tr_daily_loss_stop,
+                "params": dataclasses.asdict(self.strategy_params),
+            }
+            blob = json.dumps(core, sort_keys=True, ensure_ascii=False, default=str)
+            sid = hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
+            path = os.path.join("data", "strategy_snapshots.jsonl")
+            seen = set()
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            seen.add(json.loads(line).get("snapshot_id"))
+                        except Exception:
+                            continue
+            if sid not in seen:
+                rec = {
+                    "snapshot_id": sid,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "account_id": self.account_id,
+                    **core,
+                }
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+                self._log_event(f"[快照] 參數快照已入庫 snapshot_id={sid}")
+            return sid
+        except Exception as e:
+            logger.warning(f"param snapshot failed: {e}")
+            return None
+
     def _persist_trade_record(
         self,
         exit_reason: str,
@@ -812,6 +879,10 @@ class LiveTradingEngine:
                 "account_id": self.account_id,
                 "contract_id": self.contract_id,
                 "strategy": self.strategy_mode,
+                # 1.0.8: 出場模式/斷路器 + 參數快照引用(策略考古用)
+                "exit_mode": self._tr_exit_mode,
+                "daily_loss_stop": self._tr_daily_loss_stop,
+                "param_snapshot_id": getattr(self, "_param_snapshot_id", None),
                 "status": status,
                 "direction": signal.direction.value if signal else None,
                 "size": self.contract_size,
@@ -1823,6 +1894,8 @@ class LiveTradingEngine:
         self._trades = []
         self._log = []
         self._reset_full_tp_counts()
+        self._daily_loss_count = 0     # 1.0.8: 日虧斷路器重置
+        self._param_snapshot_id = self._register_param_snapshot()  # 1.0.8: 參數快照入庫
         self._auto_oco_fail_safe_triggered = False
         self._last_auto_oco_retry_ts = 0.0
         self._last_account_refresh = 0.0
@@ -1874,6 +1947,8 @@ class LiveTradingEngine:
         self._candles_processed = len(historical_candles)
         self._all_candles = list(historical_candles)
         self._last_candle_time = historical_candles[-1].timestamp.isoformat() if historical_candles else None
+        # 1.0.8: fade 模式 — warm-up 完成後計算前日 VA 水位
+        self._refresh_fade_levels()
 
         # Legacy fallback: old strategies only warmed recent-candle buffers, so
         # clear any accidental state. SessionTrendFollow.observe() intentionally
@@ -2089,6 +2164,8 @@ class LiveTradingEngine:
         self._active_signal = None
         self._fill_price = None
         self._trail_sl_triggered = False
+        self._ladder_max_r = 0.0       # 1.0.8: ladder 狀態歸零
+        self._ladder_lock_r = None
         self._protection_synced = False
         self._position_open_ts = 0.0
         self._last_auto_oco_retry_ts = 0.0
@@ -2218,9 +2295,11 @@ class LiveTradingEngine:
             # API's closedPnl/openPnl reset automatically at CME day boundary
             self._daily_pnl = 0.0
             self._reset_full_tp_counts()
+            self._daily_loss_count = 0     # 1.0.8: 日虧斷路器重置
             self._log_event(
                 f"新交易日 — PnL 重置 (CT 17:00)"
             )
+            self._refresh_fade_levels()    # 1.0.8: fade 前日水位換日重算
 
         # Check position status from API (ALWAYS, even without new candle)
         await self._sync_position()
@@ -2420,6 +2499,12 @@ class LiveTradingEngine:
         signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
 
         if signal and not self._pending_order_id:
+            # 1.0.8: 日虧斷路器 — 當日虧損單數達上限,今日不再開新單
+            if (self._tr_daily_loss_stop
+                    and self._daily_loss_count >= self._tr_daily_loss_stop):
+                self._unlock_signal_breakout(signal)
+                strat.notify_order_cancelled()
+                return
             if self._signal_full_tp_locked(signal):
                 lock = self._full_tp_lock_for_strategy(signal.strategy)
                 count = self._full_tp_counts.get(self._strategy_group(signal.strategy), 0)
@@ -2680,6 +2765,14 @@ class LiveTradingEngine:
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
+        # 1.0.8: ladder 出場(trend 專用)— TP bracket 推遠到打不到,出場交給階梯 SL
+        if self._tr_exit_mode == "ladder" and self.strategy_mode == "trend":
+            far = self.LADDER_FAR_TP_TICKS * self.tick_size
+            signal.tp_price = self._round_to_tick(
+                signal.entry_price + far
+                if signal.direction == Direction.BUY
+                else signal.entry_price - far
+            )
         protection_fixes = self._normalize_entry_protection(signal)
         if protection_fixes:
             self._log_event("[BRACKET FIX] " + " | ".join(protection_fixes), "warn")
@@ -2834,7 +2927,13 @@ class LiveTradingEngine:
             return False
 
     async def _check_trailing_sl_live(self):
-        """Live trailing SL: trigger at a configured fraction of TP, once."""
+        """Live trailing SL: trigger at a configured fraction of TP, once.
+
+        1.0.8: tr_exit_mode="ladder"(trend 專用)改走多段階梯 _check_ladder_sl_live。
+        """
+        if self._tr_exit_mode == "ladder" and self.strategy_mode == "trend":
+            await self._check_ladder_sl_live()
+            return
         if self._trail_sl_triggered or not self._active_signal or not self._fill_price:
             return
         sig = self._active_signal
@@ -2965,6 +3064,82 @@ class LiveTradingEngine:
             self._log_event(f"[TRAIL SL] 修改 SL 異常: {e} → 原 Auto OCO SL 維持不動", "error")
             self._trail_sl_triggered = False
         return
+
+    async def _check_ladder_sl_live(self):
+        """1.0.8: 無 TP 階梯滾動出場(trend 專用;回測 +8044 vs 固定TP +7181)。
+
+        浮盈首達 +2R → SL 移到 entry;之後每 +1R 跟 1R(恆落後峰值 2R)。
+        與一次性 trail 不同:可多次觸發,每級用 modify_order 改 Auto-OCO SL。
+        修改失敗 → 該級不記錄,下一 tick 自動重試(棘輪只上不下)。
+        """
+        sig = self._active_signal
+        if not sig or not self._fill_price:
+            return
+        mkt = self._last_market_price
+        if mkt is None:
+            return
+        entry = float(self._fill_price)
+        orig_sl = float(getattr(sig, "original_sl_price", None) or sig.sl_price)
+        risk = abs(entry - orig_sl)
+        if risk <= 0:
+            return
+
+        if sig.direction == Direction.BUY:
+            fav = float(mkt) - entry
+        else:
+            fav = entry - float(mkt)
+        r = fav / risk
+        if r > self._ladder_max_r:
+            self._ladder_max_r = r
+        if self._ladder_max_r < self.LADDER_TRIGGER_R:
+            return
+
+        lock_r = math.floor(self._ladder_max_r) - self.LADDER_GAP_R  # 2R→0(entry), 3R→+1R…
+        if self._ladder_lock_r is not None and lock_r <= self._ladder_lock_r:
+            return
+
+        if sig.direction == Direction.BUY:
+            new_sl = self._round_to_tick(entry + lock_r * risk)
+            if new_sl <= sig.sl_price:      # 不比現有 SL 好 → 記級距即可
+                self._ladder_lock_r = lock_r
+                return
+        else:
+            new_sl = self._round_to_tick(entry - lock_r * risk)
+            if new_sl >= sig.sl_price:
+                self._ladder_lock_r = lock_r
+                return
+
+        self._log_event(
+            f"[LADDER] 峰值 {self._ladder_max_r:.2f}R → SL {new_sl:.2f} "
+            f"(entry{'+' if lock_r >= 0 else ''}{lock_r:g}R, R={risk:.2f}pt)"
+        )
+
+        if not self._sl_order_id or not self._protection_synced:
+            synced = await self._sync_auto_oco_protection(sig, wait_seconds=2.0)
+            if not synced or not self._sl_order_id:
+                self._log_event("[LADDER] 找不到可修改的 Auto OCO SL,下一 tick 重試", "error")
+                return
+
+        try:
+            resp = await self.client.modify_order(
+                self.account_id,
+                self._sl_order_id,
+                size=self.contract_size,
+                stop_price=new_sl,
+            )
+            if resp.success:
+                self._log_event(f"[LADDER] SL #{self._sl_order_id} -> {new_sl:.2f}")
+                sig.sl_price = new_sl
+                self._ladder_lock_r = lock_r
+                self._trail_sl_triggered = True   # 出場歸類 trail_sl
+                self._protection_synced = True
+            else:
+                self._log_event(
+                    f"[LADDER] 修改 SL 失敗: {resp.error_message} → 保留原 SL,下一 tick 重試",
+                    "error",
+                )
+        except Exception as e:
+            self._log_event(f"[LADDER] 修改 SL 異常: {e} → 保留原 SL,下一 tick 重試", "error")
 
     async def _cancel_with_retry(self, order_id: Optional[int], label: str):
         """Cancel an order with retry."""
@@ -3264,6 +3439,8 @@ class LiveTradingEngine:
                 self._pending_created_at = None
                 self._position_age = 0
                 self._trail_sl_triggered = False
+                self._ladder_max_r = 0.0       # 1.0.8: 新倉 → ladder 狀態歸零
+                self._ladder_lock_r = None
 
             # ── Transition 1b: Position exists but engine didn't place it ──
             # Double-fill scenario: both SL and TP filled in rapid succession,
@@ -3340,6 +3517,21 @@ class LiveTradingEngine:
                         self._log_event(
                             f"Full TP count: {_sig_for_log.strategy.value} "
                             f"{self._full_tp_counts[key]}/{lock}"
+                        )
+                # 1.0.8: 日虧斷路器 — 統計當日虧損單(以 Topstep pnl 為準,缺則以價差推)
+                _pnl_for_stop = topstep_pnl
+                if (_pnl_for_stop is None and entry_fill
+                        and actual_exit_price is not None and _sig_for_log):
+                    _mult = 1.0 if _sig_for_log.direction == Direction.BUY else -1.0
+                    _pnl_for_stop = (float(actual_exit_price) - float(entry_fill)) * _mult
+                if _pnl_for_stop is not None and _pnl_for_stop < 0:
+                    self._daily_loss_count += 1
+                    if self._tr_daily_loss_stop:
+                        _hit = self._daily_loss_count >= self._tr_daily_loss_stop
+                        self._log_event(
+                            f"[斷路器] 今日虧損單 {self._daily_loss_count}/{self._tr_daily_loss_stop}"
+                            + (" → 今日停止新單" if _hit else ""),
+                            "warn" if _hit else "info",
                         )
 
                 # Cancel residual orders — each in own try/except so one failure
@@ -3467,6 +3659,46 @@ class LiveTradingEngine:
         cap = 100000  # ~69 days of 1m bars; bounds memory
         if len(self._all_candles) > cap:
             self._all_candles = self._all_candles[-cap:]
+
+    def _refresh_fade_levels(self) -> None:
+        """1.0.8: fade 模式 — 以「前一交易日」全部 1m K 線算 VP,餵給策略。
+
+        呼叫時機:warm-up 完成後、CT 17:00 交易日 rollover。
+        """
+        if self.strategy_mode != "fade":
+            return
+        today = self._get_topstep_trade_date()
+        prev_candles: List[Candle] = []
+        prev_date = None
+        for c in self._all_candles:
+            d = _topstep_trade_date(c.timestamp)
+            if d >= today:
+                continue
+            if d != prev_date:
+                # 只留「最後一個 < today 的交易日」的 K 線
+                prev_date, prev_candles = d, []
+            prev_candles.append(c)
+        if not prev_candles or len(prev_candles) < 60:
+            self.trend_follow.set_levels(None)
+            self._log_event(
+                f"[FADE] 前一交易日 K 線不足({len(prev_candles)} 根)— 無水位,今日不掛單",
+                "warn",
+            )
+            return
+        try:
+            vp = self._fade_vp.calculate(prev_candles)
+        except ValueError as e:
+            self.trend_follow.set_levels(None)
+            self._log_event(f"[FADE] 前日 VP 計算失敗: {e}", "error")
+            return
+        self.trend_follow.set_levels({
+            "date": today, "poc": vp.poc, "vah": vp.vah, "val": vp.val,
+        })
+        self._log_event(
+            f"[FADE] 前日({prev_date},{len(prev_candles)}根)水位 | "
+            f"POC={vp.poc:.2f} VAH={vp.vah:.2f} VAL={vp.val:.2f} | "
+            f"今日 BUY LIMIT @ VAL → TP POC"
+        )
 
     def get_candle_history(self) -> List[Candle]:
         """Warm-up + live 1m candles (chronological) for multi-TF zone detection."""

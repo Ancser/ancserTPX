@@ -29,6 +29,8 @@ from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
 )
 from backend.strategy.trend_follow import SessionTrendFollow
+from backend.strategy.fade import PrevDayFade  # 1.0.8: FADE 前日 VA 回歸策略
+from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
 from backend.backtest.intrabar import resolve_same_bar_exit
 
 logger = logging.getLogger(__name__)
@@ -100,9 +102,32 @@ class BacktestEngine:
             tf_combo=_overlap_combo,
             overlap_trade_tf=getattr(self.strategy_params, "tr_overlap_trade_tf", "merged"),
         )
-        # Only the trend strategy remains.
-        self.strategy_mode = "trend"
-        self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+        # 1.0.8: strategy_mode "trend"(現行)或 "fade"(前日 VA 回歸)。
+        # 屬性名沿用 trend_follow,兩策略介面相容,其餘管線不變。
+        _strat = str(getattr(self.strategy_params, "strategy", "") or "").lower()
+        self.strategy_mode = "fade" if _strat == "fade" else "trend"
+        if self.strategy_mode == "fade":
+            self.trend_follow = PrevDayFade(params=self.strategy_params)
+        else:
+            self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+        # 1.0.8: fade 模式 — 前日 VP 水位計算狀態
+        self._fade_vp = VolumeProfileCalculator(self.TICK_SIZE, float(self.config.value_area_pct))
+        self._fade_day: Optional[str] = None
+        self._fade_day_candles: List[Candle] = []
+        # 1.0.8: 出場模式("tp" 固定 TP | "ladder" 無 TP 階梯滾動)
+        self._tr_exit_mode = (
+            "ladder"
+            if str(getattr(self.strategy_params, "tr_exit_mode", "tp") or "tp").lower() == "ladder"
+            else "tp"
+        )
+        self.LADDER_TRIGGER_R = 2.0   # 浮盈達 2R 啟動(SL→entry)
+        self.LADDER_GAP_R = 2.0       # 之後每 +1R 跟 1R,恆落後峰值整數 2R
+        self._ladder_risk: float = 0.0
+        self._ladder_max_r: float = 0.0
+        # 1.0.8: 日虧斷路器 — 當日虧損單數達 N 停新單(0=OFF)
+        self._tr_daily_loss_stop = max(0, int(getattr(self.strategy_params, "tr_daily_loss_stop", 0) or 0))
+        self._daily_loss_count: int = 0
+        self._loss_count_date: Optional[str] = None
 
         # Pre-computed zone timeline (set once for machine learning grid runs)
         self._zone_timeline: Optional[List[dict]] = zone_timeline
@@ -329,6 +354,26 @@ class BacktestEngine:
         if self._record_equity:
             self._equity_curve.append((candle.timestamp, self._capital))
 
+        # 1.0.8: 交易日 rollover — 日虧斷路器計數重置 + fade 前日 VP 水位計算
+        _ts_date = _topstep_trade_date(candle.timestamp)
+        if _ts_date != self._loss_count_date:
+            self._loss_count_date = _ts_date
+            self._daily_loss_count = 0
+        if self.strategy_mode == "fade":
+            if _ts_date != self._fade_day:
+                if self._fade_day_candles:
+                    try:
+                        vp = self._fade_vp.calculate(self._fade_day_candles)
+                        self.trend_follow.set_levels({
+                            "date": _ts_date,
+                            "poc": vp.poc, "vah": vp.vah, "val": vp.val,
+                        })
+                    except ValueError:
+                        pass  # 前日 K 線不足以算 VP → 沿用舊水位或無水位
+                self._fade_day = _ts_date
+                self._fade_day_candles = []
+            self._fade_day_candles.append(candle)
+
         # Advance any active 60m post-breakout trackers BEFORE we touch
         # position state — they keep tracking even after the trade exits.
         if self._breakout_trackers:
@@ -435,6 +480,11 @@ class BacktestEngine:
             signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
             if signal:
                 signal.zone_source = zone_source
+                # 1.0.8: 日虧斷路器 — 當日虧損單數達上限,今天不再開新單
+                if (self._tr_daily_loss_stop
+                        and self._daily_loss_count >= self._tr_daily_loss_stop):
+                    self.trend_follow.notify_order_cancelled()
+                    return
                 if self._signal_full_tp_locked(signal, candle):
                     self.trend_follow.notify_order_cancelled()
                     return
@@ -622,6 +672,18 @@ class BacktestEngine:
         self._open_position = trade
         self._trail_sl_triggered = False
 
+        # 1.0.8: ladder 出場 — 記初始 R,把固定 TP 推到不可及(出場只剩滾動 SL / flatten)。
+        # 只作用於 trend;fade 的 TP=前日 POC 是策略定義,不動。
+        if self._tr_exit_mode == "ladder" and self.strategy_mode == "trend":
+            self._ladder_risk = abs(trade.entry_price - trade.sl_price)
+            self._ladder_max_r = 0.0
+            far = 1_000_000.0
+            trade.tp_price = (
+                trade.entry_price + far
+                if trade.direction == Direction.BUY
+                else trade.entry_price - far
+            )
+
         # Spawn a 60m post-breakout tracker. We track price action for
         # POST_BREAKOUT_WINDOW_MIN minutes regardless of when (or whether)
         # the trade actually exits — the user wants to know how price
@@ -764,11 +826,17 @@ class BacktestEngine:
         trail_sl_ticks=5 (default) → new SL = entry ± 5 ticks locked profit.
         One-time trigger per position.
 
+        1.0.8: tr_exit_mode="ladder" 時改走 _check_ladder_sl(多段棘輪,非一次性)。
+
         Disabling lets the trade run all the way to TP or full SL — useful when
         post-breakout stats show many trades dipping back through the trail
         level before reaching TP (a high TP↶TRAIL count means trail is
         cutting off would-be winners).
         """
+        # 1.0.8: ladder 出場模式(trend 專用)— 多段棘輪,取代一次性 trail
+        if self._tr_exit_mode == "ladder" and self.strategy_mode == "trend":
+            self._check_ladder_sl(candle)
+            return
         if self._trail_sl_triggered:
             return
         pos = self._open_position
@@ -801,6 +869,40 @@ class BacktestEngine:
                 f"Trail SL: {ticks_moved:.1f} ticks moved → SL moved to {pos.sl_price:.2f} "
                 f"({trail_ticks}t from entry, trigger={trigger_pct:.0%} TP)"
             )
+
+    def _check_ladder_sl(self, candle: Candle):
+        """1.0.8: 無 TP 階梯滾動出場(回測驗證 +8044 vs 固定TP +7181)。
+
+        浮盈(收盤計)首達 +2R → SL 移到 entry(保本);之後每多 +1R,
+        SL 跟進 +1R — 恆落後最高浮盈整數 R 約 2R。只上不下(棘輪)。
+        """
+        pos = self._open_position
+        if not pos or self._ladder_risk <= 0:
+            return
+        mkt = candle.close
+        if pos.direction == Direction.BUY:
+            fav = mkt - pos.entry_price
+        else:
+            fav = pos.entry_price - mkt
+        r = fav / self._ladder_risk
+        if r > self._ladder_max_r:
+            self._ladder_max_r = r
+        if self._ladder_max_r < self.LADDER_TRIGGER_R:
+            return
+        lock_r = math.floor(self._ladder_max_r) - self.LADDER_GAP_R  # 2R→0(entry), 3R→+1R…
+        tick = self.TICK_SIZE
+        if pos.direction == Direction.BUY:
+            new_sl = round((pos.entry_price + lock_r * self._ladder_risk) / tick) * tick
+            if new_sl > pos.sl_price:
+                pos.sl_price = new_sl
+                self._trail_sl_triggered = True
+                logger.debug(f"Ladder SL: peak {self._ladder_max_r:.2f}R → SL {new_sl:.2f} (+{lock_r:g}R)")
+        else:
+            new_sl = round((pos.entry_price - lock_r * self._ladder_risk) / tick) * tick
+            if new_sl < pos.sl_price:
+                pos.sl_price = new_sl
+                self._trail_sl_triggered = True
+                logger.debug(f"Ladder SL: peak {self._ladder_max_r:.2f}R → SL {new_sl:.2f} (+{lock_r:g}R)")
 
     def _execute_exit(self, candle: Candle, exit_price: float, reason: ExitReason):
         pos = self._open_position
@@ -842,6 +944,11 @@ class BacktestEngine:
         self._last_closed_trade = pos
         self._open_position = None
         self._trail_sl_triggered = False
+        # 1.0.8: 日虧斷路器計數(任何原因的虧損出場都算一單虧)
+        if pnl < 0:
+            self._daily_loss_count += 1
+        self._ladder_risk = 0.0
+        self._ladder_max_r = 0.0
 
         # Notify strategy of trade close
         self.trend_follow.notify_trade_closed(reason.value)

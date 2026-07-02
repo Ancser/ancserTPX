@@ -208,6 +208,12 @@ class SessionZoneDetector:
     def get_active_zone(self) -> Optional[ConsolidationZone]:
         return self._active_zone
 
+    def get_recent_zones(self) -> List[ConsolidationZone]:
+        # 1.0.8: 對齊 ClockBucket/Overlap 介面,讓 session 生長 zone 可直接
+        # 插進 live/backtest 引擎(參考 zone = 當前 session 的成長中區間)。
+        z = self._active_zone
+        return [z] if z is not None else []
+
     def get_all_zones(self) -> List[ConsolidationZone]:
         return list(self._all_zones)
 
@@ -308,6 +314,7 @@ class SessionZoneDetector:
             status=ZoneStatus.FORMING,
             exit_direction=None,
             candles=[candle],
+            timeframe="session",  # 1.0.8: UI 標籤/trade_tf 用
         )
         self._all_zones.append(self._active_zone)
         _logger.info(f"[SessionZone] 建立 session zone {zone_id} @ {candle.timestamp}")
@@ -722,11 +729,19 @@ def build_zone_detector(
 ):
     """Factory: returns a zone detector keyed by the selected method.
 
+    - ``area_timeframe == "session"`` → SessionZoneDetector(0.15.5 式整個
+      session 生長區間;與其他 TF 互斥,忽略 tf_combo)。
     - When ``tf_combo`` has >= 2 valid timeframes → OverlapZoneDetector
       (multi-timeframe overlap, identical to the backtest/ML overlap sweep).
     - Otherwise → single-timeframe ClockBucketZoneDetector keyed by
       ``area_timeframe`` (or the single timeframe in tf_combo if given).
     """
+    # 1.0.8: session 生長 zone 選項(UI 上與其他 TF 互斥)
+    if str(area_timeframe or "").strip().lower() == "session":
+        return SessionZoneDetector(
+            value_area_pct=value_area_pct,
+            tick_size=tick_size,
+        )
     valid_combo = [t for t in (tf_combo or []) if t in AREA_TIMEFRAME_MINUTES]
     if len(valid_combo) >= 2:
         return OverlapZoneDetector(

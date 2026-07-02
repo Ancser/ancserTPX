@@ -31,6 +31,46 @@ let valLine = null;
 
 // -- Strategy Params & Presets ----------------------
 
+// 1.0.8: 目前前月季約(鏡像後端 current_quarterly_contract_id):
+// CME 股指 H/M/U/Z,到期=季月第3個週五,前 8 天視為換月。
+function currentQuarterlyContractId(sym) {
+    const now = new Date();
+    const codes = { 3: 'H', 6: 'M', 9: 'U', 12: 'Z' };
+    const thirdFriday = (y, m) => {
+        let count = 0;
+        for (let d = 1; d <= 21; d++) {
+            if (new Date(Date.UTC(y, m - 1, d)).getUTCDay() === 5) {
+                count++;
+                if (count === 3) return Date.UTC(y, m - 1, d);
+            }
+        }
+        return Date.UTC(y, m - 1, 21);
+    };
+    for (const y of [now.getUTCFullYear(), now.getUTCFullYear() + 1]) {
+        for (const m of [3, 6, 9, 12]) {
+            if (now.getTime() < thirdFriday(y, m) - 8 * 86400000) {
+                return 'CON.F.US.' + String(sym || 'MNQ').toUpperCase() + '.' + codes[m] + String(y).slice(-2);
+            }
+        }
+    }
+    return 'CON.F.US.' + String(sym || 'MNQ').toUpperCase() + '.H' + String(now.getUTCFullYear() + 2).slice(-2);
+}
+
+// 1.0.8: 開機把所有寫死到期月的合約選項/輸入改成目前前月(auto-renew)
+function refreshContractOptions() {
+    const rewrite = (v) => {
+        const m = /^CON\.F\.US\.([A-Z]+)\./.exec(String(v || '').toUpperCase());
+        return m ? currentQuarterlyContractId(m[1]) : v;
+    };
+    document.querySelectorAll('select option').forEach(o => {
+        const nv = rewrite(o.value);
+        if (nv !== o.value) o.value = nv;
+    });
+    const cidInput = document.getElementById('contract-id');
+    if (cidInput && cidInput.value) cidInput.value = rewrite(cidInput.value);
+}
+document.addEventListener('DOMContentLoaded', refreshContractOptions);
+
 const DEFAULT_STRATEGY_PARAMS = {
     strategy: 'confluence',
     tp_ticks: 200,
@@ -47,7 +87,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     tr_trail_enabled: true,
     tr_full_tp_lock: 0,
     candle_seconds: 60,
-    contract_id: 'CON.F.US.MNQ.M26',  // 3× Micro NQ default
+    contract_id: currentQuarterlyContractId('MNQ'),  // 1.0.8: 自動換月
     contract_size: 3,
     value_area_pct: 0.80,
     area_timeframe: '5m',
@@ -85,7 +125,7 @@ const _appliedStrategyParamsByMode = {
     live: Object.assign({}, DEFAULT_STRATEGY_PARAMS),
 };
 
-const MNQ_SIZE_CHOICES = [1, 3, 5, 10];
+const MNQ_SIZE_CHOICES = [1, 2, 3, 5, 10];  // 1.0.8: +2 (FABLE Fade x2)
 const TRAIL_TICK_STEP = 5;
 const TRAIL_SL_PCT_CHOICES = [0.05, 0.10, 0.20, 0.30, 0.40, 0.50];
 const TRAIL_TRIGGER_PCT_CHOICES = [0, 0.30, 0.50, 0.70];
@@ -321,14 +361,33 @@ function onRrChange(mode) {
 // areas overlap. Single uses one AREA TF zone.
 // Timeframe checkbox changed → re-detect zones at the new area TF and redraw.
 function onTfSelectionChange(mode) {
+    enforceSessionTfExclusive(mode);   // 1.0.8: SESSION 與其他 TF 互斥
     updateOverlapTradeTfControl(mode);
     syncZoneFilterUI();
     onAreaConfigChange(mode);
     refreshTfZones(true);
 }
 
+// 1.0.8: SESSION(0.15.5 式整段 session 生長區間)勾選時,其他 TF 全部
+// 取消勾選並鎖灰;取消 SESSION 時解鎖,若無任何 TF 被選則回落 5m。
+function enforceSessionTfExclusive(mode) {
+    const boxes = Array.from(document.querySelectorAll('.overlap-tf-chk-' + mode));
+    const sess = boxes.find(c => c.value === 'session');
+    if (!sess) return;
+    const others = boxes.filter(c => c !== sess);
+    if (sess.checked) {
+        others.forEach(c => { c.checked = false; c.disabled = true; });
+    } else {
+        others.forEach(c => { c.disabled = false; });
+        if (!others.some(c => c.checked)) {
+            const five = others.find(c => c.value === '5m');
+            if (five) five.checked = true;
+        }
+    }
+}
+
 function readOverlapTfCombo(mode) {
-    const order = ['5m', '15m', '30m', '1h', '4h'];
+    const order = ['5m', '15m', '30m', '1h', '4h', 'session'];  // 1.0.8: +session
     const checked = Array.from(document.querySelectorAll('.overlap-tf-chk-' + mode))
         .filter(c => c.checked).map(c => c.value);
     return order.filter(tf => checked.includes(tf));
@@ -339,6 +398,7 @@ function setOverlapTfCombo(mode, combo) {
     document.querySelectorAll('.overlap-tf-chk-' + mode).forEach(c => {
         c.checked = set.has(c.value);
     });
+    enforceSessionTfExclusive(mode);   // 1.0.8: preset 載入路徑也要互斥
 }
 
 function normalizeTrendOverlapTradeTf(value) {
@@ -409,6 +469,7 @@ function onOverlapTradeTfChange(mode) {
 function normalizeStrategyName(value) {
     const v = String(value || '').trim().toLowerCase();
     if (v === 'confluence') return 'confluence';
+    if (v === 'fade') return 'fade';   // 1.0.8: FADE 前日VA回歸
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 策略映射
     return 'trend';
 }
@@ -426,6 +487,7 @@ function updateStrategyParamVisibility(mode) {
         (document.getElementById('strategy-' + mode) || {}).value
     );
     const isML = strategy === 'confluence';
+    const isFade = strategy === 'fade';   // 1.0.8
     const show = (id, on) => {
         const el = document.getElementById(id);
         if (el) el.style.display = on ? '' : 'none';
@@ -439,7 +501,45 @@ function updateStrategyParamVisibility(mode) {
     if (!isML) {
         updateOverlapTradeTfControl(mode);
         updateTrailBounds(mode);
+        enforceFadeTfLock(mode, isFade);   // 1.0.8: fade → 鎖 DAY
+        onExitModeChange(mode);            // 1.0.8: 依 exit mode 灰化
     }
+}
+
+// 1.0.8: FADE = 固定用「前一整個交易日」水位 — TF 群組顯示 DAY(鎖定),
+// 其他 TF 取消勾選並鎖灰;離開 fade 還原(無選擇時回落 5m)。
+function enforceFadeTfLock(mode, isFade) {
+    const dayChip = document.getElementById('tf-day-chip-' + mode);
+    const boxes = Array.from(document.querySelectorAll('.overlap-tf-chk-' + mode));
+    if (dayChip) dayChip.style.display = isFade ? '' : 'none';
+    if (isFade) {
+        boxes.forEach(c => { c.checked = false; c.disabled = true; });
+    } else {
+        boxes.forEach(c => { c.disabled = false; });
+        enforceSessionTfExclusive(mode);
+        if (!boxes.some(c => c.checked)) {
+            const five = boxes.find(c => c.value === '5m');
+            if (five) five.checked = true;
+        }
+    }
+}
+
+// 1.0.8: EXIT MODE 切換 — ladder 用不到 RR RATIO / TRAIL TP TRIGGER / TRAIL SL
+// (TP 移除、階梯常數固定 2R/1R),灰化不可改項;切回 tp 還原。
+function onExitModeChange(mode) {
+    const sel = document.getElementById('tr-exit-mode-' + mode);
+    const isLadder = !!(sel && sel.value === 'ladder');
+    const dim = (id, off) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.disabled = off;
+        const grp = el.closest('.form-group');
+        if (grp) grp.style.opacity = off ? '0.35' : '';
+        if (grp) grp.title = off ? 'LADDER 模式不使用(無 TP;階梯固定 +2R 保本、每 +1R 跟 1R)' : '';
+    };
+    dim('rr-ratio-' + mode, isLadder);
+    dim('trail-trigger-pct-' + mode, isLadder);
+    dim('trail-sl-pct-' + mode, isLadder);
 }
 
 // RR mode toggle: "固定" shows the single-RR select; "變動" shows the RR-grid
@@ -771,6 +871,9 @@ function collectStrategyParams(mode) {
         ),
         skip_zone_stability: false,
         breakout_confirm_bars: Math.max(1, Math.min(10, _int('confirm-bars-' + mode, 7))),
+        // 1.0.8: 出場模式(tp | ladder)+ 日虧斷路器(0=OFF)
+        tr_exit_mode: (_mlSelectValue('tr-exit-mode-' + mode, 'tp') === 'ladder') ? 'ladder' : 'tp',
+        tr_daily_loss_stop: Math.max(0, Math.min(6, _int('tr-daily-stop-' + mode, 0))),
     };
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 參數區塊
     return params;
@@ -840,6 +943,10 @@ function applyStrategyParams(mode, params) {
     onRrChange(mode);
 
     _set('confirm-bars-' + mode, String(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7));
+
+    // 1.0.8: 出場模式 + 日虧斷路器
+    _set('tr-exit-mode-' + mode, String(p.tr_exit_mode || 'tp') === 'ladder' ? 'ladder' : 'tp');
+    _set('tr-daily-stop-' + mode, String(Math.max(0, Math.min(6, parseInt(p.tr_daily_loss_stop != null ? p.tr_daily_loss_stop : 0, 10) || 0))));
 
     // ML (confluence) params — restored when the preset uses the ML strategy.
     const _prob = (v) => {
@@ -3253,6 +3360,20 @@ function drawPositionTools(trades) {
     let drawn = 0;
     const maxDraw = 25; // limit to avoid clutter
 
+    // 1.0.8: 時間→X 座標,timeToCoordinate 對可視範圍外回 null 時改用
+    // 可視區秒/像素線性外推 — 修復 zoom in/out 時框寬退化成固定像素的問題。
+    const timeToX = (sec) => {
+        if (sec == null || !Number.isFinite(sec)) return null;
+        let x = null;
+        try { x = chart.timeScale().timeToCoordinate(sec); } catch (_) {}
+        if (x !== null && x !== undefined) return x;
+        try {
+            const vr = chart.timeScale().getVisibleRange();
+            if (!vr || vr.to <= vr.from) return null;
+            return (sec - vr.from) * (chartW / (vr.to - vr.from));
+        } catch (_) { return null; }
+    };
+
     const drawHLine = (x0, x1, y, color) => {
         if (y === null || y < -50 || y > chartH + 50) return;
         ctx.save();
@@ -3276,11 +3397,12 @@ function drawPositionTools(trades) {
         if (yVAH === null || yVAL === null) return false;
         if ((yVAH < -80 && yVAL < -80) || (yVAH > chartH + 80 && yVAL > chartH + 80)) return false;
 
-        let x0 = null, x1 = null;
-        try { if (z.formed_at) x0 = chart.timeScale().timeToCoordinate(isoToChartTime(z.formed_at)); } catch(_) {}
-        try { if (z.left_at) x1 = chart.timeScale().timeToCoordinate(isoToChartTime(z.left_at)); } catch(_) {}
+        // 1.0.8: 一律按 zone 真實時間 (formed_at→left_at) 算座標,zoom 穩定;
+        // 沒有 left_at(仍活躍)才用 entry 時間補右界。
+        let x0 = z.formed_at ? timeToX(isoToChartTime(z.formed_at)) : null;
+        let x1 = z.left_at ? timeToX(isoToChartTime(z.left_at)) : null;
         if (x0 === null) x0 = fallbackEntryX - 80;
-        if (x1 === null || x1 <= x0) x1 = fallbackEntryX + 120;
+        if (x1 === null || x1 <= x0) x1 = Math.max(fallbackEntryX, x0 + 8);
         if (x1 < -20 || x0 > chartW + 20) return false;
         x0 = Math.max(0, x0);
         x1 = Math.min(chartW - 60, x1);
@@ -3314,9 +3436,10 @@ function drawPositionTools(trades) {
         const yTP = candleSeries.priceToCoordinate(tp);
         if (yEntry === null || ySL === null || yTP === null) return false;
 
-        let x1 = null;
-        try { if (t.exit_time) x1 = chart.timeScale().timeToCoordinate(isoToChartTime(t.exit_time)); } catch (_) {}
-        if (x1 === null || x1 <= entryX + 3) x1 = entryX + 120;
+        // 1.0.8: 右界一律按 exit_time 的「時間」算(timeToX 帶外推),
+        // 修復 zoom 時 2 分鐘的單被畫成固定 120px 長條的問題。
+        let x1 = t.exit_time ? timeToX(isoToChartTime(t.exit_time)) : null;
+        if (x1 === null || x1 <= entryX + 3) x1 = entryX + 8;
         if (x1 < -20 || entryX > chartW + 20) return false;
         const x0 = Math.max(0, entryX);
         const xEnd = Math.min(chartW - 60, x1);
@@ -3337,9 +3460,7 @@ function drawPositionTools(trades) {
             ctx.fillStyle = 'rgba(255, 64, 96, 0.115)';
             ctx.fillRect(x0, redTop, xEnd - x0, redH);
         }
-        drawHLine(x0, xEnd, yEntry, 'rgba(255, 167, 38, 0.74)');
-        drawHLine(x0, xEnd, yTP, 'rgba(0, 229, 160, 0.82)');
-        drawHLine(x0, xEnd, ySL, 'rgba(255, 64, 96, 0.82)');
+        // 1.0.8: 依使用者要求移除 entry/TP/SL 三條橫線,只保留紅綠底
         ctx.restore();
         return true;
     };
@@ -3891,6 +4012,69 @@ function _stopBacktestProgress(success) {
     }
     if (text) text.textContent = success ? 'complete' : 'failed';
     setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, success ? 1200 : 3500);
+}
+
+// ── 1.0.8: 高效參數掃描(SWEEP 分頁)─────────────────────────
+let _sweepData = null;
+let _sweepSortKey = 'score';
+
+async function loadSweepResults() {
+    // 啟動時自動載入上一次 sweep 結果
+    try {
+        const resp = await fetch(API + '/backtest/sweep/results');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data && data.results && data.results.length) {
+            _sweepData = data;
+            renderSweepTable();
+        }
+    } catch (_) { /* server 未起或無結果 — 靜默 */ }
+}
+document.addEventListener('DOMContentLoaded', loadSweepResults);
+
+function renderSweepTable(sortKey) {
+    if (sortKey) _sweepSortKey = sortKey;
+    const wrap = document.getElementById('sweep-results-wrap');
+    const meta = document.getElementById('sweep-meta');
+    if (!wrap || !_sweepData || !(_sweepData.results || []).length) return;
+    const rows = [..._sweepData.results];
+    const k = _sweepSortKey;
+    rows.sort((a, b) => (Number(b[k]) || 0) - (Number(a[k]) || 0));
+
+    if (meta) {
+        const created = _sweepData.created_at ? String(_sweepData.created_at).slice(0, 16).replace('T', ' ') : '?';
+        meta.textContent = 'sweep @ ' + created + ' UTC | ' + rows.length + ' 變體 | 排序: ' + k +
+            '(點欄位標題換排序)| score = pnl/maxDD;留意 GAIN/LOSS 平衡(PF)';
+    }
+    const th = (key, label) => '<th style="cursor:pointer;' +
+        (key === k ? 'color:var(--amber);' : '') +
+        '" onclick="renderSweepTable(\'' + key + '\')">' + label + '</th>';
+    const money = (v, pos) => '<span style="color:var(--' + (v >= 0 ? (pos || 'green') : 'red') + ');">' +
+        (v >= 0 ? '+' : '') + Math.round(v) + '</span>';
+    wrap.innerHTML = '<table><thead><tr>' +
+        '<th>#</th><th>PARAMS</th><th>TRADES</th><th>WIN%</th>' +
+        th('pnl', 'PNL') + th('gain', 'GAIN') + th('loss', 'LOSS') + th('pf', 'PF') +
+        th('max_dd', 'MAXDD') + th('monthly_avg', 'M-AVG') + th('worst_day', 'WORST-D') +
+        th('expect', 'EXPECT') + th('score', 'SCORE') +
+        '</tr></thead><tbody>' +
+        rows.slice(0, 60).map((r, i) => {
+            const balBad = (r.pf || 0) < 1.4;   // gain/loss 失衡提示
+            return '<tr>' +
+                '<td style="color:var(--text2);">' + (i + 1) + '</td>' +
+                '<td style="font-family:\'IBM Plex Mono\',monospace;">' + r.label + '</td>' +
+                '<td>' + r.trades + '</td>' +
+                '<td>' + ((r.win_rate || 0) * 100).toFixed(1) + '%</td>' +
+                '<td>' + money(r.pnl) + '</td>' +
+                '<td style="color:var(--text2);">+' + Math.round(r.gain) + '</td>' +
+                '<td style="color:var(--text2);">' + Math.round(r.loss) + '</td>' +
+                '<td style="color:' + (balBad ? 'var(--red)' : 'var(--green)') + ';">' + (r.pf || 0).toFixed(2) + '</td>' +
+                '<td style="color:var(--red);">' + Math.round(r.max_dd) + '</td>' +
+                '<td>' + money(r.monthly_avg || 0) + '</td>' +
+                '<td style="color:var(--red);">' + Math.round(r.worst_day) + '</td>' +
+                '<td>' + (r.expect || 0).toFixed(1) + '</td>' +
+                '<td style="color:var(--amber);font-weight:bold;">' + (r.score || 0).toFixed(2) + '</td>' +
+                '</tr>';
+        }).join('') + '</tbody></table>';
 }
 
 async function runBacktest() {
@@ -4681,6 +4865,28 @@ function renderMetrics(m, backtestTrades) {
         cls: wkCount > 0 ? ((wkCv < 1 && wkConsist >= 0.6) ? 'pos' : (wkCv > 2 ? 'neg' : '')) : '',
     };
 
+    // 1.0.8: WORST DAY — 當前窗口最差單日 pnl(實盤對照括號)
+    const _dailyVals = Object.values(activeDaily || {});
+    const worstDay = _dailyVals.length ? Math.min(..._dailyVals) : null;
+    const liveDailyVals = liveStats && liveStats.daily_pnl ? Object.values(liveStats.daily_pnl) : [];
+    const liveWorst = liveDailyVals.length ? Math.min(...liveDailyVals) : null;
+
+    // 1.0.8: MONTHLY GAIN AVG = 30.44 天歸一化月率(run-rate,非日曆月平均)。
+    // 例:2 個月賺 $4k → $2k/月;1 週 $400 → ~$1.7k/月。部分月不失真。
+    const _monthlyRate = (dailyMap, totalPnl) => {
+        const keys = Object.keys(dailyMap || {}).sort();
+        if (!keys.length) return null;
+        const spanDays = Math.max(
+            1,
+            (new Date(keys[keys.length - 1]) - new Date(keys[0])) / 86400000 + 1
+        );
+        return (totalPnl || 0) * 30.44 / spanDays;
+    };
+    const monthlyAvg = _monthlyRate(activeDaily, total_pnl);
+    const liveMonthlyAvg = liveStats ? _monthlyRate(liveStats.daily_pnl, liveStats.total_pnl) : null;
+
+    // 1.0.8: 佈局重排 — WORST DAY 接在 TOTAL LOSS 後;WIN RATE 全寬置於
+    // EXIT % 之前;CURRENT ZONE 全寬獨立一行 → ASIA..RTH 兩兩自動對齊。
     const items = [
         { label: totalPnlLabel,
           value: '$' + total_pnl.toFixed(0) + paren(liveStats ? '$' + liveStats.total_pnl.toFixed(0) : ''),
@@ -4694,6 +4900,14 @@ function renderMetrics(m, backtestTrades) {
         { label: 'TOTAL LOSS',
           value: '$' + total_loss.toFixed(0) + paren(liveStats ? '$' + liveStats.total_loss.toFixed(0) : ''),
           cls: total_loss < 0 ? 'neg' : '' },
+        { label: 'MONTHLY GAIN AVG',
+          value: (monthlyAvg != null ? '$' + monthlyAvg.toFixed(0) : '--')
+                 + paren(liveMonthlyAvg != null ? '$' + liveMonthlyAvg.toFixed(0) : ''),
+          cls: (monthlyAvg != null && monthlyAvg >= 0) ? 'pos' : 'neg' },
+        { label: 'WORST DAY',
+          value: (worstDay != null ? '$' + worstDay.toFixed(0) : '--')
+                 + paren(liveWorst != null ? '$' + liveWorst.toFixed(0) : ''),
+          cls: (worstDay != null && worstDay < 0) ? 'neg' : '' },
         { label: 'PROFIT FACTOR',
           value: fmtPF(pfPrimary) + paren(pfLive != null ? fmtPF(pfLive) : ''),
           cls: pfPrimary >= 1 ? 'pos' : 'neg' },
@@ -4703,20 +4917,20 @@ function renderMetrics(m, backtestTrades) {
         { label: 'TRADE COUNTS',
           value: String(total_trades || 0) + paren(liveStats ? String(liveStats.trades || 0) : ''),
           cls: '' },
-        { label: 'WIN RATE',
-          value: ((backtestStats.win_rate || 0) * 100).toFixed(1) + '%' + paren(liveStats ? ((liveStats.win_rate || 0) * 100).toFixed(1) + '%' : ''),
-          cls: (backtestStats.win_rate || 0) >= 0.5 ? 'pos' : '' },
         weeklyVarItem,
         { label: 'RR RATIO',
           value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
           cls: rr_ratio > 1 ? 'pos' : 'neg' },
+        { label: 'WIN RATE', full: true,
+          value: ((backtestStats.win_rate || 0) * 100).toFixed(1) + '%' + paren(liveStats ? ((liveStats.win_rate || 0) * 100).toFixed(1) + '%' : ''),
+          cls: (backtestStats.win_rate || 0) >= 0.5 ? 'pos' : '' },
         { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },
         { label: 'AVG $ TP/SL/TRAIL',
           value: fmtAvgTriple(backtestStats) + paren(liveStats ? fmtAvgTriple(liveStats) : ''),
           cls: '' },
-        { label: 'CURRENT ZONE TP/SL/TRAIL',
+        { label: 'CURRENT ZONE TP/SL/TRAIL', full: true,
           value: fmtZoneExitBuckets(currentZoneStats),
           cls: '' },
         { label: 'ASIA TP/SL/TRAIL', value: fmtSessionTriple(backtestStats, 'ASIA'), cls: '' },
@@ -4726,7 +4940,7 @@ function renderMetrics(m, backtestTrades) {
     ];
 
     grid.innerHTML = items.map(i => `
-        <div class="metric-card">
+        <div class="metric-card"${i.full ? ' style="grid-column:1 / -1;"' : ''}>
             <div class="label">${i.label}</div>
             <div class="value ${i.cls}">${i.value}</div>
         </div>
@@ -5378,4 +5592,3 @@ function _restoreBacktestCache() {
 }
 // Script tag is at end of <body>, so the DOM is already parsed here.
 _restoreBacktestCache();
-

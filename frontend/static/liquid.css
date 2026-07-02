@@ -1,0 +1,281 @@
+/* ============================================================
+   文件: frontend/static/liquid.css  (1.0.8 Liquid Glass 覆蓋層)
+   狀態: 只做視覺覆蓋 — 不動任何 id/handler/佈局邏輯,移除此檔即回退舊皮膚。
+   風格: Apple HIG / Liquid Glass — 磨砂玻璃、鏡面邊緣、彈性動效、SF 字體棧。
+   ============================================================ */
+
+:root {
+    --lg-glass: rgba(18, 20, 28, 0.58);
+    --lg-glass-strong: rgba(16, 18, 26, 0.72);
+    --lg-edge: rgba(255, 255, 255, 0.14);
+    --lg-edge-bright: rgba(255, 255, 255, 0.38);
+    --lg-radius: 22px;
+    --lg-spring: cubic-bezier(0.34, 1.56, 0.64, 1);   /* Apple 彈簧 */
+    --lg-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+               "Segoe UI Variable", "Segoe UI", "Helvetica Neue", "Noto Sans TC", sans-serif;
+    --lg-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+               "IBM Plex Mono", monospace;
+}
+
+/* ── Apple 字體棧(整站)── */
+body, .btn, .tab, label, select, input, .panel-title, .bottom-tab {
+    font-family: var(--lg-font) !important;
+}
+[style*="IBM Plex Mono"], .metric-card .value, #clock {
+    font-family: var(--lg-mono) !important;
+}
+label, .panel-title, .tab, .bottom-tab {
+    text-transform: none !important;
+    letter-spacing: 0.2px !important;
+    font-weight: 590;
+}
+
+/* ── 背景:給玻璃一點可折射的色彩 ── */
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+        radial-gradient(900px 600px at 85% -10%, rgba(64, 96, 255, 0.16), transparent 60%),
+        radial-gradient(800px 500px at -10% 110%, rgba(120, 60, 220, 0.12), transparent 60%),
+        var(--bg);
+    pointer-events: none;
+}
+
+/* ── Header → 懸浮層(圖表全寬延伸到最左,從 header 下方穿過)── */
+.header {
+    position: fixed !important;
+    top: 0; left: 0; right: 0;
+    background: transparent !important;
+    border-bottom: none !important;
+    z-index: 40;
+    pointer-events: none;
+    padding: 8px 16px !important;
+    height: 56px !important;
+}
+.header::after { display: none !important; }
+.header > * { pointer-events: auto; }
+.header h1 { display: none !important; }   /* 標題移入左面板(JS) */
+.main { height: 100vh !important; }
+
+/* ── 浮動 tab 膠囊(可拖,液態玻璃分段控制)── */
+.header-tabs {
+    position: fixed;
+    top: 10px; left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 999px;
+    background: var(--lg-glass);
+    -webkit-backdrop-filter: blur(24px) saturate(170%);
+    backdrop-filter: blur(24px) saturate(170%);
+    border: 1px solid var(--lg-edge);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35),
+                inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    cursor: grab;
+    z-index: 45;
+    height: auto !important;
+    user-select: none;
+}
+.header-tabs:active { cursor: grabbing; }
+.tab {
+    padding: 7px 16px !important;
+    border-bottom: none !important;
+    border-radius: 999px !important;
+    font-size: 12px !important;
+    height: auto !important;
+    color: var(--text2);
+    /* 彈跳隔離在單一 bar:各自 transform,不影響鄰居 */
+    transition: transform 0.45s var(--lg-spring), background 0.3s ease, color 0.3s ease !important;
+}
+.tab:hover { transform: scale(1.06); background: rgba(255, 255, 255, 0.07); }
+.tab:active { transform: scale(0.92); }
+.tab.active {
+    background: rgba(255, 255, 255, 0.16) !important;
+    color: #fff !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22),
+                0 2px 10px rgba(0, 0, 0, 0.30);
+    transform: scale(1.03);
+}
+.tab::after { display: none !important; }
+
+/* ── 左側面板 → 懸浮磨砂玻璃(圖表在底下延伸)── */
+.main { position: relative; }
+.sidebar {
+    position: absolute !important;
+    left: 12px; top: 64px; bottom: 12px;
+    width: 400px;
+    z-index: 30;
+    border-radius: var(--lg-radius);
+    background: var(--lg-glass) !important;
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid var(--lg-edge) !important;
+    border-right: 1px solid var(--lg-edge) !important;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    transition: transform 0.55s var(--lg-spring), opacity 0.4s ease;
+    overflow-x: hidden;
+}
+.sidebar.lg-hidden {
+    transform: translateX(calc(-100% - 28px));
+    opacity: 0.2;
+    pointer-events: none;
+}
+/* 鏡面邊緣 + 開合時的反光抖動(liquid glass edge twitch) */
+.sidebar::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: var(--lg-radius);
+    pointer-events: none;
+    background: linear-gradient(115deg,
+        transparent 20%,
+        rgba(255, 255, 255, 0.14) 38%,
+        rgba(255, 255, 255, 0.02) 44%,
+        transparent 60%);
+    background-size: 260% 260%;
+    background-position: 120% 0;
+    mix-blend-mode: screen;
+}
+.sidebar.lg-sheen::after { animation: lg-sheen 1.1s ease-out 1; }
+@keyframes lg-sheen {
+    0%   { background-position: 130% 0; opacity: 0.0; }
+    18%  { opacity: 1; }
+    52%  { background-position: 30% 0; }
+    64%  { background-position: 42% 0; }   /* 反光回彈 twitch */
+    100% { background-position: -40% 0; opacity: 0; }
+}
+/* 面板標題列(JS 注入 h1) */
+.lg-side-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px 16px 10px;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: linear-gradient(var(--lg-glass-strong), transparent);
+}
+.lg-side-head h1 {
+    display: block !important;
+    font-family: var(--lg-font) !important;
+    font-size: 19px !important;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+.sidebar .panel { border-bottom: 1px solid rgba(255, 255, 255, 0.07) !important; background: transparent; }
+.sidebar .panel::before, .sidebar .panel::after { display: none !important; }
+
+/* ── 圓形收合按鈕(液態玻璃圓鈕,跟著面板滑動)── */
+#lg-sidebar-toggle {
+    position: fixed;
+    top: 72px;
+    left: 364px;                    /* 面板開:貼面板右上角內側 */
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 1px solid var(--lg-edge);
+    background: var(--lg-glass-strong);
+    -webkit-backdrop-filter: blur(20px) saturate(170%);
+    backdrop-filter: blur(20px) saturate(170%);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4),
+                inset 0 1px 0 rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.85);
+    z-index: 35;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: left 0.55s var(--lg-spring), transform 0.45s var(--lg-spring),
+                background 0.3s ease;
+}
+#lg-sidebar-toggle:hover { transform: scale(1.08); background: rgba(60, 64, 80, 0.75); }
+#lg-sidebar-toggle:active { transform: scale(0.88); }
+body.lg-side-closed #lg-sidebar-toggle { left: 14px; }
+#lg-sidebar-toggle svg { width: 18px; height: 18px; }
+
+/* ── CONNECT → 使用者圓鈕 ── */
+.conn-trigger {
+    width: 40px !important;
+    height: 40px !important;
+    border-radius: 50% !important;
+    padding: 0 !important;
+    justify-content: center !important;
+    background: var(--lg-glass-strong) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(170%);
+    backdrop-filter: blur(20px) saturate(170%);
+    border: 1px solid var(--lg-edge) !important;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35),
+                inset 0 1px 0 rgba(255, 255, 255, 0.14);
+    transition: transform 0.45s var(--lg-spring), border-color 0.3s ease;
+    position: relative;
+}
+.conn-trigger:hover { transform: scale(1.08); }
+.conn-trigger:active { transform: scale(0.9); }
+.conn-trigger.connected { border-color: rgba(48, 209, 88, 0.55) !important; }
+#api-status-text, .conn-arrow { display: none !important; }
+.conn-trigger::before {
+    content: '';
+    width: 16px; height: 16px;
+    background: currentColor;
+    color: rgba(255, 255, 255, 0.8);
+    -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 12c2.7 0 4.8-2.2 4.8-4.9S14.7 2.3 12 2.3 7.2 4.4 7.2 7.1 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.9v2.4h19.2v-2.4c0-3.3-6.4-4.9-9.6-4.9z'/></svg>") center / contain no-repeat;
+    mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 12c2.7 0 4.8-2.2 4.8-4.9S14.7 2.3 12 2.3 7.2 4.4 7.2 7.1 9.3 12 12 12zm0 2.4c-3.2 0-9.6 1.6-9.6 4.9v2.4h19.2v-2.4c0-3.3-6.4-4.9-9.6-4.9z'/></svg>") center / contain no-repeat;
+}
+.conn-trigger .status-dot {
+    position: absolute;
+    right: 1px; bottom: 1px;
+    box-shadow: 0 0 0 2.5px rgba(18, 20, 28, 0.9);
+}
+.conn-panel {
+    border-radius: 18px !important;
+    background: var(--lg-glass-strong) !important;
+    -webkit-backdrop-filter: blur(28px) saturate(180%);
+    backdrop-filter: blur(28px) saturate(180%);
+    border: 1px solid var(--lg-edge) !important;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55) !important;
+}
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+#clock, .account-badge {
+    background: var(--lg-glass);
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    backdrop-filter: blur(18px) saturate(160%);
+    border: 1px solid var(--lg-edge);
+    border-radius: 999px;
+    padding: 6px 14px;
+}
+
+/* ── 按鈕 → HIG 圓角/彈性 ── */
+.btn {
+    border-radius: 12px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.3px !important;
+    text-transform: none !important;
+    transition: transform 0.4s var(--lg-spring), filter 0.25s ease,
+                background 0.25s ease, opacity 0.25s ease !important;
+}
+.btn:hover:not(:disabled) { transform: translateY(-1px) scale(1.015); filter: brightness(1.12); }
+.btn:active:not(:disabled) { transform: scale(0.97); }
+.btn-mini { border-radius: 999px !important; }
+select, input[type="text"], input[type="password"], input[type="number"] {
+    border-radius: 10px !important;
+}
+
+/* ── 底部面板/彈窗輕玻璃 ── */
+.bottom-panel {
+    background: rgba(16, 18, 26, 0.66) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    backdrop-filter: blur(22px) saturate(160%);
+    border-top: 1px solid var(--lg-edge) !important;
+}
+.bottom-tab { border-radius: 999px !important; margin: 4px 2px; }
+.metric-card { border-radius: 14px !important; }
+
+/* GFL2 斜切角在玻璃語言下取消 */
+.cut-tl, .cut-tr, .cut-bl, .cut-br { clip-path: none !important; }

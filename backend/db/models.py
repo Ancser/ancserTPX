@@ -356,6 +356,11 @@ class StrategyParams:
     # SL/TP model (v1.0.6): SL = lowest-volume node between POC and VAH/VAL;
     # TP = entry ± rr_ratio × SL-distance. rr_ratio selectable 1..6. No fixed ticks.
     rr_ratio: int = 2                      # reward:risk multiple (1..6)
+    # 1.0.8: 出場模式 — "tp" 固定 TP(現行);"ladder" 無 TP 階梯滾動
+    # (+2R 時 SL→entry,之後每 +1R 跟進 1R,恆落後峰值 2R)
+    tr_exit_mode: str = "tp"               # "tp" | "ladder"
+    # 1.0.8: 日虧斷路器 — 當個 Topstep 交易日虧損單數達 N 後停止新進場(0=OFF)
+    tr_daily_loss_stop: int = 0
     # --- v1.0.6: explainable multi-timeframe confluence (ML scorer) ---
     # Activated when strategy == "confluence". The live engine then runs the
     # SAME ConfluenceBacktester logic (per-TF detectors + trained scorer) so
@@ -534,6 +539,39 @@ def _extract_symbol(contract_id: str) -> str:
     if len(parts) >= 4:
         return parts[3].upper()
     return contract_id.upper()
+
+
+def current_quarterly_contract_id(symbol: str = "MNQ", now: "Optional[datetime]" = None) -> str:
+    """1.0.8: 目前「前月」季約 contract id — preset 不再寫死到期月,系統自動換月。
+
+    CME 股指季約月份 H/M/U/Z(3/6/9/12),到期 = 季月第 3 個週五;
+    到期前 8 天視為已換月(對齊 Topstep 慣例的提前 roll)。
+    e.g. 2026-07-02 → CON.F.US.MNQ.U26;2026-09-11 → Z26。
+    """
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = now or _dt.now(_tz.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_tz.utc)
+    codes = {3: "H", 6: "M", 9: "U", 12: "Z"}
+
+    def _third_friday(y: int, m: int) -> "_dt":
+        fridays = [d for d in range(1, 22) if _dt(y, m, d, tzinfo=_tz.utc).weekday() == 4]
+        return _dt(y, m, fridays[2], tzinfo=_tz.utc)
+
+    sym = str(symbol or "MNQ").upper()
+    for yy in (now.year, now.year + 1):
+        for mm in (3, 6, 9, 12):
+            if now < _third_friday(yy, mm) - _td(days=8):
+                return f"CON.F.US.{sym}.{codes[mm]}{str(yy)[-2:]}"
+    return f"CON.F.US.{sym}.H{str(now.year + 2)[-2:]}"
+
+
+def normalize_contract_id_to_front(contract_id: str) -> str:
+    """1.0.8: 把任何 CON.F.US.<SYM>.<到期> 改寫成目前前月季約(auto-renew)。
+    非標準格式原樣返回。"""
+    if not contract_id or not str(contract_id).upper().startswith("CON.F.US."):
+        return contract_id
+    return current_quarterly_contract_id(_extract_symbol(contract_id))
 
 
 def get_point_value(contract_id: str) -> float:
