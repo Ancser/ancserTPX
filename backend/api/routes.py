@@ -2093,6 +2093,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
 
     strategy_params = _build_strategy_params_from_request(req, contract_size)
     is_sigma = getattr(strategy_params, "strategy", "") == "sigma"
+    is_fade = getattr(strategy_params, "strategy", "") == "fade"
 
     method = str(getattr(req, "method", "single") or "single").lower()
     tf_combo = tuple(t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES)
@@ -2102,7 +2103,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     )
 
     zone_timeline = None
-    if overlap_mode and not is_sigma:
+    if overlap_mode and not is_sigma and not is_fade:
         ordered = [tf for tf in ML_TIMEFRAMES if tf in tf_combo]
         ov_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
         _update_bt_progress(
@@ -2117,6 +2118,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
 
         zone_timeline = await asyncio.to_thread(_build_overlap_timeline)
     elif (not is_sigma
+          and not is_fade
           and str(getattr(strategy_params, "area_timeframe", "5m") or "5m").lower() != "session"):
         sg_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
         _update_bt_progress(
@@ -3702,6 +3704,7 @@ _FABLE_702_PRESET_3 = "07.02 FABLE #3 Trend 低回撤 MNQx1 TF5m VA70 RR4 C3 SL8
 _FABLE_703_FADE = "07.03 FADE 前日VAL接多 MNQx1 SL120 TP75%POC Limit 全時段"
 _CODEX_SIGMA_PRESET_1 = "07.03 CODEX SIGMA #1 RTH Roll30 Std Resting HalfTP SL1 LossStop1 MNQx1"
 _CODEX_SIGMA_PRESET_2 = "07.03 CODEX SIGMA #2 RTH Roll15 Std Resting Filter HalfTP SL1.5 LossStop1 MNQx1"
+_CODEX_SIGMA_PRESET_3 = "07.05 CODEX SIGMA #3 LIVE RTH Roll60 Std Resting L3 HalfTP SL0.75 LossStop2 MNQx3"
 _DEFAULT_LAST_USED_PRESET = _FABLE_702_PRESET_1
 _PRESET_RENAMES = {
     # 1.0.8: FABLE 改名(動量書→Trend、Fade 編號 #4/#5)
@@ -3912,18 +3915,26 @@ def _sigma_preset(
     accept_mode: str,
     stop_span: float,
     daily_loss_stop: int = 1,
+    entry_mode: str = "blind",
+    target_mode: str = "half",
+    allowed_sessions: Optional[list[str]] = None,
+    method: str = "std",
+    contract_size: int = 1,
+    start_sigma: float = 1.0,
+    max_sigma: float = 3.0,
 ) -> dict:
     params = dict(_DEFAULT_PRESET_PARAMS)
+    sessions = list(allowed_sessions or ["RTH"])
     params.update({
         "strategy": "sigma",
         "contract_id": current_quarterly_contract_id("MNQ"),
-        "contract_size": 1,
+        "contract_size": int(contract_size),
         "candle_seconds": 60,
         "area_timeframe": "5m",
         "method": "single",
         "tf_combo": [],
         "value_area_pct": 0.80,
-        "tr_allowed_sessions": ["RTH"],
+        "tr_allowed_sessions": sessions,
         "tr_one_trade_per_session": False,
         "one_trade_per_session_direction": False,
         "trail_enabled": False,
@@ -3937,12 +3948,16 @@ def _sigma_preset(
         "full_tp_lock": 0,
         "tr_full_tp_lock": 0,
         "sigma_window_minutes": int(window_minutes),
-        "sigma_method": "std",
-        "sigma_entry_mode": "blind",
+        "sigma_method": "mad" if str(method).lower() == "mad" else "std",
+        "sigma_entry_mode": "reject" if str(entry_mode).lower() == "reject" else "blind",
         "sigma_accept_mode": str(accept_mode),
-        "sigma_start": 1.0,
-        "sigma_max": 3.0,
-        "sigma_target_mode": "half",
+        "sigma_start": float(start_sigma),
+        "sigma_max": float(max_sigma),
+        "sigma_target_mode": (
+            str(target_mode).lower()
+            if str(target_mode).lower() in ("inner1", "half", "center")
+            else "half"
+        ),
         "sigma_stop_span": float(stop_span),
         "sigma_accept_sigma": 2.0,
         "sigma_accept_bars": 2,
@@ -3974,6 +3989,19 @@ _BUILTIN_PRESETS = {
     ),
     _CODEX_SIGMA_PRESET_2: _sigma_preset(
         window_minutes=15, accept_mode="filter", stop_span=1.5, daily_loss_stop=1,
+    ),
+    _CODEX_SIGMA_PRESET_3: _sigma_preset(
+        window_minutes=60,
+        method="std",
+        entry_mode="blind",
+        accept_mode="none",
+        target_mode="half",
+        stop_span=0.75,
+        daily_loss_stop=2,
+        allowed_sessions=["RTH"],
+        contract_size=3,
+        start_sigma=3.0,
+        max_sigma=3.0,
     ),
     # 1.0.8: CLAUDE #1 = rank #2(單5m VA70 RR4:+7218 PF1.47 Calmar9.1 win36%)
     _CLAUDE_701_PRESET_1: _codex_626_trend_preset(

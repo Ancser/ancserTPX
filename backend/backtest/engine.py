@@ -117,6 +117,8 @@ class BacktestEngine:
         self._fade_vp = VolumeProfileCalculator(self.TICK_SIZE, float(self.config.value_area_pct))
         self._fade_day: Optional[str] = None
         self._fade_day_candles: List[Candle] = []
+        self._fade_level_zones: List[ConsolidationZone] = []
+        self._fade_active_level_zone: Optional[ConsolidationZone] = None
         # 1.0.8: 出場模式("tp" 固定 TP | "ladder" 無 TP 階梯滾動)
         self._tr_exit_mode = (
             "ladder"
@@ -310,8 +312,10 @@ class BacktestEngine:
             self._force_exit(candles[-1], ExitReason.FLATTEN)
 
         # Close any remaining active zone at end of backtest (skip timeline/sigma).
-        if candles and self._zone_timeline is None and self.strategy_mode != "sigma":
+        if candles and self._zone_timeline is None and self.strategy_mode not in ("sigma", "fade"):
             self.detector.close_final_zone(candles[-1])
+        if candles and self.strategy_mode == "fade":
+            self._close_fade_level_zone(candles[-1].timestamp)
 
         # Flush any 60m post-breakout windows that didn't naturally close.
         self._finalize_breakout_trackers()
@@ -320,12 +324,14 @@ class BacktestEngine:
         calc = MetricsCalculator()
         metrics = calc.calculate_all(self._trades, self.config.initial_capital)
 
-        # Timeline/sigma modes do not render detector zones.
-        all_zones = (
-            []
-            if self._zone_timeline is not None or self.strategy_mode == "sigma"
-            else self.detector.get_all_zones()
-        )
+        # Timeline/sigma modes do not render detector zones. Fade renders the
+        # previous-day VAH/VAL levels as day-wide chart reference lines.
+        if self.strategy_mode == "fade":
+            all_zones = self._fade_level_zones
+        elif self._zone_timeline is not None or self.strategy_mode == "sigma":
+            all_zones = []
+        else:
+            all_zones = self.detector.get_all_zones()
 
         result = BacktestResult(
             config=self.config,
@@ -359,9 +365,48 @@ class BacktestEngine:
         self._breakout_trackers = []
         self._near_data_end = False   # live-edge guard flag
         self._zi = 0                  # zone timeline index
+        self._fade_day = None
+        self._fade_day_candles = []
+        self._fade_level_zones = []
+        self._fade_active_level_zone = None
         if self._zone_timeline is None:
             self.detector.reset()
         self.trend_follow.reset()
+
+    def _close_fade_level_zone(self, end_ts: datetime) -> None:
+        zone = self._fade_active_level_zone
+        if zone is None or zone.left_at is not None:
+            return
+        zone.left_at = end_ts
+        zone.status = ZoneStatus.LEFT
+        try:
+            zone.duration_minutes = max(0, int((end_ts - zone.formed_at).total_seconds() // 60))
+        except Exception:
+            zone.duration_minutes = 0
+
+    def _add_fade_level_zone(self, trade_date: str, start_ts: datetime, vp) -> None:
+        zone = ConsolidationZone(
+            zone_id=f"FDLVL:{trade_date}",
+            formed_at=start_ts,
+            left_at=None,
+            poc=vp.poc,
+            vah_80=vp.vah,
+            val_80=vp.val,
+            high_100=vp.high_100,
+            low_100=vp.low_100,
+            total_volume=vp.total_volume,
+            duration_minutes=0,
+            num_candles=0,
+            status=ZoneStatus.ACTIVE,
+            exit_direction=None,
+            mature=True,
+            candles=[],
+            timeframe="fade",
+            profile={},
+            va_bands={},
+        )
+        self._fade_level_zones.append(zone)
+        self._fade_active_level_zone = zone
 
     def _process_candle(self, candle: Candle):
         if self._record_equity:
@@ -397,6 +442,7 @@ class BacktestEngine:
             self._rv_day_closes.append(float(candle.close))
         if self.strategy_mode == "fade":
             if _ts_date != self._fade_day:
+                self._close_fade_level_zone(candle.timestamp)
                 if self._fade_day_candles:
                     try:
                         vp = self._fade_vp.calculate(self._fade_day_candles)
@@ -404,6 +450,7 @@ class BacktestEngine:
                             "date": _ts_date,
                             "poc": vp.poc, "vah": vp.vah, "val": vp.val,
                         })
+                        self._add_fade_level_zone(_ts_date, candle.timestamp, vp)
                     except ValueError:
                         pass  # 前日 K 線不足以算 VP → 沿用舊水位或無水位
                 self._fade_day = _ts_date
@@ -424,7 +471,7 @@ class BacktestEngine:
             _active_zone = _zt.get('active')
             _is_mature   = _zt.get('mature', False)
             _recent_zones = _zt.get('recent') or ([_active_zone] if _active_zone else [])
-        elif self.strategy_mode != "sigma":
+        elif self.strategy_mode not in ("sigma", "fade"):
             # Normal path: run detector live
             self.detector.update(candle)
 
@@ -517,6 +564,10 @@ class BacktestEngine:
                 eval_zones = []
                 eval_mature = True
                 zone_source = "rolling_sigma"
+            elif self.strategy_mode == "fade":
+                eval_zones = []
+                eval_mature = True
+                zone_source = "prev_day_va"
             else:
                 # Normal path — evaluate breakout vs the recent 10 reference zones
                 eval_zones  = self.detector.get_recent_zones()

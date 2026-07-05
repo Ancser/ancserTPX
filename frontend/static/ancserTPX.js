@@ -2885,6 +2885,7 @@ function initChart() {
 // POC extends from zone start to the next session boundary.
 
 let vpOverlayCanvas = null;
+let fadeLevelsCanvas = null;
 let positionLines = [];
 let _cachedVPZones = null;  // cached for redraw on scroll/zoom
 
@@ -2896,6 +2897,17 @@ function createVPOverlay() {
     canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
     container.appendChild(canvas);
     vpOverlayCanvas = canvas;
+    return canvas;
+}
+
+function createFadeLevelsCanvas() {
+    if (fadeLevelsCanvas) return fadeLevelsCanvas;
+    const container = document.getElementById('chart-container');
+    const canvas = document.createElement('canvas');
+    canvas.id = 'fade-level-overlay';
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
+    container.appendChild(canvas);
+    fadeLevelsCanvas = canvas;
     return canvas;
 }
 
@@ -3404,6 +3416,97 @@ function clearVPOverlay() {
     }
 }
 
+function clearFadeDailyLevels() {
+    if (fadeLevelsCanvas) {
+        const ctx = fadeLevelsCanvas.getContext('2d');
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, fadeLevelsCanvas.width, fadeLevelsCanvas.height);
+    }
+}
+
+function drawFadeDailyLevels(zones) {
+    const fadeZones = (zones || []).filter(z => String(z.timeframe || '').toLowerCase() === 'fade');
+    if (!fadeZones.length) {
+        clearFadeDailyLevels();
+        return;
+    }
+
+    const canvas = createFadeLevelsCanvas();
+    const container = document.getElementById('chart-container');
+    const dpr = window.devicePixelRatio || 1;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    const timeToX = (sec) => {
+        if (sec == null || !Number.isFinite(sec)) return null;
+        let x = null;
+        try { x = chart.timeScale().timeToCoordinate(sec); } catch (_) {}
+        if (x !== null && x !== undefined) return x;
+        try {
+            const vr = chart.timeScale().getVisibleRange();
+            if (!vr || vr.to <= vr.from) return null;
+            return (sec - vr.from) * (W / (vr.to - vr.from));
+        } catch (_) { return null; }
+    };
+
+    let vFrom = null;
+    let vTo = null;
+    try {
+        const vr = chart.timeScale().getVisibleRange();
+        if (vr) { vFrom = vr.from; vTo = vr.to; }
+    } catch (_) {}
+
+    const rightEdge = W - 60;
+    const drawLine = (x0, x1, y) => {
+        if (y === null || y < -80 || y > H + 80) return;
+        if (x1 < -20 || x0 > W + 20) return;
+        x0 = Math.max(0, x0);
+        x1 = Math.min(rightEdge, x1);
+        if (x1 <= x0 + 2) return;
+        ctx.beginPath();
+        ctx.moveTo(x0, y);
+        ctx.lineTo(x1, y);
+        ctx.stroke();
+    };
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.86)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+
+    fadeZones.forEach(z => {
+        const start = isoToChartTime(z.formed_at);
+        const end = z.left_at ? isoToChartTime(z.left_at) : null;
+        if (vFrom !== null && vTo !== null && end !== null && (end < vFrom || start > vTo)) return;
+
+        let x0 = timeToX(start);
+        let x1 = end !== null ? timeToX(end) : rightEdge;
+        if (x0 === null && vFrom !== null && vTo !== null) x0 = (start - vFrom) * (W / (vTo - vFrom));
+        if (x1 === null && end !== null && vFrom !== null && vTo !== null) x1 = (end - vFrom) * (W / (vTo - vFrom));
+        if (x0 === null) return;
+        if (x1 === null || x1 <= x0) x1 = rightEdge;
+
+        const vah = Number(z.vah_80);
+        const val = Number(z.val_80);
+        if (!Number.isFinite(vah) || !Number.isFinite(val)) return;
+        const yVAH = candleSeries.priceToCoordinate(vah);
+        const yVAL = candleSeries.priceToCoordinate(val);
+        drawLine(x0, x1, yVAH);
+        drawLine(x0, x1, yVAL);
+    });
+
+    ctx.restore();
+}
+
 // -- Decision-zone overlay --
 // Draw only the primary VAH/VAL range used by each trade decision.
 
@@ -3601,6 +3704,7 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
             drawLiveTradeMarkers(trades);
             if (_overlaySyncData) {
                 if (_cachedVPZones) drawVolumeProfile(_cachedVPZones);
+                drawFadeDailyLevels(_overlaySyncData.zones);
                 redrawTradeDecisionOverlays();
                 drawSessionDividers();
             }
@@ -3610,6 +3714,7 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
             renderExecuteTrades([]);
             drawLiveTradeMarkers([]);
             if (_overlaySyncData) {
+                drawFadeDailyLevels(_overlaySyncData.zones);
                 redrawTradeDecisionOverlays();
                 drawSessionDividers();
             }
@@ -3678,11 +3783,13 @@ function drawBacktestZones(zones) {
     // Clear old price lines
     zoneRectangles.forEach(l => { try { candleSeries.removePriceLine(l); } catch(e){} });
     zoneRectangles = [];
+    clearFadeDailyLevels();
 
     if (!zones || zones.length === 0) return;
 
     // Draw VP histogram + POC/VAH/VAL lines on full-chart canvas overlay
     drawVolumeProfile(zones);
+    drawFadeDailyLevels(zones);
 }
 
 // -- API Calls -------------------------------------
@@ -4357,6 +4464,7 @@ function startOverlaySync() {
             lastCheckX = curX;
             const zonesToDraw = _cachedVPZones || data.zones;
             if (zonesToDraw) drawVolumeProfile(zonesToDraw);
+            drawFadeDailyLevels(data.zones);
             redrawTradeDecisionOverlays();
             drawSessionDividers();
         }
