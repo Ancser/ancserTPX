@@ -38,10 +38,10 @@ TRAIL_TICK_STEP = 5
 # Keep in sync with backend.api.routes.ML_TIMEFRAMES so terminal honours the
 # same area-timeframe / overlap selections the web UI saves into presets.
 ML_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h")
-PRESET_SCHEMA_VERSION = "2026-06-25-ml-consolidation-v2"
-DEFAULT_PRESET_NAME = "ML CONFLUENCE MNQx3 DEFAULT"
+PRESET_SCHEMA_VERSION = "2026-07-03-sigma-resting"
+DEFAULT_PRESET_NAME = "TREND MNQx1 DEFAULT"
 DEFAULT_PRESET_PARAMS = {
-    "strategy": "confluence",
+    "strategy": "trend",
     "tp_ticks": 200,
     "sl_ticks": 50,
     "trail_sl_ticks": 10,
@@ -89,6 +89,16 @@ DEFAULT_PRESET_PARAMS = {
     "conf_full_tp_lock": 0,
     "conf_session_limit": True,
     "conf_shadow": False,
+    "sigma_window_minutes": 15,
+    "sigma_method": "std",
+    "sigma_entry_mode": "blind",
+    "sigma_accept_mode": "none",
+    "sigma_start": 1.0,
+    "sigma_max": 3.0,
+    "sigma_target_mode": "half",
+    "sigma_stop_span": 1.0,
+    "sigma_accept_sigma": 2.0,
+    "sigma_accept_bars": 2,
     # 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 }
 CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
@@ -112,8 +122,11 @@ CLAUDE_701_PRESET_3 = "07.01 CLAUDE #3 重合5m30m小TF VA80 MNQx1 TF5m+30m Trad
 FABLE_702_PRESET_1 = "07.02 FABLE #1 Trend 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON"
 FABLE_702_PRESET_2 = "07.02 FABLE #2 Trend 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON"
 FABLE_702_PRESET_3 = "07.02 FABLE #3 Trend 低回撤 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON"
-FABLE_702_FADE_X2 = "07.02 FABLE #4 Fade MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)"
-FABLE_702_FADE_X1 = "07.02 FABLE #5 Fade MNQx1 SL80 TP=POC Trail50 全時段 (配#3)"
+# 1.0.9: fade 收斂為單一最佳 preset(SL120/TP75%POC/limit;walk-forward 三段皆正,
+# PF2.13 DD305 +1307)。舊 SL80/TP=POC #4/#5 證過擬合(多 1 日 +1255→+86),移除。
+FABLE_703_FADE = "07.03 FADE 前日VAL接多 MNQx1 SL120 TP75%POC Limit 全時段"
+CODEX_SIGMA_PRESET_1 = "07.03 CODEX SIGMA #1 RTH Roll30 Std Resting HalfTP SL1 LossStop1 MNQx1"
+CODEX_SIGMA_PRESET_2 = "07.03 CODEX SIGMA #2 RTH Roll15 Std Resting Filter HalfTP SL1.5 LossStop1 MNQx1"
 DEFAULT_LAST_USED_PRESET = FABLE_702_PRESET_1
 PRESET_RENAMES = {
     # 1.0.8: FABLE 改名(動量書→Trend、Fade 編號 #4/#5)
@@ -123,14 +136,16 @@ PRESET_RENAMES = {
         "07.02 FABLE #2 Trend 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON",
     "07.02 FABLE #3 動量書 最小最差日 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON":
         "07.02 FABLE #3 Trend 低回撤 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON",
-    "07.02 FABLE Fade前日VAL接多 MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)":
-        "07.02 FABLE #4 Fade MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)",
-    "07.02 FABLE Fade前日VAL接多 MNQx1 SL80 TP=POC Trail50 全時段 (配#3)":
-        "07.02 FABLE #5 Fade MNQx1 SL80 TP=POC Trail50 全時段 (配#3)",
+    # 1.0.9: 舊 fade #4/#5(SL80/TP=POC,過擬合)→ 收斂到唯一最佳 fade
+    "07.02 FABLE Fade前日VAL接多 MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)": FABLE_703_FADE,
+    "07.02 FABLE Fade前日VAL接多 MNQx1 SL80 TP=POC Trail50 全時段 (配#3)": FABLE_703_FADE,
+    "07.02 FABLE #4 Fade MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)": FABLE_703_FADE,
+    "07.02 FABLE #5 Fade MNQx1 SL80 TP=POC Trail50 全時段 (配#3)": FABLE_703_FADE,
 }
 REMOVED_PRESET_NAMES = {
-    DEFAULT_PRESET_NAME,
     "ML CONFLUENCE MNQx3 DEFAULT",
+    "07.03 CODEX SIGMA #1 RTH Roll30 Std Reject HalfTP SL1 LossStop1 MNQx1",
+    "07.03 CODEX SIGMA #2 RTH Roll15 Std Reject Filter HalfTP SL1.5 LossStop1 MNQx1",
     "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON ASIA B4 TF2 MNQx3",
     "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2 MNQx3",
     "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2 MNQx1",
@@ -235,32 +250,70 @@ def _trend_preset(
     }
 
 
-# 1.0.8: FADE 前日 VA 回歸 preset(策略 = fade,買前日 VAL → TP 前日 POC)
-def _fade_preset(*, contract_size: int = 1) -> Dict[str, Any]:
+# 1.0.9: FADE 前日 VA 回歸 preset(唯一最佳版:SL120 / TP=VAL+0.75*(POC-VAL) / limit)
+def _fade_preset(*, contract_size: int = 1, entry_mode: str = "limit") -> Dict[str, Any]:
     return {
         **dict(DEFAULT_PRESET_PARAMS),
         "strategy": "fade",
-        "contract_id": current_quarterly_contract_id("MNQ"),  # 1.0.8: 自動換月
+        "contract_id": current_quarterly_contract_id("MNQ"),  # 自動換月
         "contract_size": int(contract_size),
         "value_area_pct": 0.80,
-        "sl_ticks": 80,
-        "tr_sl_ticks": 80,          # 回測證實 fade 的 SL 不可收窄
-        "tp_ticks": 160,            # 名義值;實際 TP = 前日 POC(策略內定)
-        "tr_tp_ticks": 160,
-        "trail_enabled": True,
-        "tr_trail_enabled": True,
-        "trail_trigger_pct": 0.50,
-        "tr_trail_trigger_pct": 0.50,
-        "trail_sl_ticks": 10,
-        "tr_trail_sl_ticks": 10,
-        "full_tp_lock": 0,
-        "tr_full_tp_lock": 0,
+        "sl_ticks": 120,            # 1.0.9: 更寬 SL 緩衝(walk-forward 最穩)
+        "tr_sl_ticks": 120,
+        "fade_tp_frac": 0.75,       # 1.0.9: TP = VAL→POC 的 75%(提前落袋)
+        "fade_entry_mode": entry_mode,   # "limit" | "rejection"
+        "tp_ticks": 160, "tr_tp_ticks": 160,   # 名義值;實際 TP 由策略內定
+        "trail_enabled": True, "tr_trail_enabled": True,
+        "trail_trigger_pct": 0.50, "tr_trail_trigger_pct": 0.50,
+        "trail_sl_ticks": 10, "tr_trail_sl_ticks": 10,
+        "full_tp_lock": 0, "tr_full_tp_lock": 0,
         "one_trade_per_session_direction": False,   # 每日一次由策略自管
         "tr_one_trade_per_session": False,
         "tr_allowed_sessions": ["ASIA", "EURO", "PRE", "RTH", "AH"],  # 全時段
-        "area_timeframe": "5m",     # detector 照跑(僅供圖表),策略不用 zone
+        "area_timeframe": "5m", "method": "single", "tf_combo": [],
+    }
+
+
+def _sigma_preset(
+    *,
+    window_minutes: int,
+    accept_mode: str,
+    stop_span: float,
+    daily_loss_stop: int = 1,
+) -> Dict[str, Any]:
+    return {
+        **dict(DEFAULT_PRESET_PARAMS),
+        "strategy": "sigma",
+        "contract_id": current_quarterly_contract_id("MNQ"),
+        "contract_size": 1,
+        "candle_seconds": 60,
+        "area_timeframe": "5m",
         "method": "single",
         "tf_combo": [],
+        "value_area_pct": 0.80,
+        "tr_allowed_sessions": ["RTH"],
+        "tr_one_trade_per_session": False,
+        "one_trade_per_session_direction": False,
+        "trail_enabled": False,
+        "tr_trail_enabled": False,
+        "trail_trigger_pct": 0.0,
+        "tr_trail_trigger_pct": 0.0,
+        "trail_sl_ticks": 0,
+        "tr_trail_sl_ticks": 0,
+        "tr_exit_mode": "tp",
+        "tr_daily_loss_stop": int(daily_loss_stop),
+        "full_tp_lock": 0,
+        "tr_full_tp_lock": 0,
+        "sigma_window_minutes": int(window_minutes),
+        "sigma_method": "std",
+        "sigma_entry_mode": "blind",
+        "sigma_accept_mode": str(accept_mode),
+        "sigma_start": 1.0,
+        "sigma_max": 3.0,
+        "sigma_target_mode": "half",
+        "sigma_stop_span": float(stop_span),
+        "sigma_accept_sigma": 2.0,
+        "sigma_accept_bars": 2,
     }
 
 
@@ -281,9 +334,14 @@ BUILTIN_PRESETS = {
         trail_enabled=True, value_area_pct=0.70,
         exit_mode="ladder", daily_loss_stop=3,
     ),
-    # 1.0.8: FABLE Fade 書(前日 VAL 接多 → 前日 POC;x2 配 #1/#2,x1 配 #3)
-    FABLE_702_FADE_X2: _fade_preset(contract_size=2),
-    FABLE_702_FADE_X1: _fade_preset(contract_size=1),
+    # 1.0.9: FADE 唯一最佳版(SL120/TP75%/limit;可改 size 或 fade_entry_mode=rejection)
+    FABLE_703_FADE: _fade_preset(contract_size=1, entry_mode="limit"),
+    CODEX_SIGMA_PRESET_1: _sigma_preset(
+        window_minutes=30, accept_mode="none", stop_span=1.0, daily_loss_stop=1,
+    ),
+    CODEX_SIGMA_PRESET_2: _sigma_preset(
+        window_minutes=15, accept_mode="filter", stop_span=1.5, daily_loss_stop=1,
+    ),
     # 1.0.8: CLAUDE #1 = rank #2(單5m VA70 RR4:+7218 PF1.47 Calmar9.1 win36%)
     CLAUDE_701_PRESET_1: _trend_preset(
         area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
@@ -331,19 +389,8 @@ logger = logging.getLogger("ancserTPX.terminal")
 
 
 def _activate_preset_model(preset: Dict[str, Any]) -> None:
-    """Keep terminal/mac direct launch in sync with UI presets."""
-    if str(preset.get("strategy") or "").lower() != "confluence":
-        return
-    name = str(preset.get("conf_model_name") or "").strip()
-    if not name:
-        return
-    try:
-        from backend.strategy.confluence_scorer import activate_model_version
-
-        activate_model_version(name)
-        logger.info("Preset model active: %s", name)
-    except Exception as exc:
-        logger.warning("Preset model activate failed (%s): %s", name, exc)
+    """Retired: confluence model activation is disabled in the terminal path."""
+    return
 
 
 ES_CONTINUOUS = 0x80000000
@@ -409,7 +456,7 @@ def _load_presets_file() -> dict:
             continue
         strategy = str(params.get("strategy") or "").lower()
         # 1.0.8: mlc2 已移除 — 舊 preset 一律歸一化為 trend;+fade 放行
-        params["strategy"] = strategy if strategy in ("confluence", "fade") else "trend"
+        params["strategy"] = strategy if strategy in ("fade", "sigma") else "trend"
         # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         params["contract_id"] = normalize_contract_id_to_front(params.get("contract_id") or "")
         allowed_keys = {
@@ -419,6 +466,11 @@ def _load_presets_file() -> dict:
             "value_area_pct", "area_timeframe", "method", "tf_combo",
             "tr_overlap_trade_tf",
             "tr_exit_mode", "tr_daily_loss_stop",  # 1.0.8: ladder 出場 + 日虧斷路器
+            "tr_prev_rv_gate", "fade_tp_frac", "fade_entry_mode",  # 1.0.9
+            "sigma_window_minutes", "sigma_method", "sigma_entry_mode",
+            "sigma_accept_mode", "sigma_start", "sigma_max",
+            "sigma_target_mode", "sigma_stop_span", "sigma_accept_sigma",
+            "sigma_accept_bars",
             "rr_ratio", "breakout_confirm_bars", "skip_zone_stability",
             "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
             "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
@@ -435,9 +487,7 @@ def _load_presets_file() -> dict:
             if key not in allowed_keys:
                 params.pop(key, None)
         params["value_area_pct"] = _normalize_value_area_pct(params.get("value_area_pct"))  # 1.0.8: 保留 70/80
-        if params["strategy"] == "confluence" and "conf_allowed_sessions" not in params:
-            params["conf_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
-        if params["strategy"] == "trend" and "tr_allowed_sessions" not in params:
+        if params["strategy"] in ("trend", "sigma") and "tr_allowed_sessions" not in params:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
         new_name = None
         if str(name).startswith("BR "):
@@ -673,8 +723,8 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
 
     # v1.0.6: confluence (explainable ML) mode — driven by preset["strategy"].
     # 1.0.8: +fade(前日 VA 回歸)
-    strategy_mode = str(preset.get("strategy") or "confluence").lower()
-    if strategy_mode not in ("confluence", "fade"):
+    strategy_mode = str(preset.get("strategy") or "trend").lower()
+    if strategy_mode not in ("fade", "sigma"):
         strategy_mode = "trend"
 
     def _conf_float(key, default):
@@ -746,6 +796,32 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
             "ladder" if str(preset.get("tr_exit_mode") or "tp").lower() == "ladder" else "tp"
         ),
         tr_daily_loss_stop=max(0, min(9, _conf_int("tr_daily_loss_stop", 0))),
+        # 1.0.9: prevRV regime gate + fade 專用
+        tr_prev_rv_gate=max(0, min(60, _conf_int("tr_prev_rv_gate", 0))),
+        fade_tp_frac=float(preset.get("fade_tp_frac", 0.75) or 0.75),
+        fade_entry_mode=("rejection" if str(preset.get("fade_entry_mode") or "limit").lower() == "rejection" else "limit"),
+        sigma_window_minutes=max(5, _conf_int("sigma_window_minutes", 15)),
+        sigma_method=(
+            "mad" if str(preset.get("sigma_method") or "").lower() == "mad" else "std"
+        ),
+        sigma_entry_mode=(
+            "reject" if str(preset.get("sigma_entry_mode") or "blind").lower() == "reject" else "blind"
+        ),
+        sigma_accept_mode=(
+            str(preset.get("sigma_accept_mode") or "none").lower()
+            if str(preset.get("sigma_accept_mode") or "none").lower() in ("none", "filter", "switch")
+            else "none"
+        ),
+        sigma_start=max(0.5, _conf_float("sigma_start", 1.0)),
+        sigma_max=max(1.0, _conf_float("sigma_max", 3.0)),
+        sigma_target_mode=(
+            str(preset.get("sigma_target_mode") or "half").lower()
+            if str(preset.get("sigma_target_mode") or "half").lower() in ("inner1", "half", "center")
+            else "half"
+        ),
+        sigma_stop_span=max(0.25, _conf_float("sigma_stop_span", 1.0)),
+        sigma_accept_sigma=max(1.0, _conf_float("sigma_accept_sigma", 2.0)),
+        sigma_accept_bars=max(1, _conf_int("sigma_accept_bars", 2)),
         full_tp_lock=primary["lock"],
         one_trade_per_session_direction=bool(preset.get("one_trade_per_session_direction", True)),
         tr_one_trade_per_session=bool(preset.get("tr_one_trade_per_session", True)),
@@ -814,22 +890,6 @@ async def run_terminal_live() -> int:
         return 2
 
     preset_name, preset, preset_source = _load_default_preset()
-
-    # v1.0.6: one-line console confluence switch (no preset editing needed).
-    #   TOPSTEPX_CONFLUENCE=1            -> run the explainable ML confluence mode
-    #   TOPSTEPX_CONFLUENCE_SHADOW=1     -> log signals only (default: LIVE places orders)
-    #   TOPSTEPX_CONF_MIN_PROB=0.55      -> skip signals below this win-probability
-    # Base candle resolution is standardized at 1m (matches stored data + backtest).
-    if _env_bool("TOPSTEPX_CONFLUENCE", False):
-        preset = dict(preset)
-        preset["strategy"] = "confluence"
-        preset["conf_shadow"] = _env_bool("TOPSTEPX_CONFLUENCE_SHADOW", False)
-        preset["conf_base_minutes"] = 1
-        try:
-            preset["conf_min_prob"] = float(os.getenv("TOPSTEPX_CONF_MIN_PROB", "0.65") or 0.65)
-        except ValueError:
-            preset["conf_min_prob"] = 0.65
-        preset_source = f"{preset_source}+confluence_env"
 
     client = TopstepXClient(username=username, api_key=api_key, use_demo=use_demo)
     engine: Optional[LiveTradingEngine] = None

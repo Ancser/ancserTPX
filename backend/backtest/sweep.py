@@ -89,6 +89,7 @@ def _run_one(params: StrategyParams, candles: List[Candle], timeline: List[dict]
     # monthly_avg = 30.44 天歸一化月率(run-rate);日曆月分組平均會被
     # 部分月(月初/月末只有幾個交易日)嚴重拖低,故不用。
     monthly_rate = 0.0
+    seg_pnls = [0.0, 0.0, 0.0]
     if day:
         keys = sorted(day.keys())
         from datetime import date as _date
@@ -96,7 +97,14 @@ def _run_one(params: StrategyParams, candles: List[Candle], timeline: List[dict]
         d1 = _date.fromisoformat(keys[-1])
         span_days = max(1, (d1 - d0).days + 1)
         monthly_rate = float(m.total_pnl) * 30.44 / span_days
+        # 1.0.9 P1: walk-forward 三段(日期跨度三等分)— 各段獨立 pnl
+        for dk, v in day.items():
+            off = (_date.fromisoformat(dk) - d0).days
+            seg = min(2, int(off * 3 / span_days))
+            seg_pnls[seg] += v
     return {
+        "seg_pnls": [round(x, 1) for x in seg_pnls],
+        "wf_pass": bool(all(x > 0 for x in seg_pnls)),   # 1.0.9 P1 接受條件之一
         "trades": int(m.total_trades),
         "win_rate": round(float(m.win_rate), 4),
         "pnl": round(float(m.total_pnl), 1),
@@ -168,4 +176,57 @@ def run_trend_sweep(
         if progress_cb and (done % 4 == 0 or done == total):
             progress_cb(done, total, r["label"])
 
+    _annotate_plateau_and_acceptance(results)
     return results
+
+
+def _annotate_plateau_and_acceptance(results: List[dict]) -> None:
+    """1.0.9 P1: 平原測試 + 預註冊接受標準。
+
+    平原 = 鄰近參數(單一維度 ±1 檔)多數仍為正 — 真 edge 是平原,
+    尖點是過擬合指紋。接受 = wf 三段各正 + 平原 + 樣本 ≥80 + 期望 >0。
+    """
+    by_key = {}
+    for r in results:
+        p = r["params"]
+        by_key[(p["value_area_pct"], p["tr_exit_mode"], p["rr_ratio"],
+                p["breakout_confirm_bars"], p["tr_daily_loss_stop"])] = r
+
+    va_list = list(SWEEP_VA)
+    rr_list = [rr for (mode, rr) in SWEEP_EXITS if mode == "tp"]
+    c_list = list(SWEEP_CONFIRM)
+    s_list = list(SWEEP_STOP)
+
+    def _step_neighbors(seq, v):
+        try:
+            i = seq.index(v)
+        except ValueError:
+            return []
+        out = []
+        if i > 0:
+            out.append(seq[i - 1])
+        if i < len(seq) - 1:
+            out.append(seq[i + 1])
+        return out
+
+    for r in results:
+        p = r["params"]
+        va, mode, rr = p["value_area_pct"], p["tr_exit_mode"], p["rr_ratio"]
+        c, s = p["breakout_confirm_bars"], p["tr_daily_loss_stop"]
+        neigh = []
+        for va2 in _step_neighbors(va_list, va):
+            neigh.append((va2, mode, rr, c, s))
+        if mode == "tp":
+            for rr2 in _step_neighbors(rr_list, rr):
+                neigh.append((va, mode, rr2, c, s))
+        for c2 in _step_neighbors(c_list, c):
+            neigh.append((va, mode, rr, c2, s))
+        for s2 in _step_neighbors(s_list, s):
+            neigh.append((va, mode, rr, c, s2))
+        vals = [by_key[k]["pnl"] for k in neigh if k in by_key]
+        pos = sum(1 for v in vals if v > 0)
+        r["plateau_pass"] = bool(vals and pos / len(vals) >= 0.6 and r["pnl"] > 0)
+        r["accept"] = bool(
+            r.get("wf_pass") and r["plateau_pass"]
+            and r["trades"] >= 80 and r["expect"] > 0
+        )

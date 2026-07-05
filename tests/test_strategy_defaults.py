@@ -6,44 +6,38 @@ from backend.terminal_live import _build_strategy_params
 
 
 class StrategyDefaultTests(unittest.TestCase):
-    def test_public_defaults_use_confluence(self):
+    def test_public_defaults_use_trend(self):
         strategy = StrategyParams()
         backtest = BacktestRequest()
         live = LiveStartRequest(account_id=1)
-        self.assertEqual(strategy.strategy, "confluence")
-        self.assertEqual(backtest.strategy, "confluence")
-        self.assertEqual(live.strategy, "confluence")
+        self.assertEqual(strategy.strategy, "trend")
+        self.assertEqual(backtest.strategy, "trend")
+        self.assertEqual(live.strategy, "trend")
         for params in (strategy, backtest, live):
-            self.assertEqual(params.conf_band_ticks, 4.0)
-            self.assertEqual(params.conf_min_distinct_tf, 2)
-            self.assertEqual(params.conf_rr, 1.0)
-            self.assertEqual(params.conf_wait_minutes, 1)
-            self.assertEqual(params.conf_min_prob, 0.65)
-            self.assertIsNone(params.conf_rr_grid)
-            self.assertFalse(params.conf_enable_breakout)
-            self.assertIsNone(getattr(params, "conf_max_risk_ticks", None))
-            self.assertEqual(params.conf_trail_trigger_pct, 0.50)
-            self.assertEqual(params.conf_trail_lock_pct, 0.05)
+            self.assertEqual(params.sigma_window_minutes, 15)
+            self.assertEqual(params.sigma_method, "std")
+            self.assertEqual(params.sigma_entry_mode, "blind")
+            self.assertEqual(params.sigma_accept_mode, "none")
 
-    def test_terminal_preserves_new_confluence_fields(self):
+    def test_terminal_preserves_sigma_fields(self):
         params = _build_strategy_params({
-            "strategy": "confluence",
-            "conf_ev_floor": 0.2,
-            "conf_rr_grid": [1.0, 1.5, 2.0],
-            "conf_enable_breakout": False,
-            "conf_trail_trigger_pct": 0.5,
-            "conf_trail_lock_pct": 0.1,
-            "conf_full_tp_lock": 2,
-            "conf_session_limit": False,
+            "strategy": "sigma",
+            "sigma_window_minutes": 30,
+            "sigma_method": "std",
+            "sigma_entry_mode": "blind",
+            "sigma_accept_mode": "filter",
+            "sigma_stop_span": 1.5,
+            "tr_allowed_sessions": ["RTH"],
+            "tr_one_trade_per_session": False,
         }, "CON.F.US.MNQ.M26")
-        self.assertEqual(params.strategy, "confluence")
-        self.assertEqual(params.conf_ev_floor, 0.2)
-        self.assertIsNone(params.conf_rr_grid)
-        self.assertFalse(params.conf_enable_breakout)
-        self.assertEqual(params.conf_trail_trigger_pct, 0.5)
-        self.assertEqual(params.conf_trail_lock_pct, 0.1)
-        self.assertEqual(params.conf_full_tp_lock, 2)
-        self.assertFalse(params.conf_session_limit)
+        self.assertEqual(params.strategy, "sigma")
+        self.assertEqual(params.sigma_window_minutes, 30)
+        self.assertEqual(params.sigma_method, "std")
+        self.assertEqual(params.sigma_entry_mode, "blind")
+        self.assertEqual(params.sigma_accept_mode, "filter")
+        self.assertEqual(params.sigma_stop_span, 1.5)
+        self.assertEqual(params.tr_allowed_sessions, ["RTH"])
+        self.assertFalse(params.tr_one_trade_per_session)
 
 
 if __name__ == "__main__":

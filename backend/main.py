@@ -53,7 +53,12 @@ async def lifespan(app: FastAPI):
     logger.info("ancserTPX 後端啟動中...")
     username = os.getenv("TOPSTEPX_USERNAME", "")
     logger.info(f"  .env loaded: username={username}, api_key={'***set***' if os.getenv('TOPSTEPX_API_KEY') else 'NOT SET'}")
+    # 1.0.9 P0: 每日 20:10 UTC 影子重放(實盤 vs 同參數回測逐筆對賬)
+    import asyncio as _asyncio
+    from backend.api.routes import shadow_replay_daily_task
+    _shadow_task = _asyncio.create_task(shadow_replay_daily_task())
     yield
+    _shadow_task.cancel()   # 1.0.9
     logger.info("ancserTPX 後端關閉")
 
 

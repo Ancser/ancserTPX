@@ -72,7 +72,7 @@ function refreshContractOptions() {
 document.addEventListener('DOMContentLoaded', refreshContractOptions);
 
 const DEFAULT_STRATEGY_PARAMS = {
-    strategy: 'confluence',
+    strategy: 'trend',
     tp_ticks: 200,
     sl_ticks: 50,
     trail_sl_ticks: 10,
@@ -117,6 +117,16 @@ const DEFAULT_STRATEGY_PARAMS = {
     conf_trail_lock_pct: 0.05,
     conf_full_tp_lock: 0,
     conf_session_limit: true,
+    sigma_window_minutes: 15,
+    sigma_method: 'std',
+    sigma_entry_mode: 'blind',
+    sigma_accept_mode: 'none',
+    sigma_start: 1.0,
+    sigma_max: 3.0,
+    sigma_target_mode: 'half',
+    sigma_stop_span: 1.0,
+    sigma_accept_sigma: 2.0,
+    sigma_accept_bars: 2,
     // 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 };
 
@@ -468,7 +478,7 @@ function onOverlapTradeTfChange(mode) {
 
 function normalizeStrategyName(value) {
     const v = String(value || '').trim().toLowerCase();
-    if (v === 'confluence') return 'confluence';
+    if (v === 'sigma') return 'sigma';
     if (v === 'fade') return 'fade';   // 1.0.8: FADE 前日VA回歸
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 策略映射
     return 'trend';
@@ -504,6 +514,15 @@ function updateStrategyParamVisibility(mode) {
         enforceFadeTfLock(mode, isFade);   // 1.0.8: fade → 鎖 DAY
         onExitModeChange(mode);            // 1.0.8: 依 exit mode 灰化
     }
+    // 1.0.9: fade 進場模式列僅 fade 顯示;唯讀 SL 模型顯示依策略更新
+    show('fade-entry-mode-row-' + mode, isFade);
+    const SL_MODEL = {
+        trend: 'TREND: POC↔VAH/VAL 間最低量節點 SL',
+        fade:  'FADE: 前日 VAL − 120 tick(固定緩衝)',
+        sigma: 'SIGMA: 開盤價 ± N×σ(滾動標準差)',
+    };
+    const slEl = document.getElementById('sl-model-display-' + mode);
+    if (slEl) slEl.value = SL_MODEL[strategy] || SL_MODEL.trend;
 }
 
 // 1.0.8: FADE = 固定用「前一整個交易日」水位 — TF 群組顯示 DAY(鎖定),
@@ -874,6 +893,19 @@ function collectStrategyParams(mode) {
         // 1.0.8: 出場模式(tp | ladder)+ 日虧斷路器(0=OFF)
         tr_exit_mode: (_mlSelectValue('tr-exit-mode-' + mode, 'tp') === 'ladder') ? 'ladder' : 'tp',
         tr_daily_loss_stop: Math.max(0, Math.min(6, _int('tr-daily-stop-' + mode, 0))),
+        // 1.0.9: prevRV 波動閘 + fade 進場模式
+        tr_prev_rv_gate: Math.max(0, Math.min(60, _int('tr-prev-rv-gate-' + mode, 0))),
+        fade_entry_mode: (_mlSelectValue('fade-entry-mode-' + mode, 'limit') === 'rejection') ? 'rejection' : 'limit',
+        sigma_window_minutes: parseInt(applied.sigma_window_minutes != null ? applied.sigma_window_minutes : 15, 10) || 15,
+        sigma_method: String(applied.sigma_method || 'std') === 'mad' ? 'mad' : 'std',
+        sigma_entry_mode: String(applied.sigma_entry_mode || 'blind') === 'reject' ? 'reject' : 'blind',
+        sigma_accept_mode: ['none', 'filter', 'switch'].includes(String(applied.sigma_accept_mode || 'none')) ? String(applied.sigma_accept_mode || 'none') : 'none',
+        sigma_start: Number(applied.sigma_start != null ? applied.sigma_start : 1.0) || 1.0,
+        sigma_max: Number(applied.sigma_max != null ? applied.sigma_max : 3.0) || 3.0,
+        sigma_target_mode: ['inner1', 'half', 'center'].includes(String(applied.sigma_target_mode || 'half')) ? String(applied.sigma_target_mode || 'half') : 'half',
+        sigma_stop_span: Number(applied.sigma_stop_span != null ? applied.sigma_stop_span : 1.0) || 1.0,
+        sigma_accept_sigma: Number(applied.sigma_accept_sigma != null ? applied.sigma_accept_sigma : 2.0) || 2.0,
+        sigma_accept_bars: parseInt(applied.sigma_accept_bars != null ? applied.sigma_accept_bars : 2, 10) || 2,
     };
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 參數區塊
     return params;
@@ -947,6 +979,9 @@ function applyStrategyParams(mode, params) {
     // 1.0.8: 出場模式 + 日虧斷路器
     _set('tr-exit-mode-' + mode, String(p.tr_exit_mode || 'tp') === 'ladder' ? 'ladder' : 'tp');
     _set('tr-daily-stop-' + mode, String(Math.max(0, Math.min(6, parseInt(p.tr_daily_loss_stop != null ? p.tr_daily_loss_stop : 0, 10) || 0))));
+    // 1.0.9: prevRV 波動閘 + fade 進場模式
+    _set('tr-prev-rv-gate-' + mode, String(Math.max(0, Math.min(60, parseInt(p.tr_prev_rv_gate != null ? p.tr_prev_rv_gate : 0, 10) || 0))));
+    _set('fade-entry-mode-' + mode, String(p.fade_entry_mode || 'limit') === 'rejection' ? 'rejection' : 'limit');
 
     // ML (confluence) params — restored when the preset uses the ML strategy.
     const _prob = (v) => {
@@ -1021,6 +1056,28 @@ function isFixedPreset(name) {
     return Array.isArray(_presetsCache.fixed_presets) && _presetsCache.fixed_presets.includes(name);
 }
 
+function _presetSortRank(name) {
+    const s = String(name || '');
+    const m = s.match(/CLAUDE #([123])\b/);
+    if (m) return Number(m[1]);
+    if (s.includes('FABLE #')) return 10;
+    if (s.includes('CODEX SIGMA')) return 20;
+    if (s.includes('CODEX #3')) return 30;
+    if (s.includes('CODEX #4')) return 31;
+    if (s.includes('CODEX #2')) return 32;
+    return 100;
+}
+
+function _presetDisplayName(name) {
+    const s = String(name || '');
+    const m = s.match(/^(\d{2}\.\d{2})\s+([A-Z]+(?:\s+SIGMA)?)\s+#(\d+)\s+(.*)$/);
+    if (!m) return s;
+    const date = m[1];
+    const author = m[2].padEnd(11, ' ');
+    const num = ('#' + m[3]).padEnd(4, ' ');
+    return date + '  ' + author + num + m[4];
+}
+
 function _namingDatePrefix(d) {
     const dt = d instanceof Date ? d : new Date();
     const mm = String(dt.getMonth() + 1).padStart(2, '0');
@@ -1067,6 +1124,20 @@ function _probToken(value) {
 
 function buildPresetParamToken(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
+    if (normalizeStrategyName(p.strategy) === 'sigma') {
+        const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : ['RTH']);
+        return [
+            'SIGMA',
+            'Roll' + (parseInt(p.sigma_window_minutes != null ? p.sigma_window_minutes : 15, 10) || 15),
+            String(p.sigma_method || 'std').toUpperCase(),
+            String(p.sigma_entry_mode || 'blind'),
+            'Accept' + String(p.sigma_accept_mode || 'none'),
+            'TP' + String(p.sigma_target_mode || 'half'),
+            'SL' + String(p.sigma_stop_span != null ? p.sigma_stop_span : 1),
+            market,
+            _contractPresetToken(p),
+        ].join(' ');
+    }
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = p.conf_max_risk_ticks != null && Number(p.conf_max_risk_ticks) > 0
             ? ('R' + Number(p.conf_max_risk_ticks))
@@ -1110,6 +1181,7 @@ function buildPresetParamToken(params) {
 
 function suggestedPresetPurpose(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
+    if (normalizeStrategyName(p.strategy) === 'sigma') return 'Sigma';
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = Number(p.conf_max_risk_ticks || 0);
         const prob = Number(p.conf_min_prob || 0);
@@ -1186,7 +1258,7 @@ async function fetchPresets() {
 async function savePreset(mode) {
     const params = collectStrategyParams(mode);
     const confParams = collectConfluenceParams(mode);
-    if (confParams) {
+    if (false && confParams) {
         const modelSel = document.getElementById('conf-model-' + mode);
         Object.assign(params, confParams, {
             strategy: 'confluence',
@@ -1226,7 +1298,6 @@ async function loadPreset(mode) {
     } else if (_presetsCache.presets[name]) {
         const presetParams = _presetsCache.presets[name];
         applyStrategyParams(mode, presetParams);
-        await activatePresetModel(mode, presetParams.conf_model_name);
         log('Preset "' + name + '" loaded', 'info');
     }
     // Record last used
@@ -1240,7 +1311,12 @@ async function loadPreset(mode) {
 }
 
 function refreshPresetDropdowns() {
-    const names = Object.keys(_presetsCache.presets || {});
+    const names = Object.keys(_presetsCache.presets || {}).sort((a, b) => {
+        const ra = _presetSortRank(a);
+        const rb = _presetSortRank(b);
+        if (ra !== rb) return ra - rb;
+        return String(a).localeCompare(String(b), undefined, { numeric: true });
+    });
     ['bt', 'live'].forEach(function(mode) {
         const sel = document.getElementById('preset-' + mode);
         if (!sel) return;
@@ -1249,7 +1325,7 @@ function refreshPresetDropdowns() {
         names.forEach(function(n) {
             const opt = document.createElement('option');
             opt.value = n;
-            opt.textContent = isFixedPreset(n) ? n + ' *' : n;
+            opt.textContent = _presetDisplayName(isFixedPreset(n) ? n + ' *' : n);
             sel.appendChild(opt);
         });
         if (current && (current === 'default' || _presetsCache.presets[current])) {
@@ -1299,7 +1375,6 @@ async function initPresets() {
         btSel.value = lastBt;
         if (lastBt !== 'default' && _presetsCache.presets[lastBt]) {
             applyStrategyParams('bt', _presetsCache.presets[lastBt]);
-            await activatePresetModel('bt', _presetsCache.presets[lastBt].conf_model_name, { silent: true });
         } else {
             applyStrategyParams('bt', DEFAULT_STRATEGY_PARAMS);
         }
@@ -1308,7 +1383,6 @@ async function initPresets() {
         liveSel.value = lastLive;
         if (lastLive !== 'default' && _presetsCache.presets[lastLive]) {
             applyStrategyParams('live', _presetsCache.presets[lastLive]);
-            await activatePresetModel('live', _presetsCache.presets[lastLive].conf_model_name, { silent: true });
         } else {
             applyStrategyParams('live', DEFAULT_STRATEGY_PARAMS);
         }
@@ -1511,7 +1585,6 @@ async function retrainModel(mode) {
     } catch (e) { log('訓練失敗: ' + e, 'error'); }
 }
 
-document.addEventListener('DOMContentLoaded', loadModelRegistry);
 
 // -- Connection Dropdown ----------------------------
 
@@ -1585,7 +1658,7 @@ function hideHelpTooltip() {
 function decorateParamHelpDots() {
     // Applied to BOTH backtest (-bt) and live (-live) panels.
     const shared = {
-        'strategy': '\u7b56\u7565\u908f\u8f2f\uff1aTREND = \u5340\u9593\u7a81\u7834\u8da8\u52e2\u55ae\uff1bML Confluence = \u591a\u6642\u9593\u6846\u6c34\u5e73\u532f\u805a\u8a55\u5206\uff1bML Consolidation V2 = \u6efe\u52d5\u5340\u9593 VAH/VAL \u5747\u503c\u56de\u6b78\u3002\nStrategy selector for trend, ML confluence, or ML Consolidation V2.',
+        'strategy': '\u7b56\u7565\u908f\u8f2f\uff1aTREND = \u5340\u9593\u7a81\u7834\u8da8\u52e2\u55ae\uff1bFADE = \u524d\u65e5 VA \u5747\u503c\u56de\u6b78\uff1bSIGMA = rolling standard deviation resting fade\u3002\nStrategy selector for trend, fade, or sigma.',
         'contract': '\u4ea4\u6613 / \u56de\u6e2c\u4f7f\u7528\u7684\u671f\u8ca8\u5408\u7d04\uff0c\u4f8b\u5982 CON.F.US.MNQ.M26\u3002\nFutures contract used for data and orders.',
         'size': '\u6bcf\u7b46\u4ea4\u6613\u7684\u5408\u7d04\u53e3\u6578\u3002\nNumber of contracts per trade.',
         'preset': '\u8f09\u5165\u6216\u4fdd\u5b58\u76ee\u524d\u6240\u6709\u53c3\u6578\u8a2d\u5b9a\u3002\nLoad or save the current parameter set.',
@@ -1681,6 +1754,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (mainEl) mainEl.style.display = 'none';
                 if (calView) calView.classList.remove('hidden');
                 liveTopBar.style.display = 'none';
+                loadInstitutionResearch();
                 renderCalendar();
                 return;
             }
@@ -1928,7 +2002,7 @@ async function goLive() {
     // v1.0.6: ML (confluence, explainable) is selected via the STRATEGY dropdown.
     // No shadow mode in live — practice account places real orders.
     const confParams = collectConfluenceParams('live');
-    if (confParams) {
+    if (false && confParams) {
         stratParams.strategy = 'confluence';
         stratParams.conf_shadow = false;
         Object.assign(stratParams, confParams);
@@ -1950,6 +2024,14 @@ async function goLive() {
             + ' RR1:' + stratParams.rr_ratio
             + ' C=' + stratParams.breakout_confirm_bars
             + ' sessionLimit=' + (stratParams.tr_one_trade_per_session ? 'ON' : 'OFF')
+            + ' market=' + allowedSessionsLabel(stratParams.tr_allowed_sessions), 'info');
+    }
+    if (stratParams.strategy === 'sigma') {
+        log('SIGMA: LIVE Roll' + stratParams.sigma_window_minutes
+            + ' ' + String(stratParams.sigma_method || 'std').toUpperCase()
+            + ' accept=' + stratParams.sigma_accept_mode
+            + ' TP=' + stratParams.sigma_target_mode
+            + ' SL=' + stratParams.sigma_stop_span + 'sigma'
             + ' market=' + allowedSessionsLabel(stratParams.tr_allowed_sessions), 'info');
     }
 
@@ -3827,7 +3909,7 @@ function buildBacktestBody() {
     const params = collectStrategyParams('bt');
     // v1.0.6: ML (confluence, explainable) backtest is selected via the STRATEGY dropdown.
     const confParams = collectConfluenceParams('bt');
-    if (confParams) {
+    if (false && confParams) {
         params.strategy = 'confluence';
         Object.assign(params, confParams);
     }
@@ -4030,7 +4112,6 @@ async function loadSweepResults() {
         }
     } catch (_) { /* server 未起或無結果 — 靜默 */ }
 }
-document.addEventListener('DOMContentLoaded', loadSweepResults);
 
 function renderSweepTable(sortKey) {
     if (sortKey) _sweepSortKey = sortKey;
@@ -4056,10 +4137,15 @@ function renderSweepTable(sortKey) {
         th('pnl', 'PNL') + th('gain', 'GAIN') + th('loss', 'LOSS') + th('pf', 'PF') +
         th('max_dd', 'MAXDD') + th('monthly_avg', 'M-AVG') + th('worst_day', 'WORST-D') +
         th('expect', 'EXPECT') + th('score', 'SCORE') +
+        '<th title="1.0.9 P1: walk-forward 三段各自為正">WF</th>' +
+        '<th title="1.0.9 P1 接受標準: WF三段正 + 鄰域平原正 + 樣本≥80 + 期望>0">ACC</th>' +
         '</tr></thead><tbody>' +
         rows.slice(0, 60).map((r, i) => {
             const balBad = (r.pf || 0) < 1.4;   // gain/loss 失衡提示
-            return '<tr>' +
+            const segs = (r.seg_pnls || []).map(v => Math.round(v)).join(' / ');
+            const wf = r.wf_pass ? '✓' : '✗';
+            const acc = r.accept ? '★' : '—';
+            return '<tr' + (r.accept ? ' style="background:rgba(0,229,160,0.06);"' : '') + '>' +
                 '<td style="color:var(--text2);">' + (i + 1) + '</td>' +
                 '<td style="font-family:\'IBM Plex Mono\',monospace;">' + r.label + '</td>' +
                 '<td>' + r.trades + '</td>' +
@@ -4073,6 +4159,8 @@ function renderSweepTable(sortKey) {
                 '<td style="color:var(--red);">' + Math.round(r.worst_day) + '</td>' +
                 '<td>' + (r.expect || 0).toFixed(1) + '</td>' +
                 '<td style="color:var(--amber);font-weight:bold;">' + (r.score || 0).toFixed(2) + '</td>' +
+                '<td title="' + segs + '" style="color:' + (r.wf_pass ? 'var(--green)' : 'var(--red)') + ';">' + wf + '</td>' +
+                '<td style="color:' + (r.accept ? 'var(--green)' : 'var(--text3)') + ';font-weight:bold;">' + acc + '</td>' +
                 '</tr>';
         }).join('') + '</tbody></table>';
 }
@@ -5414,6 +5502,192 @@ function _calDedupeLive(trades) {
     }
     return out;
 }
+
+function _calTradesInVisibleMonth(trades) {
+    const y = _calMonth.getFullYear();
+    const m = _calMonth.getMonth();
+    return (trades || []).filter(t => {
+        const key = _calKeyFromTrade(t);
+        if (!key) return false;
+        const d = new Date(key + 'T00:00:00');
+        return d.getFullYear() === y && d.getMonth() === m;
+    });
+}
+
+function _calCurveSeries(map) {
+    const y = _calMonth.getFullYear();
+    const m = _calMonth.getMonth();
+    const days = new Date(y, m + 1, 0).getDate();
+    let equity = 0;
+    const out = [];
+    for (let day = 1; day <= days; day++) {
+        const key = _calDateKey(new Date(y, m, day));
+        equity += Number((map[key] || {}).pnl || 0);
+        out.push({ day, value: equity });
+    }
+    return out;
+}
+
+function _svgPath(points, xScale, yScale) {
+    if (!points.length) return '';
+    return points.map((p, i) => (i ? 'L' : 'M') + xScale(p.day).toFixed(1) + ' ' + yScale(p.value).toFixed(1)).join(' ');
+}
+
+function renderWeeklyIncomeCurve(btMap, liveMap) {
+    const wrap = document.getElementById('cal-income-curve');
+    const status = document.getElementById('cal-curve-status');
+    if (!wrap) return;
+    const btSeries = _calCurveSeries(btMap || {});
+    const liveSeries = _calCurveSeries(liveMap || {});
+    const vals = btSeries.concat(liveSeries).map(p => p.value);
+    const minV = Math.min(0, ...vals);
+    const maxV = Math.max(0, ...vals);
+    const pad = Math.max(100, (maxV - minV) * 0.12);
+    const lo = minV - pad;
+    const hi = maxV + pad;
+    const w = 900, h = 168, l = 40, r = 16, t = 14, b = 24;
+    const days = btSeries.length || 1;
+    const x = day => l + (day - 1) * ((w - l - r) / Math.max(1, days - 1));
+    const y = val => t + (hi - val) * ((h - t - b) / Math.max(1, hi - lo));
+    const zeroY = y(0);
+    const weekLines = [];
+    for (let d = 1; d <= days; d++) {
+        const dt = new Date(_calMonth.getFullYear(), _calMonth.getMonth(), d);
+        if (dt.getDay() === 0 && d !== 1) {
+            const xx = x(d);
+            weekLines.push(`<line x1="${xx.toFixed(1)}" y1="${t}" x2="${xx.toFixed(1)}" y2="${h - b}" stroke="rgba(255,255,255,0.08)"/>`);
+        }
+    }
+    const btPath = _svgPath(btSeries, x, y);
+    const livePath = _svgPath(liveSeries, x, y);
+    const btLast = btSeries.length ? btSeries[btSeries.length - 1].value : 0;
+    const liveLast = liveSeries.length ? liveSeries[liveSeries.length - 1].value : 0;
+    wrap.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+        <rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>
+        ${weekLines.join('')}
+        <line x1="${l}" y1="${zeroY.toFixed(1)}" x2="${w - r}" y2="${zeroY.toFixed(1)}" stroke="rgba(255,255,255,0.18)"/>
+        <path d="${btPath}" fill="none" stroke="rgba(0,229,160,0.95)" stroke-width="2.4"/>
+        <path d="${livePath}" fill="none" stroke="rgba(255,176,32,0.95)" stroke-width="2.4"/>
+        <text x="${l}" y="11" fill="rgba(0,229,160,0.95)" font-size="10" font-family="IBM Plex Mono">BT ${_calFmtMoney(btLast)}</text>
+        <text x="${w - 190}" y="11" fill="rgba(255,176,32,0.95)" font-size="10" font-family="IBM Plex Mono">LIVE ${_calFmtMoney(liveLast)}</text>
+        <text x="${l}" y="${h - 6}" fill="rgba(255,255,255,0.35)" font-size="9" font-family="IBM Plex Mono">daily cumulative, week separators shown</text>
+    </svg>`;
+    if (status) {
+        status.textContent = 'BT ' + _calFmtMoney(btLast) + ' | LIVE ' + _calFmtMoney(liveLast) + ' | visible month';
+    }
+}
+
+function _tradeTs(t, key) {
+    const raw = t && (t[key] || t.entry_time || t.time);
+    if (!raw) return null;
+    const d = new Date(raw);
+    return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function _tradeDir(t) {
+    const d = String((t && t.direction) || '').toLowerCase();
+    if (d === 'buy' || d === 'long') return 'buy';
+    if (d === 'sell' || d === 'short') return 'sell';
+    return d;
+}
+
+function _tradeEntry(t) {
+    const v = Number(t && (t.entry_price != null ? t.entry_price : t.price));
+    return Number.isFinite(v) ? v : null;
+}
+
+function _fmtPct(v) {
+    return Number.isFinite(v) ? (v * 100).toFixed(1) + '%' : '—';
+}
+
+function _orderCard(label, value, sub, cls) {
+    return '<div class="order-compare-card">'
+        + '<div class="k">' + label + '</div>'
+        + '<div class="v ' + (cls || '') + '">' + value + '</div>'
+        + '<div class="s">' + (sub || '') + '</div>'
+        + '</div>';
+}
+
+function renderOrderComparison() {
+    const wrap = document.getElementById('order-compare-cards');
+    const status = document.getElementById('order-compare-status');
+    if (!wrap) return;
+    const btTrades = _calTradesInVisibleMonth(backtestData ? backtestData.trades : []);
+    const liveTrades = _calTradesInVisibleMonth(_calLiveTrades || []);
+    const btFree = btTrades.map((_, i) => i);
+    const pairs = [];
+    const timeLimitMs = 5 * 60 * 1000;
+    const tick = 0.25;
+    for (const lv of liveTrades) {
+        const lt = _tradeTs(lv, 'entry_time');
+        const lp = _tradeEntry(lv);
+        const ld = _tradeDir(lv);
+        if (!lt || lp == null || !ld) continue;
+        let best = -1, bestCost = Infinity;
+        for (const idx of btFree) {
+            const bt = btTrades[idx];
+            if (_tradeDir(bt) !== ld) continue;
+            const btTime = _tradeTs(bt, 'entry_time');
+            const bp = _tradeEntry(bt);
+            if (!btTime || bp == null) continue;
+            const dt = Math.abs(lt - btTime);
+            if (dt > timeLimitMs) continue;
+            const ticks = Math.abs(lp - bp) / tick;
+            const cost = dt / 60000 + ticks * 0.15;
+            if (cost < bestCost) {
+                best = idx;
+                bestCost = cost;
+            }
+        }
+        if (best >= 0) {
+            btFree.splice(btFree.indexOf(best), 1);
+            const bt = btTrades[best];
+            const btTime = _tradeTs(bt, 'entry_time');
+            const bp = _tradeEntry(bt);
+            const dtMin = (lt - btTime) / 60000;
+            const diffTicks = (lp - bp) / tick;
+            const intended = Number(lv.intended_entry_price != null ? lv.intended_entry_price : lv.signal_entry_price);
+            const slipTicks = Number.isFinite(intended) ? ((lp - intended) / tick) : diffTicks;
+            pairs.push({ live: lv, bt, dtMin, diffTicks, slipTicks });
+        }
+    }
+    const matched = pairs.length;
+    const liveOnly = liveTrades.filter(lv => !pairs.some(p => p.live === lv));
+    const btOnly = btFree.map(i => btTrades[i]);
+    const sameLevel = pairs.filter(p => Math.abs(p.diffTicks) <= 2).length;
+    const avgDiff = matched ? pairs.reduce((a, p) => a + Math.abs(p.diffTicks), 0) / matched : 0;
+    const slipRows = pairs.filter(p => Math.abs(p.slipTicks) > 0.5);
+    const avgSlip = slipRows.length ? slipRows.reduce((a, p) => a + Math.abs(p.slipTicks), 0) / slipRows.length : 0;
+    const liveOnlyLoss = liveOnly.filter(t => Number(t.pnl || t.topstep_pnl || 0) < 0);
+    const liveOnlyGain = liveOnly.filter(t => Number(t.pnl || t.topstep_pnl || 0) > 0);
+    const blocked = btOnly.filter(bt => {
+        const btTime = _tradeTs(bt, 'entry_time');
+        if (!btTime) return false;
+        return liveTrades.some(lv => {
+            const a = _tradeTs(lv, 'entry_time');
+            const z = _tradeTs(lv, 'exit_time');
+            return a && z && btTime >= a && btTime <= z;
+        });
+    });
+    const presetSel = document.getElementById('preset-bt');
+    const presetName = presetSel ? presetSel.value : '';
+    const matchRate = Math.max(btTrades.length, liveTrades.length) ? matched / Math.max(btTrades.length, liveTrades.length) : 0;
+    wrap.innerHTML =
+        _orderCard('BT ORDERS', String(btTrades.length), presetName && presetName !== 'default' ? _presetDisplayName(presetName) : 'current backtest') +
+        _orderCard('LIVE ORDERS', String(liveTrades.length), 'deduped visible month') +
+        _orderCard('TIME MATCH ≤5M', _fmtPct(matchRate), matched + ' matched / max(BT,LIVE)', matchRate >= 0.9 ? 'institution-pos' : 'institution-neg') +
+        _orderCard('SAME LEVEL ≤2T', _fmtPct(matched ? sameLevel / matched : 0), sameLevel + '/' + matched + ' matched orders') +
+        _orderCard('AVG ENTRY DIFF', avgDiff.toFixed(1) + 't', 'abs live fill vs BT entry') +
+        _orderCard('FILL SLIP', slipRows.length + ' orders', 'avg ' + avgSlip.toFixed(1) + 't; future ledger exact') +
+        _orderCard('EXTRA LIVE LOSS', String(liveOnlyLoss.length), 'not shown in BT result', liveOnlyLoss.length ? 'institution-neg' : '') +
+        _orderCard('ACCIDENT GAIN', String(liveOnlyGain.length), 'live gain not expected by BT', liveOnlyGain.length ? 'institution-pos' : '') +
+        _orderCard('MISSED BT', String(btOnly.length), 'BT orders not in live') +
+        _orderCard('BLOCKED BY LIVE', String(blocked.length), 'BT signal while live trade still open');
+    if (status) {
+        status.textContent = 'pairing: same direction, entry time within 5m; historical preset attribution is approximate until new ledger fields accumulate.';
+    }
+}
+
 async function _calFetchLive(force) {
     if (_calLiveTrades && !force) return;
     try {
@@ -5425,6 +5699,173 @@ async function _calFetchLive(force) {
         _calLiveTrades = _calLiveTrades || [];
     }
 }
+
+let _institutionResearchLoaded = false;
+
+function _researchNum(value, digits) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '—';
+    return n.toFixed(digits == null ? 2 : digits);
+}
+
+function _researchClass(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n === 0) return '';
+    return n > 0 ? 'institution-pos' : 'institution-neg';
+}
+
+function _researchBars(rows, valueKey, labelKey, limit) {
+    const picked = (rows || []).slice(0, limit || 8);
+    const maxAbs = Math.max(1, ...picked.map(r => Math.abs(Number(r[valueKey] || 0))));
+    return picked.map(r => {
+        const v = Number(r[valueKey] || 0);
+        const w = Math.max(3, Math.min(100, Math.abs(v) / maxAbs * 100));
+        const side = v >= 0 ? 'pos' : 'neg';
+        return '<div class="institution-bar-row">'
+            + '<span>' + String(r[labelKey] || r.event || r.rule || '') + '</span>'
+            + '<div class="institution-bar"><i class="' + side + '" style="width:' + w.toFixed(1) + '%"></i></div>'
+            + '<b class="' + _researchClass(v) + '">' + _researchNum(v, 1) + '</b>'
+            + '</div>';
+    }).join('');
+}
+
+async function loadInstitutionResearch(force) {
+    if (_institutionResearchLoaded && !force) return;
+    const status = document.getElementById('institution-status');
+    const content = document.getElementById('institution-content');
+    if (!status || !content) return;
+    status.textContent = 'Loading research summary...';
+    try {
+        const resp = await fetch(API + '/research/institution/latest');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        if (!data.available) {
+            status.textContent = data.message || 'No research output yet.';
+            content.innerHTML = '';
+            return;
+        }
+        _institutionResearchLoaded = true;
+        status.textContent = 'Data: ' + (data.data ? data.data.bars : '?') + ' bars'
+            + ' | ' + ((data.data && data.data.first) ? data.data.first.slice(0, 10) : '?')
+            + ' → ' + ((data.data && data.data.last) ? data.data.last.slice(0, 10) : '?')
+            + ' | updated ' + String(data.created_at || '').slice(0, 16).replace('T', ' ');
+
+        const findings = (data.findings || []).slice(0, 8)
+            .map(x => '<li>' + String(x) + '</li>').join('');
+        const stats = (data.event_stats || []).slice()
+            .sort((a, b) => Math.abs(Number(b.mean_ret_30 || 0)) - Math.abs(Number(a.mean_ret_30 || 0)))
+            .slice(0, 10)
+            .map(r => '<tr>'
+                + '<td title="' + String(r.note || '') + '">' + String(r.event || '') + '</td>'
+                + '<td>' + String(r.count || 0) + '</td>'
+                + '<td class="' + _researchClass(r.mean_ret_30) + '">' + _researchNum(r.mean_ret_30, 1) + '</td>'
+                + '<td>' + _researchNum(Number(r.short_rev_30 || 0) * 100, 1) + '%</td>'
+                + '<td>' + _researchNum(Number(r.long_rev_30 || 0) * 100, 1) + '%</td>'
+                + '<td>' + _researchNum(r.mean_mfe_up_30, 0) + '</td>'
+                + '<td>' + _researchNum(r.mean_mfe_down_30, 0) + '</td>'
+                + '</tr>').join('');
+        const folds = (((data.ml || {}).folds) || []).map(r => '<tr>'
+                + '<td>F' + r.fold + '</td>'
+                + '<td>' + _researchNum(r.auc, 3) + '</td>'
+                + '<td>' + _researchNum(Number(r.base_hit || 0) * 100, 1) + '%</td>'
+                + '<td>' + _researchNum(Number(r.top_decile_hit || 0) * 100, 1) + '%</td>'
+                + '<td class="' + _researchClass(r.top_decile_ret_ticks) + '">' + _researchNum(r.top_decile_ret_ticks, 1) + '</td>'
+                + '</tr>').join('');
+        const features = (((data.ml || {}).top_features) || []).slice(0, 12)
+            .map(x => '<li>' + String(x.feature) + ' · ' + _researchNum(x.importance, 4) + '</li>').join('');
+        const ruleRows = (data.strategy_scores || []).slice(0, 12)
+            .map(r => '<tr>'
+                + '<td title="' + String(r.trigger || '') + '">' + String(r.rule || '') + '</td>'
+                + '<td>' + String(r.session || '') + '/' + String(r.filter || '') + '</td>'
+                + '<td>' + String(r.trades || 0) + '</td>'
+                + '<td class="' + _researchClass(r.pnl) + '">' + _researchNum(r.pnl, 0) + '</td>'
+                + '<td>' + _researchNum(r.max_dd, 0) + '</td>'
+                + '<td>' + _researchNum(r.profit_factor, 2) + '</td>'
+                + '<td>' + _researchNum(Number(r.win_rate || 0) * 100, 1) + '%</td>'
+                + '<td class="' + _researchClass(r.total_loss) + '">' + _researchNum(r.total_loss, 0) + '</td>'
+                + '<td>' + String(r.target_ticks || '') + '/' + String(r.stop_ticks || '') + '/' + String(r.hold_bars || '') + '</td>'
+                + '</tr>').join('');
+        const eventBiasBars = _researchBars((data.event_stats || []).slice()
+            .sort((a, b) => Math.abs(Number(b.mean_ret_30 || 0)) - Math.abs(Number(a.mean_ret_30 || 0))), 'mean_ret_30', 'event', 8);
+        const regimeRows = (data.regime_stats || []).slice()
+            .sort((a, b) => Math.abs(Number(b.mean_ret_30 || 0)) - Math.abs(Number(a.mean_ret_30 || 0)))
+            .slice(0, 14)
+            .map(r => '<tr>'
+                + '<td>' + String(r.group || '') + ':' + String(r.value || '') + '</td>'
+                + '<td>' + String(r.bars || 0) + '</td>'
+                + '<td class="' + _researchClass(r.mean_ret_30) + '">' + _researchNum(r.mean_ret_30, 1) + '</td>'
+                + '<td>' + _researchNum(r.abs_ret_30, 1) + '</td>'
+                + '<td>' + _researchNum(r.mean_range, 1) + '</td>'
+                + '<td>' + _researchNum(Number(r.sweep_rate || 0) * 100, 2) + '%</td>'
+                + '</tr>').join('');
+        const validationRows = ((((data.edge_validation || {}).validations) || []).slice(0, 10))
+            .map(r => '<tr>'
+                + '<td class="' + (r.verdict === 'FAIL' ? 'institution-neg' : (r.verdict === 'PASS' ? 'institution-pos' : '')) + '">' + String(r.verdict || '') + '</td>'
+                + '<td title="' + String(r.name || '') + '">' + String(r.family || '') + '</td>'
+                + '<td>' + String(r.trades || 0) + '</td>'
+                + '<td class="' + _researchClass(r.pnl) + '">' + _researchNum(r.pnl, 0) + '</td>'
+                + '<td>' + _researchNum(r.max_dd, 0) + '</td>'
+                + '<td>' + _researchNum(r.profit_factor, 2) + '</td>'
+                + '<td class="' + _researchClass(r.total_loss) + '">' + _researchNum(r.total_loss, 0) + '</td>'
+                + '<td>' + String(r.bootstrap_mean_ci || '') + '</td>'
+                + '<td>' + _researchNum(r.monte_carlo_dd_p95, 0) + '</td>'
+                + '<td>' + String((r.reasons || []).join(', ')) + '</td>'
+                + '</tr>').join('');
+        const futuresPort = data.futures_repo_port || {};
+        const futuresRows = ((futuresPort.top || []).slice(0, 12))
+            .map(r => '<tr>'
+                + '<td class="' + (r.verdict === 'FAIL' ? 'institution-neg' : (r.verdict === 'PASS' ? 'institution-pos' : '')) + '">' + String(r.verdict || '') + '</td>'
+                + '<td>' + String(r.tf || '') + 'm</td>'
+                + '<td title="' + String(r.mom_window || '') + '/' + String(r.accel_lag || '') + '">' + String(r.family || '') + '</td>'
+                + '<td>' + String(r.direction_mode || '') + '</td>'
+                + '<td>' + String(r.session || '') + '</td>'
+                + '<td>' + String(r.trades || 0) + '</td>'
+                + '<td class="' + _researchClass(r.pnl) + '">' + _researchNum(r.pnl, 0) + '</td>'
+                + '<td>' + _researchNum(r.max_dd, 0) + '</td>'
+                + '<td>' + _researchNum(r.profit_factor, 2) + '</td>'
+                + '<td class="' + _researchClass(r.total_loss) + '">' + _researchNum(r.total_loss, 0) + '</td>'
+                + '<td>' + String(r.tp_atr || '') + '/' + String(r.sl_atr || '') + '/' + String(r.hold_bars || '') + '</td>'
+                + '<td>' + String(r.reasons || '') + '</td>'
+                + '</tr>').join('');
+        content.innerHTML =
+            '<div class="institution-grid">'
+            + '<div class="institution-card"><h3>FINDINGS</h3><ul class="institution-list">' + findings + '</ul></div>'
+            + '<div class="institution-card"><h3>ML WALK-FORWARD</h3>'
+            + '<div style="font-family:IBM Plex Mono,monospace;font-size:10px;color:var(--text2);margin-bottom:6px;">'
+            + 'AUC mean=' + _researchNum((data.ml || {}).mean_auc, 3)
+            + ' min=' + _researchNum((data.ml || {}).min_auc, 3)
+            + ' | target: ' + String((data.ml || {}).target || '') + '</div>'
+            + '<table class="institution-table"><thead><tr><th>Fold</th><th>AUC</th><th>Base</th><th>Top10</th><th>Ret</th></tr></thead><tbody>' + folds + '</tbody></table>'
+            + '</div>'
+            + '<div class="institution-card"><h3>EVENT STATS 30M</h3>'
+            + '<table class="institution-table"><thead><tr><th>Event</th><th>N</th><th>Mean</th><th>Short%</th><th>Long%</th><th>UpMFE</th><th>DnMFE</th></tr></thead><tbody>' + stats + '</tbody></table>'
+            + '</div>'
+            + '<div class="institution-card"><h3>EVENT BIAS</h3><div class="institution-bars">' + eventBiasBars + '</div></div>'
+            + '<div class="institution-card institution-wide"><h3>RULE SCORES</h3>'
+            + '<table class="institution-table"><thead><tr><th>Rule</th><th>Env</th><th>N</th><th>PNL</th><th>DD</th><th>PF</th><th>Win</th><th>Loss</th><th>TP/SL/H</th></tr></thead><tbody>' + ruleRows + '</tbody></table>'
+            + '</div>'
+            + '<div class="institution-card institution-wide"><h3>REGIME STATS</h3>'
+            + '<table class="institution-table"><thead><tr><th>Regime</th><th>Bars</th><th>Mean</th><th>Abs</th><th>Range</th><th>Sweep</th></tr></thead><tbody>' + regimeRows + '</tbody></table>'
+            + '</div>'
+            + '<div class="institution-card institution-wide"><h3>EDGE VALIDATION</h3>'
+            + '<table class="institution-table"><thead><tr><th>Verdict</th><th>Family</th><th>N</th><th>PNL</th><th>DD</th><th>PF</th><th>Loss</th><th>Boot CI</th><th>MC DD95</th><th>Reason</th></tr></thead><tbody>' + validationRows + '</tbody></table>'
+            + '</div>'
+            + '<div class="institution-card institution-wide"><h3>FUTURES REPO PORT</h3>'
+            + '<div style="font-family:IBM Plex Mono,monospace;font-size:10px;color:var(--text2);margin-bottom:6px;">'
+            + 'variants=' + String(futuresPort.tested_variants_with_trades || 0)
+            + ' | pass=' + String(futuresPort.passes || 0)
+            + ' | updated ' + String(futuresPort.created_at || '').slice(0, 16).replace('T', ' ')
+            + '</div>'
+            + '<table class="institution-table"><thead><tr><th>Verdict</th><th>TF</th><th>Family</th><th>Mode</th><th>Session</th><th>N</th><th>PNL</th><th>DD</th><th>PF</th><th>Loss</th><th>TP/SL/H</th><th>Reason</th></tr></thead><tbody>' + futuresRows + '</tbody></table>'
+            + '</div>'
+            + '<div class="institution-card"><h3>TOP FEATURES</h3><ul class="institution-list">' + features + '</ul></div>'
+            + '</div>';
+    } catch (e) {
+        status.textContent = 'Research load failed: ' + e.message;
+        content.innerHTML = '';
+    }
+}
+
 function calShiftMonth(delta) {
     _calMonth = new Date(_calMonth.getFullYear(), _calMonth.getMonth() + delta, 1);
     renderCalendar();
@@ -5553,6 +5994,8 @@ async function renderCalendar(force) {
             ? (btN + ' backtest trades · ' + lvN + ' live trades loaded')
             : 'run a backtest first to populate the BT side · ' + lvN + ' live trades loaded';
     }
+    renderWeeklyIncomeCurve(bt, live);
+    renderOrderComparison();
 }
 
 // ════════════════════════════════════════════════════════════════════════

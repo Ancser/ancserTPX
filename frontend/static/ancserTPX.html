@@ -101,8 +101,18 @@
         <!-- Backtest Config (SessionTrendFollow only) -->
         <div class="panel" id="backtest-config-panel">
             <div class="panel-title">STRATEGY</div>
-            <!-- Strategy Params -->
-            <div class="form-row" style="margin-top:8px;">
+            <!-- Strategy Params — 1.0.9: PRESET 移到 CONTRACT 上方 -->
+            <div class="form-group" style="margin-top:8px;">
+                <label>PRESET</label>
+                <select id="preset-bt" onchange="loadPreset('bt')">
+                    <option value="default">Default</option>
+                </select>
+            </div>
+            <div class="action-row">
+                <button class="btn btn-outline btn-mini" onclick="savePreset('bt')">SAVE</button>
+                <button class="btn btn-outline btn-mini" onclick="deletePreset('bt')" title="Delete selected preset">DEL</button>
+            </div>
+            <div class="form-row">
                 <div class="form-group" style="flex:2;">
                     <label>CONTRACT</label>
                     <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt')">
@@ -119,22 +129,12 @@
                 <div class="form-group" style="flex:1;">
                     <label>STRATEGY</label>
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
-                        <option value="trend">TREND</option>
+                        <option value="trend" selected>TREND</option>
                         <option value="fade">FADE 前日VA回歸</option><!-- 1.0.8 -->
-                        <option value="confluence" selected>ML Confluence</option>
+                        <option value="sigma">SIGMA Rolling Fade</option>
                         <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
                 </div>
-            </div>
-            <div class="form-group">
-                <label>PRESET</label>
-                <select id="preset-bt" onchange="loadPreset('bt')">
-                    <option value="default">Default</option>
-                </select>
-            </div>
-            <div class="action-row">
-                <button class="btn btn-outline btn-mini" onclick="savePreset('bt')">SAVE</button>
-                <button class="btn btn-outline btn-mini" onclick="deletePreset('bt')" title="Delete selected preset">DEL</button>
             </div>
             <div id="ml-params-bt" style="display:none;margin-top:12px;">
                 <div class="panel-title" style="margin-top:0;">MODEL</div>
@@ -330,6 +330,27 @@
                         <option value="5">5</option><option value="6">6</option>
                     </select>
                 </div>
+                <!-- 1.0.9: prevRV regime gate + fade 進場模式 + 唯讀 SL 模型顯示 -->
+                <div class="form-group">
+                    <label>PREV-RV 波動閘 <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
+                    <select id="tr-prev-rv-gate-bt">
+                        <option value="0" selected>OFF</option>
+                        <option value="10">近10日</option>
+                        <option value="15">近15日</option>
+                        <option value="20">近20日</option>
+                    </select>
+                </div>
+                <div class="form-group" id="fade-entry-mode-row-bt" style="display:none;">
+                    <label>FADE 進場模式</label>
+                    <select id="fade-entry-mode-bt">
+                        <option value="limit" selected>LIMIT 直接掛 VAL(最穩)</option>
+                        <option value="rejection">REJECTION 掃回後市價</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>SL 模型 <span class="lbl-hint">(依策略自動決定,不可改)</span></label>
+                    <input type="text" id="sl-model-display-bt" readonly value="TREND: 最低量節點 SL" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
+                </div>
                 <div class="form-group">
                     <label>RR RATIO <span id="rr-ratio-bt-val" style="color:var(--accent)">1:2</span></label>
                     <select id="rr-ratio-bt" onchange="onRrChange('bt')">
@@ -407,8 +428,18 @@
         <div id="live-panel" class="hidden">
             <div class="panel">
                 <div class="panel-title">STRATEGY</div>
-                <!-- Strategy Params -->
-                <div class="form-row" style="margin-top:8px;">
+                <!-- Strategy Params — 1.0.9: PRESET 移到 CONTRACT 上方 -->
+                <div class="form-group" style="margin-top:8px;">
+                    <label>PRESET</label>
+                    <select id="preset-live" onchange="loadPreset('live')">
+                        <option value="default">Default</option>
+                    </select>
+                </div>
+                <div class="action-row">
+                    <button class="btn btn-outline btn-mini" onclick="savePreset('live')">SAVE</button>
+                    <button class="btn btn-outline btn-mini" onclick="deletePreset('live')" title="Delete selected preset">DEL</button>
+                </div>
+                <div class="form-row">
                     <div class="form-group" style="flex:2;">
                         <label>CONTRACT</label>
                         <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live')">
@@ -425,22 +456,12 @@
                     <div class="form-group" style="flex:1;">
                         <label>STRATEGY</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
-                            <option value="trend">TREND</option>
+                            <option value="trend" selected>TREND</option>
                             <option value="fade">FADE 前日VA回歸</option><!-- 1.0.8 -->
-                            <option value="confluence" selected>ML Confluence</option>
+                            <option value="sigma">SIGMA Rolling Fade</option>
                             <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
                     </div>
-                </div>
-                <div class="form-group">
-                    <label>PRESET</label>
-                    <select id="preset-live" onchange="loadPreset('live')">
-                        <option value="default">Default</option>
-                    </select>
-                </div>
-                <div class="action-row">
-                    <button class="btn btn-outline btn-mini" onclick="savePreset('live')">SAVE</button>
-                    <button class="btn btn-outline btn-mini" onclick="deletePreset('live')" title="Delete selected preset">DEL</button>
                 </div>
                 <div id="ml-params-live" style="display:none;margin-top:12px;">
                     <div class="panel-title" style="margin-top:0;">MODEL</div>
@@ -636,6 +657,27 @@
                         <option value="5">5</option><option value="6">6</option>
                     </select>
                 </div>
+                <!-- 1.0.9: prevRV regime gate + fade 進場模式 + 唯讀 SL 模型顯示 -->
+                <div class="form-group">
+                    <label>PREV-RV 波動閘 <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
+                    <select id="tr-prev-rv-gate-live">
+                        <option value="0" selected>OFF</option>
+                        <option value="10">近10日</option>
+                        <option value="15">近15日</option>
+                        <option value="20">近20日</option>
+                    </select>
+                </div>
+                <div class="form-group" id="fade-entry-mode-row-live" style="display:none;">
+                    <label>FADE 進場模式</label>
+                    <select id="fade-entry-mode-live">
+                        <option value="limit" selected>LIMIT 直接掛 VAL(最穩)</option>
+                        <option value="rejection">REJECTION 掃回後市價</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>SL 模型 <span class="lbl-hint">(依策略自動決定,不可改)</span></label>
+                    <input type="text" id="sl-model-display-live" readonly value="TREND: 最低量節點 SL" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
+                </div>
                     <div class="form-group">
                         <label>RR RATIO <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
                         <select id="rr-ratio-live" onchange="onRrChange('live')">
@@ -766,7 +808,6 @@
         <div class="bottom-panel" id="bottom-panel">
             <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
             <div class="bottom-tabs">
-                <div class="bottom-tab" data-btab="sweep">SWEEP</div><!-- 1.0.8 -->
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
                 <!-- 1.0.8: 移除 LEARN RESULT 分頁(ML sweep 結果板塊已刪除) -->
@@ -774,10 +815,6 @@
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
-                <div id="btab-sweep" class="hidden"><!-- 1.0.8: 高效參數掃描結果(啟動自動載入上次) -->
-                    <div id="sweep-meta" style="padding:6px 10px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text3);">尚無 sweep 結果</div>
-                    <div class="trade-table-wrap" id="sweep-results-wrap"></div>
-                </div>
                 <div id="btab-trades">
                     <div class="trade-table-wrap">
                         <table>
@@ -870,10 +907,39 @@
         <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span class="cal-weekhead-sum">Week</span>
     </div>
     <div id="cal-grid" class="cal-grid"></div>
+    <div class="cal-analysis-panel">
+        <div class="cal-analysis-head">
+            <div>
+                <div class="institution-kicker">WEEKLY INCOME</div>
+                <div class="institution-title">Backtest vs Live Curve</div>
+            </div>
+            <span id="cal-curve-status" class="institution-status">Run a backtest to compare curves.</span>
+        </div>
+        <div id="cal-income-curve" class="cal-income-curve"></div>
+    </div>
+    <div class="cal-analysis-panel">
+        <div class="cal-analysis-head">
+            <div>
+                <div class="institution-kicker">ORDER COMPARISON</div>
+                <div class="institution-title">Selected Preset vs Live Execution</div>
+            </div>
+            <span id="order-compare-status" class="institution-status">Historical live rows may not include preset names.</span>
+        </div>
+        <div id="order-compare-cards" class="order-compare-cards"></div>
+    </div>
+    <div id="institution-panel" class="institution-panel">
+        <div class="institution-head">
+            <div>
+                <div class="institution-kicker">RESEARCH</div>
+                <div class="institution-title">Hunter / Sweep / Liquidity</div>
+            </div>
+            <button class="cal-todaybtn" onclick="loadInstitutionResearch(true)">Refresh</button>
+        </div>
+        <div id="institution-status" class="institution-status">Loading research summary...</div>
+        <div id="institution-content" class="institution-content"></div>
+    </div>
 </div>
 
-    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=7&tradezone=1&topstepday=1&netpnl=2&mktsess=1&trendclean=1&sesstf=1&fable=1&chartfix=1&uifix=2&sweep=3"></script>
+    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&trendclean=1&sesstf=1&fable=1&chartfix=1&uifix=3&sweep=3&fade109=1"></script>
 </body>
 </html>
-
-

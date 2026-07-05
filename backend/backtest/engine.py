@@ -29,6 +29,7 @@ from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
 )
 from backend.strategy.trend_follow import SessionTrendFollow
+from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.fade import PrevDayFade  # 1.0.8: FADE 前日 VA 回歸策略
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
 from backend.backtest.intrabar import resolve_same_bar_exit
@@ -105,9 +106,11 @@ class BacktestEngine:
         # 1.0.8: strategy_mode "trend"(現行)或 "fade"(前日 VA 回歸)。
         # 屬性名沿用 trend_follow,兩策略介面相容,其餘管線不變。
         _strat = str(getattr(self.strategy_params, "strategy", "") or "").lower()
-        self.strategy_mode = "fade" if _strat == "fade" else "trend"
+        self.strategy_mode = _strat if _strat in ("fade", "sigma") else "trend"
         if self.strategy_mode == "fade":
             self.trend_follow = PrevDayFade(params=self.strategy_params)
+        elif self.strategy_mode == "sigma":
+            self.trend_follow = RollingSigmaFade(params=self.strategy_params)
         else:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
         # 1.0.8: fade 模式 — 前日 VP 水位計算狀態
@@ -128,6 +131,12 @@ class BacktestEngine:
         self._tr_daily_loss_stop = max(0, int(getattr(self.strategy_params, "tr_daily_loss_stop", 0) or 0))
         self._daily_loss_count: int = 0
         self._loss_count_date: Optional[str] = None
+        # 1.0.9: prevRV regime gate — 前一日 RV 落在近 N 日最高三分位 → 今日不進場
+        self._prev_rv_gate = max(0, int(getattr(self.strategy_params, "tr_prev_rv_gate", 0) or 0))
+        self._rv_history: List[float] = []      # 近 N 日已完成交易日的 RV
+        self._rv_day_closes: List[float] = []    # 當日累積 close(算 RV 用)
+        self._rv_cur_day: Optional[str] = None
+        self._gate_block_today: bool = False     # 今日是否被 regime gate 封鎖
 
         # Pre-computed zone timeline (set once for machine learning grid runs)
         self._zone_timeline: Optional[List[dict]] = zone_timeline
@@ -300,8 +309,8 @@ class BacktestEngine:
         if self._open_position:
             self._force_exit(candles[-1], ExitReason.FLATTEN)
 
-        # Close any remaining active zone at end of backtest (skip when using timeline)
-        if candles and self._zone_timeline is None:
+        # Close any remaining active zone at end of backtest (skip timeline/sigma).
+        if candles and self._zone_timeline is None and self.strategy_mode != "sigma":
             self.detector.close_final_zone(candles[-1])
 
         # Flush any 60m post-breakout windows that didn't naturally close.
@@ -311,8 +320,12 @@ class BacktestEngine:
         calc = MetricsCalculator()
         metrics = calc.calculate_all(self._trades, self.config.initial_capital)
 
-        # Machine-learning grid runs reuse a precomputed zone timeline and do not render zones.
-        all_zones = [] if self._zone_timeline is not None else self.detector.get_all_zones()
+        # Timeline/sigma modes do not render detector zones.
+        all_zones = (
+            []
+            if self._zone_timeline is not None or self.strategy_mode == "sigma"
+            else self.detector.get_all_zones()
+        )
 
         result = BacktestResult(
             config=self.config,
@@ -359,6 +372,29 @@ class BacktestEngine:
         if _ts_date != self._loss_count_date:
             self._loss_count_date = _ts_date
             self._daily_loss_count = 0
+        # 1.0.9: prevRV regime gate — 日 rollover 時結算前一日 RV,決定今日是否封鎖
+        if self._prev_rv_gate and _ts_date != self._rv_cur_day:
+            if self._rv_day_closes and len(self._rv_day_closes) > 2:
+                import math as _m
+                rets = [_m.log(self._rv_day_closes[i] / self._rv_day_closes[i - 1])
+                        for i in range(1, len(self._rv_day_closes))
+                        if self._rv_day_closes[i - 1] > 0 and self._rv_day_closes[i] > 0]
+                if len(rets) > 1:
+                    import statistics as _st
+                    prev_rv = _st.pstdev(rets)
+                    # 今日是否封鎖:前一日 RV >= 近 N 日(不含今日)最高三分位
+                    hist = self._rv_history[-self._prev_rv_gate:]
+                    if len(hist) >= 6:
+                        cut = sorted(hist)[len(hist) * 2 // 3]
+                        self._gate_block_today = prev_rv >= cut
+                    else:
+                        self._gate_block_today = False
+                    self._rv_history.append(prev_rv)
+                    self._rv_history = self._rv_history[-max(self._prev_rv_gate, 20):]
+            self._rv_cur_day = _ts_date
+            self._rv_day_closes = []
+        if self._prev_rv_gate:
+            self._rv_day_closes.append(float(candle.close))
         if self.strategy_mode == "fade":
             if _ts_date != self._fade_day:
                 if self._fade_day_candles:
@@ -388,9 +424,15 @@ class BacktestEngine:
             _active_zone = _zt.get('active')
             _is_mature   = _zt.get('mature', False)
             _recent_zones = _zt.get('recent') or ([_active_zone] if _active_zone else [])
-        else:
+        elif self.strategy_mode != "sigma":
             # Normal path: run detector live
             self.detector.update(candle)
+
+        if self.strategy_mode == "sigma":
+            if self._trend_session_allowed(candle.timestamp):
+                self.trend_follow.observe(candle, [], True)
+            elif not self._open_position and not self._pending_order:
+                self._reset_trend_session_state()
 
         # Daily loss limit
         date_str = candle.timestamp.strftime("%Y-%m-%d")
@@ -471,6 +513,10 @@ class BacktestEngine:
                 eval_zones  = _recent_zones
                 eval_mature = _is_mature
                 zone_source = "current"
+            elif self.strategy_mode == "sigma":
+                eval_zones = []
+                eval_mature = True
+                zone_source = "rolling_sigma"
             else:
                 # Normal path — evaluate breakout vs the recent 10 reference zones
                 eval_zones  = self.detector.get_recent_zones()
@@ -483,6 +529,10 @@ class BacktestEngine:
                 # 1.0.8: 日虧斷路器 — 當日虧損單數達上限,今天不再開新單
                 if (self._tr_daily_loss_stop
                         and self._daily_loss_count >= self._tr_daily_loss_stop):
+                    self.trend_follow.notify_order_cancelled()
+                    return
+                # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單
+                if self._prev_rv_gate and self._gate_block_today:
                     self.trend_follow.notify_order_cancelled()
                     return
                 if self._signal_full_tp_locked(signal, candle):

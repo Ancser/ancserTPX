@@ -318,7 +318,7 @@ class StrategyParams:
     Supports the legacy trend strategy and the explainable confluence scorer.
     Value Area is locked to 80% so live and backtest use the same zone width.
     """
-    strategy: str = "confluence"
+    strategy: str = "trend"
     tp_ticks: int = 200                  # 50-200 tick
     sl_ticks: int = 50                   # 50-200 tick
     trail_sl_ticks: int = 10            # 0..TP ticks from entry after trail triggers
@@ -361,6 +361,23 @@ class StrategyParams:
     tr_exit_mode: str = "tp"               # "tp" | "ladder"
     # 1.0.8: 日虧斷路器 — 當個 Topstep 交易日虧損單數達 N 後停止新進場(0=OFF)
     tr_daily_loss_stop: int = 0
+    # 1.0.9: prevRV regime gate — 前一交易日已實現波動落在近 N 日最高三分位 → 今日不進場
+    # (回測 DD -42%;波動率自相關 +0.73 故前一日可預測)。0=OFF,>0=回看視窗天數
+    tr_prev_rv_gate: int = 0
+    # 1.0.9: FADE 專用 — TP 佔 VAL→POC 比例(0.75 較穩)、進場模式(limit / rejection)
+    fade_tp_frac: float = 0.75
+    fade_entry_mode: str = "limit"         # "limit" | "rejection"
+    # 1.0.9: rolling sigma fade. Used when strategy == "sigma".
+    sigma_window_minutes: int = 15
+    sigma_method: str = "std"
+    sigma_entry_mode: str = "blind"
+    sigma_accept_mode: str = "none"
+    sigma_start: float = 1.0
+    sigma_max: float = 3.0
+    sigma_target_mode: str = "half"
+    sigma_stop_span: float = 1.0
+    sigma_accept_sigma: float = 2.0
+    sigma_accept_bars: int = 2
     # --- v1.0.6: explainable multi-timeframe confluence (ML scorer) ---
     # Activated when strategy == "confluence". The live engine then runs the
     # SAME ConfluenceBacktester logic (per-TF detectors + trained scorer) so

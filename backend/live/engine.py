@@ -33,6 +33,7 @@ from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
 )
 from backend.strategy.trend_follow import SessionTrendFollow
+from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.fade import PrevDayFade  # 1.0.8: FADE 前日 VA 回歸策略
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
 from backend.backtest.engine import _topstep_trade_date  # 1.0.8: K線時間→交易日(fade 分日)
@@ -126,15 +127,15 @@ class LiveTradingEngine:
             tf_combo=overlap_combo,
             overlap_trade_tf=getattr(self.strategy_params, "tr_overlap_trade_tf", "merged"),
         )
-        # Strategy mode: "trend" (default, 1.0.6), "confluence" (v1.0.6 ML),
-        # or "fade" (1.0.8 前日 VA 回歸). The trend-slot object is ALWAYS built so
-        # legacy state/helpers keep working; fade 直接替換該槽位(介面相容)。
+        # Strategy mode: trend/fade/sigma.  The trend-slot object is ALWAYS built
+        # so legacy state/helpers keep working; fade/sigma replace that slot.
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "trend") or "trend").lower()
-        # 1.0.8: mlc2 (ml_consolidation_v2) 已移除;trend / confluence / fade
-        if self.strategy_mode not in ("confluence", "fade"):
+        if self.strategy_mode not in ("fade", "sigma"):
             self.strategy_mode = "trend"
         if self.strategy_mode == "fade":
             self.trend_follow = PrevDayFade(params=self.strategy_params)
+        elif self.strategy_mode == "sigma":
+            self.trend_follow = RollingSigmaFade(params=self.strategy_params)
         else:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
         # 1.0.8: fade 前日 VP 計算器(僅 fade 模式使用)
@@ -153,6 +154,9 @@ class LiveTradingEngine:
         # 1.0.8: 日虧斷路器 — 當日虧損單數達 N 停新單(0=OFF)
         self._tr_daily_loss_stop = max(0, int(getattr(self.strategy_params, "tr_daily_loss_stop", 0) or 0))
         self._daily_loss_count: int = 0
+        # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單(0=OFF)
+        self._prev_rv_gate = max(0, int(getattr(self.strategy_params, "tr_prev_rv_gate", 0) or 0))
+        self._gate_block_today: bool = False
         if self.strategy_mode == "confluence":
             try:
                 conf_wait = int(getattr(self.strategy_params, "conf_wait_minutes", 1) or 1)
@@ -872,10 +876,39 @@ class LiveTradingEngine:
 
             scorer = getattr(self.confluence, "scorer", None) if self.confluence else None
             cfg = getattr(self.confluence, "cfg", None) if self.confluence else None
+            order_plan = {}
+            if signal is not None:
+                try:
+                    order_plan = dict((signal.meta or {}).get("order_plan") or {})
+                except Exception:
+                    order_plan = {}
+            intended_entry = None
+            if signal is not None:
+                intended_entry = order_plan.get(
+                    "intended_entry_price",
+                    getattr(signal, "original_entry_price", signal.entry_price),
+                )
+            entry_fill = entry_price
+            slip_ticks = None
+            slip_points = None
+            slip_dollars = None
+            try:
+                if intended_entry is not None and entry_fill is not None:
+                    direction_mult = 1 if signal and signal.direction == Direction.BUY else -1
+                    slip_points = (float(entry_fill) - float(intended_entry)) * direction_mult
+                    slip_ticks = slip_points / self.tick_size
+                    slip_dollars = slip_points * self.point_value * self.contract_size
+            except Exception:
+                slip_ticks = slip_points = slip_dollars = None
 
             record = {
                 "exit_time": exit_time.isoformat() if exit_time else None,
                 "entry_time": entry_time.isoformat() if entry_time else None,
+                "signal_time": (
+                    signal.timestamp.isoformat()
+                    if signal is not None and getattr(signal, "timestamp", None)
+                    else None
+                ),
                 "account_id": self.account_id,
                 "contract_id": self.contract_id,
                 "strategy": self.strategy_mode,
@@ -886,11 +919,32 @@ class LiveTradingEngine:
                 "status": status,
                 "direction": signal.direction.value if signal else None,
                 "size": self.contract_size,
+                "order_id": order_plan.get("order_id"),
+                "sl_order_id": order_plan.get("sl_order_id", self._sl_order_id),
+                "tp_order_id": order_plan.get("tp_order_id", self._tp_order_id),
+                "order_type": order_plan.get("order_type") or (getattr(signal, "order_type", None) if signal else None),
+                "order_submitted_at": order_plan.get("submitted_at"),
+                "market_price_at_submit": order_plan.get("market_price_at_submit"),
+                "intended_entry_price": intended_entry,
+                "signal_entry_price": (
+                    getattr(signal, "entry_price", None) if signal is not None else None
+                ),
+                "entry_fill_price": entry_fill,
                 "entry_price": entry_price,
+                "entry_slippage_ticks": (
+                    round(float(slip_ticks), 2) if slip_ticks is not None else None
+                ),
+                "entry_slippage_points": (
+                    round(float(slip_points), 4) if slip_points is not None else None
+                ),
+                "entry_slippage_dollars": (
+                    round(float(slip_dollars), 2) if slip_dollars is not None else None
+                ),
                 "exit_price": exit_price,
                 "topstep_pnl": topstep_pnl,
                 "sl_price": signal.sl_price if signal else None,
                 "tp_price": signal.tp_price if signal else None,
+                "signal_reason": signal.reason if signal else None,
                 "original_sl_price": (
                     getattr(signal, "original_sl_price", signal.sl_price)
                     if signal else None
@@ -1896,6 +1950,11 @@ class LiveTradingEngine:
         self._reset_full_tp_counts()
         self._daily_loss_count = 0     # 1.0.8: 日虧斷路器重置
         self._param_snapshot_id = self._register_param_snapshot()  # 1.0.8: 參數快照入庫
+        try:   # 1.0.9: 本帳號設為 shadow replay 主帳號(其餘為跟單,忽略)
+            from backend.backtest.shadow_replay import set_main_account
+            set_main_account(self.account_id)
+        except Exception:
+            pass
         self._auto_oco_fail_safe_triggered = False
         self._last_auto_oco_retry_ts = 0.0
         self._last_account_refresh = 0.0
@@ -1949,6 +2008,7 @@ class LiveTradingEngine:
         self._last_candle_time = historical_candles[-1].timestamp.isoformat() if historical_candles else None
         # 1.0.8: fade 模式 — warm-up 完成後計算前日 VA 水位
         self._refresh_fade_levels()
+        self._refresh_prev_rv_gate()  # 1.0.9
 
         # Legacy fallback: old strategies only warmed recent-candle buffers, so
         # clear any accidental state. SessionTrendFollow.observe() intentionally
@@ -2300,6 +2360,7 @@ class LiveTradingEngine:
                 f"新交易日 — PnL 重置 (CT 17:00)"
             )
             self._refresh_fade_levels()    # 1.0.8: fade 前日水位換日重算
+            self._refresh_prev_rv_gate()    # 1.0.9: regime gate 換日重算
 
         # Check position status from API (ALWAYS, even without new candle)
         await self._sync_position()
@@ -2365,6 +2426,11 @@ class LiveTradingEngine:
         # 1.0.8: 移除 mlc2_evaluator.update
         self._append_history(candle)
         self._update_tf_breakout(candle)
+        if self.strategy_mode == "sigma":
+            if self._trend_session_allowed(candle.timestamp):
+                self.trend_follow.observe(candle, [], True)
+            elif not self._open_position and not self._pending_order_id:
+                self._reset_breakout_confirmation()
 
         # ── Periodic status log every minute ──
         current_minute = now.minute
@@ -2407,7 +2473,7 @@ class LiveTradingEngine:
             return
 
         if (
-            self.strategy_mode == "trend"
+            self.strategy_mode in ("trend", "sigma")
             and self._pending_order_id
             and not self._trend_session_allowed(candle.timestamp)
         ):
@@ -2499,6 +2565,11 @@ class LiveTradingEngine:
         signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
 
         if signal and not self._pending_order_id:
+            # 1.0.9: prevRV regime gate — 前一日高波動 → 今日不進場
+            if self._prev_rv_gate and self._gate_block_today:
+                self._unlock_signal_breakout(signal)
+                strat.notify_order_cancelled()
+                return
             # 1.0.8: 日虧斷路器 — 當日虧損單數達上限,今日不再開新單
             if (self._tr_daily_loss_stop
                     and self._daily_loss_count >= self._tr_daily_loss_stop):
@@ -2765,6 +2836,7 @@ class LiveTradingEngine:
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
+        signal.original_entry_price = signal.entry_price
         # 1.0.8: ladder 出場(trend 專用)— TP bracket 推遠到打不到,出場交給階梯 SL
         if self._tr_exit_mode == "ladder" and self.strategy_mode == "trend":
             far = self.LADDER_FAR_TP_TICKS * self.tick_size
@@ -2776,8 +2848,16 @@ class LiveTradingEngine:
         protection_fixes = self._normalize_entry_protection(signal)
         if protection_fixes:
             self._log_event("[BRACKET FIX] " + " | ".join(protection_fixes), "warn")
+        signal.original_entry_price = getattr(signal, "original_entry_price", signal.entry_price)
         signal.original_sl_price = signal.sl_price
         signal.original_tp_price = signal.tp_price
+        signal.meta.setdefault("order_plan", {})
+        signal.meta["order_plan"].update({
+            "order_type": "limit",
+            "intended_entry_price": signal.entry_price,
+            "submitted_at": None,
+            "market_price_at_submit": self._last_market_price,
+        })
 
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "買" if signal.direction == Direction.BUY else "賣"
@@ -2835,6 +2915,11 @@ class LiveTradingEngine:
                 self._pending_signal = signal
                 self._pending_age = 0
                 self._pending_created_at = datetime.utcnow()
+                signal.meta.setdefault("order_plan", {})
+                signal.meta["order_plan"].update({
+                    "order_id": resp.order_id,
+                    "submitted_at": self._pending_created_at.isoformat(),
+                })
                 self._persist_breakout_lock(signal)
                 self._mark_session_direction_locked(signal)
                 self._log_event(
@@ -2865,6 +2950,13 @@ class LiveTradingEngine:
         signal.original_entry_price = signal.entry_price
         signal.original_sl_price = signal.sl_price
         signal.original_tp_price = signal.tp_price
+        signal.meta.setdefault("order_plan", {})
+        signal.meta["order_plan"].update({
+            "order_type": "market",
+            "intended_entry_price": signal.entry_price,
+            "submitted_at": None,
+            "market_price_at_submit": self._last_market_price,
+        })
         ok, reason = self._validate_market_signal_geometry(signal, signal.entry_price)
         if not ok:
             self._log_event(f"[MARKET BLOCK] {reason}", "error")
@@ -2907,6 +2999,11 @@ class LiveTradingEngine:
                 self._pending_signal = signal
                 self._pending_age = 0
                 self._pending_created_at = datetime.utcnow()
+                signal.meta.setdefault("order_plan", {})
+                signal.meta["order_plan"].update({
+                    "order_id": resp.order_id,
+                    "submitted_at": self._pending_created_at.isoformat(),
+                })
                 self._persist_breakout_lock(signal)
                 self._mark_session_direction_locked(signal)
                 self._log_event(
@@ -3538,6 +3635,12 @@ class LiveTradingEngine:
                 # doesn't block the other
                 sl_id = self._sl_order_id
                 tp_id = self._tp_order_id
+                if _sig_for_log:
+                    _sig_for_log.meta.setdefault("order_plan", {})
+                    _sig_for_log.meta["order_plan"].update({
+                        "sl_order_id": sl_id,
+                        "tp_order_id": tp_id,
+                    })
                 self._sl_order_id = None
                 self._tp_order_id = None
                 self._fill_price = None
@@ -3699,6 +3802,41 @@ class LiveTradingEngine:
             f"POC={vp.poc:.2f} VAH={vp.vah:.2f} VAL={vp.val:.2f} | "
             f"今日 BUY LIMIT @ VAL → TP POC"
         )
+
+    def _refresh_prev_rv_gate(self) -> None:
+        """1.0.9: prevRV regime gate — 用歷史 K 線算各交易日 RV,決定今日是否封鎖。
+        呼叫時機:warm-up 完成後、CT 17:00 rollover(與 _refresh_fade_levels 並列)。"""
+        if not self._prev_rv_gate:
+            return
+        import math as _m
+        import statistics as _st
+        today = self._get_topstep_trade_date()
+        by_day: Dict[str, List[float]] = {}
+        for c in self._all_candles:
+            d = _topstep_trade_date(c.timestamp)
+            by_day.setdefault(d, []).append(float(c.close))
+        days = sorted(d for d in by_day if d < today)
+        rvs = []
+        for d in days:
+            cs = by_day[d]
+            rets = [_m.log(cs[i] / cs[i - 1]) for i in range(1, len(cs))
+                    if cs[i - 1] > 0 and cs[i] > 0]
+            rvs.append(_st.pstdev(rets) if len(rets) > 1 else 0.0)
+        if len(rvs) < 7:
+            self._gate_block_today = False
+            return
+        prev_rv = rvs[-1]
+        hist = rvs[-1 - self._prev_rv_gate: -1] if len(rvs) > 1 else []
+        if len(hist) >= 6:
+            cut = sorted(hist)[len(hist) * 2 // 3]
+            self._gate_block_today = prev_rv >= cut
+            self._log_event(
+                f"[REGIME] 前日 RV={prev_rv:.5f} vs 近{len(hist)}日高三分位 {cut:.5f} → "
+                + ("今日封鎖新單 🚫" if self._gate_block_today else "今日可交易 ✓"),
+                "warn" if self._gate_block_today else "info",
+            )
+        else:
+            self._gate_block_today = False
 
     def get_candle_history(self) -> List[Candle]:
         """Warm-up + live 1m candles (chronological) for multi-TF zone detection."""

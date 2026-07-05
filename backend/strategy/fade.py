@@ -42,10 +42,16 @@ class PrevDayFade:
 
     def __init__(self, params=None):
         p = params
-        # 2026-07-02 isolation study:
-        # long->POC keeps the best PF/DD; breakout legs are negative.
-        # both->mid has higher gross PnL but lower win/PF quality.
-        self.SL_TICKS = int(getattr(p, "tr_sl_ticks", None) or getattr(p, "sl_ticks", 80) or 80)
+        # 2026-07-02 isolation study: long->POC 保 PF/DD;breakout 腿為負。
+        # 2026-07-03 flex 研究:SL120 + TP=VAL+0.75*(POC-VAL) 是唯一過 walk-forward
+        # 三段的組合(SL 越寬越穩、TP 越近越穩);tp_frac>1 過 POC 皆第三段翻負。
+        self.SL_TICKS = int(getattr(p, "tr_sl_ticks", None) or getattr(p, "sl_ticks", 120) or 120)
+        # TP 佔 VAL→POC 距離的比例(0.75 = 提前落袋,經驗證最穩)
+        self.TP_FRAC = float(getattr(p, "fade_tp_frac", 0.75) or 0.75)
+        # 進場模式:"limit"(直接掛 VAL)| "rejection"(跌破 VAL 又收回 → 市價追)
+        self.ENTRY_MODE = str(getattr(p, "fade_entry_mode", "limit") or "limit").lower()
+        if self.ENTRY_MODE not in ("limit", "rejection"):
+            self.ENTRY_MODE = "limit"
         self._levels: Optional[Dict[str, Any]] = None
         # 每天一次:發信號上鎖;掛單過期未成交解鎖;成交後鎖到日終。
         self._used: set[str] = set()
@@ -115,44 +121,53 @@ class PrevDayFade:
         key = f"{lv['date']}:fadeLong"
         if key in self._used:
             return None
-        # 只在前日 VA 區間內掛(價格已離開區間 = 趨勢日,不接)
-        if not (val < candle.close < vah):
-            return None
         if (poc - val) <= self.MIN_TP_TICKS * self.TICK_SIZE:
             return None
 
-        entry = val
-        sl = entry - self.SL_TICKS * self.TICK_SIZE
-        min_sl = entry - self.MIN_STOP_TICKS * self.TICK_SIZE
-        if sl > min_sl:
-            sl = min_sl
-        tp = poc
+        sl = val - self.SL_TICKS * self.TICK_SIZE     # 結構性 SL,置於 VAL 下方固定緩衝
+        tp = val + self.TP_FRAC * (poc - val)          # TP = VAL→POC 的 TP_FRAC 比例處
+
+        if self.ENTRY_MODE == "rejection":
+            # 拒絕進場:本根 K 跌破 VAL(掃)又收回 VAL 上方(拒絕)→ 市價追多。
+            # 只在仍離 TP 有空間時做(避免收得太高)。
+            if not (candle.low <= val < candle.close < poc):
+                return None
+            entry = candle.close
+            order_type = "market"
+            if tp - entry <= self.MIN_TP_TICKS * self.TICK_SIZE:
+                return None
+            reason = (f"FADE REJECTION(market) | 掃VAL {val:.2f} 收回 @ {entry:.2f} "
+                      f"-> TP {tp:.2f} | SL {sl:.2f}")
+        else:
+            # 直接掛單:價格在前日 VA 內時掛 BUY LIMIT @ VAL(趨勢日離開區間不接)。
+            if not (val < candle.close < vah):
+                return None
+            entry = val
+            order_type = "limit"
+            reason = (f"FADE LIMIT | prevVAL {entry:.2f} -> TP {tp:.2f}({self.TP_FRAC:g}) "
+                      f"| SL {sl:.2f} ({self.SL_TICKS}t)")
 
         self._used.add(key)
         self._last_key = key
         self._state = "confirmed"
 
-        logger.info(
-            f"[FADE] BUY LIMIT @ prevVAL {entry:.2f} | SL={sl:.2f} TP=prevPOC {tp:.2f} "
-            f"| levels({lv['date']})"
-        )
+        logger.info(f"[FADE-{self.ENTRY_MODE}] BUY @ {entry:.2f} | SL={sl:.2f} TP={tp:.2f} "
+                    f"| levels({lv['date']})")
         return TradeSignal(
             strategy=StrategyType.TREND_FOLLOW,
             direction=Direction.BUY,
             entry_price=entry, sl_price=sl, tp_price=tp,
             zone_id=f"FD:{lv['date']}",
-            reason=(
-                f"FADE LONG | prevVAL {entry:.2f} -> prevPOC {tp:.2f} | "
-                f"SL {sl:.2f} ({self.SL_TICKS}t)"
-            ),
+            reason=reason,
             timestamp=candle.timestamp,
             breakout_range=abs(vah - val),
+            order_type=order_type,
             meta={
                 "strategy_family": "fade",
-                "mode": "prev_day_va",
+                "mode": "prev_day_va_" + self.ENTRY_MODE,
                 "side": "VAL",
                 "trade_tf": "1d",
-                "labels": ["fade:prevVAL->prevPOC"],
+                "labels": [f"fade:{self.ENTRY_MODE}:VAL->{self.TP_FRAC:g}POC"],
                 "primary_zone": {
                     "tf": "1d", "zone_id": f"FD:{lv['date']}",
                     "poc": poc, "vah_80": vah, "val_80": val,
