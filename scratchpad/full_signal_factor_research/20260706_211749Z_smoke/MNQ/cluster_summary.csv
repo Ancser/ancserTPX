@@ -1,0 +1,4 @@
+cluster_kind,cluster_families,signal_family,signals,avg_cluster_size,h1_direction_acc,h1_peak_capture_rate,h3_direction_acc,h3_peak_capture_rate,h6_direction_acc,h6_peak_capture_rate,h12_direction_acc,h12_peak_capture_rate,h24_direction_acc,h24_peak_capture_rate,h48_direction_acc,h48_peak_capture_rate
+solo,icefishball,icefishball,5,1.0,0.6,0.2,0.6,0.2,0.6,0.2,0.6,0.2,0.6,0.2,1.0,0.2
+same_family,icefishball,icefishball,2,2.0,0.5,0.0,0.5,0.0,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+solo,momentum_reversion,momentum_reversion,1,1.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0

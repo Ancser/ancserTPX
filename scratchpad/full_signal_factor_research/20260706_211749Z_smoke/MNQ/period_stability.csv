@@ -1,0 +1,4 @@
+config_id,period,periods,positive_periods,positive_rate,min_pnl,max_pnl,std_pnl
+X01244,trade_date,1,1,1.0,508.52,508.52,0.0
+X01244,week,1,1,1.0,508.52,508.52,0.0
+X01244,month,1,1,1.0,508.52,508.52,0.0

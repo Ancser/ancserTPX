@@ -55,7 +55,7 @@ def _env(key: str, default: str = "") -> str:
     return os.getenv(key, default)
 
 
-MNQ_SIZE_CHOICES = (1, 2, 3, 5, 10)  # 1.0.8: +2 (FABLE Fade x2)
+MNQ_SIZE_CHOICES = (1, 2, 3, 5, 10)  # 1.0.8: sizing choices
 TRAIL_TICK_STEP = 5
 ML_TRAIL_PCT_CHOICES = (
     0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
@@ -70,8 +70,10 @@ def _normalize_contract_size(contract_id: str, requested) -> int:
     try:
         size = int(requested or 1)
     except (TypeError, ValueError):
-        size = 3
-    return size if size in MNQ_SIZE_CHOICES else 3
+        size = 3 if sym == "MNQ" else 1
+    if sym == "MNQ":
+        return size if size in MNQ_SIZE_CHOICES else 3
+    return max(1, size)
 
 
 def _normalize_trade_ticks(value, default: int) -> int:
@@ -83,7 +85,7 @@ def _normalize_trade_ticks(value, default: int) -> int:
 
 
 def _normalize_value_area_pct(value=None, default: float = 0.80) -> float:
-    """1.0.8: 開放 70%/80% 兩檔 VA(CLAUDE 系列 preset 用 70% 較窄邊界);
+    """1.0.8: 開放 70%/80% 兩檔 VA(70% = 較窄邊界);
     其餘任何值一律吸附到最近的允許檔,無法解析則回 default(80%)。"""
     try:
         pct = float(value)
@@ -199,16 +201,45 @@ def _trail_grid_for(sl_ticks: int, tp_ticks: int, trigger_pct: float) -> List[Tu
 def _normalize_strategy_name(value: str) -> str:
     # 1.0.8: +fade(前日 VA 回歸);confluence 由呼叫端先行判斷
     v = str(value or "").strip().lower()
-    return v if v in ("fade", "sigma") else "trend"
+    return v if v in ("fade", "sigma", "pmo", "factor") else "trend"
 
 
 
-AREA_TIMEFRAME_CHOICES = ("5m", "15m", "30m", "1h", "4h", "session")  # 1.0.8: +session 生長區間
+AREA_TIMEFRAME_CHOICES = ("15m", "30m", "1h", "4h", "session")  # 1.0.8: +session 生長區間
 
 
 def _normalize_area_timeframe(value) -> str:
-    tf = str(value or "5m").strip().lower()
-    return tf if tf in AREA_TIMEFRAME_CHOICES else "5m"
+    tf = str(value or "15m").strip().lower()
+    return tf if tf in AREA_TIMEFRAME_CHOICES else "15m"
+
+
+def _normalize_factor_family(value) -> str:
+    v = str(value or "emapmo").strip().lower()
+    aliases = {
+        "pmo": "emapmo",
+        "ema_pmo": "emapmo",
+        "mrev": "momentum_reversion",
+        "momentum": "momentum_reversion",
+        "kdjma": "icefishball",
+        "ifb": "icefishball",
+    }
+    v = aliases.get(v, v)
+    return v if v in ("emapmo", "momentum_reversion", "icefishball") else "emapmo"
+
+
+def _normalize_factor_side(value) -> str:
+    v = str(value or "all").strip().lower()
+    return v if v in ("all", "long_only", "short_only") else "all"
+
+
+def _normalize_factor_rule(value) -> str:
+    v = str(value or "atr").strip().lower()
+    return v if v in ("fixed", "atr", "atr_blend", "range15_pct") else "atr"
+
+
+def _normalize_factor_pmo_mode(value) -> str:
+    v = str(value or "normal").strip().lower()
+    return v if v in ("normal", "early", "both") else "normal"
 
 
 # 1.0.8: 移除重複的 _normalize_value_area_pct clamp 版本(原在此)。
@@ -371,7 +402,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         # 1.0.9: prevRV regime gate + fade 專用
         tr_prev_rv_gate=max(0, min(60, int(getattr(req, "tr_prev_rv_gate", 0) or 0))),
         fade_tp_frac=float(getattr(req, "fade_tp_frac", 0.75) or 0.75),
-        fade_entry_mode=("rejection" if str(getattr(req, "fade_entry_mode", "limit") or "limit").lower() == "rejection" else "limit"),
+        fade_entry_mode=(lambda m: m if m in ("limit", "rejection", "or15") else "limit")(str(getattr(req, "fade_entry_mode", "limit") or "limit").lower()),  # 1.0.9: +or15
         sigma_window_minutes=max(5, int(getattr(req, "sigma_window_minutes", 15) or 15)),
         sigma_method=(
             "mad" if str(getattr(req, "sigma_method", "std") or "std").lower() == "mad" else "std"
@@ -394,7 +425,27 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         sigma_stop_span=max(0.25, float(getattr(req, "sigma_stop_span", 1.0) or 1.0)),
         sigma_accept_sigma=max(1.0, float(getattr(req, "sigma_accept_sigma", 2.0) or 2.0)),
         sigma_accept_bars=max(1, int(getattr(req, "sigma_accept_bars", 2) or 2)),
-        area_timeframe=_normalize_area_timeframe(getattr(req, "area_timeframe", "5m")),
+        pmo_timeframe_minutes=max(1, int(getattr(req, "pmo_timeframe_minutes", 5) or 5)),
+        pmo_signal_mode=(
+            "early" if str(getattr(req, "pmo_signal_mode", "normal") or "normal").lower() == "early" else "normal"
+        ),
+        pmo_sl_atr=max(0.1, float(getattr(req, "pmo_sl_atr", 1.0) or 1.0)),
+        pmo_tp_atr=max(0.1, float(getattr(req, "pmo_tp_atr", 1.0) or 1.0)),
+        pmo_max_hold_bars=max(0, int(getattr(req, "pmo_max_hold_bars", 24) or 0)),
+        pmo_max_trades_per_day=max(0, int(getattr(req, "pmo_max_trades_per_day", 3) or 0)),
+        pmo_warmup_bars=max(20, int(getattr(req, "pmo_warmup_bars", 150) or 150)),
+        factor_timeframe_minutes=max(1, int(getattr(req, "factor_timeframe_minutes", 5) or 5)),
+        factor_signal_family=_normalize_factor_family(getattr(req, "factor_signal_family", "emapmo")),
+        factor_side_mode=_normalize_factor_side(getattr(req, "factor_side_mode", "all")),
+        factor_pmo_signal_mode=_normalize_factor_pmo_mode(getattr(req, "factor_pmo_signal_mode", "normal")),
+        factor_sl_rule=_normalize_factor_rule(getattr(req, "factor_sl_rule", "atr")),
+        factor_tp_rule=_normalize_factor_rule(getattr(req, "factor_tp_rule", "atr")),
+        factor_sl_value=max(0.01, float(getattr(req, "factor_sl_value", 1.5) or 1.5)),
+        factor_tp_value=max(0.01, float(getattr(req, "factor_tp_value", 2.0) or 2.0)),
+        factor_max_hold_bars=max(0, int(getattr(req, "factor_max_hold_bars", 24) or 0)),
+        factor_max_trades_per_day=max(0, int(getattr(req, "factor_max_trades_per_day", 3) or 0)),
+        factor_warmup_bars=max(20, int(getattr(req, "factor_warmup_bars", 150) or 150)),
+        area_timeframe=_normalize_area_timeframe(getattr(req, "area_timeframe", "15m")),
         value_area_pct=_normalize_value_area_pct(getattr(req, "value_area_pct", 0.80)),
         rr_ratio=_normalize_rr_ratio(getattr(req, "rr_ratio", 2)),
         method=str(getattr(req, "method", "single") or "single").lower(),
@@ -522,6 +573,262 @@ def _upsert_historical_candles(candles: List[Candle]) -> None:
         by_ts[_candle_key(c)] = c
     _historical_candles = sorted(by_ts.values(), key=_candle_time)
 
+
+def _ema_series(values: List[Optional[float]], span: int) -> List[Optional[float]]:
+    alpha = 2.0 / (float(span) + 1.0)
+    out: List[Optional[float]] = []
+    prev: Optional[float] = None
+    for value in values:
+        if value is None or not math.isfinite(float(value)):
+            out.append(prev)
+            continue
+        v = float(value)
+        prev = v if prev is None else alpha * v + (1.0 - alpha) * prev
+        out.append(prev)
+    return out
+
+
+def _rma_series(values: List[Optional[float]], length: int) -> List[float]:
+    alpha = 1.0 / float(length)
+    out: List[float] = []
+    prev = 0.0
+    seeded = False
+    for value in values:
+        v = 0.0 if value is None or not math.isfinite(float(value)) else float(value)
+        if not seeded:
+            prev = v
+            seeded = True
+        else:
+            prev = alpha * v + (1.0 - alpha) * prev
+        out.append(prev)
+    return out
+
+
+def _bcwsma_series(values: List[Optional[float]], length: int, multiplier: int) -> List[float]:
+    out: List[float] = []
+    prev = 0.0
+    for value in values:
+        raw = 0.0 if value is None or not math.isfinite(float(value)) else float(value)
+        prev = (multiplier * raw + (length - multiplier) * prev) / float(length)
+        out.append(prev)
+    return out
+
+
+def _atr_series(bars: List[Candle], length: int = 14, min_periods: int = 7) -> List[Optional[float]]:
+    trs: List[float] = []
+    atrs: List[Optional[float]] = []
+    for i, cur in enumerate(bars):
+        prev_close = float(bars[i - 1].close) if i > 0 else float(cur.close)
+        tr = max(
+            float(cur.high) - float(cur.low),
+            abs(float(cur.high) - prev_close),
+            abs(float(cur.low) - prev_close),
+        )
+        trs.append(tr)
+        start = max(0, len(trs) - length)
+        window = trs[start:]
+        atrs.append((sum(window) / len(window)) if len(window) >= min_periods else None)
+    return atrs
+
+
+def _signal_marker(
+    *,
+    marker_time: datetime,
+    signal_type: str,
+    subtype: str,
+    direction: str,
+    price: float,
+    source_time: datetime,
+    detail: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "time": marker_time.isoformat(),
+        "source_time": source_time.isoformat(),
+        "type": signal_type,
+        "subtype": subtype,
+        "direction": direction,
+        "price": round(float(price), 4),
+        "detail": detail,
+    }
+
+
+def _collect_pmo_markers(bars: List[Candle], cutoff: Optional[datetime]) -> List[Dict[str, Any]]:
+    closes = [float(c.close) for c in bars]
+    roc: List[Optional[float]] = [None]
+    for i in range(1, len(closes)):
+        prev = closes[i - 1]
+        roc.append(None if prev == 0 else 100.0 * (closes[i] - prev) / prev)
+    first = _ema_series(roc, 100)
+    pmo = _ema_series([None if v is None else 10.0 * v for v in first], 50)
+    sig = _ema_series(pmo, 10)
+
+    markers: List[Dict[str, Any]] = []
+    for i in range(149, len(bars) - 1):
+        p0, p1 = pmo[i - 1], pmo[i]
+        s0, s1 = sig[i - 1], sig[i]
+        if None in (p0, p1, s0, s1):
+            continue
+        assert p0 is not None and p1 is not None and s0 is not None and s1 is not None
+
+        subtypes: List[str] = []
+        direction = ""
+        crossunder = p1 < s1 and p0 >= s0
+        crossover = p1 > s1 and p0 <= s0
+        if p1 > 0.06 and crossunder:
+            subtypes.append("normal")
+            direction = "short"
+        if p1 < -0.10 and crossover:
+            subtypes.append("normal")
+            direction = "long"
+
+        if i >= 2:
+            p_prev2, s_prev2 = pmo[i - 2], sig[i - 2]
+            if None not in (p_prev2, s_prev2):
+                assert p_prev2 is not None and s_prev2 is not None
+                diff0 = p0 - s0
+                diff1 = p1 - s1
+                diff_prev2 = p_prev2 - s_prev2
+                inv0 = s0 - p0
+                inv1 = s1 - p1
+                inv_prev2 = s_prev2 - p_prev2
+                if s1 > 0.06 and diff1 < diff0 and p1 > s1 and diff0 < diff_prev2:
+                    subtypes.append("early")
+                    direction = direction or "short"
+                if s1 < -0.10 and inv1 < inv0 and p1 < s1 and inv0 < inv_prev2:
+                    subtypes.append("early")
+                    direction = direction or "long"
+
+        if not subtypes:
+            continue
+        entry_bar = bars[i + 1]
+        entry_time = _candle_time(entry_bar)
+        if cutoff and entry_time < cutoff:
+            continue
+        markers.append(_signal_marker(
+            marker_time=entry_time,
+            signal_type="emapmo",
+            subtype="+".join(dict.fromkeys(subtypes)),
+            direction=direction,
+            price=float(entry_bar.open),
+            source_time=_candle_time(bars[i]),
+            detail={"pmo": round(float(p1), 5), "signal": round(float(s1), 5)},
+        ))
+    return markers
+
+
+def _collect_icefishball_markers(bars: List[Candle], cutoff: Optional[datetime]) -> List[Dict[str, Any]]:
+    closes = [float(c.close) for c in bars]
+    highs = [float(c.high) for c in bars]
+    lows = [float(c.low) for c in bars]
+
+    rsv: List[Optional[float]] = []
+    for i, close in enumerate(closes):
+        if i < 8:
+            rsv.append(None)
+            continue
+        hi = max(highs[i - 8:i + 1])
+        lo = min(lows[i - 8:i + 1])
+        rsv.append(None if hi <= lo else 100.0 * ((close - lo) / (hi - lo)))
+    k = _bcwsma_series(rsv, 3, 1)
+    d = _bcwsma_series(k, 3, 1)
+    j = [(3.0 * kk) - (2.0 * dd) for kk, dd in zip(k, d)]
+
+    delta: List[Optional[float]] = [None]
+    for i in range(1, len(closes)):
+        delta.append(closes[i] - closes[i - 1])
+    up = _rma_series([None if v is None else max(v, 0.0) for v in delta], 14)
+    down = _rma_series([None if v is None else max(-v, 0.0) for v in delta], 14)
+    rsi: List[float] = []
+    for u, dn in zip(up, down):
+        if dn == 0:
+            rsi.append(100.0)
+        elif u == 0:
+            rsi.append(0.0)
+        else:
+            rsi.append(100.0 - (100.0 / (1.0 + (u / dn))))
+
+    markers: List[Dict[str, Any]] = []
+    for i in range(9, len(bars) - 1):
+        short_sig = j[i] > 80 and j[i] < j[i - 1] and closes[i] > closes[i - 1] and rsi[i] > 60
+        long_sig = j[i] < 20 and j[i] > j[i - 1] and closes[i] < closes[i - 1] and rsi[i] < 40
+        if not (short_sig or long_sig):
+            continue
+        entry_bar = bars[i + 1]
+        entry_time = _candle_time(entry_bar)
+        if cutoff and entry_time < cutoff:
+            continue
+        markers.append(_signal_marker(
+            marker_time=entry_time,
+            signal_type="icefishball",
+            subtype="kdjma",
+            direction="short" if short_sig else "long",
+            price=float(entry_bar.open),
+            source_time=_candle_time(bars[i]),
+            detail={"j": round(float(j[i]), 3), "rsi": round(float(rsi[i]), 3)},
+        ))
+    return markers
+
+
+def _collect_momentum_reversion_markers(bars: List[Candle], cutoff: Optional[datetime]) -> List[Dict[str, Any]]:
+    lookback = 40
+    mom_threshold = 0.4
+    rev_span = 12
+    rev_threshold = 1.1
+
+    closes = [float(c.close) for c in bars]
+    atrs = _atr_series(bars, 14, 7)
+    mean = _ema_series([float(c) for c in closes], rev_span)
+
+    markers: List[Dict[str, Any]] = []
+    min_i = max(lookback + 2, rev_span + 2, 20)
+    for i in range(min_i, len(bars) - 1):
+        atr = atrs[i]
+        avg = mean[i]
+        if atr is None or avg is None or atr <= 0:
+            continue
+        mom = (closes[i] - closes[i - lookback]) / (atr * math.sqrt(lookback))
+        rev = (closes[i] - avg) / atr
+        if not (math.isfinite(mom) and math.isfinite(rev)):
+            continue
+        direction = ""
+        if mom >= mom_threshold and rev <= -rev_threshold:
+            direction = "long"
+        elif mom <= -mom_threshold and rev >= rev_threshold:
+            direction = "short"
+        if not direction:
+            continue
+        entry_bar = bars[i + 1]
+        entry_time = _candle_time(entry_bar)
+        if cutoff and entry_time < cutoff:
+            continue
+        markers.append(_signal_marker(
+            marker_time=entry_time,
+            signal_type="momentum_reversion",
+            subtype="m200r5_0362",
+            direction=direction,
+            price=float(entry_bar.open),
+            source_time=_candle_time(bars[i]),
+            detail={"mom_norm": round(float(mom), 4), "rev_z": round(float(rev), 4)},
+        ))
+    return markers
+
+
+def _mnq_signal_scope_allowed(candles: List[Candle]) -> Tuple[bool, str]:
+    blocked = {"ZL", "GC", "MGC"}
+    live_sym = ""
+    try:
+        live_sym = _extract_symbol(_live_contract_id or "")
+    except Exception:
+        live_sym = ""
+    candle_syms = {
+        str(getattr(c, "symbol", "") or "").upper().replace("/", "")
+        for c in candles[-50:]
+        if str(getattr(c, "symbol", "") or "").strip()
+    }
+    if live_sym in blocked or candle_syms.intersection(blocked):
+        return False, f"Skipped non-MNQ scope: live={live_sym or '-'} candles={','.join(sorted(candle_syms)) or '-'}"
+    return True, live_sym or (",".join(sorted(candle_syms)) or "MNQ")
+
 async def _refresh_recent_historical_candles(contract_id: str, limit: int = 240) -> None:
     """Refresh recent 1m bars before simulation so backtest uses final OHLC."""
     if not _topstepx_client:
@@ -562,13 +869,13 @@ class BacktestRequest(BaseModel):
     )
     candle_seconds: int = 60
     value_area_pct: float = 0.80
-    area_timeframe: str = "5m"
+    area_timeframe: str = "15m"
     rr_ratio: int = 2                     # reward:risk multiple (1..6)
     tr_exit_mode: str = "tp"              # 1.0.8: "tp" 固定 TP | "ladder" 階梯滾動
     tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF)
     tr_prev_rv_gate: int = 0              # 1.0.9: prevRV regime gate 回看天數(0=OFF)
-    fade_tp_frac: float = 0.75            # 1.0.9: FADE TP=VAL→POC 比例
-    fade_entry_mode: str = "limit"        # 1.0.9: FADE 進場 limit|rejection
+    fade_tp_frac: float = 0.75            # 1.0.9: DAY ZONE TP=VAL→POC 比例
+    fade_entry_mode: str = "limit"        # 1.0.9: DAY ZONE 進場 limit|rejection|or15
     # Contract & sizing (defaults to 3× Micro NQ)
     sigma_window_minutes: int = 15
     sigma_method: str = "std"
@@ -580,7 +887,25 @@ class BacktestRequest(BaseModel):
     sigma_stop_span: float = 1.0
     sigma_accept_sigma: float = 2.0
     sigma_accept_bars: int = 2
-    contract_id: str = "CON.F.US.MNQ.M26"
+    pmo_timeframe_minutes: int = 5
+    pmo_signal_mode: str = "normal"
+    pmo_sl_atr: float = 1.0
+    pmo_tp_atr: float = 1.0
+    pmo_max_hold_bars: int = 24
+    pmo_max_trades_per_day: int = 3
+    pmo_warmup_bars: int = 150
+    factor_timeframe_minutes: int = 5
+    factor_signal_family: str = "emapmo"
+    factor_side_mode: str = "all"
+    factor_pmo_signal_mode: str = "normal"
+    factor_sl_rule: str = "atr"
+    factor_tp_rule: str = "atr"
+    factor_sl_value: float = 1.5
+    factor_tp_value: float = 2.0
+    factor_max_hold_bars: int = 24
+    factor_max_trades_per_day: int = 3
+    factor_warmup_bars: int = 150
+    contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     contract_size: int = 3
     full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     one_trade_per_session_direction: bool = True
@@ -662,6 +987,8 @@ class TradeResponse(BaseModel):
     wall_id: Optional[str] = None
     labels: List[str] = Field(default_factory=list)
     primary_zone: Optional[Dict[str, Any]] = None
+    or_range: Optional[Dict[str, Any]] = None
+    reason: Optional[str] = None
     vol_ratio: Optional[float]
     is_big_trend: bool
 
@@ -830,6 +1157,60 @@ async def get_stored_candles(limit: int = 60000):
     }
 
 
+@router.get("/data/mnq-signals")
+async def get_mnq_signal_markers(limit: int = 60000):
+    """Return read-only MNQ factor markers for the 1m chart.
+
+    The factors are evaluated on completed 5m bars. Marker timestamps are the
+    next 5m open so chart markers line up with actionable, non-repainting bars.
+    """
+    if not _historical_candles:
+        return {"signals": [], "count": 0, "shown": 0, "symbol": "MNQ"}
+
+    candles = sorted(_historical_candles, key=_candle_time)
+    allowed, symbol = _mnq_signal_scope_allowed(candles)
+    if not allowed:
+        return {
+            "signals": [],
+            "count": 0,
+            "shown": 0,
+            "symbol": symbol,
+            "skipped": symbol,
+        }
+
+    cutoff: Optional[datetime] = None
+    if limit and limit > 0 and len(candles) > limit:
+        cutoff = _candle_time(candles[-limit])
+
+    try:
+        bars_5m = BacktestEngine.aggregate_1m_to_5m(candles)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not aggregate MNQ markers: {exc}")
+
+    signals: List[Dict[str, Any]] = []
+    signals.extend(_collect_pmo_markers(bars_5m, cutoff))
+    signals.extend(_collect_momentum_reversion_markers(bars_5m, cutoff))
+    signals.extend(_collect_icefishball_markers(bars_5m, cutoff))
+    signals.sort(key=lambda row: row["time"])
+
+    max_markers = 5000
+    shown = signals[-max_markers:] if len(signals) > max_markers else signals
+    counts: Dict[str, int] = {}
+    for row in shown:
+        key = str(row.get("type") or "")
+        counts[key] = counts.get(key, 0) + 1
+
+    return {
+        "signals": shown,
+        "count": len(signals),
+        "shown": len(shown),
+        "symbol": "MNQ",
+        "source_interval": "5m",
+        "display_interval": "1m",
+        "counts": counts,
+    }
+
+
 @router.get("/research/institution/latest")
 async def institution_research_latest():
     """Latest hunter/sweep/liquidity research summary for the Data tab."""
@@ -951,7 +1332,7 @@ class DetectZonesRequest(BaseModel):
     min_candles_for_zone: int = 6
     poc_drift_threshold: float = 3.0
     value_area_pct: float = 0.80
-    area_timeframe: str = "5m"
+    area_timeframe: str = "15m"
     all_timeframes: bool = False   # ML: draw every timeframe's VAH/VAL/POC at once
 
 
@@ -1072,7 +1453,7 @@ async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
                 "area_timeframe": "all",
                 "timeframes": list(ML_TIMEFRAMES),
             }
-        area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "5m"))
+        area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "15m"))
         return {"zones": [], "count": 0, "area_timeframe": area_timeframe}
     sorted_candles = sorted(base_candles, key=lambda c: c.timestamp)
 
@@ -1092,7 +1473,7 @@ async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
             "timeframes": list(_all_tfs),
         }
 
-    area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "5m"))
+    area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "15m"))
     zone_list = await asyncio.to_thread(
         _detect_zones_sync,
         sorted_candles,
@@ -1128,23 +1509,50 @@ async def get_accounts():
             if not acc.get("canTrade", False):
                 continue
             name = acc.get("name", "")
-            is_practice = "PRAC" in name
             result.append({
                 "id": acc["id"],
                 "name": name,
                 "balance": acc.get("balance", 0),
                 "can_trade": True,
-                "is_practice": is_practice,
-                "type": "PRACTICE" if is_practice else "FUNDED",
+                "is_practice": "PRAC" in name,
             })
 
-        return {"success": True, "accounts": result}
+        # 1.0.9: 套上帳號類型(express/practice/exam)+ 持久化的 preset/live/main 指派。
+        from backend.live.account_roles import annotate_accounts, load_roles
+        roles = load_roles()
+        result = annotate_accounts(result, roles)
+        return {"success": True, "accounts": result, "roles": roles}
 
     except Exception as e:
         logger.error(f"Accounts fetch failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         await client.disconnect()
+
+
+@router.get("/accounts/roles")
+async def get_account_roles():
+    """1.0.9: 讀取 Live 帳號槽的 preset/main 指派。"""
+    from backend.live.account_roles import load_roles
+    return {"success": True, "roles": load_roles()}
+
+
+class AccountRolesRequest(BaseModel):
+    email: str = ""
+    main_account_id: str = ""
+    accounts: dict = {}      # {"<accId>": {"preset": "<name>"|null, "live": bool}}
+
+
+@router.post("/accounts/roles")
+async def save_account_roles(req: AccountRolesRequest):
+    """1.0.9: 存檔每帳號 preset/live + 固定主帳號(驗證:最多 2 個 live、main 須為有效帳號)。"""
+    from backend.live.account_roles import save_roles
+    saved = save_roles({
+        "email": req.email,
+        "main_account_id": req.main_account_id,
+        "accounts": req.accounts,
+    })
+    return {"success": True, "roles": saved}
 
 
 @router.post("/data/fetch-historical")
@@ -1646,6 +2054,8 @@ def _run_confluence_backtest(req: BacktestRequest, progress_callback=None) -> Ba
             wall_id=meta.get("wall_id"),
             labels=meta.get("labels") or [],
             primary_zone=meta.get("primary_zone"),
+            or_range=meta.get("or_range"),
+            reason=meta.get("signal_reason") or meta.get("reason"),
             vol_ratio=getattr(t, "vol_ratio", 0.0),
             is_big_trend=getattr(t, "is_big_trend", False),
         ))
@@ -1682,7 +2092,7 @@ def _run_confluence_backtest(req: BacktestRequest, progress_callback=None) -> Ba
 
 class ConfluenceTrainRequest(BaseModel):
     """Retrain the explainable confluence scorer on the loaded 1m history."""
-    contract_id: str = "CON.F.US.MNQ.M26"
+    contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     train_frac: float = 1.0      # 1.0 = learn from ALL loaded data (for going live)
     stride: int = 5
     wait_min: int = 60
@@ -1917,7 +2327,7 @@ class ModelRetrainRequest(BaseModel):
     stride: int = 5
     wait_min: int = 60
     horizon_min: int = 1440
-    contract_id: str = "CON.F.US.MNQ.M26"
+    contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     activate: bool = True
 
 
@@ -2094,6 +2504,8 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     strategy_params = _build_strategy_params_from_request(req, contract_size)
     is_sigma = getattr(strategy_params, "strategy", "") == "sigma"
     is_fade = getattr(strategy_params, "strategy", "") == "fade"
+    is_pmo = getattr(strategy_params, "strategy", "") == "pmo"
+    is_factor = getattr(strategy_params, "strategy", "") == "factor"
 
     method = str(getattr(req, "method", "single") or "single").lower()
     tf_combo = tuple(t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES)
@@ -2103,7 +2515,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     )
 
     zone_timeline = None
-    if overlap_mode and not is_sigma and not is_fade:
+    if overlap_mode and not is_sigma and not is_fade and not is_pmo and not is_factor:
         ordered = [tf for tf in ML_TIMEFRAMES if tf in tf_combo]
         ov_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
         _update_bt_progress(
@@ -2119,7 +2531,9 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         zone_timeline = await asyncio.to_thread(_build_overlap_timeline)
     elif (not is_sigma
           and not is_fade
-          and str(getattr(strategy_params, "area_timeframe", "5m") or "5m").lower() != "session"):
+          and not is_pmo
+          and not is_factor
+          and str(getattr(strategy_params, "area_timeframe", "15m") or "15m").lower() != "session"):
         sg_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
         _update_bt_progress(
             "building zone timeline", 0, len(sg_candles),
@@ -2185,6 +2599,8 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
             wall_id=meta.get("wall_id"),
             labels=meta.get("labels") or [],
             primary_zone=meta.get("primary_zone"),
+            or_range=meta.get("or_range"),
+            reason=meta.get("signal_reason") or meta.get("reason"),
             vol_ratio=t.vol_ratio,
             is_big_trend=t.is_big_trend,
         ))
@@ -2314,18 +2730,86 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
 # ── 1.0.8: 高效參數掃描(0.15.0 sweep 回歸版,timeline 快路徑)────────
 _SWEEP_RESULTS_FILE = Path("data") / "sweep_results.json"
 _sweep_running = False
+_LATEST_SWEEP_PRESET_PREFIX = "SWEEP "
+
+
+def _sync_latest_sweep_presets(payload: dict, req: BacktestRequest, contract_size: int) -> list[str]:
+    results = list((payload or {}).get("results") or [])
+    if not results:
+        return []
+    grouped: dict[str, list[dict]] = {}
+    for row in results:
+        grouped.setdefault(str(row.get("model") or "TREND").upper(), []).append(row)
+
+    def _rank(row: dict) -> tuple:
+        return (
+            1 if row.get("accept") else 0,
+            1 if row.get("wf_pass") else 0,
+            float(row.get("pf") or 0.0),
+            float(row.get("score") or 0.0),
+            float(row.get("pnl") or 0.0),
+            -float(row.get("max_dd") or 0.0),
+        )
+
+    model_to_strategy = {
+        "TREND": "trend",
+        "DAY ZONE": "fade",
+        "DISTRIBUTION": "sigma",
+        "FACTOR": "factor",
+        "PMO": "pmo",
+    }
+    model_order = ["FACTOR", "DISTRIBUTION", "DAY ZONE", "TREND", "PMO"]
+    data = _load_presets_file()
+    presets = data.setdefault("presets", {})
+    for name in list(presets.keys()):
+        if str(name).startswith(_LATEST_SWEEP_PRESET_PREFIX):
+            presets.pop(name, None)
+
+    created: list[str] = []
+    fallback_cid = current_quarterly_contract_id("MNQ")
+    contract_id = normalize_contract_id_to_front(getattr(req, "contract_id", "") or fallback_cid)
+    for model in model_order:
+        rows = sorted(grouped.get(model, []), key=_rank, reverse=True)[:3]
+        for idx, row in enumerate(rows, start=1):
+            row_params = dict(row.get("params") or {})
+            strategy = str(row_params.get("strategy") or model_to_strategy.get(model, "trend"))
+            row_params["strategy"] = strategy
+            params = dict(_DEFAULT_PRESET_PARAMS)
+            params.update({
+                "strategy": strategy,
+                "contract_id": contract_id,
+                "contract_size": int(contract_size),
+                "candle_seconds": int(getattr(req, "candle_seconds", 60) or 60),
+                "area_timeframe": row_params.get("area_timeframe", "15m"),
+                "method": row_params.get("method", "single"),
+                "tf_combo": row_params.get("tf_combo", []),
+            })
+            params.update(row_params)
+            label = " ".join(str(row.get("label") or "").replace("#", "").split())[:48]
+            name = (
+                f"{_LATEST_SWEEP_PRESET_PREFIX}{model} #{idx} "
+                f"{label} PF{float(row.get('pf') or 0.0):.2f} "
+                f"DD{float(row.get('max_dd') or 0.0):.0f} "
+                f"T{int(row.get('trades') or 0)}"
+            )
+            presets[name] = params
+            created.append(name)
+    data["latest_sweep_presets"] = created
+    data["latest_sweep_created_at"] = str((payload or {}).get("created_at") or datetime.now(timezone.utc).isoformat())
+    _save_presets_file(data)
+    return created
 
 
 @router.post("/backtest/sweep")
 async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
-    """跑完整 5m trend 參數掃描(144 變體,~7 分鐘),結果持久化供 SWEEP 分頁。"""
+    """跑完整 multi-model 參數掃描(TREND / DAY ZONE / DISTRIBUTION),結果持久化供 SWEEP 分頁。"""
     global _sweep_running
     if _sweep_running:
         raise HTTPException(400, "Sweep 已在執行中")
     if not _historical_candles:
         raise HTTPException(400, "無歷史資料 — 請先 CONNECT / 載入資料")
 
-    from backend.backtest.sweep import run_trend_sweep
+    from backend.backtest.sweep import run_model_sweep
 
     _sweep_running = True
     try:
@@ -2338,8 +2822,13 @@ async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
         def _progress(cur, total, detail):
             _update_bt_progress("sweeping", cur, total, detail)
 
-        results = await asyncio.to_thread(run_trend_sweep, candles, base, _progress)
+        results = await asyncio.to_thread(run_model_sweep, candles, base, _progress)
         results.sort(key=lambda r: -r.get("score", 0.0))
+        qualified_by_model = {"TREND": [], "DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": []}
+        for r in results:
+            if r.get("accept"):
+                model = str(r.get("model") or "TREND").upper()
+                qualified_by_model.setdefault(model, []).append(r)
         payload = {
             "created_at": datetime.now(timezone.utc).isoformat(),
             "candles": len(candles),
@@ -2348,15 +2837,65 @@ async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
                 candles[-1].timestamp.isoformat(),
             ],
             "results": results,
+            "qualified_by_model": qualified_by_model,
         }
+        try:
+            payload["latest_sweep_presets"] = _sync_latest_sweep_presets(payload, req, contract_size)
+        except Exception as e:
+            logger.warning(f"sync latest sweep presets failed: {e}")
         _SWEEP_RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
         _SWEEP_RESULTS_FILE.write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8"
         )
+        # 1.0.9: 長期記錄 — 每次 sweep 存時間戳全檔 + 追加摘要到 sweep_history.jsonl
+        try:
+            import gc as _gc
+            runs_dir = Path("data") / "sweep_runs"
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+            (runs_dir / f"sweep_{stamp}.json").write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            top = results[0] if results else {}
+            hist = {
+                "created_at": payload["created_at"], "stamp": stamp,
+                "candles": len(candles), "range": payload["range"],
+                "variants": len(results),
+                "accepted": sum(len(v) for v in qualified_by_model.values()),
+                "by_model": {m: len(v) for m, v in qualified_by_model.items()},
+                "top": {"model": top.get("model"), "label": top.get("label"),
+                        "pf": top.get("pf"), "pnl": top.get("pnl"),
+                        "max_dd": top.get("max_dd"), "trades": top.get("trades")},
+            }
+            with (Path("data") / "sweep_history.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(hist, ensure_ascii=False) + "\n")
+            _gc.collect()   # 掃描後釋放記憶體
+        except Exception as e:
+            logger.warning(f"sweep archive failed: {e}")
         _update_bt_progress("done", 1, 1, "sweep 完成", status="done")
         return payload
     finally:
         _sweep_running = False
+
+
+@router.get("/backtest/sweep/history")
+async def get_backtest_sweep_history(limit: int = 50):
+    """1.0.9: 近 N 次 sweep 的長期摘要記錄(data/sweep_history.jsonl)。"""
+    path = Path("data") / "sweep_history.jsonl"
+    rows: List[dict] = []
+    try:
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            rows.append(json.loads(line))
+                        except Exception:
+                            continue
+    except Exception as e:
+        logger.warning(f"read sweep history failed: {e}")
+    rows = rows[-max(1, int(limit)):][::-1]   # 最新在前
+    return {"runs": rows, "count": len(rows)}
 
 
 @router.get("/backtest/sweep/results")
@@ -2367,7 +2906,11 @@ async def get_backtest_sweep_results():
             return json.loads(_SWEEP_RESULTS_FILE.read_text(encoding="utf-8"))
     except Exception as e:
         logger.warning(f"read sweep results failed: {e}")
-    return {"results": [], "created_at": None}
+    return {
+        "results": [],
+        "qualified_by_model": {"TREND": [], "DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": []},
+        "created_at": None,
+    }
 
 
 # ── 1.0.9 P0: 影子重放(實盤 vs 同參數回測 逐筆對賬)──────────────
@@ -2376,7 +2919,7 @@ def _shadow_timeline_provider(candles):
     def _provide(params):
         try:
             method = str(getattr(params, "method", "single") or "single").lower()
-            area = str(getattr(params, "area_timeframe", "5m") or "5m").lower()
+            area = str(getattr(params, "area_timeframe", "15m") or "15m").lower()
             combo = list(getattr(params, "tf_combo", None) or [])
             if (method == "overlap" and len(combo) >= 2) or area == "session":
                 return None      # overlap/session 走引擎內建 detector(正確性優先)
@@ -2620,7 +3163,7 @@ def _precompute_zone_timeline(
     candles: list,
     value_area_pct: float = 0.80,
     skip_zone_stability: bool = False,
-    area_timeframe: str = "5m",
+    area_timeframe: str = "15m",
 ) -> list:
     """Run the clock-bucket zone detector ONCE on all candles.
     Returns a list[dict] — one entry per candle — with pre-computed zone state:
@@ -2770,7 +3313,7 @@ def _get_merged_zone_timeline(candles, value_area_pct, skip_zone_stability,
 # 1.0.8: 移除 MLRunRequest / ConfComboRunRequest 請求模型
 
 
-ML_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h")
+ML_TIMEFRAMES = ("15m", "30m", "1h", "4h")
 ML_RR_VALUES = tuple(range(1, 7))   # 1:1 .. 1:6
 
 
@@ -2887,20 +3430,42 @@ async def get_backtest_progress():
 # ============================================================
 
 _live_engine = None
+# 1.0.9: 多帳號 —— 最多 2 個 leader 引擎並行,keyed by account_id(int)。
+# _live_engine 永遠指向 primary(第一個啟動的),讓所有既有「單引擎」引用零改動。
+_live_engines: Dict[int, Any] = {}
+MAX_LIVE_ENGINES = 2
+
+
+def _primary_live_engine():
+    """primary 引擎(第一個註冊的,或 None)。既有單引擎路徑沿用。"""
+    return next(iter(_live_engines.values()), None)
+
+
+def _resolve_live_engine(account_id: Optional[int] = None):
+    """account_id 指定 → 該帳號引擎;否則 primary。"""
+    if account_id:
+        return _live_engines.get(int(account_id))
+    return _primary_live_engine()
+
+
+def _sync_primary_engine():
+    """把模組級 _live_engine 對齊 primary(供既有引用)。"""
+    global _live_engine
+    _live_engine = _primary_live_engine()
 
 
 class LiveStartRequest(BaseModel):
     account_id: int
-    contract_id: str = "CON.F.US.MNQ.M26"
+    contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     contract_size: int = 3
     value_area_pct: float = 0.80
-    area_timeframe: str = "5m"
+    area_timeframe: str = "15m"
     rr_ratio: int = 2                     # reward:risk multiple (1..6)
     tr_exit_mode: str = "tp"              # 1.0.8: "tp" 固定 TP | "ladder" 階梯滾動
     tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF)
     tr_prev_rv_gate: int = 0              # 1.0.9: prevRV regime gate 回看天數(0=OFF)
-    fade_tp_frac: float = 0.75            # 1.0.9: FADE TP=VAL→POC 比例
-    fade_entry_mode: str = "limit"        # 1.0.9: FADE 進場 limit|rejection
+    fade_tp_frac: float = 0.75            # 1.0.9: DAY ZONE TP=VAL→POC 比例
+    fade_entry_mode: str = "limit"        # 1.0.9: DAY ZONE 進場 limit|rejection|or15
     # v1.0.6: "single" = one area timeframe; "overlap" = enter at the AVERAGE
     # overlapping VAH/VAL of the timeframes in tf_combo (mirrors backtest/ML).
     method: str = "single"
@@ -2935,6 +3500,24 @@ class LiveStartRequest(BaseModel):
     sigma_stop_span: float = 1.0
     sigma_accept_sigma: float = 2.0
     sigma_accept_bars: int = 2
+    pmo_timeframe_minutes: int = 5
+    pmo_signal_mode: str = "normal"
+    pmo_sl_atr: float = 1.0
+    pmo_tp_atr: float = 1.0
+    pmo_max_hold_bars: int = 24
+    pmo_max_trades_per_day: int = 3
+    pmo_warmup_bars: int = 150
+    factor_timeframe_minutes: int = 5
+    factor_signal_family: str = "emapmo"
+    factor_side_mode: str = "all"
+    factor_pmo_signal_mode: str = "normal"
+    factor_sl_rule: str = "atr"
+    factor_tp_rule: str = "atr"
+    factor_sl_value: float = 1.5
+    factor_tp_value: float = 2.0
+    factor_max_hold_bars: int = 24
+    factor_max_trades_per_day: int = 3
+    factor_warmup_bars: int = 150
     full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     one_trade_per_session_direction: bool = True
     tr_one_trade_per_session: bool = True
@@ -2969,10 +3552,16 @@ class LiveStartRequest(BaseModel):
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
     """啟動即時交易引擎"""
-    global _live_engine
+    global _live_engine, _live_engines
 
-    if _live_engine and _live_engine.is_running:
-        raise HTTPException(400, "Live engine already running")
+    # 1.0.9: 多帳號 —— 同一帳號不可重複啟動;最多 MAX_LIVE_ENGINES 個 leader 並行。
+    existing = _live_engines.get(int(req.account_id))
+    if existing and getattr(existing, "is_running", False):
+        raise HTTPException(400, f"Account {req.account_id} live engine already running")
+    running_others = [aid for aid, e in _live_engines.items()
+                      if aid != int(req.account_id) and getattr(e, "is_running", False)]
+    if len(running_others) >= MAX_LIVE_ENGINES:
+        raise HTTPException(400, f"Max {MAX_LIVE_ENGINES} concurrent leader engines already running")
 
     if not _historical_candles:
         raise HTTPException(400, "No candles loaded — connect first")
@@ -3059,7 +3648,7 @@ async def live_start(req: LiveStartRequest):
     value_area_pct = _normalize_value_area_pct(req.value_area_pct)
     live_strategy_params = _build_strategy_params_from_request(req, contract_size)
 
-    _live_engine = LiveTradingEngine(
+    engine = LiveTradingEngine(
         client=_topstepx_client,
         account_id=req.account_id,
         contract_id=req.contract_id,
@@ -3067,6 +3656,9 @@ async def live_start(req: LiveStartRequest):
         value_area_pct=value_area_pct,
         strategy_params=live_strategy_params,
     )
+    # 1.0.9: 註冊進多帳號表;_live_engine 對齊 primary(既有引用零改動)。
+    _live_engines[int(req.account_id)] = engine
+    _sync_primary_engine()
 
     # Log candle date range
     if live_warmup_candles:
@@ -3079,51 +3671,67 @@ async def live_start(req: LiveStartRequest):
     else:
         logger.warning("[LIVE START] NO warmup candles!")
     try:
-        await _live_engine.start(live_warmup_candles)
-        logger.info(f"[LIVE START] Engine started successfully")
+        await engine.start(live_warmup_candles)
+        logger.info(f"[LIVE START] Engine started successfully (account {req.account_id})")
     except Exception as e:
         logger.error(f"[LIVE START] Engine start failed: {e}")
-        _live_engine = None
+        _live_engines.pop(int(req.account_id), None)
+        _sync_primary_engine()
         raise HTTPException(500, f"Engine start failed: {e}")
 
-    return {"success": True, "message": "Live engine started"}
+    return {"success": True, "message": "Live engine started", "account_id": req.account_id}
 
 
 @router.post("/live/stop")
-async def live_stop():
-    """停止即時交易引擎"""
-    global _live_engine
-    if not _live_engine or not _live_engine.is_running:
+async def live_stop(account_id: int = 0):
+    """停止即時交易引擎(account_id 指定某 leader;0=primary)"""
+    eng = _resolve_live_engine(account_id or None)
+    if not eng or not eng.is_running:
         return {"success": True, "message": "Not running"}
-
-    await _live_engine.stop()
-    return {"success": True, "message": "Live engine stopped"}
+    await eng.stop()
+    return {"success": True, "message": "Live engine stopped", "account_id": getattr(eng, "account_id", account_id)}
 
 
 @router.post("/live/cancel-pending")
-async def live_cancel_pending():
-    """取消掛單"""
-    if not _live_engine:
+async def live_cancel_pending(account_id: int = 0):
+    """取消掛單(account_id 指定某 leader;0=primary)"""
+    eng = _resolve_live_engine(account_id or None)
+    if not eng:
         raise HTTPException(400, "Live engine not started")
-    cancelled = await _live_engine.cancel_pending_now()
+    cancelled = await eng.cancel_pending_now()
     return {"success": cancelled, "message": "Pending order cancelled" if cancelled else "No pending order"}
 
 
 @router.post("/live/flatten")
-async def live_flatten():
-    """緊急平倉"""
-    if not _live_engine:
+async def live_flatten(account_id: int = 0):
+    """緊急平倉(account_id 指定某 leader;0=primary)"""
+    eng = _resolve_live_engine(account_id or None)
+    if not eng:
         raise HTTPException(400, "Live engine not started")
-    await _live_engine.flatten_now()
-    return {"success": True, "message": "Flatten executed"}
+    await eng.flatten_now()
+    return {"success": True, "message": "Flatten executed", "account_id": getattr(eng, "account_id", account_id)}
 
 
 @router.get("/live/status")
-async def live_status():
-    """取得即時交易狀態"""
-    if not _live_engine:
+async def live_status(account_id: int = 0):
+    """取得即時交易狀態(account_id 指定某 leader;0=primary)"""
+    eng = _resolve_live_engine(account_id or None)
+    if not eng:
         return {"running": False}
-    return _live_engine.get_status()
+    return eng.get_status()
+
+
+@router.get("/live/status-all")
+async def live_status_all():
+    """1.0.9: 所有 leader 引擎的即時狀態(Live 帳號槽監控用)。"""
+    out = []
+    for aid, eng in _live_engines.items():
+        try:
+            st = eng.get_status()
+        except Exception as e:
+            st = {"running": False, "error": str(e)}
+        out.append({"account_id": aid, "status": st})
+    return {"success": True, "engines": out, "count": len(out)}
 
 
 @router.get("/live/account-state")
@@ -3517,37 +4125,95 @@ def _pair_fills_to_trades(fills: List[dict]) -> List[dict]:
     return trades
 
 
+# 1.0.9: 多帳號交易紀錄 —— account_id → name 快取(refresh 時填),供分帳號標註/彙總。
+_account_name_cache: Dict[int, str] = {}
+
+
+def _annotate_trade_accounts(trades: List[dict], roles=None) -> List[dict]:
+    """替每筆交易標上 account_name(快取)、account_type(express/practice/exam)、is_main。"""
+    from backend.live.account_roles import load_roles, classify_type
+    roles = roles or load_roles()
+    main = str(roles.get("main_account_id") or "")
+    for t in trades:
+        aid = t.get("account_id")
+        sid = str(aid) if aid is not None else None
+        if not t.get("account_name") and aid in _account_name_cache:
+            t["account_name"] = _account_name_cache[aid]
+        nm = t.get("account_name") or ""
+        t["account_type"] = classify_type(nm) if nm else None
+        t["is_main"] = (sid == main)
+    return trades
+
+
+def _trade_history_by_account(trades: List[dict]) -> List[dict]:
+    """分帳號彙總:每帳號的筆數與淨 PnL(主帳號優先、筆數多者在前)。"""
+    agg: Dict[Any, dict] = {}
+    for t in trades:
+        aid = t.get("account_id")
+        if aid is None:
+            continue
+        g = agg.setdefault(aid, {"account_id": aid, "account_name": t.get("account_name"),
+                                 "account_type": t.get("account_type"), "is_main": t.get("is_main", False),
+                                 "trades": 0, "net_pnl": 0.0})
+        g["trades"] += 1
+        g["net_pnl"] += float(t.get("net_pnl", t.get("pnl", 0)) or 0)
+        if not g["account_name"] and t.get("account_name"):
+            g["account_name"] = t["account_name"]
+        if t.get("account_type") and not g["account_type"]:
+            g["account_type"] = t["account_type"]
+    return sorted(agg.values(), key=lambda x: (not x["is_main"], -x["trades"]))
+
+
+def _trade_history_response(full_trades: List[dict], filter_acc_id: int, source: str) -> dict:
+    """統一組裝回應:全帳號彙總(by_account,不受 filter 影響)+ 可選單帳號過濾的 trades。"""
+    from backend.live.account_roles import load_roles
+    roles = load_roles()
+    _annotate_trade_accounts(full_trades, roles)
+    by_account = _trade_history_by_account(full_trades)
+    out = full_trades
+    if filter_acc_id:
+        out = [t for t in full_trades if t.get("account_id") == filter_acc_id]
+    return {
+        "trades": out,
+        "source": source,
+        "count": len(out),
+        "account_id": filter_acc_id,
+        "by_account": by_account,       # 1.0.9: 分帳號彙總(所有帳號)
+        "email": roles.get("email", ""),
+    }
+
+
 @router.get("/live/trade-history")
 async def live_trade_history(refresh: bool = False, account_id: int = 0):
     """Get trade history. Returns cached data by default.
     Pass ?refresh=true to re-fetch from TopstepX API.
-    Pass ?account_id=N to only return trades for that account."""
-    filter_acc_id = account_id or (
-        getattr(_live_engine, "account_id", 0) if _live_engine else 0
-    )
+    Pass ?account_id=N to only return trades for that account (0 = all accounts).
+    1.0.9: 回應含 by_account 分帳號彙總 + email;預設不再自動限縮到 primary 引擎帳號。"""
+    # 1.0.9: 預設仍過濾到「固定主帳號」,保持既有 calendar/monitor 單帳號檢視不變
+    # (避免其他帳號複製單灌水);多帳號總覽改用回應中的 by_account 彙總。
+    # 優先序:指定 account_id > 執行中 primary 引擎 > roles.main_account_id > 0(全部)。
+    filter_acc_id = account_id
+    if not filter_acc_id:
+        _prim = _primary_live_engine()
+        if _prim is not None:
+            filter_acc_id = getattr(_prim, "account_id", 0) or 0
+    if not filter_acc_id:
+        from backend.live.account_roles import main_account_id as _main_id
+        _m = _main_id()
+        if _m:
+            try:
+                filter_acc_id = int(_m)
+            except (TypeError, ValueError):
+                filter_acc_id = 0
 
     if not refresh:
         cached = _ensure_net_trade_pnl(_load_trade_history_cache())
         if cached:
-            if filter_acc_id:
-                cached = [t for t in cached if t.get("account_id") == filter_acc_id]
-            return {
-                "trades": cached,
-                "source": "cache",
-                "count": len(cached),
-                "account_id": filter_acc_id,
-            }
+            return _trade_history_response(cached, filter_acc_id, "cache")
 
     if not _topstepx_client:
         cached = _ensure_net_trade_pnl(_load_trade_history_cache())
-        if filter_acc_id:
-            cached = [t for t in cached if t.get("account_id") == filter_acc_id]
-        return {
-            "trades": cached,
-            "source": "cache",
-            "count": len(cached),
-            "account_id": filter_acc_id,
-        }
+        return _trade_history_response(cached, filter_acc_id, "cache")
 
     try:
         accounts = await _topstepx_client.get_accounts()
@@ -3558,6 +4224,7 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
         all_fills: List[dict] = []
         for acc in active_accounts:
             acc_id = acc.get("id")
+            _account_name_cache[acc_id] = acc.get("name", "")   # 1.0.9: 供分帳號標註
             try:
                 raw_trades = await _topstepx_client.get_trade_history(acc_id)
                 for t in raw_trades:
@@ -3576,28 +4243,12 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
         if all_trades:
             _save_trade_history_cache(all_trades)
 
-        out = all_trades
-        if filter_acc_id:
-            out = [t for t in out if t.get("account_id") == filter_acc_id]
-
-        return {
-            "trades": out,
-            "source": "api",
-            "count": len(out),
-            "account_id": filter_acc_id,
-        }
+        return _trade_history_response(all_trades, filter_acc_id, "api")
 
     except Exception as e:
         logger.error(f"[TRADE HISTORY] failed: {e}")
         cached = _ensure_net_trade_pnl(_load_trade_history_cache())
-        if filter_acc_id:
-            cached = [t for t in cached if t.get("account_id") == filter_acc_id]
-        return {
-            "trades": cached,
-            "source": "cache_fallback",
-            "count": len(cached),
-            "account_id": filter_acc_id,
-        }
+        return _trade_history_response(cached, filter_acc_id, "cache_fallback")
 
 
 # ── Presets (JSON file) ────────────────────────────────
@@ -3632,7 +4283,7 @@ _DEFAULT_PRESET_PARAMS = {
     "one_trade_per_session_direction": True,
     "tr_one_trade_per_session": True,
     "value_area_pct": 0.80,
-    "area_timeframe": "5m",
+    "area_timeframe": "15m",
     "method": "single",
     "tf_combo": [],
     "tr_overlap_trade_tf": "merged",
@@ -3668,379 +4319,45 @@ _DEFAULT_PRESET_PARAMS = {
     "sigma_stop_span": 1.0,
     "sigma_accept_sigma": 2.0,
     "sigma_accept_bars": 2,
+    "pmo_timeframe_minutes": 5,
+    "pmo_signal_mode": "normal",
+    "pmo_sl_atr": 1.0,
+    "pmo_tp_atr": 1.0,
+    "pmo_max_hold_bars": 24,
+    "pmo_max_trades_per_day": 3,
+    "pmo_warmup_bars": 150,
+    "factor_timeframe_minutes": 5,
+    "factor_signal_family": "emapmo",
+    "factor_side_mode": "all",
+    "factor_pmo_signal_mode": "normal",
+    "factor_sl_rule": "atr",
+    "factor_tp_rule": "atr",
+    "factor_sl_value": 1.5,
+    "factor_tp_value": 2.0,
+    "factor_max_hold_bars": 24,
+    "factor_max_trades_per_day": 3,
+    "factor_warmup_bars": 150,
     # 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 }
 
-_CODEX_620_MODEL = "20260618_codex_rr3-band4-mintf2-production-baseline-02"
-# Legacy 06.24 CODEX presets (kept in _REMOVED for migration)
-_CODEX_624_PRESET_1 = "06.24 CODEX #1 穩健測試 MNQx1 RR1:3 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2"
-_CODEX_624_PRESET_2 = "06.24 CODEX #2 收益較高 MNQx1 RR1:2.75 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2"
-_CODEX_624_PRESET_3 = "06.24 CODEX #3 卡瑪最佳 MNQx1 RR1:1.75 POFF R70 W1m Trail50L5 SesON ASIA B4 TF2"
-_CODEX_624_PRESET_4 = "06.24 CODEX #4 PNL最高 MNQx1 RR1:1.5 POFF R50 W1m Trail50L5 SesON ASIA B4 TF2"
-_CODEX_624_PRESET_5 = "06.24 CODEX #5 回撤最低 MNQx1 RR1:2.5 P0.65 R90 W1m Trail50L5 SesON ASIA B4 TF2"
-# CLAUDE #1-5 retired: OOM sweep produced unreliable low-RR configs (RR≤1.25)
-_CODEX_626_PRESET_1 = "06.26 CODEX #1 Trend穩定 MNQx1 TF1h RR1:4 C3 SL40 Trail50L10"
-_CODEX_626_PRESET_2 = "06.26 CODEX #2 Trend多單 MNQx1 TF5m RR1:4 C3 SL80 Trail50L10"
-_CODEX_626_PRESET_3 = "06.26 CODEX #3 Trend均衡 MNQx1 TF15m RR1:4 C3 SL40 TrailOFF"
-_CODEX_626_PRESET_4 = "06.26 CODEX #4 RESEARCH Confluence舊最佳 MNQx1 RR1:2.5 P0.65 R90 B4 TF2 Shadow"
-_CODEX_626_PRESET_5 = "06.26 CODEX #5 RESEARCH Confluence低回撤 MNQx1 RR1:1.5 POFF R50 B4 TF2 Shadow"
-_CODEX_626_PRESET_6 = "06.26 CODEX #6 RESEARCH Confluence高TF MNQx1 RR1:1.5 P0.65 R40 B8 TF3 Shadow"
-_CODEX_626_PRESET_7 = "06.26 CODEX #7 RESEARCH MLC2低回撤 MNQx1 LB240 B2 RANGE POC R40 ASIA Shadow"
-_CODEX_626_PRESET_8 = "06.26 CODEX #8 RESEARCH MLC2多單 MNQx1 LB240 B1 RANGE POC R20 PRE Shadow"
-_CODEX_626_PRESET_9 = "06.26 CODEX #9 RESEARCH MLC2寬Band MNQx1 LB240 B4 RANGE POC R40 ASIA Shadow"
-_CODEX_630_PRESET_1 = "06.30 CODEX #1 Trend低損 MNQx1 TF5m RR1:6 C2 SL80 Trail50L10 SesON FT2"
-_CODEX_630_PRESET_3 = "06.30 CODEX #3 Trend重合5m30m小TF MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
-_CODEX_630_PRESET_4 = "06.30 CODEX #4 Trend重合30m1h小TF MNQx1 TF30m+1h Trade30m RR1:7 C4 SL80 Trail50L10 SesON FT0"
-# 1.0.8: CLAUDE 系列 = VA70/80 x RR 全掃排行榜前段(rank #2/#4/#5)。移除 CODEX #1。
-_CLAUDE_701_PRESET_1 = "07.01 CLAUDE #1 單5m VA70 MNQx1 TF5m RR1:4 C3 SL80 Trail50L10 SesON"
-_CLAUDE_701_PRESET_2 = "07.01 CLAUDE #2 重合30m1h小TF VA70 MNQx1 TF30m+1h Trade30m RR1:6 C4 SL80 Trail50L10 SesON"
-_CLAUDE_701_PRESET_3 = "07.01 CLAUDE #3 重合5m30m小TF VA80 MNQx1 TF5m+30m Trade5m RR1:6 C3 SL80 Trail50L10 SesOFF FT2"
-# 1.0.8: FABLE 系列 = 雙引擎組合(ladder 出場 + 日虧斷路器 + FADE 前日VA回歸)。
-# 回測 2.5 月:#1組合 +7549/DD489;#2組合 +10773/DD998;#3組合 +5525/DD498(最差日 -165)。
-_FABLE_702_PRESET_1 = "07.02 FABLE #1 Trend 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON"
-_FABLE_702_PRESET_2 = "07.02 FABLE #2 Trend 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON"
-_FABLE_702_PRESET_3 = "07.02 FABLE #3 Trend 低回撤 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON"
-# 1.0.9: fade 收斂為單一最佳 preset(SL120/TP75%POC/limit,PF2.13 DD305,walk-forward★)
-_FABLE_703_FADE = "07.03 FADE 前日VAL接多 MNQx1 SL120 TP75%POC Limit 全時段"
-_CODEX_SIGMA_PRESET_1 = "07.03 CODEX SIGMA #1 RTH Roll30 Std Resting HalfTP SL1 LossStop1 MNQx1"
-_CODEX_SIGMA_PRESET_2 = "07.03 CODEX SIGMA #2 RTH Roll15 Std Resting Filter HalfTP SL1.5 LossStop1 MNQx1"
-_CODEX_SIGMA_PRESET_3 = "07.05 CODEX SIGMA #3 LIVE RTH Roll60 Std Resting L3 HalfTP SL0.75 LossStop2 MNQx3"
-_DEFAULT_LAST_USED_PRESET = _FABLE_702_PRESET_1
-_PRESET_RENAMES = {
-    # 1.0.8: FABLE 改名(動量書→Trend、Fade 編號 #4/#5)
-    "07.02 FABLE #1 動量書 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON":
-        "07.02 FABLE #1 Trend 均衡 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop4 SesON",
-    "07.02 FABLE #2 動量書 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON":
-        "07.02 FABLE #2 Trend 進攻 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder StopOFF SesON",
-    "07.02 FABLE #3 動量書 最小最差日 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON":
-        "07.02 FABLE #3 Trend 低回撤 MNQx1 TF5m VA70 RR4 C3 SL80 Ladder Stop3 SesON",
-    # 1.0.9: 舊 fade(SL80/TP=POC 過擬合)→ 收斂到唯一最佳 fade
-    "07.02 FABLE Fade前日VAL接多 MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)": _FABLE_703_FADE,
-    "07.02 FABLE Fade前日VAL接多 MNQx1 SL80 TP=POC Trail50 全時段 (配#3)": _FABLE_703_FADE,
-    "07.02 FABLE #4 Fade MNQx2 SL80 TP=POC Trail50 全時段 (配#1/#2)": _FABLE_703_FADE,
-    "07.02 FABLE #5 Fade MNQx1 SL80 TP=POC Trail50 全時段 (配#3)": _FABLE_703_FADE,
-}
-_REMOVED_PRESET_NAMES = {
-    "ML CONFLUENCE MNQx3 DEFAULT",
-    "07.03 CODEX SIGMA #1 RTH Roll30 Std Reject HalfTP SL1 LossStop1 MNQx1",
-    "07.03 CODEX SIGMA #2 RTH Roll15 Std Reject Filter HalfTP SL1.5 LossStop1 MNQx1",
-    "6/20 CODEX #1 baseline02 RR1:5 P0.60 R80 W1m TrailOFF SesON ASIA B4 TF2 MNQx3",
-    "6/20 CODEX #2 baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2 MNQx3",
-    "6/23 CODEX #3 SAFE baseline02 RR1:5 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2 MNQx1",
-    "6/20 CLAUDE #1 ML RR1:3 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
-    "6/20 CLAUDE #1 SVD RR1:2 P0.55 W1m TrailOFF SesON B4 TF2 MNQx3",
-    "6/22 CLAUDE #1 ML RR1:3 P0.55 ROFF W1m TrailOFF SesON B4 TF2 MNQx1",
-    # Retired MLC2 preset (strategy has no edge)
-    "06.25 CODEX #1 均值回歸 MNQx1 MLC2 LB30 Band2 SLB4 RR1:4 ASIA+EURO TrailOFF",
-    # Retired CLAUDE #1-5: OOM sweep data was wrong, low-RR configs unprofitable
-    "06.25 CLAUDE #1 Calmar最佳 MNQx1 RR1:1.0 R30 Trail50L5 ASIA B4 TF2",
-    "06.25 CLAUDE #2 回撤最低 MNQx1 RR1:1.0 R50 Trail50L5 ASIA B4 TF2",
-    "06.25 CLAUDE #3 均衡型 MNQx1 RR1:1.75 R70 Trail50L5 ASIA B4 TF2",
-    "06.25 CLAUDE #4 收益最高 MNQx1 RR1:1.5 R50 Trail50L5 ASIA B4 TF2",
-    "06.25 CLAUDE #5 高勝率 MNQx1 RR1:1.25 R40 Trail50L5 ASIA B4 TF2",
-    # Retired 06.24 confluence presets: corrected-market validation on
-    # 2026-06-26 showed unstable/negative May+June splits.
-    _CODEX_624_PRESET_1,
-    _CODEX_624_PRESET_2,
-    _CODEX_624_PRESET_3,
-    _CODEX_624_PRESET_4,
-    _CODEX_624_PRESET_5,
-    _CODEX_626_PRESET_1,
-    _CODEX_626_PRESET_3,
-    _CODEX_626_PRESET_4,
-    _CODEX_626_PRESET_5,
-    _CODEX_626_PRESET_6,
-    _CODEX_626_PRESET_7,
-    _CODEX_626_PRESET_8,
-    _CODEX_626_PRESET_9,
-    # 1.0.8: 依使用者要求移除 CODEX #1(改用 CLAUDE 系列)
-    _CODEX_630_PRESET_1,
-}
-
-
-def _codex_624_preset(
-    *,
-    rr: float,
-    max_risk_ticks: int,
-    min_prob: float = 0.0,
-    trail_trigger: float = 0.50,
-    contract_id: str = "",  # 1.0.8: 空 = 開機時取前月季約
-    contract_size: int = 1,
-) -> dict:
-    params = dict(_DEFAULT_PRESET_PARAMS)
-    params.update({
-        "tp_ticks": int(round(50 * float(rr))),
-        "tr_tp_ticks": int(round(50 * float(rr))),
-        "contract_id": contract_id,
-        "contract_size": contract_size,
-        "rr_ratio": float(rr),
-        "conf_model_name": _CODEX_620_MODEL,
-        "conf_rr": float(rr),
-        "conf_min_prob": float(min_prob),
-        "conf_max_risk_ticks": int(max_risk_ticks),
-        "conf_sl_reference_tf": "largest",
-        "conf_band_ticks": 4.0,
-        "conf_min_distinct_tf": 2,
-        "conf_allowed_sessions": ["ASIA"],
-        "conf_trail_trigger_pct": trail_trigger,
-        "conf_trail_lock_pct": 0.05,
-        "conf_session_limit": True,
-    })
-    return params
-
-
-def _codex_626_trend_preset(
-    *,
-    area_timeframe: str,
-    rr: int,
-    confirm_bars: int,
-    sl_ticks: int,
-    trail_enabled: bool,
-    trail_trigger: float = 0.50,
-    trail_ticks: int = 10,
-    full_tp_lock: int = 0,
-    method: str = "single",
-    tf_combo: Optional[list[str]] = None,
-    overlap_trade_tf: str = "merged",
-    session_limit: bool = True,
-    value_area_pct: float = 0.80,  # 1.0.8: 可調 VA(70% 較窄邊界),供 CLAUDE 系列 preset 使用
-    exit_mode: str = "tp",         # 1.0.8: "tp" 固定 TP | "ladder" 無 TP 階梯滾動
-    daily_loss_stop: int = 0,      # 1.0.8: 日虧 N 單斷路器(0=OFF)
-    contract_id: str = "",  # 1.0.8: 空 = 開機時取前月季約
-    contract_size: int = 1,
-) -> dict:
-    params = dict(_DEFAULT_PRESET_PARAMS)
-    tp_ticks = int(sl_ticks) * int(rr)
-    method = "overlap" if str(method or "").lower() == "overlap" else "single"
-    combo = [t for t in (tf_combo or []) if t in ML_TIMEFRAMES]
-    if method != "overlap" or len(combo) < 2:
-        combo = []
-        method = "single"
-    contract_id = contract_id or current_quarterly_contract_id("MNQ")  # 1.0.8
-    params.update({
-        "strategy": "trend",
-        "tr_exit_mode": "ladder" if exit_mode == "ladder" else "tp",
-        "tr_daily_loss_stop": int(daily_loss_stop),
-        "contract_id": contract_id,
-        "contract_size": contract_size,
-        "area_timeframe": area_timeframe,
-        "method": method,
-        "tf_combo": combo,
-        "tr_overlap_trade_tf": _normalize_tr_overlap_trade_tf(overlap_trade_tf),
-        "value_area_pct": float(value_area_pct),
-        "rr_ratio": int(rr),
-        "breakout_confirm_bars": int(confirm_bars),
-        "tp_ticks": tp_ticks,
-        "sl_ticks": int(sl_ticks),
-        "tr_tp_ticks": tp_ticks,
-        "tr_sl_ticks": int(sl_ticks),
-        "trail_enabled": bool(trail_enabled),
-        "tr_trail_enabled": bool(trail_enabled),
-        "trail_trigger_pct": float(trail_trigger if trail_enabled else 0.0),
-        "tr_trail_trigger_pct": float(trail_trigger if trail_enabled else 0.0),
-        "trail_sl_ticks": int(trail_ticks if trail_enabled else 0),
-        "tr_trail_sl_ticks": int(trail_ticks if trail_enabled else 0),
-        "full_tp_lock": int(full_tp_lock),
-        "tr_full_tp_lock": int(full_tp_lock),
-        "tr_allowed_sessions": ["ASIA"],
-        "one_trade_per_session_direction": True,
-        "tr_one_trade_per_session": bool(session_limit),
-    })
-    return params
-
-
-def _codex_626_confluence_research_preset(
-    *,
-    rr: float,
-    max_risk_ticks: int,
-    min_prob: float,
-    band: float,
-    min_tf: int,
-    contract_id: str = "",  # 1.0.8: 空 = 開機時取前月季約
-    contract_size: int = 1,
-) -> dict:
-    params = _codex_624_preset(
-        rr=rr,
-        max_risk_ticks=max_risk_ticks,
-        min_prob=min_prob,
-        contract_id=contract_id,
-        contract_size=contract_size,
-    )
-    params.update({
-        "strategy": "confluence",
-        "conf_band_ticks": float(band),
-        "conf_min_distinct_tf": int(min_tf),
-        "conf_sl_reference_tf": "largest",
-        "conf_allowed_sessions": ["ASIA"],
-        "conf_trail_trigger_pct": 0.50,
-        "conf_trail_lock_pct": 0.05,
-        "conf_session_limit": True,
-        # Research-only: corrected-market validation did not pass stability.
-        # Selecting this preset for live logs signals without placing orders.
-        "conf_shadow": True,
-    })
-    return params
-
-
-# 1.0.8: 移除 _codex_626_mlc2_research_preset(零呼叫者;mlc2 策略已刪除)
-
-
-# 1.0.8: FADE 前日 VA 回歸 preset(策略 = fade,買前日 VAL → TP 前日 POC)
-def _fable_fade_preset(*, contract_size: int = 1, entry_mode: str = "limit") -> dict:
-    params = dict(_DEFAULT_PRESET_PARAMS)
-    params.update({
-        "strategy": "fade",
-        "contract_id": current_quarterly_contract_id("MNQ"),  # 自動換月
-        "contract_size": int(contract_size),
-        "value_area_pct": 0.80,
-        "sl_ticks": 120, "tr_sl_ticks": 120,   # 1.0.9: 更寬 SL(walk-forward 最穩)
-        "fade_tp_frac": 0.75,                    # 1.0.9: TP = VAL→POC 的 75%
-        "fade_entry_mode": entry_mode,           # "limit" | "rejection"
-        "tp_ticks": 160, "tr_tp_ticks": 160,
-        "trail_enabled": True, "tr_trail_enabled": True,
-        "trail_trigger_pct": 0.50, "tr_trail_trigger_pct": 0.50,
-        "trail_sl_ticks": 10, "tr_trail_sl_ticks": 10,
-        "full_tp_lock": 0, "tr_full_tp_lock": 0,
-        "one_trade_per_session_direction": False,
-        "tr_one_trade_per_session": False,
-        "tr_allowed_sessions": ["ASIA", "EURO", "PRE", "RTH", "AH"],
-        "area_timeframe": "5m", "method": "single", "tf_combo": [],
-    })
-    return params
-
-
-def _sigma_preset(
-    *,
-    window_minutes: int,
-    accept_mode: str,
-    stop_span: float,
-    daily_loss_stop: int = 1,
-    entry_mode: str = "blind",
-    target_mode: str = "half",
-    allowed_sessions: Optional[list[str]] = None,
-    method: str = "std",
-    contract_size: int = 1,
-    start_sigma: float = 1.0,
-    max_sigma: float = 3.0,
-) -> dict:
-    params = dict(_DEFAULT_PRESET_PARAMS)
-    sessions = list(allowed_sessions or ["RTH"])
-    params.update({
-        "strategy": "sigma",
-        "contract_id": current_quarterly_contract_id("MNQ"),
-        "contract_size": int(contract_size),
-        "candle_seconds": 60,
-        "area_timeframe": "5m",
-        "method": "single",
-        "tf_combo": [],
-        "value_area_pct": 0.80,
-        "tr_allowed_sessions": sessions,
-        "tr_one_trade_per_session": False,
-        "one_trade_per_session_direction": False,
-        "trail_enabled": False,
-        "tr_trail_enabled": False,
-        "trail_trigger_pct": 0.0,
-        "tr_trail_trigger_pct": 0.0,
-        "trail_sl_ticks": 0,
-        "tr_trail_sl_ticks": 0,
-        "tr_exit_mode": "tp",
-        "tr_daily_loss_stop": int(daily_loss_stop),
-        "full_tp_lock": 0,
-        "tr_full_tp_lock": 0,
-        "sigma_window_minutes": int(window_minutes),
-        "sigma_method": "mad" if str(method).lower() == "mad" else "std",
-        "sigma_entry_mode": "reject" if str(entry_mode).lower() == "reject" else "blind",
-        "sigma_accept_mode": str(accept_mode),
-        "sigma_start": float(start_sigma),
-        "sigma_max": float(max_sigma),
-        "sigma_target_mode": (
-            str(target_mode).lower()
-            if str(target_mode).lower() in ("inner1", "half", "center")
-            else "half"
-        ),
-        "sigma_stop_span": float(stop_span),
-        "sigma_accept_sigma": 2.0,
-        "sigma_accept_bars": 2,
-    })
-    return params
-
-
-_BUILTIN_PRESETS = {
-    # 1.0.8: FABLE 動量書(CLAUDE #1 進場 + ladder 出場 + 日虧斷路器)
-    _FABLE_702_PRESET_1: _codex_626_trend_preset(
-        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-        value_area_pct=0.70, exit_mode="ladder", daily_loss_stop=4,
-    ),
-    _FABLE_702_PRESET_2: _codex_626_trend_preset(
-        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-        value_area_pct=0.70, exit_mode="ladder", daily_loss_stop=0,
-    ),
-    _FABLE_702_PRESET_3: _codex_626_trend_preset(
-        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-        value_area_pct=0.70, exit_mode="ladder", daily_loss_stop=3,
-    ),
-    # 1.0.8: FABLE Fade 書(前日 VAL 接多 → 前日 POC;x2 配 #1/#2,x1 配 #3)
-    _FABLE_703_FADE: _fable_fade_preset(contract_size=1, entry_mode="limit"),
-    _CODEX_SIGMA_PRESET_1: _sigma_preset(
-        window_minutes=30, accept_mode="none", stop_span=1.0, daily_loss_stop=1,
-    ),
-    _CODEX_SIGMA_PRESET_2: _sigma_preset(
-        window_minutes=15, accept_mode="filter", stop_span=1.5, daily_loss_stop=1,
-    ),
-    _CODEX_SIGMA_PRESET_3: _sigma_preset(
-        window_minutes=60,
-        method="std",
-        entry_mode="blind",
-        accept_mode="none",
-        target_mode="half",
-        stop_span=0.75,
-        daily_loss_stop=2,
-        allowed_sessions=["RTH"],
-        contract_size=3,
-        start_sigma=3.0,
-        max_sigma=3.0,
-    ),
-    # 1.0.8: CLAUDE #1 = rank #2(單5m VA70 RR4:+7218 PF1.47 Calmar9.1 win36%)
-    _CLAUDE_701_PRESET_1: _codex_626_trend_preset(
-        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-        value_area_pct=0.70,
-    ),
-    # 1.0.8: CLAUDE #2 = rank #4(重合30m1h小TF VA70 RR6:+6134 PF2.06 Calmar10.0)
-    _CLAUDE_701_PRESET_2: _codex_626_trend_preset(
-        area_timeframe="30m", rr=6, confirm_bars=4, sl_ticks=80,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-        full_tp_lock=0, method="overlap", tf_combo=["30m", "1h"],
-        overlap_trade_tf="smallest", session_limit=True, value_area_pct=0.70,
-    ),
-    # 1.0.8: CLAUDE #3 = rank #5(重合5m30m小TF VA80 RR6:+6087 PF1.94 Calmar10.6)
-    _CLAUDE_701_PRESET_3: _codex_626_trend_preset(
-        area_timeframe="5m", rr=6, confirm_bars=3, sl_ticks=80,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-        full_tp_lock=2, method="overlap", tf_combo=["5m", "30m"],
-        overlap_trade_tf="smallest", session_limit=False, value_area_pct=0.80,
-    ),
-    _CODEX_630_PRESET_3: _codex_626_trend_preset(
-        area_timeframe="5m", rr=6, confirm_bars=3, sl_ticks=80,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-        full_tp_lock=2, method="overlap", tf_combo=["5m", "30m"],
-        overlap_trade_tf="smallest", session_limit=False,
-    ),
-    _CODEX_630_PRESET_4: _codex_626_trend_preset(
-        area_timeframe="30m", rr=7, confirm_bars=4, sl_ticks=80,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-        full_tp_lock=0, method="overlap", tf_combo=["30m", "1h"],
-        overlap_trade_tf="smallest", session_limit=True,
-    ),
-    _CODEX_626_PRESET_2: _codex_626_trend_preset(
-        area_timeframe="5m", rr=4, confirm_bars=3, sl_ticks=80,
-        trail_enabled=True, trail_trigger=0.50, trail_ticks=10,
-    ),
-}
+_PRESET_RENAMES = {}
+_REMOVED_PRESET_NAMES = set()
+_BUILTIN_PRESETS = {}
 _FIXED_PRESET_NAMES = ()
+
+
+def _preset_name_uses_allowed_model(name: str) -> bool:
+    parts = str(name or "").split()
+    if len(parts) < 3:
+        return False
+    model_part = " ".join(parts[1:]).upper()
+    return (
+        model_part.startswith("TREND #")
+        or model_part.startswith("DAY ZONE #")
+        or model_part.startswith("DISTRIBUTION #")
+        or model_part.startswith("PMO #")
+        or model_part.startswith("FACTOR #")
+    )
 
 
 def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
@@ -4060,20 +4377,25 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
     if data.get("preset_schema") != _PRESET_SCHEMA_VERSION:
         presets.clear()
         data["preset_schema"] = _PRESET_SCHEMA_VERSION
-        data["last_used_bt"] = _DEFAULT_LAST_USED_PRESET
-        data["last_used_live"] = _DEFAULT_LAST_USED_PRESET
+        data["last_used_bt"] = "default"
+        data["last_used_live"] = "default"
         changed = True
 
     for name, params in list(presets.items()):
         if not isinstance(params, dict):
             continue
-        if str(name).startswith("07.01 CODEX #1 RESEARCH"):
+        if not _preset_name_uses_allowed_model(str(name)):
+            presets.pop(name, None)
+            changed = True
+            continue
+        upper_name = str(name).upper()
+        if any(label in upper_name for label in (" CODEX ", " CLAUDE ", " FABLE ", " USER ")):
             presets.pop(name, None)
             changed = True
             continue
         strategy = str(params.get("strategy") or "").lower()
         # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend;+fade 放行
-        normalized_strategy = strategy if strategy in ("fade", "sigma") else "trend"
+        normalized_strategy = strategy if strategy in ("fade", "sigma", "pmo", "factor") else "trend"
         # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         _cid_new = normalize_contract_id_to_front(params.get("contract_id") or "")
         if _cid_new != params.get("contract_id"):
@@ -4082,16 +4404,27 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         if params.get("strategy") != normalized_strategy:
             params["strategy"] = normalized_strategy
             changed = True
-        # 1.0.8: 吸附到 70/80 兩檔而非硬鎖 80,保留 CLAUDE 系列的 70% 設定
+        # 1.0.8: 吸附到 70/80 兩檔而非硬鎖 80,保留舊 70% 設定
         _va = _normalize_value_area_pct(params.get("value_area_pct"))
         if params.get("value_area_pct") != _va:
             params["value_area_pct"] = _va
             changed = True
-        if normalized_strategy in ("trend", "sigma") and "tr_allowed_sessions" not in params:
+        if normalized_strategy in ("trend", "sigma", "pmo", "factor") and "tr_allowed_sessions" not in params:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
             changed = True
         if normalized_strategy == "trend" and "tr_overlap_trade_tf" not in params:
             params["tr_overlap_trade_tf"] = "merged"
+            changed = True
+        area_tf = _normalize_area_timeframe(params.get("area_timeframe"))
+        if params.get("area_timeframe") != area_tf:
+            params["area_timeframe"] = area_tf
+            changed = True
+        tf_combo = [t for t in (params.get("tf_combo") or []) if t in ML_TIMEFRAMES]
+        if params.get("tf_combo") != tf_combo:
+            params["tf_combo"] = tf_combo
+            changed = True
+        if params.get("method") == "overlap" and len(tf_combo) < 2:
+            params["method"] = "single"
             changed = True
 
     for old_name, new_name in _PRESET_RENAMES.items():
@@ -4114,14 +4447,16 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             changed = True
 
     if not presets:
-        presets[_DEFAULT_LAST_USED_PRESET] = dict(_BUILTIN_PRESETS[_DEFAULT_LAST_USED_PRESET])
-        changed = True
+        for key in ("last_used_bt", "last_used_live"):
+            if data.get(key) != "default":
+                data[key] = "default"
+                changed = True
 
     for key in ("last_used_bt", "last_used_live"):
         if key not in data or (
             data.get(key) != "default" and data.get(key) not in presets
         ):
-            data[key] = _DEFAULT_LAST_USED_PRESET if _DEFAULT_LAST_USED_PRESET in presets else next(iter(presets))
+            data[key] = "default"
             changed = True
 
     data["fixed_presets"] = []
@@ -4140,8 +4475,8 @@ def _load_presets_file() -> dict:
         data = {
             "presets": {},
             "preset_schema": _PRESET_SCHEMA_VERSION,
-            "last_used_bt": _DEFAULT_LAST_USED_PRESET,
-            "last_used_live": _DEFAULT_LAST_USED_PRESET,
+            "last_used_bt": "default",
+            "last_used_live": "default",
         }
     data, changed = _ensure_builtin_presets(data)
     if changed:

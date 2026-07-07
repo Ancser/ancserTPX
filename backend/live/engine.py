@@ -34,7 +34,9 @@ from backend.strategy.session_filter import (
 )
 from backend.strategy.trend_follow import SessionTrendFollow
 from backend.strategy.sigma import RollingSigmaFade
-from backend.strategy.fade import PrevDayFade  # 1.0.8: FADE 前日 VA 回歸策略
+from backend.strategy.pmo import EMAPMOStrategy
+from backend.strategy.factor import FactorSignalStrategy
+from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
 from backend.backtest.engine import _topstep_trade_date  # 1.0.8: K線時間→交易日(fade 分日)
 from backend.broker.topstepx import TopstepXClient, order_error_meaning
@@ -130,12 +132,20 @@ class LiveTradingEngine:
         # Strategy mode: trend/fade/sigma.  The trend-slot object is ALWAYS built
         # so legacy state/helpers keep working; fade/sigma replace that slot.
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "trend") or "trend").lower()
-        if self.strategy_mode not in ("fade", "sigma"):
+        if self.strategy_mode not in ("fade", "sigma", "pmo", "factor"):
             self.strategy_mode = "trend"
         if self.strategy_mode == "fade":
-            self.trend_follow = PrevDayFade(params=self.strategy_params)
+            # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
+            if str(getattr(self.strategy_params, "fade_entry_mode", "") or "").lower() == "or15":
+                self.trend_follow = OpeningRangeFade(params=self.strategy_params)
+            else:
+                self.trend_follow = PrevDayFade(params=self.strategy_params)
         elif self.strategy_mode == "sigma":
             self.trend_follow = RollingSigmaFade(params=self.strategy_params)
+        elif self.strategy_mode == "pmo":
+            self.trend_follow = EMAPMOStrategy(params=self.strategy_params)
+        elif self.strategy_mode == "factor":
+            self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
         else:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
         # 1.0.8: fade 前日 VP 計算器(僅 fade 模式使用)
@@ -157,6 +167,18 @@ class LiveTradingEngine:
         # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單(0=OFF)
         self._prev_rv_gate = max(0, int(getattr(self.strategy_params, "tr_prev_rv_gate", 0) or 0))
         self._gate_block_today: bool = False
+        if self.strategy_mode == "pmo":
+            self._pmo_max_hold_minutes = (
+                max(0, int(getattr(self.strategy_params, "pmo_max_hold_bars", 0) or 0))
+                * max(1, int(getattr(self.strategy_params, "pmo_timeframe_minutes", 5) or 5))
+            )
+        elif self.strategy_mode == "factor":
+            self._pmo_max_hold_minutes = (
+                max(0, int(getattr(self.strategy_params, "factor_max_hold_bars", 0) or 0))
+                * max(1, int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5))
+            )
+        else:
+            self._pmo_max_hold_minutes = 0
         if self.strategy_mode == "confluence":
             try:
                 conf_wait = int(getattr(self.strategy_params, "conf_wait_minutes", 1) or 1)
@@ -1677,6 +1699,36 @@ class LiveTradingEngine:
                 "trend": self._full_tp_lock_for_strategy(StrategyType.TREND_FOLLOW),
             },
             "full_tp_counts": dict(self._full_tp_counts),
+            # 1.0.9: 封鎖型 risk gate 即時狀態 — 供 live 監控狀態列顯示「現在哪個限制生效」
+            "risk_gates": {
+                # 日虧斷路器:當日虧損單數達上限 → 今日停新單(休息)
+                "daily_loss": {
+                    "limit": self._tr_daily_loss_stop,
+                    "count": self._daily_loss_count,
+                    "resting": bool(
+                        self._tr_daily_loss_stop
+                        and self._daily_loss_count >= self._tr_daily_loss_stop
+                    ),
+                },
+                # PREV-RV 波動閘:前一日高波動 → 今日封鎖新單
+                "prev_rv": {
+                    "lookback": self._prev_rv_gate,
+                    "blocking": bool(self._prev_rv_gate and self._gate_block_today),
+                },
+                # 每 zone/方向 一單(session-direction lock)開關
+                "session_limit": {
+                    "on": bool(
+                        getattr(self.strategy_params, "conf_session_limit", True)
+                        if self.strategy_mode == "confluence"
+                        else self._tr_one_trade_per_session
+                    ),
+                },
+                # 全 TP 鎖(達 N 次完整 TP → 停到下一個 session)
+                "tp_lock": {
+                    "on": self._full_tp_lock > 0,
+                    "locked": self._any_full_tp_locked(),
+                },
+            },
             "strategy_mode": self.strategy_mode,
             "active_mode": getattr(self.trend_follow, 'active_mode', self.strategy_mode),
             "trend_allowed_sessions": self._trend_session_label(),
@@ -2431,6 +2483,8 @@ class LiveTradingEngine:
                 self.trend_follow.observe(candle, [], True)
             elif not self._open_position and not self._pending_order_id:
                 self._reset_breakout_confirmation()
+        elif self.strategy_mode in ("pmo", "factor") and (self._open_position or self._pending_order_id):
+            self.trend_follow.observe(candle, [], True)
 
         # ── Periodic status log every minute ──
         current_minute = now.minute
@@ -2473,7 +2527,7 @@ class LiveTradingEngine:
             return
 
         if (
-            self.strategy_mode in ("trend", "sigma")
+            self.strategy_mode in ("trend", "sigma", "pmo", "factor")
             and self._pending_order_id
             and not self._trend_session_allowed(candle.timestamp)
         ):
@@ -2501,6 +2555,16 @@ class LiveTradingEngine:
         # Auto OCO protection is monitored before the candle gate; trailing still needs price.
         if self._open_position:
             self._position_age += 1   # track for display only
+            if (
+                self.strategy_mode in ("pmo", "factor")
+                and self._pmo_max_hold_minutes > 0
+                and self._entry_time is not None
+            ):
+                held = (datetime.utcnow() - self._entry_time).total_seconds() / 60.0
+                if held >= self._pmo_max_hold_minutes:
+                    self._log_event(f"{self.strategy_mode.upper()} max hold {self._pmo_max_hold_minutes}m reached -> flatten")
+                    await self.flatten_now()
+                    return
             if self._last_market_price:
                 await self._check_trailing_sl_live()
             return
@@ -2549,9 +2613,13 @@ class LiveTradingEngine:
         # 1.0.8: 移除「所有 TF 同方向突破」gate — live 與 backtest 對齊。
         # (回測未含此 gate;A/B 測試證實 gate 對 overlap preset #3 幾乎毀掉績效。
         #  突破判定改由 trend_follow.evaluate 對交易 zone 判斷,live == backtest。)
-        # Evaluate breakout vs the recent 10 reference zones (v1.0.6).
-        eval_zones = self.detector.get_recent_zones()
-        eval_mature = self.detector.is_zone_mature
+        if self.strategy_mode in ("sigma", "pmo", "factor", "fade"):
+            eval_zones = []
+            eval_mature = True
+        else:
+            # Evaluate breakout vs the recent 10 reference zones (v1.0.6).
+            eval_zones = self.detector.get_recent_zones()
+            eval_mature = self.detector.is_zone_mature
 
         # Strategy evaluation
         strat = self.trend_follow
@@ -2563,6 +2631,8 @@ class LiveTradingEngine:
             strat.reset()
 
         signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
+        if signal and self.strategy_mode in ("sigma", "pmo", "factor", "fade"):
+            signal.zone_source = self.strategy_mode
 
         if signal and not self._pending_order_id:
             # 1.0.9: prevRV regime gate — 前一日高波動 → 今日不進場
@@ -3903,5 +3973,3 @@ class LiveTradingEngine:
         except Exception as e:
             self._log_event(f"取得K線失敗: {e}", "error")
         return []
-
-

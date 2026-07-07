@@ -346,12 +346,12 @@ class StrategyParams:
     skip_zone_stability: bool = False
     breakout_confirm_bars: int = 7         # consecutive candles fully outside VA required
     # Area (zone) configuration — fixed clock-bucket timeframe + value-area width.
-    area_timeframe: str = "5m"             # "5m" | "15m" | "30m" | "1h" | "4h"
+    area_timeframe: str = "15m"            # "15m" | "30m" | "1h" | "4h"
     value_area_pct: float = 0.80           # value-area width fraction (0.50..0.95)
     # Zone method (v1.0.6): "single" = one timeframe; "overlap" = require 2..5
     # timeframes' value areas to overlap (identical to backtest/ML overlap sweep).
     method: str = "single"                 # "single" | "overlap"
-    tf_combo: List[str] = field(default_factory=list)  # overlap timeframes, e.g. ["5m","15m"]
+    tf_combo: List[str] = field(default_factory=list)  # overlap timeframes, e.g. ["15m","30m"]
     tr_overlap_trade_tf: str = "merged"    # "merged" original overlap zone | "smallest" trade smallest TF zone
     # SL/TP model (v1.0.6): SL = lowest-volume node between POC and VAH/VAL;
     # TP = entry ± rr_ratio × SL-distance. rr_ratio selectable 1..6. No fixed ticks.
@@ -364,9 +364,9 @@ class StrategyParams:
     # 1.0.9: prevRV regime gate — 前一交易日已實現波動落在近 N 日最高三分位 → 今日不進場
     # (回測 DD -42%;波動率自相關 +0.73 故前一日可預測)。0=OFF,>0=回看視窗天數
     tr_prev_rv_gate: int = 0
-    # 1.0.9: FADE 專用 — TP 佔 VAL→POC 比例(0.75 較穩)、進場模式(limit / rejection)
+    # 1.0.9: FADE 專用 — TP 佔 VAL→POC 比例(0.75 較穩)、進場模式(limit / rejection / or15)
     fade_tp_frac: float = 0.75
-    fade_entry_mode: str = "limit"         # "limit" | "rejection"
+    fade_entry_mode: str = "limit"         # "limit" | "rejection" | "or15"
     # 1.0.9: rolling sigma fade. Used when strategy == "sigma".
     sigma_window_minutes: int = 15
     sigma_method: str = "std"
@@ -378,6 +378,28 @@ class StrategyParams:
     sigma_stop_span: float = 1.0
     sigma_accept_sigma: float = 2.0
     sigma_accept_bars: int = 2
+    # 1.0.10: EMAPMO / PMO. Signals are calculated on completed 5m bars;
+    # risk is ATR-based and entries are market orders.
+    pmo_timeframe_minutes: int = 5
+    pmo_signal_mode: str = "normal"       # "normal" | "early"
+    pmo_sl_atr: float = 1.0
+    pmo_tp_atr: float = 1.0
+    pmo_max_hold_bars: int = 24           # 24 x 5m = 120 minutes
+    pmo_max_trades_per_day: int = 3
+    pmo_warmup_bars: int = 150
+    # 1.0.10: Generic completed-candle factor strategy. Used when
+    # strategy == "factor"; supports EMAPMO, momentum reversion, and icefishball.
+    factor_timeframe_minutes: int = 5
+    factor_signal_family: str = "emapmo"  # "emapmo" | "momentum_reversion" | "icefishball"
+    factor_side_mode: str = "all"         # "all" | "long_only" | "short_only"
+    factor_pmo_signal_mode: str = "normal"  # "normal" | "early" | "both"
+    factor_sl_rule: str = "atr"           # "fixed" | "atr" | "atr_blend" | "range15_pct"
+    factor_tp_rule: str = "atr"
+    factor_sl_value: float = 1.5
+    factor_tp_value: float = 2.0
+    factor_max_hold_bars: int = 24
+    factor_max_trades_per_day: int = 3
+    factor_warmup_bars: int = 150
     # --- v1.0.6: explainable multi-timeframe confluence (ML scorer) ---
     # Activated when strategy == "confluence". The live engine then runs the
     # SAME ConfluenceBacktester logic (per-TF detectors + trained scorer) so
@@ -544,7 +566,17 @@ _CONTRACT_SPECS = {
             "commission_rt": 1.00, "fees_rt": 2.80},
     "MNQ": {"point_value": 2.0,  "tick_size": 0.25, "label": "MNQ (Micro)",
             "commission_rt": 0.50, "fees_rt": 0.74},   # MNQ Micro RT ≈ $1.24
+    "MES": {"point_value": 5.0,  "tick_size": 0.25, "label": "MES (Micro ES)",
+            "commission_rt": 0.50, "fees_rt": 0.74},
+    "GC":  {"point_value": 100.0, "tick_size": 0.10, "label": "GC (Gold)",
+            "commission_rt": 1.00, "fees_rt": 2.80},
+    "MGC": {"point_value": 10.0, "tick_size": 0.10, "label": "MGC (Micro Gold)",
+            "commission_rt": 0.50, "fees_rt": 0.74},
+    "ZL":  {"point_value": 600.0, "tick_size": 0.01, "label": "ZL (Soybean Oil)",
+            "commission_rt": 1.00, "fees_rt": 2.80},
 }
+
+_QUARTERLY_ROLL_SYMBOLS = {"ENQ", "NQ", "MNQ", "ES", "MES"}
 
 
 def _extract_symbol(contract_id: str) -> str:
@@ -588,7 +620,10 @@ def normalize_contract_id_to_front(contract_id: str) -> str:
     非標準格式原樣返回。"""
     if not contract_id or not str(contract_id).upper().startswith("CON.F.US."):
         return contract_id
-    return current_quarterly_contract_id(_extract_symbol(contract_id))
+    sym = _extract_symbol(contract_id)
+    if sym not in _QUARTERLY_ROLL_SYMBOLS:
+        return contract_id
+    return current_quarterly_contract_id(sym)
 
 
 def get_point_value(contract_id: str) -> float:

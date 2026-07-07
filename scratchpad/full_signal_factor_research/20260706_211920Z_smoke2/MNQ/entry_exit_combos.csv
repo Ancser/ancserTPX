@@ -1,0 +1,17 @@
+entry_signal,exit_signal,max_hold_bars,trades,pnl,profit_factor,win_rate,expectancy,max_dd,total_gain,total_loss,wf_folds,wf_positive,wf_all_positive,wf_pnls,week_positive_rate
+icefishball,momentum_reversion,6,5,103.8,1.608,0.4,20.76,170.72,274.52,-170.72,3,2,False,"[-87.48, 35.02, 156.26]",1.0
+icefishball,icefishball,12,5,95.3,1.523,0.4,19.06,182.22,277.52,-182.22,3,2,False,"[-92.98, 25.02, 163.26]",1.0
+icefishball,icefishball,6,5,92.3,1.5065,0.4,18.46,182.22,274.52,-182.22,3,2,False,"[-92.98, 29.02, 156.26]",1.0
+icefishball,icefishball,24,4,72.04,1.3953,0.25,18.01,182.22,254.26,-182.22,3,1,False,"[-92.98, -89.24, 254.26]",1.0
+icefishball,icefishball,48,4,42.54,1.2335,0.25,10.635,182.22,224.76,-182.22,3,1,False,"[-92.98, -89.24, 224.76]",1.0
+icefishball,momentum_reversion,12,5,-14.2,0.9513,0.4,-2.84,291.72,277.52,-291.72,3,1,False,"[-120.48, -56.98, 163.26]",0.0
+icefishball,momentum_reversion,24,4,-75.46,0.7711,0.25,-18.865,329.72,254.26,-329.72,3,1,False,"[-158.48, -171.24, 254.26]",0.0
+icefishball,momentum_reversion,48,4,-104.96,0.6817,0.25,-26.24,329.72,224.76,-329.72,3,1,False,"[-158.48, -171.24, 224.76]",0.0
+momentum_reversion,icefishball,6,1,-92.24,0.0,0.0,-92.24,92.24,0.0,-92.24,1,0,False,[-92.24],0.0
+momentum_reversion,icefishball,12,1,-92.24,0.0,0.0,-92.24,92.24,0.0,-92.24,1,0,False,[-92.24],0.0
+momentum_reversion,icefishball,24,1,-92.24,0.0,0.0,-92.24,92.24,0.0,-92.24,1,0,False,[-92.24],0.0
+momentum_reversion,icefishball,48,1,-92.24,0.0,0.0,-92.24,92.24,0.0,-92.24,1,0,False,[-92.24],0.0
+momentum_reversion,momentum_reversion,6,1,-92.24,0.0,0.0,-92.24,92.24,0.0,-92.24,1,0,False,[-92.24],0.0
+momentum_reversion,momentum_reversion,12,1,-92.24,0.0,0.0,-92.24,92.24,0.0,-92.24,1,0,False,[-92.24],0.0
+momentum_reversion,momentum_reversion,24,1,-92.24,0.0,0.0,-92.24,92.24,0.0,-92.24,1,0,False,[-92.24],0.0
+momentum_reversion,momentum_reversion,48,1,-92.24,0.0,0.0,-92.24,92.24,0.0,-92.24,1,0,False,[-92.24],0.0

@@ -58,9 +58,10 @@ function currentQuarterlyContractId(sym) {
 
 // 1.0.8: 開機把所有寫死到期月的合約選項/輸入改成目前前月(auto-renew)
 function refreshContractOptions() {
+    const quarterly = new Set(['NQ', 'ENQ', 'MNQ', 'ES', 'MES']);
     const rewrite = (v) => {
         const m = /^CON\.F\.US\.([A-Z]+)\./.exec(String(v || '').toUpperCase());
-        return m ? currentQuarterlyContractId(m[1]) : v;
+        return (m && quarterly.has(m[1])) ? currentQuarterlyContractId(m[1]) : v;
     };
     document.querySelectorAll('select option').forEach(o => {
         const nv = rewrite(o.value);
@@ -90,7 +91,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     contract_id: currentQuarterlyContractId('MNQ'),  // 1.0.8: 自動換月
     contract_size: 3,
     value_area_pct: 0.80,
-    area_timeframe: '5m',
+    area_timeframe: '15m',
     tr_overlap_trade_tf: 'merged',
     rr_ratio: 2,
     full_tp_lock: 0,
@@ -127,6 +128,13 @@ const DEFAULT_STRATEGY_PARAMS = {
     sigma_stop_span: 1.0,
     sigma_accept_sigma: 2.0,
     sigma_accept_bars: 2,
+    pmo_timeframe_minutes: 5,
+    pmo_signal_mode: 'normal',
+    pmo_sl_atr: 1.0,
+    pmo_tp_atr: 1.0,
+    pmo_max_hold_bars: 24,
+    pmo_max_trades_per_day: 3,
+    pmo_warmup_bars: 150,
     // 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 };
 
@@ -135,18 +143,21 @@ const _appliedStrategyParamsByMode = {
     live: Object.assign({}, DEFAULT_STRATEGY_PARAMS),
 };
 
-const MNQ_SIZE_CHOICES = [1, 2, 3, 5, 10];  // 1.0.8: +2 (FABLE Fade x2)
+const MNQ_SIZE_CHOICES = [1, 2, 3, 5, 10];  // 1.0.8: sizing choices
 const TRAIL_TICK_STEP = 5;
 const TRAIL_SL_PCT_CHOICES = [0.05, 0.10, 0.20, 0.30, 0.40, 0.50];
 const TRAIL_TRIGGER_PCT_CHOICES = [0, 0.30, 0.50, 0.70];
 
 function contractSymbolFromId(contractId) {
     const cid = (contractId || '').toUpperCase();
-    return cid.indexOf('.MNQ.') >= 0 || cid === 'MNQ' ? 'MNQ' : 'NQ';
+    const m = /^CON\.F\.US\.([A-Z]+)\./.exec(cid);
+    if (m) return m[1] === 'ENQ' ? 'NQ' : m[1];
+    if (['MNQ', 'NQ', 'MES', 'GC', 'MGC', 'ZL'].includes(cid)) return cid;
+    return 'NQ';
 }
 
 function contractLabelFromId(contractId) {
-    return contractSymbolFromId(contractId) === 'MNQ' ? 'MNQ' : 'NQ';
+    return contractSymbolFromId(contractId);
 }
 
 function displaySymbolFromTrade(t) {
@@ -190,11 +201,19 @@ function positionContractLabel(pos, fallbackContractId) {
 }
 
 function pointValueForContract(contractId) {
-    return contractSymbolFromId(contractId) === 'MNQ' ? 2 : 20;
+    const sym = contractSymbolFromId(contractId);
+    if (sym === 'MNQ') return 2;
+    if (sym === 'MES') return 5;
+    if (sym === 'GC') return 100;
+    if (sym === 'MGC') return 10;
+    if (sym === 'ZL') return 600;
+    return 20;
 }
 
 function tickDollarValue(contractId, size) {
-    return pointValueForContract(contractId) * 0.25 * normalizeContractSize(contractId, size);
+    const sym = contractSymbolFromId(contractId);
+    const tickSize = sym === 'ZL' ? 0.01 : ((sym === 'GC' || sym === 'MGC') ? 0.10 : 0.25);
+    return pointValueForContract(contractId) * tickSize * normalizeContractSize(contractId, size);
 }
 
 function fmtPct(pct) {
@@ -255,7 +274,7 @@ function allowedSizesForContract(contractId) {
 function normalizeContractSize(contractId, size) {
     const allowed = allowedSizesForContract(contractId);
     const n = parseInt(size, 10);
-    return allowed.includes(n) ? n : 3;
+    return allowed.includes(n) ? n : allowed[0];
 }
 
 function syncSizeOptions(mode, wantedSize) {
@@ -379,7 +398,7 @@ function onTfSelectionChange(mode) {
 }
 
 // 1.0.8: SESSION(0.15.5 式整段 session 生長區間)勾選時,其他 TF 全部
-// 取消勾選並鎖灰;取消 SESSION 時解鎖,若無任何 TF 被選則回落 5m。
+// 取消勾選並鎖灰;取消 SESSION 時解鎖,若無任何 TF 被選則回落 15m。
 function enforceSessionTfExclusive(mode) {
     const boxes = Array.from(document.querySelectorAll('.overlap-tf-chk-' + mode));
     const sess = boxes.find(c => c.value === 'session');
@@ -390,14 +409,14 @@ function enforceSessionTfExclusive(mode) {
     } else {
         others.forEach(c => { c.disabled = false; });
         if (!others.some(c => c.checked)) {
-            const five = others.find(c => c.value === '5m');
-            if (five) five.checked = true;
+            const fallback = others.find(c => c.value === '15m');
+            if (fallback) fallback.checked = true;
         }
     }
 }
 
 function readOverlapTfCombo(mode) {
-    const order = ['5m', '15m', '30m', '1h', '4h', 'session'];  // 1.0.8: +session
+    const order = ['15m', '30m', '1h', '4h', 'session'];  // 1.0.8: +session
     const checked = Array.from(document.querySelectorAll('.overlap-tf-chk-' + mode))
         .filter(c => c.checked).map(c => c.value);
     return order.filter(tf => checked.includes(tf));
@@ -421,7 +440,7 @@ function trendTfUsage(params) {
     const method = (p.method || (combo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
     const tfs = (method === 'overlap' && combo.length >= 2)
         ? combo
-        : [String(p.area_timeframe || combo[0] || '5m')];
+        : [String(p.area_timeframe || combo[0] || '15m')];
     const isOverlap = method === 'overlap' && tfs.length >= 2;
     const tradeMode = normalizeTrendOverlapTradeTf(p.tr_overlap_trade_tf);
     const trade = isOverlap
@@ -455,7 +474,7 @@ function updateOverlapTradeTfControl(mode) {
     const params = {
         method: isOverlap ? 'overlap' : 'single',
         tf_combo: isOverlap ? tfs : [],
-        area_timeframe: tfs[0] || '5m',
+        area_timeframe: tfs[0] || '15m',
         tr_overlap_trade_tf: sel ? sel.value : 'merged',
     };
     const u = trendTfUsage(params);
@@ -478,14 +497,44 @@ function onOverlapTradeTfChange(mode) {
 
 function normalizeStrategyName(value) {
     const v = String(value || '').trim().toLowerCase();
+    if (v === 'pmo') return 'pmo';
     if (v === 'sigma') return 'sigma';
-    if (v === 'fade') return 'fade';   // 1.0.8: FADE 前日VA回歸
+    if (v === 'fade') return 'fade';   // 1.0.8: DAY ZONE 前日VA回歸
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 策略映射
     return 'trend';
 }
 
+function strategyDisplayName(value) {
+    const v = normalizeStrategyName(value);
+    if (v === 'fade') return 'DAY ZONE';
+    if (v === 'sigma') return 'DISTRIBUTION';
+    if (v === 'pmo') return 'PMO';
+    return 'TREND';
+}
+
 function strategyIdPrefix(kind) {
     return '';
+}
+
+function _paramControlGroup(id) {
+    const el = document.getElementById(id);
+    return el ? (el.closest('.form-group') || el) : null;
+}
+
+function _showParamControl(id, on) {
+    const grp = _paramControlGroup(id);
+    if (grp) grp.style.display = on ? '' : 'none';
+}
+
+function _setParamControlDisabled(id, off, title) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.disabled = off;
+    const grp = el.closest('.form-group');
+    if (grp) {
+        grp.style.opacity = off ? '0.35' : '';
+        grp.title = off ? (title || '') : '';
+    }
 }
 
 // ML (confluence) uses a completely different parameter set than TREND.
@@ -497,14 +546,25 @@ function updateStrategyParamVisibility(mode) {
         (document.getElementById('strategy-' + mode) || {}).value
     );
     const isML = strategy === 'confluence';
+    const isTrend = strategy === 'trend';
     const isFade = strategy === 'fade';   // 1.0.8
+    const isSigma = strategy === 'sigma';
+    const isPmo = strategy === 'pmo';
     const show = (id, on) => {
         const el = document.getElementById(id);
         if (el) el.style.display = on ? '' : 'none';
     };
+    const showControl = (id, on) => _showParamControl(id + '-' + mode, on);
     // trend-only controls — hidden in ML mode.
-    show('tr-params-' + mode, !isML);
-    show('overlap-tf-row-' + mode, !isML);
+    show('tr-params-' + mode, !isML && !isPmo);
+    show('overlap-tf-row-' + mode, !isML && isTrend);
+    show('tr-overlap-trade-row-' + mode, !isML && isTrend);
+    showControl('area-pct', !isML && (isTrend || isFade));
+    showControl('confirm-bars', !isML && isTrend);
+    showControl('tr-exit-mode', !isML && isTrend);
+    showControl('rr-ratio', !isML && isTrend);
+    showControl('trail-trigger-pct', !isML && isTrend);
+    showControl('trail-sl-pct', !isML && isTrend);
     // ML Confluence params — shown only in confluence mode
     show('ml-params-' + mode, isML);
     if (isML) onRrModeChange(mode);
@@ -514,19 +574,27 @@ function updateStrategyParamVisibility(mode) {
         enforceFadeTfLock(mode, isFade);   // 1.0.8: fade → 鎖 DAY
         onExitModeChange(mode);            // 1.0.8: 依 exit mode 灰化
     }
-    // 1.0.9: fade 進場模式列僅 fade 顯示;唯讀 SL 模型顯示依策略更新
+    // 1.0.9: fade 進場模式列僅 fade 顯示;唯讀 SL 模型顯示依策略/fade 子模式更新
     show('fade-entry-mode-row-' + mode, isFade);
-    const SL_MODEL = {
-        trend: 'TREND: POC↔VAH/VAL 間最低量節點 SL',
-        fade:  'FADE: 前日 VAL − 120 tick(固定緩衝)',
-        sigma: 'SIGMA: 開盤價 ± N×σ(滾動標準差)',
-    };
+    let slText;
+    if (isFade) {
+        const fem = _mlSelectValue('fade-entry-mode-' + mode, 'limit');
+        slText = (fem === 'or15')
+            ? 'OR15: entry ± 0.2×前日VA幅(雙向假突破·TP 1×幅)'
+            : 'DAY ZONE: 前日 VAL - 120 tick 固定緩衝';
+    } else if (isSigma) {
+        slText = 'DISTRIBUTION: preset rolling sigma SL / center TP';
+    } else if (isPmo) {
+        slText = 'PMO: completed 5m EMAPMO signal, ATR SL / ATR TP, market entry';
+    } else {
+        slText = 'TREND: POC↔VAH/VAL 間最低量節點 SL';
+    }
     const slEl = document.getElementById('sl-model-display-' + mode);
-    if (slEl) slEl.value = SL_MODEL[strategy] || SL_MODEL.trend;
+    if (slEl) slEl.value = slText;
 }
 
-// 1.0.8: FADE = 固定用「前一整個交易日」水位 — TF 群組顯示 DAY(鎖定),
-// 其他 TF 取消勾選並鎖灰;離開 fade 還原(無選擇時回落 5m)。
+// 1.0.8: DAY ZONE = 固定用「前一整個交易日」水位 — TF 群組顯示 DAY(鎖定),
+// 其他 TF 取消勾選並鎖灰;離開 fade 還原(無選擇時回落 15m)。
 function enforceFadeTfLock(mode, isFade) {
     const dayChip = document.getElementById('tf-day-chip-' + mode);
     const boxes = Array.from(document.querySelectorAll('.overlap-tf-chk-' + mode));
@@ -537,16 +605,20 @@ function enforceFadeTfLock(mode, isFade) {
         boxes.forEach(c => { c.disabled = false; });
         enforceSessionTfExclusive(mode);
         if (!boxes.some(c => c.checked)) {
-            const five = boxes.find(c => c.value === '5m');
-            if (five) five.checked = true;
+            const fallback = boxes.find(c => c.value === '15m');
+            if (fallback) fallback.checked = true;
         }
     }
 }
 
-// 1.0.8: EXIT MODE 切換 — ladder 用不到 RR RATIO / TRAIL TP TRIGGER / TRAIL SL
+// 1.0.8: TP 切換 — ladder 用不到 RR RATIO / TRAIL TP TRIGGER / TRAIL SL
 // (TP 移除、階梯常數固定 2R/1R),灰化不可改項;切回 tp 還原。
 function onExitModeChange(mode) {
     const sel = document.getElementById('tr-exit-mode-' + mode);
+    const strategy = normalizeStrategyName(
+        (document.getElementById('strategy-' + mode) || {}).value
+    );
+    if (strategy !== 'trend') return;
     const isLadder = !!(sel && sel.value === 'ladder');
     const dim = (id, off) => {
         const el = document.getElementById(id);
@@ -850,7 +922,7 @@ function collectStrategyParams(mode) {
     //   1 TF  → single (tf_combo empty, area_timeframe = that TF)
     //   2+ TF → overlap (tf_combo = selected TFs, area_timeframe = first/smallest)
     const selTfs = readOverlapTfCombo(mode);
-    const tfs = selTfs.length ? selTfs : ['5m'];
+    const tfs = selTfs.length ? selTfs : ['15m'];
     const method = tfs.length >= 2 ? 'overlap' : 'single';
     const tfCombo = method === 'overlap' ? tfs : [];
     const areaTimeframe = tfs[0];
@@ -895,7 +967,7 @@ function collectStrategyParams(mode) {
         tr_daily_loss_stop: Math.max(0, Math.min(6, _int('tr-daily-stop-' + mode, 0))),
         // 1.0.9: prevRV 波動閘 + fade 進場模式
         tr_prev_rv_gate: Math.max(0, Math.min(60, _int('tr-prev-rv-gate-' + mode, 0))),
-        fade_entry_mode: (_mlSelectValue('fade-entry-mode-' + mode, 'limit') === 'rejection') ? 'rejection' : 'limit',
+        fade_entry_mode: (function (m) { return (m === 'rejection' || m === 'or15') ? m : 'limit'; })(_mlSelectValue('fade-entry-mode-' + mode, 'limit')),  // 1.0.9: +or15
         sigma_window_minutes: parseInt(applied.sigma_window_minutes != null ? applied.sigma_window_minutes : 15, 10) || 15,
         sigma_method: String(applied.sigma_method || 'std') === 'mad' ? 'mad' : 'std',
         sigma_entry_mode: String(applied.sigma_entry_mode || 'blind') === 'reject' ? 'reject' : 'blind',
@@ -906,6 +978,13 @@ function collectStrategyParams(mode) {
         sigma_stop_span: Number(applied.sigma_stop_span != null ? applied.sigma_stop_span : 1.0) || 1.0,
         sigma_accept_sigma: Number(applied.sigma_accept_sigma != null ? applied.sigma_accept_sigma : 2.0) || 2.0,
         sigma_accept_bars: parseInt(applied.sigma_accept_bars != null ? applied.sigma_accept_bars : 2, 10) || 2,
+        pmo_timeframe_minutes: parseInt(applied.pmo_timeframe_minutes != null ? applied.pmo_timeframe_minutes : 5, 10) || 5,
+        pmo_signal_mode: String(applied.pmo_signal_mode || 'normal') === 'early' ? 'early' : 'normal',
+        pmo_sl_atr: Number(applied.pmo_sl_atr != null ? applied.pmo_sl_atr : 1.0) || 1.0,
+        pmo_tp_atr: Number(applied.pmo_tp_atr != null ? applied.pmo_tp_atr : 1.0) || 1.0,
+        pmo_max_hold_bars: parseInt(applied.pmo_max_hold_bars != null ? applied.pmo_max_hold_bars : 24, 10) || 24,
+        pmo_max_trades_per_day: parseInt(applied.pmo_max_trades_per_day != null ? applied.pmo_max_trades_per_day : 3, 10) || 3,
+        pmo_warmup_bars: parseInt(applied.pmo_warmup_bars != null ? applied.pmo_warmup_bars : 150, 10) || 150,
     };
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 參數區塊
     return params;
@@ -981,7 +1060,7 @@ function applyStrategyParams(mode, params) {
     _set('tr-daily-stop-' + mode, String(Math.max(0, Math.min(6, parseInt(p.tr_daily_loss_stop != null ? p.tr_daily_loss_stop : 0, 10) || 0))));
     // 1.0.9: prevRV 波動閘 + fade 進場模式
     _set('tr-prev-rv-gate-' + mode, String(Math.max(0, Math.min(60, parseInt(p.tr_prev_rv_gate != null ? p.tr_prev_rv_gate : 0, 10) || 0))));
-    _set('fade-entry-mode-' + mode, String(p.fade_entry_mode || 'limit') === 'rejection' ? 'rejection' : 'limit');
+    _set('fade-entry-mode-' + mode, (function (m) { return (m === 'rejection' || m === 'or15') ? m : 'limit'; })(String(p.fade_entry_mode || 'limit')));  // 1.0.9: +or15
 
     // ML (confluence) params — restored when the preset uses the ML strategy.
     const _prob = (v) => {
@@ -1025,7 +1104,7 @@ function applyStrategyParams(mode, params) {
     const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
     const selectedTfs = (method === 'overlap' && tfCombo.length >= 2)
         ? tfCombo
-        : [String(p.area_timeframe || '5m')];
+        : [String(p.area_timeframe || '15m')];
     setOverlapTfCombo(mode, selectedTfs);
     updateOverlapTradeTfControl(mode);
 
@@ -1057,25 +1136,22 @@ function isFixedPreset(name) {
 }
 
 function _presetSortRank(name) {
-    const s = String(name || '');
-    const m = s.match(/CLAUDE #([123])\b/);
-    if (m) return Number(m[1]);
-    if (s.includes('FABLE #')) return 10;
-    if (s.includes('CODEX SIGMA')) return 20;
-    if (s.includes('CODEX #3')) return 30;
-    if (s.includes('CODEX #4')) return 31;
-    if (s.includes('CODEX #2')) return 32;
+    const s = String(name || '').toUpperCase();
+    if (s.includes(' TREND #')) return 10;
+    if (s.includes(' DAY ZONE #')) return 20;
+    if (s.includes(' DISTRIBUTION #')) return 30;
+    if (s.includes(' PMO #')) return 40;
     return 100;
 }
 
 function _presetDisplayName(name) {
     const s = String(name || '');
-    const m = s.match(/^(\d{2}\.\d{2})\s+([A-Z]+(?:\s+SIGMA)?)\s+#(\d+)\s+(.*)$/);
+    const m = s.match(/^(\d{2}\.\d{2})\s+(TREND|DAY ZONE|DISTRIBUTION|PMO)\s+#(\d+)\s+(.*)$/);
     if (!m) return s;
     const date = m[1];
-    const author = m[2].padEnd(11, ' ');
+    const model = m[2].padEnd(7, ' ');
     const num = ('#' + m[3]).padEnd(4, ' ');
-    return date + '  ' + author + num + m[4];
+    return date + '  ' + model + num + m[4];
 }
 
 function _namingDatePrefix(d) {
@@ -1085,9 +1161,17 @@ function _namingDatePrefix(d) {
     return mm + '.' + dd;
 }
 
-function _normalizeNamingAuthor(author) {
-    const value = String(author || 'USER').trim().toUpperCase();
-    return ['USER', 'CODEX', 'CLAUDE'].includes(value) ? value : 'USER';
+function _namingModelFromParams(params) {
+    const strategy = normalizeStrategyName((params || {}).strategy);
+    if (strategy === 'fade') return 'DAY ZONE';
+    if (strategy === 'sigma') return 'DISTRIBUTION';
+    if (strategy === 'pmo') return 'PMO';
+    return 'TREND';
+}
+
+function _normalizeNamingModel(model) {
+    const value = String(model || '').trim().toUpperCase();
+    return ['TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO'].includes(value) ? value : 'TREND';
 }
 
 function _sanitizePresetPurpose(value, fallback) {
@@ -1095,8 +1179,8 @@ function _sanitizePresetPurpose(value, fallback) {
     return (clean || fallback || '手動保存').slice(0, 12);
 }
 
-function _nextPresetNumber(author, datePrefix) {
-    const a = _normalizeNamingAuthor(author);
+function _nextPresetNumber(model, datePrefix) {
+    const a = _normalizeNamingModel(model);
     const prefix = datePrefix + ' ' + a + ' #';
     let maxN = 0;
     Object.keys((_presetsCache && _presetsCache.presets) || {}).forEach((name) => {
@@ -1127,13 +1211,26 @@ function buildPresetParamToken(params) {
     if (normalizeStrategyName(p.strategy) === 'sigma') {
         const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : ['RTH']);
         return [
-            'SIGMA',
+            'DISTRIBUTION',
             'Roll' + (parseInt(p.sigma_window_minutes != null ? p.sigma_window_minutes : 15, 10) || 15),
             String(p.sigma_method || 'std').toUpperCase(),
             String(p.sigma_entry_mode || 'blind'),
             'Accept' + String(p.sigma_accept_mode || 'none'),
             'TP' + String(p.sigma_target_mode || 'half'),
             'SL' + String(p.sigma_stop_span != null ? p.sigma_stop_span : 1),
+            market,
+            _contractPresetToken(p),
+        ].join(' ');
+    }
+    if (normalizeStrategyName(p.strategy) === 'pmo') {
+        const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : null);
+        return [
+            'PMO',
+            String(p.pmo_signal_mode || 'normal').toUpperCase(),
+            String(p.pmo_timeframe_minutes || 5) + 'm',
+            'SL' + String(p.pmo_sl_atr != null ? p.pmo_sl_atr : 1) + 'ATR',
+            'TP' + String(p.pmo_tp_atr != null ? p.pmo_tp_atr : 1) + 'ATR',
+            'H' + String(p.pmo_max_hold_bars != null ? p.pmo_max_hold_bars : 24),
             market,
             _contractPresetToken(p),
         ].join(' ');
@@ -1171,7 +1268,7 @@ function buildPresetParamToken(params) {
     const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
     const tfs = (method === 'overlap' && tfCombo.length >= 2)
         ? tfCombo
-        : (tfCombo.length ? [tfCombo[0]] : [p.area_timeframe || '5m']);
+        : (tfCombo.length ? [tfCombo[0]] : [p.area_timeframe || '15m']);
     const confirm = Math.max(1, Math.min(10, parseInt(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7, 10) || 7));
     const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : ['ASIA']);
     const overlapTrade = method === 'overlap' && p.tr_overlap_trade_tf === 'smallest' ? 'TradeSmall' : '';
@@ -1181,7 +1278,8 @@ function buildPresetParamToken(params) {
 
 function suggestedPresetPurpose(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
-    if (normalizeStrategyName(p.strategy) === 'sigma') return 'Sigma';
+    if (normalizeStrategyName(p.strategy) === 'sigma') return 'Distribution';
+    if (normalizeStrategyName(p.strategy) === 'pmo') return 'PMO';
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = Number(p.conf_max_risk_ticks || 0);
         const prob = Number(p.conf_min_prob || 0);
@@ -1195,56 +1293,13 @@ function suggestedPresetPurpose(params) {
     return '手動測試';
 }
 
-function buildPresetName(params, purpose, author) {
+function buildPresetName(params, purpose, model) {
     const px = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
     const day = _namingDatePrefix();
-    const a = _normalizeNamingAuthor(author || 'USER');
+    const a = _normalizeNamingModel(model || _namingModelFromParams(px));
     const n = _nextPresetNumber(a, day);
     const use = _sanitizePresetPurpose(purpose, suggestedPresetPurpose(px));
     return day + ' ' + a + ' #' + n + ' ' + use + ' ' + buildPresetParamToken(px);
-
-    const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
-    const vaPct = Math.round((p.value_area_pct != null ? Number(p.value_area_pct) : 0.80) * 100);
-    const rr = Math.max(1, Math.min(6, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
-    const tfCombo = Array.isArray(p.tf_combo) ? p.tf_combo.filter(Boolean) : [];
-    const method = (p.method || (tfCombo.length >= 2 ? 'overlap' : 'single')).toLowerCase();
-    const tfs = (method === 'overlap' && tfCombo.length >= 2)
-        ? tfCombo
-        : (tfCombo.length ? [tfCombo[0]] : [p.area_timeframe || '5m']);
-    const confirm = Math.max(1, Math.min(10, parseInt(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7, 10) || 7));
-    const contractLabel = contractLabelFromId(p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id);
-    const contractSize = normalizeContractSize(
-        p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id,
-        p.contract_size != null ? p.contract_size : DEFAULT_STRATEGY_PARAMS.contract_size
-    );
-    if (normalizeStrategyName(p.strategy) === 'confluence') {
-        const rrLabel = 'RR1:' + _fmtConfRr(p.conf_rr != null ? p.conf_rr : 1.0);
-        const prob = _fmtMlProb(p.conf_min_prob != null ? p.conf_min_prob : 0.65).replace('.', '');
-        const risk = p.conf_max_risk_ticks != null && Number(p.conf_max_risk_ticks) > 0
-            ? ('R' + Number(p.conf_max_risk_ticks))
-            : 'ROFF';
-        const trail = Number(p.conf_trail_trigger_pct || 0) > 0 ? 'Trail50L5' : 'TrailOFF';
-        const session = p.conf_session_limit === false ? 'SesOFF' : 'SesON';
-        const market = allowedSessionsLabel(p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA']);
-        const modelName = String(p.conf_model_name || _activeModelName || '').replace(/^20260618_codex_rr3-band4-mintf2-production-/, '');
-        const modelLabel = modelName ? (' ' + modelName) : '';
-        return 'ML' + modelLabel + ' ' + rrLabel +
-            ' P' + prob +
-            ' ' + risk +
-            ' ' + trail +
-            ' ' + session +
-            ' ' + market +
-            ' B' + Number(p.conf_band_ticks != null ? p.conf_band_ticks : 4) +
-            ' TF' + Number(p.conf_min_distinct_tf != null ? p.conf_min_distinct_tf : 2) +
-            ' W1m ' + contractLabel + '@' + contractSize;
-    }
-    // Naming: TR{VA%} {tf/tf/...} RR1:{rr} C{confirm} {contract}@{size}
-    //   → e.g. "TR80 5m/1h/4h RR1:3 C7 MNQ@3"
-    return 'TR' + vaPct +
-        ' ' + tfs.join('/') +
-        ' RR1:' + rr +
-        ' C' + confirm +
-        ' ' + contractLabel + '@' + contractSize;
 }
 
 async function fetchPresets() {
@@ -1267,7 +1322,7 @@ async function savePreset(mode) {
     }
     const purpose = prompt('Preset purpose (4-5 chars):', suggestedPresetPurpose(params));
     if (purpose == null) return;
-    const name = buildPresetName(params, purpose, 'USER');
+    const name = buildPresetName(params, purpose);
     if (!name || !name.trim()) return;
     try {
         const saveResp = await fetch(API + '/presets/save', {
@@ -1658,8 +1713,8 @@ function hideHelpTooltip() {
 function decorateParamHelpDots() {
     // Applied to BOTH backtest (-bt) and live (-live) panels.
     const shared = {
-        'strategy': '\u7b56\u7565\u908f\u8f2f\uff1aTREND = \u5340\u9593\u7a81\u7834\u8da8\u52e2\u55ae\uff1bFADE = \u524d\u65e5 VA \u5747\u503c\u56de\u6b78\uff1bSIGMA = rolling standard deviation resting fade\u3002\nStrategy selector for trend, fade, or sigma.',
-        'contract': '\u4ea4\u6613 / \u56de\u6e2c\u4f7f\u7528\u7684\u671f\u8ca8\u5408\u7d04\uff0c\u4f8b\u5982 CON.F.US.MNQ.M26\u3002\nFutures contract used for data and orders.',
+        'strategy': '策略邏輯：TREND = 區間突破趨勢單；DAY ZONE = 前日 VA 均值回歸；DISTRIBUTION = rolling distribution resting fade；PMO = 5m EMAPMO ATR market entry。\nStrategy selector for trend, day-zone, distribution, or PMO.',
+        'contract': '\u4ea4\u6613 / \u56de\u6e2c\u4f7f\u7528\u7684\u671f\u8ca8\u5408\u7d04\uff0c\u4f8b\u5982 CON.F.US.MNQ.U26\u3002\nFutures contract used for data and orders.',
         'size': '\u6bcf\u7b46\u4ea4\u6613\u7684\u5408\u7d04\u53e3\u6578\u3002\nNumber of contracts per trade.',
         'preset': '\u8f09\u5165\u6216\u4fdd\u5b58\u76ee\u524d\u6240\u6709\u53c3\u6578\u8a2d\u5b9a\u3002\nLoad or save the current parameter set.',
         // ML CONFLUENCE
@@ -1688,7 +1743,7 @@ function decorateParamHelpDots() {
         'username': 'Topstep / ProjectX \u767b\u5165\u90f5\u7bb1\u3002\nTopstep login email.',
         'apikey': 'ProjectX API \u91d1\u9470\u3002\nProjectX API key.',
         'contract-preset': '\u5feb\u901f\u586b\u5165 contractId\u3002\nShortcut that fills the contractId.',
-        'contract-id': '\u671f\u8ca8\u5408\u7d04 ID\uff0c\u4f8b\u5982 CON.F.US.MNQ.M26\u3002\nFutures contract ID.',
+        'contract-id': '\u671f\u8ca8\u5408\u7d04 ID\uff0c\u4f8b\u5982 CON.F.US.MNQ.U26\u3002\nFutures contract ID.',
         'start-date': '\u6b77\u53f2\u8cc7\u6599\u958b\u59cb\u65e5\u671f\u3002\nStart date for historical data.',
         'end-date': '\u6b77\u53f2\u8cc7\u6599\u7d50\u675f\u65e5\u671f\u3002\nEnd date for historical data.',
         'data-count': '\u76ee\u524d\u8f09\u5165\u7684 1 \u5206\u9418 K \u7dda\u6578\u91cf\u3002\nLoaded 1-minute candle count.',
@@ -1749,7 +1804,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const liveTopBar = document.getElementById('live-top-bar');
             const calView = document.getElementById('calendar-view');
             const mainEl = document.querySelector('.main');
-            // Calendar is a full-page overlay; any non-calendar tab restores .main.
+            // 1.0.9: 切到非 account 分頁 → 停掉帳號頁狀態輪詢
+            // 1.0.9: 切到非 live 分頁 → 停掉兩帳號槽輪詢
+            if (tab !== 'live' && _liveSlotInterval) { clearInterval(_liveSlotInterval); _liveSlotInterval = null; }
+            // Calendar / Account are full-page overlays; any other tab restores .main.
             if (tab === 'calendar') {
                 if (mainEl) mainEl.style.display = 'none';
                 if (calView) calView.classList.remove('hidden');
@@ -1771,6 +1829,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 livePanel.classList.remove('hidden');
                 if (_liveInterval || _liveStatusInterval) liveTopBar.style.display = 'block';
                 updateLiveTopBar();
+                // 1.0.9: 兩帳號槽 —— 填入 + 每 2s 更新各槽狀態
+                try { initLiveSlots(); } catch (e) {}
+                if (!_liveSlotInterval) _liveSlotInterval = setInterval(pollLiveSlots, 2000);
             }
         };
     });
@@ -1779,10 +1840,11 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
             t.classList.add('active');
             const tab = t.dataset.btab;
-            ['trades','execute','pnl','log'].forEach(id => {
+            ['presets','trades','execute','pnl','log'].forEach(id => {
                 const panel = document.getElementById('btab-' + id);
                 if (panel) panel.classList.toggle('hidden', id !== tab);
             });
+            if (tab === 'presets') renderSweepTable();
             if (tab === 'log') scrollSystemLogToBottom();
             if (tab === 'pnl') renderPnlCurve();
         };
@@ -1825,6 +1887,7 @@ async function loadAccounts() {
         const practice = data.accounts.find(a => a.is_practice);
         currentAccount = practice || data.accounts[0];
         updateAccountBadge();
+        try { initLiveSlots(); } catch (e) {}   // 1.0.9: 填入兩帳號槽
 
         // Populate live monitor account dropdown
         const liveSelect = document.getElementById('live-account-select');
@@ -2027,7 +2090,7 @@ async function goLive() {
             + ' market=' + allowedSessionsLabel(stratParams.tr_allowed_sessions), 'info');
     }
     if (stratParams.strategy === 'sigma') {
-        log('SIGMA: LIVE Roll' + stratParams.sigma_window_minutes
+        log('DISTRIBUTION: LIVE Roll' + stratParams.sigma_window_minutes
             + ' ' + String(stratParams.sigma_method || 'std').toUpperCase()
             + ' accept=' + stratParams.sigma_accept_mode
             + ' TP=' + stratParams.sigma_target_mode
@@ -2267,6 +2330,76 @@ async function fetchRealState() {
     }
 }
 
+// 1.0.9: Live 風控閘狀態列 — 顯示每個「封鎖型」風控限制目前是否生效,讓使用者
+// 一眼知道現在是「盤段外 / 已達日限 / 日虧休息 / 波動閘封鎖 / TP 鎖」而沒有進單。
+//   綠 = 通行(armed 可交易)、灰 = OFF(未啟用)、紅 = 正在封鎖/休息、琥珀 = 已計數但未達上限。
+function renderLiveRiskGates(st) {
+    st = st || {};
+    const gates = st.risk_gates || {};
+    const GREY = 'var(--text3)', GREEN = 'var(--green)', RED = 'var(--red)',
+          AMBER = 'var(--amber)', CYAN = 'var(--cyan)';
+    const setChip = (id, text, color) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = text;
+        el.style.color = color;
+        el.style.borderColor = color;
+    };
+
+    // ── 盤段 (market session window) — 前端用允許盤段 vs 現在盤段判斷 ──
+    const sess = getMarketSession();                       // {label, color}
+    const allowedLabel = st.active_allowed_sessions || st.trend_allowed_sessions || '';
+    let marketOk, marketText;
+    if (sess.label === 'CLOSED') {
+        marketOk = false; marketText = '盤段 休市';
+    } else if (!allowedLabel || allowedLabel === 'ALL') {
+        marketOk = true; marketText = '盤段 ' + sess.label + '·ALL';
+    } else {
+        const allow = String(allowedLabel).split(/[+,]/).map(s => s.trim().toUpperCase());
+        marketOk = allow.includes(sess.label);
+        marketText = '盤段 ' + sess.label + (marketOk ? '·允許' : '·盤段外');
+    }
+    setChip('lv-rg-market', marketText, marketOk ? GREEN : GREY);
+
+    // ── 日限:每 zone/方向 一單 (session-direction lock 開關) ──
+    const sessOn = gates.session_limit ? !!gates.session_limit.on : false;
+    setChip('lv-rg-session', '日限 ' + (sessOn ? 'ON' : 'OFF'), sessOn ? GREEN : GREY);
+
+    // ── 日虧斷路器:當日虧損單數達上限 → 休息(停新單) ──
+    const dl = gates.daily_loss || {};
+    let dlText, dlColor;
+    if (!dl.limit) { dlText = '日虧 OFF'; dlColor = GREY; }
+    else if (dl.resting) { dlText = '日虧 休息 ' + (dl.count || 0) + '/' + dl.limit; dlColor = RED; }
+    else { dlText = '日虧 ' + (dl.count || 0) + '/' + dl.limit; dlColor = (dl.count || 0) > 0 ? AMBER : GREEN; }
+    setChip('lv-rg-dailyloss', dlText, dlColor);
+
+    // ── PREV-RV 波動閘:前一日高波動 → 今日封鎖 ──
+    const rv = gates.prev_rv || {};
+    let rvText, rvColor;
+    if (!rv.lookback) { rvText = '波動閘 OFF'; rvColor = GREY; }
+    else if (rv.blocking) { rvText = '波動閘 封鎖'; rvColor = RED; }
+    else { rvText = '波動閘 近' + rv.lookback + '日·通行'; rvColor = CYAN; }
+    setChip('lv-rg-prevrv', rvText, rvColor);
+
+    // ── TP 鎖(只在有設定時顯示) ──
+    const tp = gates.tp_lock || {};
+    const tpChip = document.getElementById('lv-rg-tplock');
+    if (tpChip) {
+        if (!tp.on) {
+            tpChip.style.display = 'none';
+        } else {
+            tpChip.style.display = '';
+            setChip('lv-rg-tplock', tp.locked ? 'TP鎖 鎖定' : 'TP鎖 armed', tp.locked ? RED : GREY);
+        }
+    }
+
+    // ── 側欄 LIVE STATUS 鏡像(日虧 / 波動閘) ──
+    const dlPanel = document.getElementById('live-rg-dailyloss-text');
+    if (dlPanel) { dlPanel.textContent = dlText.replace(/^日虧 /, ''); dlPanel.style.color = dlColor; }
+    const rvPanel = document.getElementById('live-rg-prevrv-text');
+    if (rvPanel) { rvPanel.textContent = rvText.replace(/^波動閘 /, ''); rvPanel.style.color = rvColor; }
+}
+
 async function pollLiveStatus() {
     // Always update market session (even without engine)
     const session = getMarketSession();
@@ -2276,9 +2409,11 @@ async function pollLiveStatus() {
     if (elMarket) { elMarket.textContent = session.label; elMarket.style.color = session.color; }
 
     try {
-        const resp = await fetch(API + '/live/status');
+        // 1.0.9: 頂欄/圖表跟隨目前聚焦的帳號(liveAccount);未設則走 primary 引擎
+        const resp = await fetch(API + '/live/status' + (liveAccount && liveAccount.id ? ('?account_id=' + liveAccount.id) : ''));
         if (!resp.ok) return;
         const st = await resp.json();
+        renderLiveRiskGates(st);   // 1.0.9: 風控閘狀態列(running / stopped 皆更新)
         if (!st.running) {
             if (_liveStartInProgress) {
                 const statusEl = document.getElementById('live-status-text');
@@ -2388,7 +2523,8 @@ async function pollLiveStatus() {
         // ── Top bar: Strategy ──
         const stratTopEl = document.getElementById('lv-strategy');
         if (stratTopEl) {
-            const sn = (st.strategy_mode || collectStrategyParams('live').strategy || '--').toUpperCase();
+            const rawStrategy = st.strategy_mode || collectStrategyParams('live').strategy || '--';
+            const sn = rawStrategy === '--' ? '--' : strategyDisplayName(rawStrategy);
             stratTopEl.textContent = sn;
             stratTopEl.style.color = 'var(--cyan)';
             window._liveStrategyName = sn;
@@ -2502,8 +2638,10 @@ async function pollLiveStatus() {
             modeText = st.confluence_shadow ? '影子(不下單)' : '實盤';
             modeColor = st.confluence_shadow ? 'var(--amber)' : 'var(--green)';
         } else {
-            const am = (st.active_mode || '').toUpperCase();
-            const sn = (st.strategy_mode || '').toUpperCase();
+            const amRaw = st.active_mode || '';
+            const snRaw = st.strategy_mode || '';
+            const am = amRaw ? strategyDisplayName(amRaw) : '';
+            const sn = snRaw ? strategyDisplayName(snRaw) : '';
             modeText = (am && am !== sn) ? am : '實盤';
             modeColor = 'var(--green)';
         }
@@ -2529,7 +2667,9 @@ async function pollLiveStatus() {
         // Status-line label adapts to the active strategy (ML 狀態 / TREND 狀態)
         const statusLabelEl = document.getElementById('lv-status-label');
         if (statusLabelEl) {
-            statusLabelEl.textContent = isMLStatus ? 'ML 狀態' : 'TREND 狀態';
+            statusLabelEl.textContent = isMLStatus
+                ? 'ML 狀態'
+                : (strategyDisplayName(st.strategy_mode || collectStrategyParams('live').strategy) + ' 狀態');
         }
         const phaseTopEl = document.getElementById('lv-phase-top');
         if (phaseTopEl) {
@@ -2782,6 +2922,7 @@ async function pollLiveCandle() {
 
         if (updated > 0) {
             window._lastChartData.sort((a, b) => a.time - b.time);
+            refreshIndicatorSignalMarkers(false);
             _refreshAllMarkers();
             log('K線更新: ' + newestC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');
         }
@@ -3215,9 +3356,9 @@ function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
 // ── Timeframe zone filter state (bottom-left chart control) ──
 // Draws clean VAH/VAL/POC LINES per timeframe (no VP histogram). Line width
 // scales with timeframe size; colour = orange (live) / white (backtest).
-const TF_ORDER = ['5m', '15m', '30m', '1h', '4h'];
-const TF_LINE_WIDTH = { '5m': 1.0, '15m': 1.3, '30m': 1.7, '1h': 2.1, '4h': 2.6 };
-let _zoneFilter = { tfs: new Set(['5m']), mode: 'backtest' };
+const TF_ORDER = ['15m', '30m', '1h', '4h'];
+const TF_LINE_WIDTH = { '15m': 1.3, '30m': 1.7, '1h': 2.1, '4h': 2.6 };
+let _zoneFilter = { tfs: new Set(['15m']), mode: 'backtest' };
 let _tfAllZones = [];          // all-timeframe zones (each tagged with .timeframe)
 let _tfZonesFetching = false;
 let _tfZonesLastFetch = 0;
@@ -3239,7 +3380,7 @@ function _activeZonePanel() {
 function syncZoneFilterUI() {
     let sel = [];
     try { sel = readOverlapTfCombo(_activeZonePanel()); } catch (e) {}
-    _zoneFilter.tfs = new Set(sel.length ? sel : ['5m']);
+    _zoneFilter.tfs = new Set(sel.length ? sel : ['15m']);
 }
 
 // Kept for back-compat callers: re-sync TFs from params, then refetch + redraw.
@@ -3602,6 +3743,53 @@ function drawPositionTools(trades) {
         return true;
     };
 
+    const drawOrRange = (t, fallbackEntryX) => {
+        const r = (t && t.or_range) || {};
+        const orHigh = Number(r.or_high != null ? r.or_high : (r.high_100 != null ? r.high_100 : r.vah_80));
+        const orLow = Number(r.or_low != null ? r.or_low : (r.low_100 != null ? r.low_100 : r.val_80));
+        if (!Number.isFinite(orHigh) || !Number.isFinite(orLow)) return false;
+        const yHigh = candleSeries.priceToCoordinate(orHigh);
+        const yLow = candleSeries.priceToCoordinate(orLow);
+        if (yHigh === null || yLow === null) return false;
+        if ((yHigh < -80 && yLow < -80) || (yHigh > chartH + 80 && yLow > chartH + 80)) return false;
+
+        let x0 = r.formed_at ? timeToX(isoToChartTime(r.formed_at)) : null;
+        let xWindowEnd = r.left_at ? timeToX(isoToChartTime(r.left_at)) : null;
+        if (x0 === null) x0 = fallbackEntryX - 90;
+        if (xWindowEnd === null || xWindowEnd <= x0) xWindowEnd = x0 + 18;
+        let xEnd = Math.max(fallbackEntryX, xWindowEnd);
+        if (xEnd < -20 || x0 > chartW + 20) return false;
+        x0 = Math.max(0, x0);
+        xWindowEnd = Math.min(chartW - 60, xWindowEnd);
+        xEnd = Math.min(chartW - 60, xEnd);
+        if (xEnd <= x0 + 4) return false;
+
+        const top = Math.min(yHigh, yLow);
+        const h = Math.abs(yLow - yHigh);
+        ctx.save();
+        ctx.fillStyle = 'rgba(255, 167, 38, 0.07)';
+        if (xWindowEnd > x0 + 2 && h > 1) ctx.fillRect(x0, top, xWindowEnd - x0, h);
+        ctx.strokeStyle = 'rgba(255, 167, 38, 0.88)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x0, yHigh);
+        ctx.lineTo(xEnd, yHigh);
+        ctx.moveTo(x0, yLow);
+        ctx.lineTo(xEnd, yLow);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        const label = _tradeIsBuy(t) ? 'OR15 low fake -> LONG' : 'OR15 high fake -> SHORT';
+        const ly = _tradeIsBuy(t) ? yLow + 14 : yHigh - 6;
+        if (ly > 10 && ly < chartH - 10) {
+            ctx.font = '10px IBM Plex Mono, monospace';
+            ctx.fillStyle = 'rgba(255, 167, 38, 0.92)';
+            ctx.fillText(label, Math.max(4, Math.min(fallbackEntryX + 5, chartW - 190)), ly);
+        }
+        ctx.restore();
+        return true;
+    };
+
     const tradePrice = (t, keys) => {
         for (const k of keys) {
             const n = Number(t && t[k]);
@@ -3658,9 +3846,10 @@ function drawPositionTools(trades) {
         if (entryX === null) return;
         if (entryX < -200 || entryX > chartW + 50) return;
 
-        const drewRisk = drawRiskRewardBox(t, entryX);
         const drewZone = drawPrimaryZone(t, entryX);
-        if (!drewRisk && !drewZone) return;
+        const drewRisk = drawRiskRewardBox(t, entryX);
+        const drewOr = drawOrRange(t, entryX);
+        if (!drewRisk && !drewZone && !drewOr) return;
 
         drawn++;
     });
@@ -3861,6 +4050,8 @@ async function connectAPI() {
         document.getElementById('conn-trigger').classList.add('connected');
         document.getElementById('data-count').value = data.candles_count + ' bars';
         document.getElementById('btn-backtest').disabled = false;
+        const btnSweep = document.getElementById('btn-sweep');   // 1.0.9: 連線後啟用 SWEEP
+        if (btnSweep) btnSweep.disabled = false;
         const btnRunAll = document.getElementById('btn-run-all');
         if (btnRunAll) btnRunAll.disabled = false;
         const btnFullFilter = document.getElementById('btn-full-filter');
@@ -3960,6 +4151,7 @@ function showCandleData(candles) {
     drawSessionDividers();
     // Populate the all-timeframe zone cache so the filter draws lines immediately.
     refreshTfZones(true);
+    refreshIndicatorSignalMarkers(true);
 }
 
 function applyDefaultChartView(chartData, zones) {
@@ -4205,7 +4397,8 @@ function _stopBacktestProgress(success) {
 
 // ── 1.0.8: 高效參數掃描(SWEEP 分頁)─────────────────────────
 let _sweepData = null;
-let _sweepSortKey = 'score';
+let _sweepSortKey = 'pf';        // 1.0.9: 預設依 PF 排序
+let _sweepRenderedRows = [];     // 目前排序後渲染的列(供 + 存 preset)
 
 async function loadSweepResults() {
     // 啟動時自動載入上一次 sweep 結果
@@ -4225,14 +4418,27 @@ function renderSweepTable(sortKey) {
     const wrap = document.getElementById('sweep-results-wrap');
     const meta = document.getElementById('sweep-meta');
     if (!wrap || !_sweepData || !(_sweepData.results || []).length) return;
-    const rows = [..._sweepData.results];
+    const onlyAcc = !!((document.getElementById('sweep-filter-acc') || {}).checked);   // 1.0.9: 只顯示 ACC ★
+    let rows = [..._sweepData.results];
+    if (onlyAcc) rows = rows.filter(r => r.accept);
     const k = _sweepSortKey;
     rows.sort((a, b) => (Number(b[k]) || 0) - (Number(a[k]) || 0));
+    _sweepRenderedRows = rows;   // 1.0.9: 供 + 存 preset(index 對齊渲染順序)
+    if (!rows.length) {
+        wrap.innerHTML = '<div style="color:var(--text3);padding:16px;">沒有通過 ACC ★ 的變體 — 取消勾選以看全部。</div>';
+        if (meta) meta.textContent = '0 / ' + _sweepData.results.length + ' 通過 ACC ★';
+        return;
+    }
 
     if (meta) {
         const created = _sweepData.created_at ? String(_sweepData.created_at).slice(0, 16).replace('T', ' ') : '?';
-        meta.textContent = 'sweep @ ' + created + ' UTC | ' + rows.length + ' 變體 | 排序: ' + k +
-            '(點欄位標題換排序)| score = pnl/maxDD;留意 GAIN/LOSS 平衡(PF)';
+        const byModel = _sweepData.qualified_by_model || {};
+        const modelSummary = Object.keys(byModel).length
+            ? (' | qualified: ' + Object.keys(byModel).map(m => m + '=' + ((byModel[m] || []).length)).join(' '))
+            : '';
+        meta.textContent = 'sweep @ ' + created + ' UTC | ' + rows.length +
+            (onlyAcc ? ' ★通過 / ' + (_sweepData.results || []).length + ' 全部' : ' 變體') +
+            ' | 排序: ' + k + '(點欄位標題換排序)| PF first' + modelSummary;
     }
     const th = (key, label) => '<th style="cursor:pointer;' +
         (key === k ? 'color:var(--amber);' : '') +
@@ -4240,12 +4446,13 @@ function renderSweepTable(sortKey) {
     const money = (v, pos) => '<span style="color:var(--' + (v >= 0 ? (pos || 'green') : 'red') + ');">' +
         (v >= 0 ? '+' : '') + Math.round(v) + '</span>';
     wrap.innerHTML = '<table><thead><tr>' +
-        '<th>#</th><th>PARAMS</th><th>TRADES</th><th>WIN%</th>' +
+        '<th>#</th><th>MODEL</th><th>PARAMS</th><th>TRADES</th><th>WIN%</th>' +
         th('pnl', 'PNL') + th('gain', 'GAIN') + th('loss', 'LOSS') + th('pf', 'PF') +
         th('max_dd', 'MAXDD') + th('monthly_avg', 'M-AVG') + th('worst_day', 'WORST-D') +
         th('expect', 'EXPECT') + th('score', 'SCORE') +
         '<th title="1.0.9 P1: walk-forward 三段各自為正">WF</th>' +
         '<th title="1.0.9 P1 接受標準: WF三段正 + 鄰域平原正 + 樣本≥80 + 期望>0">ACC</th>' +
+        '<th title="存成結構化 preset">+</th>' +
         '</tr></thead><tbody>' +
         rows.slice(0, 60).map((r, i) => {
             const balBad = (r.pf || 0) < 1.4;   // gain/loss 失衡提示
@@ -4254,6 +4461,7 @@ function renderSweepTable(sortKey) {
             const acc = r.accept ? '★' : '—';
             return '<tr' + (r.accept ? ' style="background:rgba(0,229,160,0.06);"' : '') + '>' +
                 '<td style="color:var(--text2);">' + (i + 1) + '</td>' +
+                '<td style="color:var(--cyan);font-weight:600;">' + (r.model || 'TREND') + '</td>' +
                 '<td style="font-family:\'IBM Plex Mono\',monospace;">' + r.label + '</td>' +
                 '<td>' + r.trades + '</td>' +
                 '<td>' + ((r.win_rate || 0) * 100).toFixed(1) + '%</td>' +
@@ -4268,8 +4476,94 @@ function renderSweepTable(sortKey) {
                 '<td style="color:var(--amber);font-weight:bold;">' + (r.score || 0).toFixed(2) + '</td>' +
                 '<td title="' + segs + '" style="color:' + (r.wf_pass ? 'var(--green)' : 'var(--red)') + ';">' + wf + '</td>' +
                 '<td style="color:' + (r.accept ? 'var(--green)' : 'var(--text3)') + ';font-weight:bold;">' + acc + '</td>' +
+                '<td><button class="btn btn-outline btn-mini" style="padding:0 7px;font-size:12px;line-height:1.5;" onclick="saveSweepPreset(' + i + ')" title="存成 preset">+</button></td>' +
                 '</tr>';
         }).join('') + '</tbody></table>';
+}
+
+// 1.0.9: 程式化切換底部分頁
+function _showBottomTab(name) {
+    document.querySelectorAll('.bottom-tab').forEach(x => x.classList.toggle('active', x.dataset.btab === name));
+    ['presets', 'trades', 'execute', 'pnl', 'log'].forEach(id => {
+        const p = document.getElementById('btab-' + id);
+        if (p) p.classList.toggle('hidden', id !== name);
+    });
+    if (name === 'presets') renderSweepTable();
+    if (name === 'log') scrollSystemLogToBottom();
+    if (name === 'pnl') renderPnlCurve();
+}
+
+// 1.0.9: 全策略參數掃描(TREND + DAY ZONE + DISTRIBUTION)→ 結果進 PRESETS 分頁,依 PF 排序
+async function runBacktestSweep() {
+    const sweepBtn = document.getElementById('btn-sweep');
+    const btBtn = document.getElementById('btn-backtest');
+    if (sweepBtn && sweepBtn.disabled) return;
+    const _resetSweepBtn = () => { if (sweepBtn) sweepBtn.textContent = 'SWEEP ALL STRATEGIES'; };
+    // 1.0.9: SWEEP 很吃 CPU/記憶體;和 live 引擎同時跑易造成卡頓/當機 → 先警告
+    try {
+        const lr = await fetch(API + '/live/status-all');
+        if (lr.ok) {
+            const ld = await lr.json();
+            const running = (ld.engines || []).filter(e => e.status && e.status.running).length;
+            if (running > 0 && !confirm('偵測到 ' + running + ' 個 live 引擎在跑。\nSWEEP 很吃資源,和 live 同時跑可能卡頓甚至當機 — 建議先 STOP live。\n仍要繼續?')) { _resetSweepBtn(); return; }
+        }
+    } catch (e) {}
+    const dataOk = await _ensureBacktestData(sweepBtn || btBtn);
+    if (!dataOk) { _resetSweepBtn(); return; }
+    if (!confirm('全策略參數掃描(TREND + DAY ZONE + DISTRIBUTION,約 350 變體,~10–15 分鐘,不動 CONTRACT/SIZE)。開始?')) { _resetSweepBtn(); return; }
+
+    if (sweepBtn) { sweepBtn.disabled = true; sweepBtn.textContent = 'SWEEPING…'; }
+    if (btBtn) btBtn.disabled = true;
+    _showBottomTab('presets');
+    const body = buildBacktestBody();
+    log('SWEEP 開始:全策略參數掃描(依 PF 排序)…', 'info');
+    _startBacktestProgress();
+
+    let ok = false;
+    try {
+        const resp = await fetch(API + '/backtest/sweep', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || resp.statusText); }
+        await resp.json();                 // sweep 已持久化結果
+        await loadSweepResults();
+        renderSweepTable('pf');
+        ok = true;
+        const n = (_sweepData && (_sweepData.results || []).length) || 0;
+        log('SWEEP 完成 // ' + n + ' 變體 // 依 PF 排序,點 + 存成 preset', 'success');
+    } catch (e) {
+        log('SWEEP 失敗: ' + e.message, 'error');
+    } finally {
+        _stopBacktestProgress(ok);
+        if (sweepBtn) { sweepBtn.disabled = false; sweepBtn.textContent = 'SWEEP ALL STRATEGIES'; }
+        if (btBtn) btBtn.disabled = false;
+    }
+}
+
+// 1.0.9: 把某個 sweep 結果列存成結構化命名 preset(base = 當前 backtest 表單,overlay = 該列掃出的參數)
+async function saveSweepPreset(i) {
+    const r = (_sweepRenderedRows || [])[i];
+    if (!r) { log('找不到該 sweep 列', 'warn'); return; }
+    const rowStrat = (r.params && r.params.strategy)
+        || (r.model === 'DAY ZONE' ? 'fade' : (r.model === 'DISTRIBUTION' ? 'sigma' : 'trend'));
+    const base = collectStrategyParams('bt');
+    const params = Object.assign({}, base, r.params, { strategy: rowStrat });
+    const purpose = prompt('Preset purpose (4-5 chars):', suggestedPresetPurpose(params));
+    if (purpose == null) return;
+    const name = buildPresetName(params, purpose);
+    if (!name || !name.trim()) return;
+    try {
+        const resp = await fetch(API + '/presets/save', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim(), params: params }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        await fetchPresets();
+        refreshPresetDropdowns();
+        log('Sweep preset "' + name.trim() + '" saved ✓ (' + r.model + ' ' + r.label + ')', 'success');
+    } catch (e) {
+        log('Preset save error: ' + e.message, 'error');
+    }
 }
 
 async function runBacktest() {
@@ -4379,13 +4673,23 @@ async function runBacktest() {
 
 let _overlaySyncRAF = null;
 let _overlaySyncData = null;
+let _indicatorSignalMarkers = [];
+let _indicatorSignalsLoading = false;
+let _indicatorSignalsQueued = false;
+let _lastIndicatorSignalLogKey = '';
 let _backtestMarkers = [];
 let _liveMarkers = [];
 let _liveRealtimeMarkers = [];
 
+const INDICATOR_SIGNAL_STYLES = {
+    emapmo: { color: '#22d3ee', label: 'PMO', position: 'aboveBar' },
+    momentum_reversion: { color: '#a78bfa', label: 'MREV', position: 'belowBar' },
+    icefishball: { color: '#f59e0b', label: 'IFB', position: 'inBar' },
+};
+
 function _refreshAllMarkers() {
     if (!candleSeries) return;
-    let persistent = [..._backtestMarkers, ..._liveMarkers];
+    let persistent = [..._indicatorSignalMarkers, ..._backtestMarkers, ..._liveMarkers];
     let realtime = [..._liveRealtimeMarkers];
     // Drop markers whose time is before the first chart bar.
     // Lightweight Charts snaps older markers to the first bar → visual stacking.
@@ -4403,6 +4707,77 @@ function _refreshAllMarkers() {
 function _setLiveRealtimeMarkers(markers) {
     _liveRealtimeMarkers = (markers || []).filter(m => m && m.time && !isNaN(m.time));
     _refreshAllMarkers();
+}
+
+function _signalMarkerFromApi(row) {
+    if (!row || !row.time) return null;
+    const style = INDICATOR_SIGNAL_STYLES[row.type] || { color: '#e5e7eb', label: 'SIG', position: 'aboveBar' };
+    const t = isoToChartTime(row.time);
+    if (!t || isNaN(t)) return null;
+    const dir = String(row.direction || '').toLowerCase();
+    const dirText = dir === 'long' ? ' L' : (dir === 'short' ? ' S' : '');
+    return {
+        time: t,
+        position: style.position,
+        color: style.color,
+        shape: 'circle',
+        text: style.label + dirText,
+    };
+}
+
+async function refreshIndicatorSignalMarkers(logSummary) {
+    if (!candleSeries || !window._lastChartData || window._lastChartData.length === 0) return;
+    if (_indicatorSignalsLoading) {
+        _indicatorSignalsQueued = true;
+        return;
+    }
+    _indicatorSignalsLoading = true;
+    try {
+        const resp = await fetch(API + '/data/mnq-signals?limit=' + CHART_MAX_CANDLES);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.skipped) {
+            _indicatorSignalMarkers = [];
+            _refreshAllMarkers();
+            if (logSummary && data.skipped !== _lastIndicatorSignalLogKey) {
+                _lastIndicatorSignalLogKey = data.skipped;
+                log('MNQ signal markers skipped: ' + data.skipped, 'info');
+            }
+            return;
+        }
+
+        const seen = new Set();
+        _indicatorSignalMarkers = (data.signals || []).map(_signalMarkerFromApi).filter(m => {
+            if (!m) return false;
+            const key = m.time + '|' + m.text;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+        _refreshAllMarkers();
+
+        if (logSummary) {
+            const counts = data.counts || {};
+            const summary = [
+                'PMO ' + (counts.emapmo || 0),
+                'MREV ' + (counts.momentum_reversion || 0),
+                'IFB ' + (counts.icefishball || 0),
+            ].join(' / ');
+            const key = data.shown + '|' + summary;
+            if (key !== _lastIndicatorSignalLogKey) {
+                _lastIndicatorSignalLogKey = key;
+                log('MNQ signal markers loaded: ' + summary + ' (' + (data.shown || 0) + ')', 'info');
+            }
+        }
+    } catch(e) {
+        // Optional overlay; keep chart rendering quiet if it fails.
+    } finally {
+        _indicatorSignalsLoading = false;
+        if (_indicatorSignalsQueued) {
+            _indicatorSignalsQueued = false;
+            refreshIndicatorSignalMarkers(false);
+        }
+    }
 }
 
 function renderChart(data) {
@@ -4510,6 +4885,10 @@ function _tradePnlText(t) {
 }
 
 function _tradeDecisionPhrase(t) {
+    const labels = Array.isArray(t && t.labels) ? t.labels.join('|').toLowerCase() : '';
+    if ((t && t.or_range) || labels.includes('or15:') || String((t && t.mode) || '').toLowerCase() === 'or15_false_break') {
+        return _tradeIsBuy(t) ? 'OR15 long' : 'OR15 short';
+    }
     return _tradeIsBuy(t) ? 'long' : 'short';
 }
 
@@ -5146,7 +5525,7 @@ function renderMetrics(m, backtestTrades) {
 function renderTrades(trades) {
     const tbody = document.getElementById('trades-tbody');
     if (!trades || trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
         return;
     }
 
@@ -5179,6 +5558,19 @@ function renderTrades(trades) {
         const p = (n) => n < 10 ? '0' + n : '' + n;
         return p(hh) + ':' + p(mm) + ':' + p(ss);
     };
+    const esc = (s) => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const explainTrade = (t) => {
+        if (t.reason) return String(t.reason);
+        const labels = Array.isArray(t.labels) ? t.labels.join(', ') : '';
+        if (t.or_range) {
+            const r = t.or_range || {};
+            const side = _tradeIsBuy(t) ? 'OR low fake -> long' : 'OR high fake -> short';
+            return 'OR15 ' + side + ' | OR ' + Number(r.or_low).toFixed(2) + '~' + Number(r.or_high).toFixed(2);
+        }
+        return labels || t.zone_id || '--';
+    };
 
     tbody.innerHTML = sorted.map((t, i) => {
         const netPnl = t.pnl || 0;
@@ -5194,6 +5586,8 @@ function renderTrades(trades) {
         // Short trade ID (last 6 chars) so column stays narrow
         const id = t.trade_id ? String(t.trade_id).slice(-6) : (totalN - i);
         const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
+        const why = explainTrade(t);
+        const whyShort = why.length > 96 ? why.slice(0, 93) + '...' : why;
 
         return '<tr>' +
             '<td style="color:var(--text2);">' + id + '</td>' +
@@ -5208,6 +5602,7 @@ function renderTrades(trades) {
             '<td class="pnl-neg">$-' + commission.toFixed(2) + '</td>' +
             '<td class="pnl-neg">$-' + fees.toFixed(2) + '</td>' +
             '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
+            '<td title="' + esc(why) + '" style="color:var(--text2);font-family:\'IBM Plex Mono\',monospace;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(whyShort) + '</td>' +
         '</tr>';
     }).join('');
 }
@@ -5217,7 +5612,7 @@ function renderExecuteTrades(trades) {
     const tbody = document.getElementById('execute-tbody');
     if (!tbody) return;
     if (!trades || trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--text2);padding:20px;">NO EXECUTE TRADE DATA</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:var(--text2);padding:20px;">NO EXECUTE TRADE DATA</td></tr>';
         return;
     }
 
@@ -5246,6 +5641,19 @@ function renderExecuteTrades(trades) {
         const p = (n) => n < 10 ? '0' + n : '' + n;
         return p(hh) + ':' + p(mm) + ':' + p(ss);
     };
+    const esc = (s) => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    const explainTrade = (t) => {
+        if (t.reason) return String(t.reason);
+        const labels = Array.isArray(t.labels) ? t.labels.join(', ') : '';
+        if (t.or_range) {
+            const r = t.or_range || {};
+            const side = _tradeIsBuy(t) ? 'OR low fake -> long' : 'OR high fake -> short';
+            return 'OR15 ' + side + ' | OR ' + Number(r.or_low).toFixed(2) + '~' + Number(r.or_high).toFixed(2);
+        }
+        return labels || t.zone_id || '--';
+    };
 
     tbody.innerHTML = sorted.map((t) => {
         const grossPnl = (t.gross_pnl != null)
@@ -5260,6 +5668,8 @@ function renderExecuteTrades(trades) {
         const size = t.size || 1;
         const id = t.trade_id ? String(t.trade_id).split('_')[0].slice(-6) : '--';
         const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
+        const why = explainTrade(t);
+        const whyShort = why.length > 96 ? why.slice(0, 93) + '...' : why;
 
         return '<tr>' +
             '<td style="color:var(--text2);">' + id + '</td>' +
@@ -5274,6 +5684,7 @@ function renderExecuteTrades(trades) {
             '<td class="pnl-neg">$-' + commission.toFixed(2) + '</td>' +
             '<td class="pnl-neg">$-' + fees.toFixed(2) + '</td>' +
             '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
+            '<td title="' + esc(why) + '" style="color:var(--text2);font-family:\'IBM Plex Mono\',monospace;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(whyShort) + '</td>' +
         '</tr>';
     }).join('');
 }
@@ -6143,3 +6554,180 @@ function _restoreBacktestCache() {
 }
 // Script tag is at end of <body>, so the DOM is already parsed here.
 _restoreBacktestCache();
+
+// ════════════════════════════════════════════════════════════════════════
+// 1.0.9: Live 帳號槽 — ACCOUNT 1 / ACCOUNT 2 各自選帳號與 preset。
+//   GO LIVE 對真實帳號下單,由使用者手動觸發;app 絕不自動下單。
+// ════════════════════════════════════════════════════════════════════════
+function _acctEsc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+let _liveSlotInterval = null;
+const _LIVE_SLOTS_KEY = 'ancser_live_slots.v1';
+
+function _loadLiveSlots() {
+    try { return JSON.parse(localStorage.getItem(_LIVE_SLOTS_KEY) || '{}') || {}; } catch (e) { return {}; }
+}
+function _saveLiveSlots() {
+    const o = {};
+    [1, 2].forEach(s => {
+        o['acct' + s] = (document.getElementById('live-acct-select-' + s) || {}).value || '';
+        o['preset' + s] = (document.getElementById('live-acct-preset-' + s) || {}).value || '';
+    });
+    try { localStorage.setItem(_LIVE_SLOTS_KEY, JSON.stringify(o)); } catch (e) {}
+}
+function _defaultSlotAccount(slot, accts) {
+    const express = accts.find(a => a.account_type === 'express');
+    const practice = accts.find(a => a.account_type === 'practice');
+    const main = accts.find(a => a.is_main);
+    const s1 = (main || express || accts[0] || {}).id || '';
+    if (slot === 1) return s1;
+    const s2 = practice && practice.id !== s1 ? practice.id : (accts.find(a => a.id !== s1) || {}).id;
+    return s2 || '';
+}
+
+async function initLiveSlots() {
+    // presets 需在快取(供 preset 下拉);若空則抓一次
+    if (!_presetsCache || !Object.keys(_presetsCache.presets || {}).length) {
+        try { const pr = await fetch(API + '/presets'); if (pr.ok) { const pd = await pr.json(); if (pd && pd.presets) _presetsCache = pd; } } catch (e) {}
+    }
+    const accts = allAccounts || [];
+    const presetNames = Object.keys((_presetsCache && _presetsCache.presets) || {});
+    const saved = _loadLiveSlots();
+    [1, 2].forEach(slot => {
+        const accSel = document.getElementById('live-acct-select-' + slot);
+        const preSel = document.getElementById('live-acct-preset-' + slot);
+        if (accSel) {
+            const cur = accSel.value;
+            accSel.innerHTML = '<option value="">-- 選帳號 --</option>' + accts.map(a =>
+                '<option value="' + a.id + '">' + _acctEsc(a.name) + ' [' + String(a.account_type || '').toUpperCase() + '] $'
+                + Number(a.balance || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }) + '</option>').join('');
+            let def = cur || saved['acct' + slot] || _defaultSlotAccount(slot, accts);
+            if (def && accts.find(a => String(a.id) === String(def))) accSel.value = String(def);
+        }
+        if (preSel) {
+            const cur = preSel.value;
+            preSel.innerHTML = '<option value="">-- 選 preset --</option>' + presetNames.map(n =>
+                '<option value="' + _acctEsc(n) + '">' + _acctEsc(n) + '</option>').join('');
+            const dp = cur || saved['preset' + slot] || '';
+            if (dp && presetNames.includes(dp)) preSel.value = dp;
+        }
+    });
+    pollLiveSlots();
+}
+
+function onLiveSlotChange(slot) { _saveLiveSlots(); pollLiveSlots(); }
+
+async function liveSlotGoLive(slot) {
+    const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
+    const presetName = (document.getElementById('live-acct-preset-' + slot) || {}).value;
+    if (!accId) { log('ACCOUNT ' + slot + ':先選帳號', 'warn'); return; }
+    if (!presetName || !(_presetsCache.presets || {})[presetName]) { log('ACCOUNT ' + slot + ':先選 preset', 'warn'); return; }
+    // 兩槽不可選同一帳號
+    const other = parseInt((document.getElementById('live-acct-select-' + (slot === 1 ? 2 : 1)) || {}).value);
+    if (other && other === accId) { log('兩個槽不可用同一帳號', 'warn'); return; }
+    const acc = (allAccounts || []).find(a => a.id === accId);
+    const warn = (acc && acc.account_type === 'express') ? '\n⚠ EXPRESS 真錢帳號,會下真單!' : '';
+    if (!confirm('GO LIVE (ACCOUNT ' + slot + ')\n帳號:' + (acc ? acc.name : accId) + '\npreset:' + presetName + warn)) return;
+    const preset = _presetsCache.presets[presetName];
+    const body = Object.assign({}, preset, { account_id: accId });
+    if (!body.contract_id) body.contract_id = fv('contract-id', 'CON.F.US.MNQ.U26');
+    try {
+        const resp = await fetch(API + '/live/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await resp.json();
+        if (!resp.ok) { log('ACCOUNT ' + slot + ' 啟動失敗:' + _acctEsc(data.detail || JSON.stringify(data)), 'warn'); }
+        else {
+            log('ACCOUNT ' + slot + ' GO LIVE acct ' + accId + ' preset=' + presetName + ' ✓', 'success');
+            _startLiveChartForAccount(acc, preset);   // 帶動圖表 + 頂欄(跟隨此帳號)
+        }
+    } catch (e) { log('ACCOUNT ' + slot + ' 啟動連線失敗:' + e.message, 'warn'); }
+    _saveLiveSlots();
+    setTimeout(pollLiveSlots, 400);
+}
+
+async function liveSlotStop(slot) {
+    const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
+    if (!accId) return;
+    try { const r = await fetch(API + '/live/stop?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' STOP:' + _acctEsc(d.message || ''), 'info'); }
+    catch (e) { log('ACCOUNT ' + slot + ' STOP 失敗:' + e.message, 'warn'); }
+    setTimeout(pollLiveSlots, 300);
+}
+
+async function liveSlotFlatten(slot) {
+    const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
+    if (!accId) return;
+    if (!confirm('ACCOUNT ' + slot + ' 緊急平倉帳號 ' + accId + '?')) return;
+    try { const r = await fetch(API + '/live/flatten?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' FLATTEN:' + _acctEsc(d.message || ''), 'warn'); }
+    catch (e) { log('ACCOUNT ' + slot + ' FLATTEN 失敗:' + e.message, 'warn'); }
+    setTimeout(pollLiveSlots, 300);
+}
+
+// 帶動圖表/頂欄跟隨指定帳號(沿用既有 live chart machinery)
+function _startLiveChartForAccount(acc, stratParams) {
+    if (acc) liveAccount = acc;
+    try {
+        _zoneFilter.mode = 'live';
+        const tfs = (stratParams.method === 'overlap' && stratParams.tf_combo && stratParams.tf_combo.length)
+            ? stratParams.tf_combo : [stratParams.area_timeframe];
+        _zoneFilter.tfs = new Set(tfs);
+        syncZoneFilterUI();
+    } catch (e) {}
+    const topBar = document.getElementById('live-top-bar');
+    if (topBar) topBar.style.display = 'block';
+    try { updateLiveTopBar(); } catch (e) {}
+    _lastLiveCandleTime = '';
+    if (_liveInterval) clearInterval(_liveInterval);
+    _liveInterval = setInterval(pollLiveCandle, 1000); pollLiveCandle();
+    if (_liveStatusInterval) clearInterval(_liveStatusInterval);
+    _liveStatusInterval = setInterval(pollLiveStatus, 1000); pollLiveStatus();
+    try { refreshTfZones(true); } catch (e) {}
+    setTimeout(() => { try { refreshLiveZoneOverlay(stratParams); } catch (e) {} }, 0);
+}
+
+function _liveSlotRenderStatus(slot, statusMap, sess) {
+    const accId = String((document.getElementById('live-acct-select-' + slot) || {}).value || '');
+    const st = statusMap[accId];
+    const dot = document.getElementById('live-slot-dot-' + slot);
+    const set = (base, txt, color) => { const el = document.getElementById(base + '-' + slot); if (el) { el.textContent = txt; if (color) el.style.color = color; } };
+    set('live-slot-mkt', sess.label, sess.color);
+    if (!accId) {
+        set('live-slot-status', '—', 'var(--text3)');
+        if (dot) { dot.style.background = 'var(--text3)'; dot.style.boxShadow = 'none'; }
+        ['live-slot-phase', 'live-slot-mode', 'live-slot-dl', 'live-slot-rv', 'live-slot-pnl'].forEach(b => set(b, '--', 'var(--text3)'));
+        return;
+    }
+    if (st && st.running) {
+        set('live-slot-status', '交易中', 'var(--green)');
+        if (dot) { dot.style.background = 'var(--green)'; dot.style.boxShadow = '0 0 6px var(--green)'; }
+        set('live-slot-phase', st.phase || '--', 'var(--text2)');
+        const activeModeName = st.active_mode ? strategyDisplayName(st.active_mode) : '';
+        const strategyModeName = st.strategy_mode ? strategyDisplayName(st.strategy_mode) : 'TREND';
+        const mode = st.confluence_shadow ? '影子(不下單)'
+            : ((activeModeName && activeModeName !== strategyModeName) ? activeModeName : '實盤');
+        set('live-slot-mode', mode, 'var(--green)');
+        const pnl = st.daily_pnl || 0;
+        set('live-slot-pnl', (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0), pnl >= 0 ? 'var(--green)' : 'var(--red)');
+        const g = st.risk_gates || {}, dl = g.daily_loss || {}, rv = g.prev_rv || {};
+        set('live-slot-dl', dl.limit ? (dl.resting ? ('休息 ' + (dl.count || 0) + '/' + dl.limit) : ((dl.count || 0) + '/' + dl.limit)) : 'OFF', dl.resting ? 'var(--red)' : 'var(--text2)');
+        set('live-slot-rv', rv.lookback ? (rv.blocking ? '封鎖' : '近' + rv.lookback + '日通行') : 'OFF', rv.blocking ? 'var(--red)' : 'var(--text2)');
+    } else {
+        set('live-slot-status', st ? '已停' : '未啟動', 'var(--text3)');
+        if (dot) { dot.style.background = 'var(--text3)'; dot.style.boxShadow = 'none'; }
+        ['live-slot-phase', 'live-slot-mode', 'live-slot-dl', 'live-slot-rv', 'live-slot-pnl'].forEach(b => set(b, '--', 'var(--text3)'));
+    }
+}
+
+async function pollLiveSlots() {
+    const lp = document.getElementById('live-panel');
+    if (!lp || lp.classList.contains('hidden')) return;   // 只在 Live 分頁輪詢
+    const sess = getMarketSession();
+    let statusMap = {};
+    try {
+        const r = await fetch(API + '/live/status-all');
+        if (r.ok) { const d = await r.json(); (d.engines || []).forEach(e => { statusMap[String(e.account_id)] = e.status || {}; }); }
+    } catch (e) {}
+    [1, 2].forEach(slot => _liveSlotRenderStatus(slot, statusMap, sess));
+}

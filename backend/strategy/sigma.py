@@ -163,12 +163,12 @@ class RollingSigmaFade:
 
     def get_phase_label(self) -> str:
         if self._state == "confirmed":
-            return "SIGMA pending"
+            return "DISTRIBUTION pending"
         if self._state == "in_trade":
-            return "SIGMA in trade"
+            return "DISTRIBUTION in trade"
         if self._last_center is None or self._last_sigma is None:
-            return f"SIGMA warming {len(self._candles)}/{self.window_bars}"
-        return f"SIGMA {self.window_minutes}m {self.method} C={self._last_center:.2f} σ={self._last_sigma:.2f}"
+            return f"DISTRIBUTION warming {len(self._candles)}/{self.window_bars}"
+        return f"DISTRIBUTION {self.window_minutes}m {self.method} C={self._last_center:.2f} σ={self._last_sigma:.2f}"
 
     def _ensure_session(self, candle: Candle) -> None:
         code, start = _session_for(candle.timestamp)
@@ -353,7 +353,7 @@ class RollingSigmaFade:
             zone_id=zone_id,
             zone_source="rolling_sigma",
             reason=(
-                f"SIGMA {side.upper()} {self.entry_mode} L{level:g} | C={center:.2f} "
+                f"DISTRIBUTION {side.upper()} {self.entry_mode} L{level:g} | C={center:.2f} "
                 f"sigma={sigma:.2f} SLspan={self.stop_span:g} TP={self.target_mode}"
             ),
             timestamp=candle.timestamp,

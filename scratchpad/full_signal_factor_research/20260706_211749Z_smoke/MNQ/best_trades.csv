@@ -1,0 +1,3 @@
+config_id,signal_family,side_mode,signal_id,direction,entry_time,exit_time,entry,exit,sl,tp,exit_reason,hold_bars,pnl,gross_pnl,session,trade_date,week,month
+X01244,icefishball,long_only,icefishball:kdjma:long:2026-07-06T13:30:00+00:00,long,2026-07-06T13:30:00+00:00,2026-07-06T13:45:00+00:00,29836.0,29950.75,29764.25,29950.75,tp,3,228.26,229.5,RTH,2026-07-06,2026-W28,2026-07
+X01244,icefishball,long_only,icefishball:kdjma:long:2026-07-06T17:45:00+00:00,long,2026-07-06T17:45:00+00:00,2026-07-06T19:20:00+00:00,29905.25,30046.0,29817.25,30046.0,tp,19,280.26,281.5,RTH,2026-07-06,2026-W28,2026-07

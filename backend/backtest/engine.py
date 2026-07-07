@@ -30,7 +30,9 @@ from backend.strategy.session_filter import (
 )
 from backend.strategy.trend_follow import SessionTrendFollow
 from backend.strategy.sigma import RollingSigmaFade
-from backend.strategy.fade import PrevDayFade  # 1.0.8: FADE 前日 VA 回歸策略
+from backend.strategy.pmo import EMAPMOStrategy
+from backend.strategy.factor import FactorSignalStrategy
+from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
 from backend.backtest.intrabar import resolve_same_bar_exit
 
@@ -106,11 +108,19 @@ class BacktestEngine:
         # 1.0.8: strategy_mode "trend"(現行)或 "fade"(前日 VA 回歸)。
         # 屬性名沿用 trend_follow,兩策略介面相容,其餘管線不變。
         _strat = str(getattr(self.strategy_params, "strategy", "") or "").lower()
-        self.strategy_mode = _strat if _strat in ("fade", "sigma") else "trend"
+        self.strategy_mode = _strat if _strat in ("fade", "sigma", "pmo", "factor") else "trend"
         if self.strategy_mode == "fade":
-            self.trend_follow = PrevDayFade(params=self.strategy_params)
+            # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
+            if str(getattr(self.strategy_params, "fade_entry_mode", "") or "").lower() == "or15":
+                self.trend_follow = OpeningRangeFade(params=self.strategy_params)
+            else:
+                self.trend_follow = PrevDayFade(params=self.strategy_params)
         elif self.strategy_mode == "sigma":
             self.trend_follow = RollingSigmaFade(params=self.strategy_params)
+        elif self.strategy_mode == "pmo":
+            self.trend_follow = EMAPMOStrategy(params=self.strategy_params)
+        elif self.strategy_mode == "factor":
+            self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
         else:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
         # 1.0.8: fade 模式 — 前日 VP 水位計算狀態
@@ -139,6 +149,18 @@ class BacktestEngine:
         self._rv_day_closes: List[float] = []    # 當日累積 close(算 RV 用)
         self._rv_cur_day: Optional[str] = None
         self._gate_block_today: bool = False     # 今日是否被 regime gate 封鎖
+        if self.strategy_mode == "pmo":
+            self._pmo_max_hold_minutes = (
+                max(0, int(getattr(self.strategy_params, "pmo_max_hold_bars", 0) or 0))
+                * max(1, int(getattr(self.strategy_params, "pmo_timeframe_minutes", 5) or 5))
+            )
+        elif self.strategy_mode == "factor":
+            self._pmo_max_hold_minutes = (
+                max(0, int(getattr(self.strategy_params, "factor_max_hold_bars", 0) or 0))
+                * max(1, int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5))
+            )
+        else:
+            self._pmo_max_hold_minutes = 0
 
         # Pre-computed zone timeline (set once for machine learning grid runs)
         self._zone_timeline: Optional[List[dict]] = zone_timeline
@@ -312,7 +334,7 @@ class BacktestEngine:
             self._force_exit(candles[-1], ExitReason.FLATTEN)
 
         # Close any remaining active zone at end of backtest (skip timeline/sigma).
-        if candles and self._zone_timeline is None and self.strategy_mode not in ("sigma", "fade"):
+        if candles and self._zone_timeline is None and self.strategy_mode not in ("sigma", "fade", "pmo", "factor"):
             self.detector.close_final_zone(candles[-1])
         if candles and self.strategy_mode == "fade":
             self._close_fade_level_zone(candles[-1].timestamp)
@@ -328,7 +350,7 @@ class BacktestEngine:
         # previous-day VAH/VAL levels as day-wide chart reference lines.
         if self.strategy_mode == "fade":
             all_zones = self._fade_level_zones
-        elif self._zone_timeline is not None or self.strategy_mode == "sigma":
+        elif self._zone_timeline is not None or self.strategy_mode in ("sigma", "pmo", "factor"):
             all_zones = []
         else:
             all_zones = self.detector.get_all_zones()
@@ -471,7 +493,7 @@ class BacktestEngine:
             _active_zone = _zt.get('active')
             _is_mature   = _zt.get('mature', False)
             _recent_zones = _zt.get('recent') or ([_active_zone] if _active_zone else [])
-        elif self.strategy_mode not in ("sigma", "fade"):
+        elif self.strategy_mode not in ("sigma", "fade", "pmo", "factor"):
             # Normal path: run detector live
             self.detector.update(candle)
 
@@ -480,6 +502,8 @@ class BacktestEngine:
                 self.trend_follow.observe(candle, [], True)
             elif not self._open_position and not self._pending_order:
                 self._reset_trend_session_state()
+        elif self.strategy_mode in ("pmo", "factor") and (self._open_position or self._pending_order):
+            self.trend_follow.observe(candle, [], True)
 
         # Daily loss limit
         date_str = candle.timestamp.strftime("%Y-%m-%d")
@@ -521,6 +545,11 @@ class BacktestEngine:
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
+                if self._pmo_max_hold_minutes > 0 and self.strategy_mode in ("pmo", "factor"):
+                    held = (candle.timestamp - self._open_position.entry_time).total_seconds() / 60.0
+                    if held >= self._pmo_max_hold_minutes:
+                        self._force_exit(candle, ExitReason.FLATTEN)
+                        return
                 # ── Trailing SL: trigger at configured TP%, then move SL from entry ──
                 self._check_trailing_sl(candle)
                 return  # still open, don't open new
@@ -564,6 +593,14 @@ class BacktestEngine:
                 eval_zones = []
                 eval_mature = True
                 zone_source = "rolling_sigma"
+            elif self.strategy_mode == "pmo":
+                eval_zones = []
+                eval_mature = True
+                zone_source = "pmo"
+            elif self.strategy_mode == "factor":
+                eval_zones = []
+                eval_mature = True
+                zone_source = "factor"
             elif self.strategy_mode == "fade":
                 eval_zones = []
                 eval_mature = True
@@ -749,6 +786,9 @@ class BacktestEngine:
 
     def _execute_entry(self, signal: TradeSignal, candle: Candle):
         fill_price = signal.entry_price
+        meta = dict(getattr(signal, "meta", None) or {})
+        if getattr(signal, "reason", None):
+            meta.setdefault("signal_reason", signal.reason)
 
         trade = Trade(
             trade_id=f"T{uuid.uuid4().hex[:8]}",
@@ -768,7 +808,7 @@ class BacktestEngine:
             vol_ratio=signal.vol_ratio,
             is_big_trend=signal.is_big_trend,
             breakout_range=signal.breakout_range,
-            meta=dict(getattr(signal, "meta", None) or {}),
+            meta=meta,
         )
         self._open_position = trade
         self._trail_sl_triggered = False

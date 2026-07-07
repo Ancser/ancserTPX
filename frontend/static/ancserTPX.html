@@ -5,7 +5,7 @@
         └─ ancserTPX.js    (邏輯)
   狀態: v1.0.6
   功能 / Features:
-    1. Backtest, Machine Learning, Live Monitor 共用 completed 1m candle decision flow.
+    1. Backtest, Machine Learning, Live 共用 completed 1m candle decision flow.
     2. 策略固定為 trend。
     3. Value Area 固定 80%，preset 名稱不再包含 area sweep。
     4. Full TP Lock 取代舊 profit lock，達到 1/2/3 次完整 TP 後下一 session 前停止新單。
@@ -34,7 +34,7 @@
     <div class="header-tabs">
         <div class="tab" data-tab="calendar">Data</div>
         <div class="tab active" data-tab="backtest">Backtest</div>
-        <div class="tab" data-tab="live">Live Monitor</div>
+        <div class="tab" data-tab="live">Live</div>
     </div>
     <div class="header-right">
         <div class="account-switcher">
@@ -130,8 +130,9 @@
                     <label>STRATEGY</label>
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
                         <option value="trend" selected>TREND</option>
-                        <option value="fade">FADE 前日VA回歸</option><!-- 1.0.8 -->
-                        <option value="sigma">SIGMA Rolling Fade</option>
+                        <option value="fade">DAY ZONE 前日VA回歸</option><!-- 1.0.8 -->
+                        <option value="sigma">DISTRIBUTION Rolling Fade</option>
+                        <option value="pmo">PMO EMAPMO</option>
                         <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
                 </div>
@@ -271,14 +272,13 @@
                     <div class="form-group" style="flex:1;">
                         <label>TIMEFRAMES <span class="lbl-hint">(pick 1 = single; pick 2+ = overlap)</span></label>
                         <div id="overlap-tf-bt" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
-                            <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="5m" checked onchange="onTfSelectionChange('bt')"> 5m</label>
-                            <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="15m" onchange="onTfSelectionChange('bt')"> 15m</label>
+                            <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="15m" checked onchange="onTfSelectionChange('bt')"> 15m</label>
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="30m" onchange="onTfSelectionChange('bt')"> 30m</label>
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="1h" onchange="onTfSelectionChange('bt')"> 1h</label>
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="4h" onchange="onTfSelectionChange('bt')"> 4h</label>
                             <!-- 1.0.8: 0.15.5 式整段 session 生長區間,與其他 TF 互斥 -->
                             <label class="tf-chk" title="整段 session 生長區間 (0.15.5) — 與其他 TF 互斥"><input type="checkbox" class="overlap-tf-chk-bt" value="session" onchange="onTfSelectionChange('bt')"> SESSION</label>
-                            <label class="tf-chk" id="tf-day-chip-bt" style="display:none;" title="FADE 前日VA回歸 — 固定使用前一整個交易日"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
+                            <label class="tf-chk" id="tf-day-chip-bt" style="display:none;" title="DAY ZONE 前日VA回歸 — 固定使用前一整個交易日"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
                         </div>
                     </div>
                 </div>
@@ -289,7 +289,7 @@
                             <option value="merged" selected>Merged overlap</option>
                             <option value="smallest">Smallest selected TF</option>
                         </select>
-                        <div id="tr-overlap-trade-hint-bt" style="font-size:10px;color:var(--text3);margin-top:4px;">JUDGE 5m / OVERLAP OFF / TRADE 5m</div>
+                        <div id="tr-overlap-trade-hint-bt" style="font-size:10px;color:var(--text3);margin-top:4px;">JUDGE 15m / OVERLAP OFF / TRADE 15m</div>
                     </div>
                 </div>
                 <div class="form-row">
@@ -313,38 +313,13 @@
                 <input type="hidden" id="sl-ticks-bt" value="50">
                 <span id="sl-ticks-bt-val" style="display:none">50</span>
                 <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
-                <!-- 1.0.8: EXIT MODE = RISK 第一項;日虧斷路器獨立一行 -->
+                <!-- 1.0.9: 執行/出場參數群組在上(TP → SL 模型 → RR → TRAIL 相鄰),
+                     封鎖型 risk gate(日虧斷路器 / PREV-RV / DAY ZONE 模式)移到下方 -->
                 <div class="form-group">
-                    <label>EXIT MODE</label>
+                    <label>TP</label>
                     <select id="tr-exit-mode-bt" onchange="onExitModeChange('bt')">
                         <option value="tp" selected>TP 固定</option>
                         <option value="ladder">LADDER 階梯滾動</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>日虧斷路器 <span class="lbl-hint">(當日虧 N 單停新單,0=OFF)</span></label>
-                    <select id="tr-daily-stop-bt">
-                        <option value="0" selected>OFF</option>
-                        <option value="1">1</option><option value="2">2</option>
-                        <option value="3">3</option><option value="4">4</option>
-                        <option value="5">5</option><option value="6">6</option>
-                    </select>
-                </div>
-                <!-- 1.0.9: prevRV regime gate + fade 進場模式 + 唯讀 SL 模型顯示 -->
-                <div class="form-group">
-                    <label>PREV-RV 波動閘 <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
-                    <select id="tr-prev-rv-gate-bt">
-                        <option value="0" selected>OFF</option>
-                        <option value="10">近10日</option>
-                        <option value="15">近15日</option>
-                        <option value="20">近20日</option>
-                    </select>
-                </div>
-                <div class="form-group" id="fade-entry-mode-row-bt" style="display:none;">
-                    <label>FADE 進場模式</label>
-                    <select id="fade-entry-mode-bt">
-                        <option value="limit" selected>LIMIT 直接掛 VAL(最穩)</option>
-                        <option value="rejection">REJECTION 掃回後市價</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -375,6 +350,33 @@
                     <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
                     <input type="hidden" id="trail-sl-ticks-bt" value="20">
                 </div>
+                <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
+                <div class="form-group">
+                    <label>日虧斷路器 <span class="lbl-hint">(當日虧 N 單停新單,0=OFF)</span></label>
+                    <select id="tr-daily-stop-bt">
+                        <option value="0" selected>OFF</option>
+                        <option value="1">1</option><option value="2">2</option>
+                        <option value="3">3</option><option value="4">4</option>
+                        <option value="5">5</option><option value="6">6</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>PREV-RV 波動閘 <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
+                    <select id="tr-prev-rv-gate-bt">
+                        <option value="0" selected>OFF</option>
+                        <option value="10">近10日</option>
+                        <option value="15">近15日</option>
+                        <option value="20">近20日</option>
+                    </select>
+                </div>
+                <div class="form-group" id="fade-entry-mode-row-bt" style="display:none;">
+                    <label>DAY ZONE 進場模式</label>
+                    <select id="fade-entry-mode-bt" onchange="updateStrategyParamVisibility('bt')">
+                        <option value="limit" selected>LIMIT 直接掛 VAL(最穩)</option>
+                        <option value="rejection">REJECTION 掃回後市價</option>
+                        <option value="or15">OR15 開盤假突破(雙向·市價)</option>
+                    </select>
+                </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
                         <label>SESSION LIMIT</label>
@@ -400,6 +402,8 @@
 
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
+                <!-- 1.0.9: 全策略參數掃描(TREND+DAY ZONE+DISTRIBUTION),依 PF 排序,結果進 PRESETS 分頁 -->
+                <button class="btn btn-amber" id="btn-sweep" onclick="runBacktestSweep()" disabled>SWEEP ALL STRATEGIES</button>
                 <div id="backtest-progress-wrap" style="display:none;margin-top:1px;">
                     <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
                         <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">BACKTEST</span>
@@ -424,9 +428,9 @@
             <div class="metrics-grid" id="metrics-grid"></div>
         </div>
 
-        <!-- Live Monitor Panel (hidden by default) -->
+        <!-- Live Panel (hidden by default) -->
         <div id="live-panel" class="hidden">
-            <div class="panel">
+            <div class="panel" id="live-settings-panel" style="display:none;">
                 <div class="panel-title">STRATEGY</div>
                 <!-- Strategy Params — 1.0.9: PRESET 移到 CONTRACT 上方 -->
                 <div class="form-group" style="margin-top:8px;">
@@ -457,8 +461,9 @@
                         <label>STRATEGY</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
                             <option value="trend" selected>TREND</option>
-                            <option value="fade">FADE 前日VA回歸</option><!-- 1.0.8 -->
-                            <option value="sigma">SIGMA Rolling Fade</option>
+                            <option value="fade">DAY ZONE 前日VA回歸</option><!-- 1.0.8 -->
+                            <option value="sigma">DISTRIBUTION Rolling Fade</option>
+                            <option value="pmo">PMO EMAPMO</option>
                             <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
                     </div>
@@ -598,14 +603,13 @@
                         <div class="form-group" style="flex:1;">
                             <label>TIMEFRAMES <span class="lbl-hint">(pick 1 = single; pick 2+ = overlap)</span></label>
                             <div id="overlap-tf-live" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
-                                <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="5m" checked onchange="onTfSelectionChange('live')"> 5m</label>
-                                <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="15m" onchange="onTfSelectionChange('live')"> 15m</label>
+                                <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="15m" checked onchange="onTfSelectionChange('live')"> 15m</label>
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="30m" onchange="onTfSelectionChange('live')"> 30m</label>
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="1h" onchange="onTfSelectionChange('live')"> 1h</label>
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="4h" onchange="onTfSelectionChange('live')"> 4h</label>
                                 <!-- 1.0.8: 0.15.5 式整段 session 生長區間,與其他 TF 互斥 -->
                                 <label class="tf-chk" title="整段 session 生長區間 (0.15.5) — 與其他 TF 互斥"><input type="checkbox" class="overlap-tf-chk-live" value="session" onchange="onTfSelectionChange('live')"> SESSION</label>
-                            <label class="tf-chk" id="tf-day-chip-live" style="display:none;" title="FADE 前日VA回歸 — 固定使用前一整個交易日"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
+                            <label class="tf-chk" id="tf-day-chip-live" style="display:none;" title="DAY ZONE 前日VA回歸 — 固定使用前一整個交易日"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
                             </div>
                     </div>
                 </div>
@@ -616,7 +620,7 @@
                             <option value="merged" selected>Merged overlap</option>
                             <option value="smallest">Smallest selected TF</option>
                         </select>
-                        <div id="tr-overlap-trade-hint-live" style="font-size:10px;color:var(--text3);margin-top:4px;">JUDGE 5m / OVERLAP OFF / TRADE 5m</div>
+                        <div id="tr-overlap-trade-hint-live" style="font-size:10px;color:var(--text3);margin-top:4px;">JUDGE 15m / OVERLAP OFF / TRADE 15m</div>
                     </div>
                 </div>
                 <div class="form-row">
@@ -640,14 +644,44 @@
                     <input type="hidden" id="sl-ticks-live" value="50">
                     <span id="sl-ticks-live-val" style="display:none">50</span>
                     <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
-                <!-- 1.0.8: EXIT MODE = RISK 第一項;日虧斷路器獨立一行 -->
+                <!-- 1.0.9: 執行/出場參數群組在上(TP → SL 模型 → RR → TRAIL 相鄰),
+                     封鎖型 risk gate(日虧斷路器 / PREV-RV / DAY ZONE 模式)移到下方 -->
                 <div class="form-group">
-                    <label>EXIT MODE</label>
+                    <label>TP</label>
                     <select id="tr-exit-mode-live" onchange="onExitModeChange('live')">
                         <option value="tp" selected>TP 固定</option>
                         <option value="ladder">LADDER 階梯滾動</option>
                     </select>
                 </div>
+                <div class="form-group">
+                    <label>SL 模型 <span class="lbl-hint">(依策略自動決定,不可改)</span></label>
+                    <input type="text" id="sl-model-display-live" readonly value="TREND: 最低量節點 SL" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
+                </div>
+                <div class="form-group">
+                    <label>RR RATIO <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
+                    <select id="rr-ratio-live" onchange="onRrChange('live')">
+                        <option value="1">1:1</option><option value="2" selected>1:2</option>
+                        <option value="3">1:3</option><option value="4">1:4</option>
+                        <option value="5">1:5</option><option value="6">1:6</option>
+                    </select>
+                    <input type="hidden" id="tp-ticks-live" value="100">
+                </div>
+                <div class="form-group">
+                    <label>TRAIL TP TRIGGER</label>
+                    <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
+                        <option value="0">OFF</option>
+                        <option value="0.05" selected>5%</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>
+                        TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+10% TP</span>
+                        <span id="trail-sl-ticks-live-val" style="color:var(--text2)">20t / $30.00</span>
+                    </label>
+                    <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
+                    <input type="hidden" id="trail-sl-ticks-live" value="20">
+                </div>
+                <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
                 <div class="form-group">
                     <label>日虧斷路器 <span class="lbl-hint">(當日虧 N 單停新單,0=OFF)</span></label>
                     <select id="tr-daily-stop-live">
@@ -657,7 +691,6 @@
                         <option value="5">5</option><option value="6">6</option>
                     </select>
                 </div>
-                <!-- 1.0.9: prevRV regime gate + fade 進場模式 + 唯讀 SL 模型顯示 -->
                 <div class="form-group">
                     <label>PREV-RV 波動閘 <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
                     <select id="tr-prev-rv-gate-live">
@@ -668,40 +701,13 @@
                     </select>
                 </div>
                 <div class="form-group" id="fade-entry-mode-row-live" style="display:none;">
-                    <label>FADE 進場模式</label>
-                    <select id="fade-entry-mode-live">
+                    <label>DAY ZONE 進場模式</label>
+                    <select id="fade-entry-mode-live" onchange="updateStrategyParamVisibility('live')">
                         <option value="limit" selected>LIMIT 直接掛 VAL(最穩)</option>
                         <option value="rejection">REJECTION 掃回後市價</option>
+                        <option value="or15">OR15 開盤假突破(雙向·市價)</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label>SL 模型 <span class="lbl-hint">(依策略自動決定,不可改)</span></label>
-                    <input type="text" id="sl-model-display-live" readonly value="TREND: 最低量節點 SL" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
-                </div>
-                    <div class="form-group">
-                        <label>RR RATIO <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
-                        <select id="rr-ratio-live" onchange="onRrChange('live')">
-                            <option value="1">1:1</option><option value="2" selected>1:2</option>
-                            <option value="3">1:3</option><option value="4">1:4</option>
-                            <option value="5">1:5</option><option value="6">1:6</option>
-                        </select>
-                        <input type="hidden" id="tp-ticks-live" value="100">
-                    </div>
-                    <div class="form-group">
-                        <label>TRAIL TP TRIGGER</label>
-                        <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
-                            <option value="0">OFF</option>
-                            <option value="0.05" selected>5%</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>
-                            TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+10% TP</span>
-                            <span id="trail-sl-ticks-live-val" style="color:var(--text2)">20t / $30.00</span>
-                        </label>
-                        <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
-                        <input type="hidden" id="trail-sl-ticks-live" value="20">
-                    </div>
                     <div class="form-row">
                         <div class="form-group" style="flex:1;">
                             <label>SESSION LIMIT</label>
@@ -726,29 +732,44 @@
                 </div>
 
             </div>
+            <!-- 1.0.9: 兩個 live 帳號槽(ACCOUNT 1 / ACCOUNT 2)—— 各自帳號+preset 選擇、
+                 GO/STOP/FLAT、以及合併進標題的即時狀態。狀態走 /live/status-all。 -->
             <div class="panel">
-                <div class="panel-title">ACCOUNT</div>
-                <select id="live-account-select" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:8px;margin-bottom:10px;font-family:'IBM Plex Mono',monospace;font-size:11px;" onchange="onLiveAccountSwitch()">
-                    <option>-- NO ACCOUNT --</option>
-                </select>
-                <div id="live-account-info" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text3);line-height:1.8;margin-bottom:10px;"></div>
-                <div style="display:flex;gap:6px;">
-                    <button class="btn btn-green" id="btn-go-live" onclick="goLive()" disabled style="flex:1;">GO LIVE</button>
-                    <button class="btn btn-amber" id="btn-stop-live" onclick="stopLive()" disabled style="flex:1;">STOP</button>
-                    <button class="btn btn-red" id="btn-flatten" onclick="flattenLive()" disabled style="flex:1;">FLATTEN</button>
+                <div class="panel-title">ACCOUNT 1</div>
+                <select id="live-acct-select-1" onchange="onLiveSlotChange(1)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選帳號 --</option></select>
+                <select id="live-acct-preset-1" onchange="onLiveSlotChange(1)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選 preset --</option></select>
+                <div style="display:flex;gap:6px;margin-top:8px;">
+                    <button class="btn btn-green" onclick="liveSlotGoLive(1)" style="flex:1;">GO LIVE</button>
+                    <button class="btn btn-amber" onclick="liveSlotStop(1)" style="flex:1;">STOP</button>
+                    <button class="btn btn-red" onclick="liveSlotFlatten(1)" style="flex:1;">FLAT</button>
+                </div>
+                <div style="color:var(--text2);font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2.0;margin-top:8px;">
+                    <div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text3);" id="live-slot-dot-1"></span>STATUS: <span id="live-slot-status-1" style="color:var(--text3);letter-spacing:1px;">—</span></div>
+                    <div style="padding-left:14px;">PHASE: <span id="live-slot-phase-1" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">MODE: <span id="live-slot-mode-1" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">MARKET: <span id="live-slot-mkt-1" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">日虧斷路: <span id="live-slot-dl-1" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">波動閘: <span id="live-slot-rv-1" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">DAILY PNL: <span id="live-slot-pnl-1" style="color:var(--text3);">--</span></div>
                 </div>
             </div>
             <div class="panel">
-                <div class="panel-title">LIVE STATUS</div>
-                <div style="color:var(--text2);font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2.2;">
-                    <div style="display:flex;align-items:center;gap:8px;">
-                        <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text3);" id="live-status-dot"></span>
-                        STATUS: <span id="live-status-text" style="color:var(--text3);letter-spacing:1px;">OFFLINE</span>
-                    </div>
-                    <div style="padding-left:14px;">PHASE: <span id="live-position-text" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">MODE: <span id="live-mode-text" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">MARKET: <span id="lv-market-session" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">DAILY PNL: <span id="live-pnl-text" style="color:var(--text3);">--</span></div>
+                <div class="panel-title">ACCOUNT 2</div>
+                <select id="live-acct-select-2" onchange="onLiveSlotChange(2)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選帳號 --</option></select>
+                <select id="live-acct-preset-2" onchange="onLiveSlotChange(2)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選 preset --</option></select>
+                <div style="display:flex;gap:6px;margin-top:8px;">
+                    <button class="btn btn-green" onclick="liveSlotGoLive(2)" style="flex:1;">GO LIVE</button>
+                    <button class="btn btn-amber" onclick="liveSlotStop(2)" style="flex:1;">STOP</button>
+                    <button class="btn btn-red" onclick="liveSlotFlatten(2)" style="flex:1;">FLAT</button>
+                </div>
+                <div style="color:var(--text2);font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2.0;margin-top:8px;">
+                    <div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text3);" id="live-slot-dot-2"></span>STATUS: <span id="live-slot-status-2" style="color:var(--text3);letter-spacing:1px;">—</span></div>
+                    <div style="padding-left:14px;">PHASE: <span id="live-slot-phase-2" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">MODE: <span id="live-slot-mode-2" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">MARKET: <span id="live-slot-mkt-2" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">日虧斷路: <span id="live-slot-dl-2" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">波動閘: <span id="live-slot-rv-2" style="color:var(--text3);">--</span></div>
+                    <div style="padding-left:14px;">DAILY PNL: <span id="live-slot-pnl-2" style="color:var(--text3);">--</span></div>
                 </div>
             </div>
         </div>
@@ -758,7 +779,7 @@
     <div class="content">
         <div id="chart-container">
 
-            <!-- Live Monitor Top Bar -->
+            <!-- Live Top Bar -->
             <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'IBM Plex Mono',monospace;font-size:11px;">
                 <div style="display:flex;align-items:stretch;height:28px;">
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MARKET: <span id="lv-session" style="color:var(--amber);margin-left:6px;">--</span></div>
@@ -766,6 +787,15 @@
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MODE: <span id="lv-mode" style="color:var(--green);margin-left:6px;">--</span></div>
                     <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">持倉: <span id="lv-position" style="color:var(--text2);margin-left:6px;">FLAT</span></div>
                     <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:0 8px;">資金: <span id="lv-capital" style="color:var(--green);margin-left:6px;">--</span></div>
+                </div>
+                <!-- 1.0.9: Risk-gate 狀態列 — 每個封鎖型限制目前是否生效(綠=通行 / 灰=OFF / 紅=封鎖·休息) -->
+                <div id="lv-riskgate-row" style="display:flex;align-items:center;height:22px;border-top:1px solid var(--border);padding:0 12px;font-size:10px;letter-spacing:0.3px;gap:6px;flex-wrap:wrap;">
+                    <span style="color:var(--text3);font-weight:600;margin-right:2px;white-space:nowrap;">風控閘</span>
+                    <span id="lv-rg-market" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;">盤段 --</span>
+                    <span id="lv-rg-session" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;">日限 --</span>
+                    <span id="lv-rg-dailyloss" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;">日虧 --</span>
+                    <span id="lv-rg-prevrv" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;">波動閘 --</span>
+                    <span id="lv-rg-tplock" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;display:none;">TP鎖 --</span>
                 </div>
                 <!-- Status line — its own row, adapts to ML (confluence) or Trend -->
                 <div style="display:flex;align-items:center;height:22px;border-top:1px solid var(--border);padding:0 12px;font-size:10px;letter-spacing:0.3px;">
@@ -808,6 +838,7 @@
         <div class="bottom-panel" id="bottom-panel">
             <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
             <div class="bottom-tabs">
+                <div class="bottom-tab" data-btab="presets">PRESETS</div>
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
                 <!-- 1.0.8: 移除 LEARN RESULT 分頁(ML sweep 結果板塊已刪除) -->
@@ -815,6 +846,15 @@
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
+                <!-- 1.0.9: SWEEP 結果(全策略,依 PF 排序)+ 每列 + 存成結構化 preset -->
+                <div id="btab-presets" class="hidden">
+                    <div style="display:flex;align-items:center;gap:12px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+                        <span style="font-size:11px;color:var(--amber);font-weight:600;letter-spacing:0.5px;">SWEEP 結果 · 全策略 · 依 PF 排序</span>
+                        <label style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="sweep-filter-acc" onchange="renderSweepTable()"> 只顯示 ACC ★ 通過</label>
+                        <span id="sweep-meta" style="font-size:10px;color:var(--text3);">尚無結果 — 用側欄 <b>SWEEP ALL STRATEGIES</b>(約 10–15 分鐘)。</span>
+                    </div>
+                    <div id="sweep-results-wrap" class="trade-table-wrap"></div>
+                </div>
                 <div id="btab-trades">
                     <div class="trade-table-wrap">
                         <table>
@@ -832,6 +872,7 @@
                                     <th>COMMISSION</th>
                                     <th>FEES</th>
                                     <th>DIR</th>
+                                    <th>WHY</th>
                                 </tr>
                             </thead>
                             <tbody id="trades-tbody"></tbody>
@@ -855,6 +896,7 @@
                                     <th>COMMISSION</th>
                                     <th>FEES</th>
                                     <th>DIR</th>
+                                    <th>WHY</th>
                                 </tr>
                             </thead>
                             <tbody id="execute-tbody"></tbody>
@@ -940,6 +982,6 @@
     </div>
 </div>
 
-    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&trendclean=1&sesstf=1&fable=1&chartfix=1&uifix=3&sweep=3&fade109=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1"></script>
 </body>
 </html>

@@ -2,6 +2,8 @@
 
 NO EMOJI
 
+Conversation language: Chinese.
+
 ## Version rule
 
 When making a product version commit, bump the visible app version by one patch
@@ -16,14 +18,16 @@ X.Y.Z feature / fix / study
 All newly saved presets must use this fixed format:
 
 ```text
-MM.DD USER|CODEX|CLAUDE #N purpose contract-and-params
+MM.DD MODEL #N purpose contract-and-params
 ```
 
 Rules:
 
 - `MM.DD` is the local save date, for example `06.24`.
-- Author is one of `USER`, `CODEX`, or `CLAUDE`.
-- `#N` is the next number for that author on that date.
+- `MODEL` is the actual strategy/model name: `TREND`, `DAY ZONE`, or
+  `DISTRIBUTION`.
+- Do not use author/agent labels as preset/model names.
+- `#N` is the next number for that model on that date.
 - `purpose` should be a short 4-5 character summary when possible.
 - `contract-and-params` must include contract/size and all material strategy
   controls, for example:
@@ -37,13 +41,13 @@ MNQx1 RR1:3 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2
 All newly trained model ids must use this fixed format:
 
 ```text
-MM.DD USER|CODEX|CLAUDE #N contract-and-model-params
+MM.DD MODEL #N contract-and-model-params
 ```
 
 Example:
 
 ```text
-06.24 CODEX #1 MNQ RR1-3 B4 TF2 W1m
+07.06 DISTRIBUTION #1 MNQ RR1-3 B4 TF2 W1m
 ```
 
 Use `RR1-3` instead of `RR1:3` in model ids because Windows filenames cannot
@@ -64,12 +68,28 @@ data/models/confluence_scorer.json
 
 ## New model training workflow
 
-Major goal:
+Major goal (1.0.9 revision — profit-factor first, maxDD is a gate not the rank key):
 
-- For funded-account candidates, prioritize strategies with tested max drawdown
-  below `$2,000`. A preset above `$2,000` maxDD can be reported as research, but
-  should not be treated as live-ready unless the user explicitly accepts the
-  higher drawdown.
+- Rank and select by **profit factor and PF stability**, not by a single
+  max-drawdown number. Rationale (user, 2026-07-05): maxDD is one worst-case
+  point that a lucky/trending month can keep artificially low; profit factor
+  (and how steady PF stays across the walk-forward thirds) is what keeps the
+  equity curve survivable when regime shifts. A high total loss is unstable the
+  moment PF drifts down, even if that month's maxDD looked small.
+- Acceptance — a candidate must pass ALL of:
+  - profit factor `>= ~2.0`, and every walk-forward third's PF `> 1`;
+  - per-trade expectancy `> 0` net of commission + fees (RR1 baseline);
+  - sample `>= 80` trades;
+  - plateau: neighbouring `+/-1` param still positive (no cliff);
+  - total loss `< PnL` (prefer total loss `< 70%` of PnL).
+- `maxDD < $2,000` stays a **hard Topstep account gate** (trailing DD), NOT the
+  ranking key. A candidate that clears PF/stability but breaches `$2,000` maxDD
+  is research-only until the user accepts the higher DD or scales size down. A
+  low maxDD alone must never promote a low-PF setup.
+- PnL is not the first-place ranking target. Treat PnL as a sizing/capacity
+  result after edge quality is proven: if PF and stability are high enough,
+  higher PnL can be achieved by raising contracts. Do not promote a low-PF
+  setup just because its raw PnL is high.
 
 When a full strategy/algorithm description is provided:
 
@@ -86,10 +106,15 @@ When a full strategy/algorithm description is provided:
    and exit-management knobs. Output data in batch to avoid accident interuption 
    no timeout limit
    make sure high effieicent structure
-5. Rank results by max drawdown first, then PnL, profit factor, Calmar, trade
-   count, and live/backtest realism. Clearly separate `< $2,000 maxDD` live
-   candidates from higher-DD research candidates.
-6. Show the user in a table 5 best preset for different purpose
+5. Rank results by **profit factor and PF stability first** (walk-forward thirds
+   all `> 1`), then total-loss-to-PnL ratio, expectancy, maxDD, trade count,
+   Calmar, live/backtest realism, and only then raw PnL as a secondary sizing
+   signal. Enforce `maxDD < $2,000` as a hard gate that separates live
+   candidates from higher-DD research candidates, but do not let a low maxDD
+   alone promote a low-PF setup.
+6. Show the user in a table the best 5 presets for different purposes, and also
+   list qualifying presets per model: `TREND`, `DAY ZONE`, and `DISTRIBUTION`.
+   If a model has no qualifying preset, say `none` and explain which gate failed.
 7. Create the best practical preset(s) using the preset naming rule above.
 8. Report what features mattered, what parameters were useful/useless, and
    whether the setup is ready for live testing or only for research.
