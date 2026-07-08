@@ -100,7 +100,7 @@
     <div class="sidebar">
         <!-- Backtest Config (SessionTrendFollow only) -->
         <div class="panel" id="backtest-config-panel">
-            <div class="panel-title">STRATEGY</div>
+            <div class="panel-title">ENVIRONMENT</div>
             <!-- Strategy Params — 1.0.9: PRESET 移到 CONTRACT 上方 -->
             <div class="form-group" style="margin-top:8px;">
                 <label>PRESET</label>
@@ -127,7 +127,7 @@
             </div>
             <div class="form-row">
                 <div class="form-group" style="flex:1;">
-                    <label>STRATEGY</label>
+                    <label>MODEL</label>
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
                         <option value="trend" selected>TREND</option>
                         <option value="fade">DAY ZONE 前日VA回歸</option><!-- 1.0.8 -->
@@ -244,14 +244,14 @@
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
-                        <label>SESSION LIMIT</label>
+                        <label>SESSION MAX TRADE LIMIT</label>
                         <select id="conf-session-limit-bt" onchange="updateMlParamSummary('bt')">
                             <option value="1" selected>ON</option>
                             <option value="0">OFF</option>
                         </select>
                     </div>
                     <div class="form-group" style="flex:1;">
-                        <label>MARKET SESSION</label>
+                        <label>MARKET LIMIT</label>
                         <select id="conf-allowed-sessions-bt" onchange="updateMlParamSummary('bt')">
                             <option value="">ALL</option>
                             <option value="ASIA,PRE">ASIA + PRE</option>
@@ -269,6 +269,17 @@
                 </div>
             </div>
             <div id="tr-params-bt" style="margin-top:12px;">
+                <div class="panel-title" style="margin-top:14px;">MODEL SETTINGS</div>
+                <div class="form-row" id="entry-trigger-row-bt">
+                    <div class="form-group" style="flex:1;">
+                        <label>ENTRY TRIGGER <span class="lbl-hint">(底層模型決定,不可改)</span></label>
+                        <input type="text" id="sl-model-display-bt" readonly value="TREND: completed candle + model confirmation" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
+                        <select id="entry-mode-bt" disabled style="display:none;" title="Entry type is fixed by each model implementation.">
+                            <option value="market" selected>MARKET</option>
+                            <option value="limit">LIMIT</option>
+                        </select>
+                    </div>
+                </div>
                 <div class="form-row" id="overlap-tf-row-bt">
                     <div class="form-group" style="flex:1;">
                         <label>TIMEFRAMES <span class="lbl-hint">(pick 1 = single; pick 2+ = overlap)</span></label>
@@ -313,63 +324,8 @@
                 </div>
                 <input type="hidden" id="sl-ticks-bt" value="50">
                 <span id="sl-ticks-bt-val" style="display:none">50</span>
-                <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
-                <!-- 1.0.9: 執行/出場參數群組在上(TP → SL 模型 → RR → TRAIL 相鄰),
+                                <!-- 1.0.9: 執行/出場參數群組在上(TP → SL 模型 → RR → TRAIL 相鄰),
                      封鎖型 risk gate(日虧斷路器 / PREV-RV / DAY ZONE 模式)移到下方 -->
-                <div class="form-group">
-                    <label>TP</label>
-                    <select id="tr-exit-mode-bt" onchange="onExitModeChange('bt')">
-                        <option value="tp" selected>TP 固定</option>
-                        <option value="ladder">LADDER 階梯滾動</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>SL 模型 <span class="lbl-hint">(依策略自動決定,不可改)</span></label>
-                    <input type="text" id="sl-model-display-bt" readonly value="TREND: 最低量節點 SL" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
-                </div>
-                <div class="form-group">
-                    <label>RR RATIO <span id="rr-ratio-bt-val" style="color:var(--accent)">1:2</span></label>
-                    <select id="rr-ratio-bt" onchange="onRrChange('bt')">
-                        <option value="1">1:1</option><option value="2" selected>1:2</option>
-                        <option value="3">1:3</option><option value="4">1:4</option>
-                        <option value="5">1:5</option><option value="6">1:6</option>
-                    </select>
-                    <input type="hidden" id="tp-ticks-bt" value="100">
-                </div>
-                <div class="form-group">
-                    <label>TRAIL TP TRIGGER</label>
-                    <select id="trail-trigger-pct-bt" onchange="updateTrailBounds('bt')">
-                        <option value="0">OFF</option>
-                        <option value="0.05" selected>5%</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>
-                        TRAIL SL <span id="trail-sl-pct-bt-val" style="color:var(--accent)">+10% TP</span>
-                        <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">20t / $30.00</span>
-                    </label>
-                    <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
-                    <input type="hidden" id="trail-sl-ticks-bt" value="20">
-                </div>
-                <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
-                <div class="form-group">
-                    <label>日虧斷路器 <span class="lbl-hint">(當日虧 N 單停新單,0=OFF)</span></label>
-                    <select id="tr-daily-stop-bt">
-                        <option value="0" selected>OFF</option>
-                        <option value="1">1</option><option value="2">2</option>
-                        <option value="3">3</option><option value="4">4</option>
-                        <option value="5">5</option><option value="6">6</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>PREV-RV 波動閘 <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
-                    <select id="tr-prev-rv-gate-bt">
-                        <option value="0" selected>OFF</option>
-                        <option value="10">近10日</option>
-                        <option value="15">近15日</option>
-                        <option value="20">近20日</option>
-                    </select>
-                </div>
                 <div class="form-group" id="fade-entry-mode-row-bt" style="display:none;">
                     <label>DAY ZONE 進場模式</label>
                     <select id="fade-entry-mode-bt" onchange="updateStrategyParamVisibility('bt')">
@@ -378,16 +334,156 @@
                         <option value="or15">OR15 開盤假突破(雙向·市價)</option>
                     </select>
                 </div>
+                <div id="factor-params-bt" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>FACTOR FAMILY</label>
+                            <select id="factor-family-bt">
+                                <option value="emapmo" selected>EMAPMO</option>
+                                <option value="icefishball">KDJMA</option>
+                                <option value="momentum_reversion">MREV</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>SIDE</label>
+                            <select id="factor-side-bt">
+                                <option value="all">BOTH</option>
+                                <option value="long_only" selected>LONG ONLY</option>
+                                <option value="short_only">SHORT ONLY</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>SIGNAL MODE</label>
+                            <select id="factor-pmo-mode-bt">
+                                <option value="normal">NORMAL</option>
+                                <option value="early" selected>EARLY</option>
+                                <option value="both">BOTH</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>VA FILTER</label>
+                            <select id="factor-va-filter-bt">
+                                <option value="off" selected>OFF</option>
+                                <option value="outside">OUTSIDE VA80</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>SL ANCHOR</label>
+                            <select id="factor-sl-rule-bt" onchange="onFactorRiskAnchorChange('bt','sl')">
+                                <option value="atr">ATR</option>
+                                <option value="atr_blend" selected>ATR BLEND</option>
+                                <option value="range15_pct">AREA15 %</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>SL INPUT</label>
+                            <select id="factor-sl-value-bt">
+                                <option value="0.5">0.5</option>
+                                <option value="0.75">0.75</option>
+                                <option value="1">1</option>
+                                <option value="1.5">1.5</option>
+                                <option value="2">2</option>
+                                <option value="2.5" selected>2.5</option>
+                                <option value="3">3</option>
+                            </select>
+                        </div>
+                    </div>
+                    <input type="hidden" id="factor-hold-bt" value="24">
+                </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
-                        <label>SESSION LIMIT</label>
+                        <label>TP ANCHOR</label>
+                        <select id="tr-exit-mode-bt" onchange="onExitModeChange('bt')">
+                            <option value="tp" selected>FIXED RATIO</option>
+                            <option value="ladder">LADDER RATIO</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>TP INPUT <span id="rr-ratio-bt-val" style="color:var(--accent)">1:2</span></label>
+                        <select id="rr-ratio-bt" onchange="onRrChange('bt')">
+                            <option value="1">1 x SL</option><option value="2" selected>2 x SL</option>
+                            <option value="3">3 x SL</option><option value="4">4 x SL</option>
+                            <option value="5">5 x SL</option><option value="6">6 x SL</option>
+                        </select>
+                        <input type="hidden" id="tp-ticks-bt" value="100">
+                    </div>
+                </div>
+                <div class="form-group" id="ladder-ratio-row-bt" style="display:none;">
+                    <label>LADDER INPUT <span class="lbl-hint">(engine fixed)</span></label>
+                    <select id="ladder-ratio-bt" disabled title="Current ladder is fixed in engine: +2R break-even, then trail 1R for each +1R move.">
+                        <option value="engine" selected>+2R BE, then +1R trail / +1R move</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>TRAIL TP TRIGGER</label>
+                        <select id="trail-trigger-pct-bt" onchange="updateTrailBounds('bt')">
+                            <option value="0">OFF</option>
+                            <option value="0.05" selected>5%</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>
+                            TRAIL SL <span id="trail-sl-pct-bt-val" style="color:var(--accent)">+10% TP</span>
+                            <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">20t / $30.00</span>
+                        </label>
+                        <select id="trail-sl-pct-bt" onchange="updateTrailBounds('bt')"></select>
+                        <input type="hidden" id="trail-sl-ticks-bt" value="20">
+                    </div>
+                </div>
+                <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
+                <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
+                <div class="form-group">
+                    <label>DAILY MAX TRADE LIMIT</label>
+                    <select id="factor-max-trades-bt">
+                        <option value="0">OFF</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3" selected>3</option>
+                        <option value="4">4</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>FULL LOSS LOCK <span class="lbl-hint">(當日虧 N 單停新單,0=OFF)</span></label>
+                    <select id="tr-daily-stop-bt">
+                        <option value="0" selected>OFF</option>
+                        <option value="1">1</option><option value="2">2</option>
+                        <option value="3">3</option><option value="4">4</option>
+                        <option value="5">5</option><option value="6">6</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>FULL WIN LOCK <span class="lbl-hint">(當日贏 N 單落袋停手,0=OFF)</span></label>
+                    <select id="tr-daily-win-stop-bt">
+                        <option value="0" selected>OFF</option>
+                        <option value="1">1</option><option value="2">2</option>
+                        <option value="3">3</option><option value="4">4</option>
+                        <option value="5">5</option><option value="6">6</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>HIGH VOLATILITY LOCK <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
+                    <select id="tr-prev-rv-gate-bt">
+                        <option value="0" selected>OFF</option>
+                        <option value="10">近10日</option>
+                        <option value="15">近15日</option>
+                        <option value="20">近20日</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>SESSION MAX TRADE LIMIT</label>
                         <select id="tr-session-limit-bt">
                             <option value="1" selected>ON</option>
                             <option value="0">OFF</option>
                         </select>
                     </div>
                     <div class="form-group" style="flex:1;">
-                        <label>MARKET SESSION</label>
+                        <label>MARKET LIMIT</label>
                         <select id="tr-allowed-sessions-bt">
                             <option value="">ALL</option>
                             <option value="ASIA,PRE">ASIA + PRE</option>
@@ -404,7 +500,20 @@
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
                 <!-- 1.0.9: 全策略參數掃描(TREND+DAY ZONE+DISTRIBUTION),依 PF 排序,結果進 PRESETS 分頁 -->
-                <button class="btn btn-amber" id="btn-sweep" onclick="runBacktestSweep()" disabled>SWEEP ALL STRATEGIES</button>
+                <!-- 1.0.9: sweep run/lock 面板 — 勾選要跑的 model;contract/size + risk 鎖定 -->
+                <div style="display:flex;gap:6px;align-items:flex-end;">
+                    <button class="btn btn-amber" id="btn-sweep" onclick="runBacktestSweep()" disabled style="flex:1;">SWEEP</button>
+                    <div class="form-group" style="flex:1;margin:0;">
+                        <label>SWEEP MODEL <span class="lbl-hint">MNQx1 + risk locked</span></label>
+                        <select id="sweep-model-scope-bt">
+                            <option value="ALL" selected>ALL MODELS</option>
+                            <option value="FACTOR">FACTOR ONLY</option>
+                            <option value="TREND">TREND ONLY</option>
+                            <option value="DAY ZONE">DAY ZONE ONLY</option>
+                            <option value="DISTRIBUTION">DISTRIBUTION ONLY</option>
+                        </select>
+                    </div>
+                </div>
                 <div id="backtest-progress-wrap" style="display:none;margin-top:1px;">
                     <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
                         <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">BACKTEST</span>
@@ -432,7 +541,7 @@
         <!-- Live Panel (hidden by default) -->
         <div id="live-panel" class="hidden">
             <div class="panel" id="live-settings-panel" style="display:none;">
-                <div class="panel-title">STRATEGY</div>
+                <div class="panel-title">ENVIRONMENT</div>
                 <!-- Strategy Params — 1.0.9: PRESET 移到 CONTRACT 上方 -->
                 <div class="form-group" style="margin-top:8px;">
                     <label>PRESET</label>
@@ -459,7 +568,7 @@
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
-                        <label>STRATEGY</label>
+                        <label>MODEL</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
                             <option value="trend" selected>TREND</option>
                             <option value="fade">DAY ZONE 前日VA回歸</option><!-- 1.0.8 -->
@@ -576,14 +685,14 @@
                     </div>
                     <div class="form-row">
                         <div class="form-group" style="flex:1;">
-                            <label>SESSION LIMIT</label>
+                            <label>SESSION MAX TRADE LIMIT</label>
                             <select id="conf-session-limit-live" onchange="updateMlParamSummary('live')">
                                 <option value="1" selected>ON</option>
                                 <option value="0">OFF</option>
                             </select>
                         </div>
                         <div class="form-group" style="flex:1;">
-                            <label>MARKET SESSION</label>
+                            <label>MARKET LIMIT</label>
                             <select id="conf-allowed-sessions-live" onchange="updateMlParamSummary('live')">
                                 <option value="">ALL</option>
                                 <option value="ASIA,PRE">ASIA + PRE</option>
@@ -601,6 +710,17 @@
                     </div>
                 </div>
                 <div id="tr-params-live" style="margin-top:12px;">
+                    <div class="panel-title" style="margin-top:14px;">MODEL SETTINGS</div>
+                    <div class="form-row" id="entry-trigger-row-live">
+                        <div class="form-group" style="flex:1;">
+                            <label>ENTRY TRIGGER <span class="lbl-hint">(底層模型決定,不可改)</span></label>
+                            <input type="text" id="sl-model-display-live" readonly value="TREND: completed candle + model confirmation" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
+                            <select id="entry-mode-live" disabled style="display:none;" title="Entry type is fixed by each model implementation.">
+                                <option value="market" selected>MARKET</option>
+                                <option value="limit">LIMIT</option>
+                            </select>
+                        </div>
+                    </div>
                     <div class="form-row" id="overlap-tf-row-live">
                         <div class="form-group" style="flex:1;">
                             <label>TIMEFRAMES <span class="lbl-hint">(pick 1 = single; pick 2+ = overlap)</span></label>
@@ -645,63 +765,8 @@
                     </div>
                     <input type="hidden" id="sl-ticks-live" value="50">
                     <span id="sl-ticks-live-val" style="display:none">50</span>
-                    <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
-                <!-- 1.0.9: 執行/出場參數群組在上(TP → SL 模型 → RR → TRAIL 相鄰),
+                                    <!-- 1.0.9: 執行/出場參數群組在上(TP → SL 模型 → RR → TRAIL 相鄰),
                      封鎖型 risk gate(日虧斷路器 / PREV-RV / DAY ZONE 模式)移到下方 -->
-                <div class="form-group">
-                    <label>TP</label>
-                    <select id="tr-exit-mode-live" onchange="onExitModeChange('live')">
-                        <option value="tp" selected>TP 固定</option>
-                        <option value="ladder">LADDER 階梯滾動</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>SL 模型 <span class="lbl-hint">(依策略自動決定,不可改)</span></label>
-                    <input type="text" id="sl-model-display-live" readonly value="TREND: 最低量節點 SL" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
-                </div>
-                <div class="form-group">
-                    <label>RR RATIO <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
-                    <select id="rr-ratio-live" onchange="onRrChange('live')">
-                        <option value="1">1:1</option><option value="2" selected>1:2</option>
-                        <option value="3">1:3</option><option value="4">1:4</option>
-                        <option value="5">1:5</option><option value="6">1:6</option>
-                    </select>
-                    <input type="hidden" id="tp-ticks-live" value="100">
-                </div>
-                <div class="form-group">
-                    <label>TRAIL TP TRIGGER</label>
-                    <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
-                        <option value="0">OFF</option>
-                        <option value="0.05" selected>5%</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>
-                        TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+10% TP</span>
-                        <span id="trail-sl-ticks-live-val" style="color:var(--text2)">20t / $30.00</span>
-                    </label>
-                    <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
-                    <input type="hidden" id="trail-sl-ticks-live" value="20">
-                </div>
-                <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
-                <div class="form-group">
-                    <label>日虧斷路器 <span class="lbl-hint">(當日虧 N 單停新單,0=OFF)</span></label>
-                    <select id="tr-daily-stop-live">
-                        <option value="0" selected>OFF</option>
-                        <option value="1">1</option><option value="2">2</option>
-                        <option value="3">3</option><option value="4">4</option>
-                        <option value="5">5</option><option value="6">6</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>PREV-RV 波動閘 <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
-                    <select id="tr-prev-rv-gate-live">
-                        <option value="0" selected>OFF</option>
-                        <option value="10">近10日</option>
-                        <option value="15">近15日</option>
-                        <option value="20">近20日</option>
-                    </select>
-                </div>
                 <div class="form-group" id="fade-entry-mode-row-live" style="display:none;">
                     <label>DAY ZONE 進場模式</label>
                     <select id="fade-entry-mode-live" onchange="updateStrategyParamVisibility('live')">
@@ -710,16 +775,156 @@
                         <option value="or15">OR15 開盤假突破(雙向·市價)</option>
                     </select>
                 </div>
+                <div id="factor-params-live" style="display:none;">
                     <div class="form-row">
                         <div class="form-group" style="flex:1;">
-                            <label>SESSION LIMIT</label>
+                            <label>FACTOR FAMILY</label>
+                            <select id="factor-family-live">
+                                <option value="emapmo" selected>EMAPMO</option>
+                                <option value="icefishball">KDJMA</option>
+                                <option value="momentum_reversion">MREV</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>SIDE</label>
+                            <select id="factor-side-live">
+                                <option value="all">BOTH</option>
+                                <option value="long_only" selected>LONG ONLY</option>
+                                <option value="short_only">SHORT ONLY</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>SIGNAL MODE</label>
+                            <select id="factor-pmo-mode-live">
+                                <option value="normal">NORMAL</option>
+                                <option value="early" selected>EARLY</option>
+                                <option value="both">BOTH</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>VA FILTER</label>
+                            <select id="factor-va-filter-live">
+                                <option value="off" selected>OFF</option>
+                                <option value="outside">OUTSIDE VA80</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>SL ANCHOR</label>
+                            <select id="factor-sl-rule-live" onchange="onFactorRiskAnchorChange('live','sl')">
+                                <option value="atr">ATR</option>
+                                <option value="atr_blend" selected>ATR BLEND</option>
+                                <option value="range15_pct">AREA15 %</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="flex:1;">
+                            <label>SL INPUT</label>
+                            <select id="factor-sl-value-live">
+                                <option value="0.5">0.5</option>
+                                <option value="0.75">0.75</option>
+                                <option value="1">1</option>
+                                <option value="1.5">1.5</option>
+                                <option value="2">2</option>
+                                <option value="2.5" selected>2.5</option>
+                                <option value="3">3</option>
+                            </select>
+                        </div>
+                    </div>
+                    <input type="hidden" id="factor-hold-live" value="24">
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>TP ANCHOR</label>
+                        <select id="tr-exit-mode-live" onchange="onExitModeChange('live')">
+                            <option value="tp" selected>FIXED RATIO</option>
+                            <option value="ladder">LADDER RATIO</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>TP INPUT <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
+                        <select id="rr-ratio-live" onchange="onRrChange('live')">
+                            <option value="1">1 x SL</option><option value="2" selected>2 x SL</option>
+                            <option value="3">3 x SL</option><option value="4">4 x SL</option>
+                            <option value="5">5 x SL</option><option value="6">6 x SL</option>
+                        </select>
+                        <input type="hidden" id="tp-ticks-live" value="100">
+                    </div>
+                </div>
+                <div class="form-group" id="ladder-ratio-row-live" style="display:none;">
+                    <label>LADDER INPUT <span class="lbl-hint">(engine fixed)</span></label>
+                    <select id="ladder-ratio-live" disabled title="Current ladder is fixed in engine: +2R break-even, then trail 1R for each +1R move.">
+                        <option value="engine" selected>+2R BE, then +1R trail / +1R move</option>
+                    </select>
+                </div>
+                <div class="form-row">
+                    <div class="form-group" style="flex:1;">
+                        <label>TRAIL TP TRIGGER</label>
+                        <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
+                            <option value="0">OFF</option>
+                            <option value="0.05" selected>5%</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1;">
+                        <label>
+                            TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+10% TP</span>
+                            <span id="trail-sl-ticks-live-val" style="color:var(--text2)">20t / $30.00</span>
+                        </label>
+                        <select id="trail-sl-pct-live" onchange="updateTrailBounds('live')"></select>
+                        <input type="hidden" id="trail-sl-ticks-live" value="20">
+                    </div>
+                </div>
+                <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
+                <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
+                <div class="form-group">
+                    <label>DAILY MAX TRADE LIMIT</label>
+                    <select id="factor-max-trades-live">
+                        <option value="0">OFF</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3" selected>3</option>
+                        <option value="4">4</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>FULL LOSS LOCK <span class="lbl-hint">(當日虧 N 單停新單,0=OFF)</span></label>
+                    <select id="tr-daily-stop-live">
+                        <option value="0" selected>OFF</option>
+                        <option value="1">1</option><option value="2">2</option>
+                        <option value="3">3</option><option value="4">4</option>
+                        <option value="5">5</option><option value="6">6</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>FULL WIN LOCK <span class="lbl-hint">(當日贏 N 單落袋停手,0=OFF)</span></label>
+                    <select id="tr-daily-win-stop-live">
+                        <option value="0" selected>OFF</option>
+                        <option value="1">1</option><option value="2">2</option>
+                        <option value="3">3</option><option value="4">4</option>
+                        <option value="5">5</option><option value="6">6</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>HIGH VOLATILITY LOCK <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
+                    <select id="tr-prev-rv-gate-live">
+                        <option value="0" selected>OFF</option>
+                        <option value="10">近10日</option>
+                        <option value="15">近15日</option>
+                        <option value="20">近20日</option>
+                    </select>
+                </div>
+                    <div class="form-row">
+                        <div class="form-group" style="flex:1;">
+                            <label>SESSION MAX TRADE LIMIT</label>
                             <select id="tr-session-limit-live">
                                 <option value="1" selected>ON</option>
                                 <option value="0">OFF</option>
                             </select>
                         </div>
                         <div class="form-group" style="flex:1;">
-                            <label>MARKET SESSION</label>
+                            <label>MARKET LIMIT</label>
                             <select id="tr-allowed-sessions-live">
                                 <option value="">ALL</option>
                                 <option value="ASIA,PRE">ASIA + PRE</option>
@@ -734,10 +939,10 @@
                 </div>
 
             </div>
-            <!-- 1.0.9: 兩個 live 帳號槽(ACCOUNT 1 / ACCOUNT 2)—— 各自帳號+preset 選擇、
+            <!-- 1.0.9: 兩個 live 帳號槽(ACCOUNT MAIN / ACCOUNT MINOR)—— 各自帳號+preset 選擇、
                  GO/STOP/FLAT、以及合併進標題的即時狀態。狀態走 /live/status-all。 -->
             <div class="panel">
-                <div class="panel-title">ACCOUNT 1</div>
+                <div class="panel-title">ACCOUNT MAIN</div>
                 <select id="live-acct-select-1" onchange="onLiveSlotChange(1)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選帳號 --</option></select>
                 <select id="live-acct-preset-1" onchange="onLiveSlotChange(1)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選 preset --</option></select>
                 <div style="display:flex;gap:6px;margin-top:8px;">
@@ -756,7 +961,7 @@
                 </div>
             </div>
             <div class="panel">
-                <div class="panel-title">ACCOUNT 2</div>
+                <div class="panel-title">ACCOUNT MINOR</div>
                 <select id="live-acct-select-2" onchange="onLiveSlotChange(2)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選帳號 --</option></select>
                 <select id="live-acct-preset-2" onchange="onLiveSlotChange(2)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選 preset --</option></select>
                 <div style="display:flex;gap:6px;margin-top:8px;">
@@ -853,7 +1058,7 @@
                     <div style="display:flex;align-items:center;gap:12px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
                         <span style="font-size:11px;color:var(--amber);font-weight:600;letter-spacing:0.5px;">SWEEP 結果 · 全策略 · 依 PF 排序</span>
                         <label style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="sweep-filter-acc" onchange="renderSweepTable()"> 只顯示 ACC ★ 通過</label>
-                        <span id="sweep-meta" style="font-size:10px;color:var(--text3);">尚無結果 — 用側欄 <b>SWEEP ALL STRATEGIES</b>(約 10–15 分鐘)。</span>
+                        <span id="sweep-meta" style="font-size:10px;color:var(--text3);">尚無結果 — 用側欄 <b>SWEEP</b>(約 10–15 分鐘)。</span>
                     </div>
                     <div id="sweep-results-wrap" class="trade-table-wrap"></div>
                 </div>
@@ -984,6 +1189,6 @@
     </div>
 </div>
 
-    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=3"></script>
 </body>
 </html>

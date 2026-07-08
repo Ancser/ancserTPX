@@ -164,6 +164,9 @@ class LiveTradingEngine:
         # 1.0.8: 日虧斷路器 — 當日虧損單數達 N 停新單(0=OFF)
         self._tr_daily_loss_stop = max(0, int(getattr(self.strategy_params, "tr_daily_loss_stop", 0) or 0))
         self._daily_loss_count: int = 0
+        # 1.0.9: FULL WIN LOCK — 當日贏 N 單停新單(0=OFF)
+        self._tr_daily_win_stop = max(0, int(getattr(self.strategy_params, "tr_daily_win_stop", 0) or 0))
+        self._daily_win_count: int = 0
         # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單(0=OFF)
         self._prev_rv_gate = max(0, int(getattr(self.strategy_params, "tr_prev_rv_gate", 0) or 0))
         self._gate_block_today: bool = False
@@ -1710,6 +1713,15 @@ class LiveTradingEngine:
                         and self._daily_loss_count >= self._tr_daily_loss_stop
                     ),
                 },
+                # 1.0.9: FULL WIN LOCK:當日贏單數達上限 → 落袋停手
+                "daily_win": {
+                    "limit": self._tr_daily_win_stop,
+                    "count": self._daily_win_count,
+                    "resting": bool(
+                        self._tr_daily_win_stop
+                        and self._daily_win_count >= self._tr_daily_win_stop
+                    ),
+                },
                 # PREV-RV 波動閘:前一日高波動 → 今日封鎖新單
                 "prev_rv": {
                     "lookback": self._prev_rv_gate,
@@ -2010,6 +2022,7 @@ class LiveTradingEngine:
         self._log = []
         self._reset_full_tp_counts()
         self._daily_loss_count = 0     # 1.0.8: 日虧斷路器重置
+        self._daily_win_count = 0      # 1.0.9: FULL WIN LOCK 重置
         self._param_snapshot_id = self._register_param_snapshot()  # 1.0.8: 參數快照入庫
         try:   # 1.0.9: 本帳號設為 shadow replay 主帳號(其餘為跟單,忽略)
             from backend.backtest.shadow_replay import set_main_account
@@ -2417,6 +2430,7 @@ class LiveTradingEngine:
             self._daily_pnl = 0.0
             self._reset_full_tp_counts()
             self._daily_loss_count = 0     # 1.0.8: 日虧斷路器重置
+            self._daily_win_count = 0      # 1.0.9: FULL WIN LOCK 重置
             self._log_event(
                 f"新交易日 — PnL 重置 (CT 17:00)"
             )
@@ -2652,6 +2666,12 @@ class LiveTradingEngine:
             # 1.0.8: 日虧斷路器 — 當日虧損單數達上限,今日不再開新單
             if (self._tr_daily_loss_stop
                     and self._daily_loss_count >= self._tr_daily_loss_stop):
+                self._unlock_signal_breakout(signal)
+                strat.notify_order_cancelled()
+                return
+            # 1.0.9: FULL WIN LOCK — 當日贏單數達上限,落袋停手
+            if (self._tr_daily_win_stop
+                    and self._daily_win_count >= self._tr_daily_win_stop):
                 self._unlock_signal_breakout(signal)
                 strat.notify_order_cancelled()
                 return
@@ -3701,6 +3721,13 @@ class LiveTradingEngine:
                         and actual_exit_price is not None and _sig_for_log):
                     _mult = 1.0 if _sig_for_log.direction == Direction.BUY else -1.0
                     _pnl_for_stop = (float(actual_exit_price) - float(entry_fill)) * _mult
+                if _pnl_for_stop is not None and _pnl_for_stop > 0:
+                    self._daily_win_count += 1   # 1.0.9: FULL WIN LOCK 計數
+                    if (self._tr_daily_win_stop
+                            and self._daily_win_count >= self._tr_daily_win_stop):
+                        self._log_event(
+                            f"[WIN LOCK] 今日贏單 {self._daily_win_count}/{self._tr_daily_win_stop} → 落袋停手",
+                            "warn")
                 if _pnl_for_stop is not None and _pnl_for_stop < 0:
                     self._daily_loss_count += 1
                     if self._tr_daily_loss_stop:

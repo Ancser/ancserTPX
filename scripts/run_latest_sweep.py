@@ -4,7 +4,7 @@ Writes:
 - data/sweep_results.json
 - data/sweep_runs/sweep_<timestamp>.json
 - data/sweep_history.jsonl
-- data/presets.json latest "SWEEP <MODEL> #..." presets
+- data/presets.json latest "<MMDD> <MODEL> #..." presets
 """
 
 from __future__ import annotations

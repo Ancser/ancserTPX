@@ -412,6 +412,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             else "tp"
         ),
         tr_daily_loss_stop=max(0, min(9, int(getattr(req, "tr_daily_loss_stop", 0) or 0))),
+        tr_daily_win_stop=max(0, min(9, int(getattr(req, "tr_daily_win_stop", 0) or 0))),  # 1.0.9
         # 1.0.9: prevRV regime gate + fade 專用
         tr_prev_rv_gate=max(0, min(60, int(getattr(req, "tr_prev_rv_gate", 0) or 0))),
         fade_tp_frac=float(getattr(req, "fade_tp_frac", 0.75) or 0.75),
@@ -886,7 +887,9 @@ class BacktestRequest(BaseModel):
     area_timeframe: str = "15m"
     rr_ratio: int = 2                     # reward:risk multiple (1..6)
     tr_exit_mode: str = "tp"              # 1.0.8: "tp" 固定 TP | "ladder" 階梯滾動
-    tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF)
+    tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF;UI=FULL LOSS LOCK)
+    tr_daily_win_stop: int = 0            # 1.0.9: FULL WIN LOCK — 日贏 N 單停新單(0=OFF)
+    sweep_models: Optional[List[str]] = None  # 1.0.9: sweep run/lock — 要跑的 model 清單(None=全部)
     tr_prev_rv_gate: int = 0              # 1.0.9: prevRV regime gate 回看天數(0=OFF)
     fade_tp_frac: float = 0.75            # 1.0.9: DAY ZONE TP=VAL→POC 比例
     fade_entry_mode: str = "limit"        # 1.0.9: DAY ZONE 進場 limit|rejection|or15
@@ -2774,19 +2777,51 @@ def _sync_latest_sweep_presets(payload: dict, req: BacktestRequest, contract_siz
         "PMO": "pmo",
     }
     model_order = ["FACTOR", "DISTRIBUTION", "DAY ZONE", "TREND", "PMO"]
+
+    def _factor_family_key(row: dict) -> str:
+        params = row.get("params") or {}
+        return str(params.get("factor_signal_family") or row.get("label") or "factor").lower()
+
+    def _factor_pf_rank(row: dict) -> tuple:
+        return (
+            float(row.get("pf") or 0.0),
+            1 if row.get("wf_pass") else 0,
+            float(row.get("pnl") or 0.0),
+            -float(row.get("max_dd") or 0.0),
+            float(row.get("score") or 0.0),
+        )
+
+    def _select_latest_rows(model: str, rows: list[dict]) -> list[dict]:
+        ranked = sorted(rows, key=_rank, reverse=True)
+        if model != "FACTOR":
+            return ranked[:3]
+        best_by_family: dict[str, dict] = {}
+        for row in sorted(rows, key=_factor_pf_rank, reverse=True):
+            family = _factor_family_key(row)
+            if family not in best_by_family:
+                best_by_family[family] = row
+        return sorted(best_by_family.values(), key=_factor_pf_rank, reverse=True)[:3]
+
     data = _load_presets_file()
     presets = data.setdefault("presets", {})
+    previous_latest = set(str(n) for n in (data.get("latest_sweep_presets") or []))
     for name in list(presets.keys()):
-        if str(name).startswith(_LATEST_SWEEP_PRESET_PREFIX):
+        if name in previous_latest or str(name).startswith(_LATEST_SWEEP_PRESET_PREFIX):
             presets.pop(name, None)
 
     created: list[str] = []
     fallback_cid = current_quarterly_contract_id("MNQ")
     contract_id = normalize_contract_id_to_front(getattr(req, "contract_id", "") or fallback_cid)
+    try:
+        raw_created = str((payload or {}).get("created_at") or "")
+        sweep_dt = datetime.fromisoformat(raw_created.replace("Z", "+00:00")).astimezone()
+    except Exception:
+        sweep_dt = datetime.now(timezone.utc).astimezone()
+    date_prefix = sweep_dt.strftime("%m%d")
     for model in model_order:
-        rows = sorted(grouped.get(model, []), key=_rank, reverse=True)[:3]
+        rows = _select_latest_rows(model, grouped.get(model, []))
         for idx, row in enumerate(rows, start=1):
-            row_params = dict(row.get("params") or {})
+            row_params = dict(row.get("preset_params") or row.get("params") or {})
             strategy = str(row_params.get("strategy") or model_to_strategy.get(model, "trend"))
             row_params["strategy"] = strategy
             params = dict(_DEFAULT_PRESET_PARAMS)
@@ -2802,10 +2837,8 @@ def _sync_latest_sweep_presets(payload: dict, req: BacktestRequest, contract_siz
             params.update(row_params)
             label = " ".join(str(row.get("label") or "").replace("#", "").split())[:48]
             name = (
-                f"{_LATEST_SWEEP_PRESET_PREFIX}{model} #{idx} "
-                f"{label} PF{float(row.get('pf') or 0.0):.2f} "
-                f"DD{float(row.get('max_dd') or 0.0):.0f} "
-                f"T{int(row.get('trades') or 0)}"
+                f"{date_prefix} {model} #{idx} "
+                f"{label} PF{float(row.get('pf') or 0.0):.2f}"
             )
             presets[name] = params
             created.append(name)
@@ -2837,7 +2870,7 @@ async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
         def _progress(cur, total, detail):
             _update_bt_progress("sweeping", cur, total, detail)
 
-        results = await asyncio.to_thread(run_model_sweep, candles, base, _progress)
+        results = await asyncio.to_thread(run_model_sweep, candles, base, _progress, getattr(req, 'sweep_models', None))
         results.sort(key=lambda r: -r.get("score", 0.0))
         qualified_by_model = {"TREND": [], "DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": []}
         for r in results:
@@ -3477,7 +3510,8 @@ class LiveStartRequest(BaseModel):
     area_timeframe: str = "15m"
     rr_ratio: int = 2                     # reward:risk multiple (1..6)
     tr_exit_mode: str = "tp"              # 1.0.8: "tp" 固定 TP | "ladder" 階梯滾動
-    tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF)
+    tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF;UI=FULL LOSS LOCK)
+    tr_daily_win_stop: int = 0            # 1.0.9: FULL WIN LOCK — 日贏 N 單停新單(0=OFF)
     tr_prev_rv_gate: int = 0              # 1.0.9: prevRV regime gate 回看天數(0=OFF)
     fade_tp_frac: float = 0.75            # 1.0.9: DAY ZONE TP=VAL→POC 比例
     fade_entry_mode: str = "limit"        # 1.0.9: DAY ZONE 進場 limit|rejection|or15
@@ -4365,9 +4399,19 @@ _FIXED_PRESET_NAMES = ()
 
 def _preset_name_uses_allowed_model(name: str) -> bool:
     parts = str(name or "").split()
-    if len(parts) < 3:
+    if len(parts) < 2:
         return False
-    model_part = " ".join(parts[1:]).upper()
+    if parts[0].upper() == "SWEEP":
+        model_parts = parts[1:]
+    elif len(parts) >= 2 and len(parts[0]) == 4 and parts[0].isdigit():
+        model_parts = parts[1:]
+    elif len(parts) >= 3 and len(parts[0]) == 5 and parts[0][2] == "." and ":" in parts[1]:
+        model_parts = parts[2:]
+    elif len(parts) >= 2 and len(parts[0]) == 5 and parts[0][2] == ".":
+        model_parts = parts[1:]
+    else:
+        model_parts = parts
+    model_part = " ".join(model_parts).upper()
     return (
         model_part.startswith("TREND #")
         or model_part.startswith("DAY ZONE #")

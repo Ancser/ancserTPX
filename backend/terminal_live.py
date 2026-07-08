@@ -131,6 +131,7 @@ def _preset_name_uses_allowed_model(name: str) -> bool:
         or model_part.startswith("DAY ZONE #")
         or model_part.startswith("DISTRIBUTION #")
         or model_part.startswith("PMO #")
+        or model_part.startswith("FACTOR #")
     )
 
 
@@ -209,7 +210,7 @@ def _load_presets_file() -> dict:
             continue
         strategy = str(params.get("strategy") or "").lower()
         # 1.0.8: mlc2 已移除 — 舊 preset 一律歸一化為 trend;+fade 放行
-        params["strategy"] = strategy if strategy in ("fade", "sigma", "pmo") else "trend"
+        params["strategy"] = strategy if strategy in ("fade", "sigma", "pmo", "factor") else "trend"
         # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         params["contract_id"] = normalize_contract_id_to_front(params.get("contract_id") or "")
         allowed_keys = {
@@ -218,7 +219,7 @@ def _load_presets_file() -> dict:
             "contract_size", "full_tp_lock", "one_trade_per_session_direction",
             "value_area_pct", "area_timeframe", "method", "tf_combo",
             "tr_overlap_trade_tf",
-            "tr_exit_mode", "tr_daily_loss_stop",  # 1.0.8: ladder 出場 + 日虧斷路器
+            "tr_exit_mode", "tr_daily_loss_stop", "tr_daily_win_stop",  # 1.0.8: ladder 出場 + 日虧斷路器
             "tr_prev_rv_gate", "fade_tp_frac", "fade_entry_mode",  # 1.0.9
             "sigma_window_minutes", "sigma_method", "sigma_entry_mode",
             "sigma_accept_mode", "sigma_start", "sigma_max",

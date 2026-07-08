@@ -136,14 +136,14 @@ const DEFAULT_STRATEGY_PARAMS = {
     pmo_max_trades_per_day: 3,
     pmo_warmup_bars: 150,
     factor_timeframe_minutes: 5,
-    factor_signal_family: 'icefishball',
-    factor_side_mode: 'all',
-    factor_pmo_signal_mode: 'normal',
-    factor_session_va_filter: 'outside',
-    factor_sl_rule: 'trend_ticks',
-    factor_tp_rule: 'trend_rr',
-    factor_sl_value: 1.0,
-    factor_tp_value: 1.0,
+    factor_signal_family: 'emapmo',
+    factor_side_mode: 'long_only',
+    factor_pmo_signal_mode: 'early',
+    factor_session_va_filter: 'off',
+    factor_sl_rule: 'atr_blend',
+    factor_tp_rule: 'atr_blend',
+    factor_sl_value: 2.5,
+    factor_tp_value: 2.0,
     factor_max_hold_bars: 24,
     factor_max_trades_per_day: 3,
     factor_warmup_bars: 150,
@@ -390,10 +390,10 @@ function onRrChange(mode) {
     const slEl = document.getElementById('sl-ticks-' + mode);
     const tpEl = document.getElementById('tp-ticks-' + mode);
     const lbl = document.getElementById('rr-ratio-' + mode + '-val');
-    const rr = rrEl ? (parseInt(rrEl.value, 10) || 2) : 2;
+    const rr = rrEl ? (parseFloat(rrEl.value) || 2) : 2;
     const slTicks = slEl ? (Math.abs(parseInt(slEl.value, 10)) || 50) : 50;
     if (tpEl) tpEl.value = String(rr * slTicks);
-    if (lbl) lbl.textContent = '1:' + rr;
+    if (lbl) lbl.textContent = '1:' + (Number.isInteger(rr) ? String(rr) : rr.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''));
     updateTrailBounds(mode);
 }
 
@@ -517,6 +517,25 @@ function normalizeStrategyName(value) {
     return 'trend';
 }
 
+function _setStrategySelect(mode, strategy) {
+    const normalized = normalizeStrategyName(strategy);
+    const el = document.getElementById('strategy-' + mode);
+    if (el) {
+        if (!Array.from(el.options || []).some(o => o.value === normalized)) {
+            const opt = document.createElement('option');
+            opt.value = normalized;
+            opt.textContent = strategyDisplayName(normalized);
+            el.appendChild(opt);
+        }
+        el.value = normalized;
+    }
+    if (!_appliedStrategyParamsByMode[mode]) {
+        _appliedStrategyParamsByMode[mode] = Object.assign({}, DEFAULT_STRATEGY_PARAMS);
+    }
+    _appliedStrategyParamsByMode[mode].strategy = normalized;
+    return normalized;
+}
+
 function strategyDisplayName(value) {
     const v = normalizeStrategyName(value);
     if (v === 'fade') return 'DAY ZONE';
@@ -574,7 +593,7 @@ function updateStrategyParamVisibility(mode) {
     show('tr-params-' + mode, !isML && !isPmo);
     show('overlap-tf-row-' + mode, !isML && isTrend);
     show('tr-overlap-trade-row-' + mode, !isML && isTrend);
-    showControl('area-pct', !isML && (isTrend || isFade || isFactor));
+    showControl('area-pct', !isML && (isTrend || isFade));
     showControl('confirm-bars', !isML && isTrend);
     showControl('tr-exit-mode', !isML && (isTrend || isFactor));
     showControl('rr-ratio', !isML && (isTrend || isFactor));
@@ -591,6 +610,7 @@ function updateStrategyParamVisibility(mode) {
     }
     // 1.0.9: fade 進場模式列僅 fade 顯示;唯讀 SL 模型顯示依策略/fade 子模式更新
     show('fade-entry-mode-row-' + mode, isFade);
+    show('factor-params-' + mode, isFactor);
     let slText;
     if (isFade) {
         const fem = _mlSelectValue('fade-entry-mode-' + mode, 'limit');
@@ -602,12 +622,40 @@ function updateStrategyParamVisibility(mode) {
     } else if (isPmo) {
         slText = 'PMO: completed 5m EMAPMO signal, ATR SL / ATR TP, market entry';
     } else if (isFactor) {
-        slText = 'FACTOR: completed 5m Icefishball outside session VA80, market entry';
+        slText = 'FACTOR: completed 5m signal, market entry; side/signal/SL/TP use FACTOR controls';
     } else {
         slText = 'TREND: POC↔VAH/VAL 間最低量節點 SL';
     }
+    let entryMode = 'market';
+    if (isFade) {
+        const femNow = _mlSelectValue('fade-entry-mode-' + mode, 'limit');
+        entryMode = femNow === 'limit' ? 'limit' : 'market';
+        slText = femNow === 'or15'
+            ? 'DAY ZONE OR15: completed opening-range false-break candle, market entry'
+            : 'DAY ZONE: previous-day value-area level timing; entry type is model-defined';
+    } else if (isSigma) {
+        slText = 'DISTRIBUTION: rolling distribution band timing; market entry after model signal';
+    } else if (isPmo) {
+        slText = 'PMO: completed 5m EMAPMO signal; next available market entry';
+    } else if (isFactor) {
+        slText = 'FACTOR: completed 5m factor signal; live/backtest use last completed candle only';
+    } else {
+        slText = 'TREND: completed candle + value-area breakout confirmation; market entry';
+    }
     const slEl = document.getElementById('sl-model-display-' + mode);
     if (slEl) slEl.value = slText;
+    const entryEl = document.getElementById('entry-mode-' + mode);
+    if (entryEl) {
+        entryEl.value = entryMode;
+        entryEl.disabled = true;
+        entryEl.title = 'Entry type is fixed by the selected model engine, so changing it here would make backtest/live inconsistent.';
+        const grp = entryEl.closest('.form-group');
+        if (grp) {
+            grp.style.opacity = '0.55';
+            grp.title = entryEl.title;
+        }
+    }
+    syncFactorRiskControls(mode);
 }
 
 // 1.0.8: DAY ZONE = 固定用「前一整個交易日」水位 — TF 群組顯示 DAY(鎖定),
@@ -652,6 +700,68 @@ function onExitModeChange(mode) {
 
 // RR mode toggle: "固定" shows the single-RR select; "變動" shows the RR-grid
 // (range) select and hides the fixed one. Only one is ever visible.
+function onExitModeChange(mode) {
+    const sel = document.getElementById('tr-exit-mode-' + mode);
+    const strategy = normalizeStrategyName(
+        (document.getElementById('strategy-' + mode) || {}).value
+    );
+    if (strategy !== 'trend' && strategy !== 'factor') return;
+    const isLadder = !!(sel && sel.value === 'ladder');
+    const setGroupVisible = (id, on) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const grp = el.closest('.form-group');
+        if (grp) grp.style.display = on ? '' : 'none';
+        el.disabled = !on;
+    };
+    setGroupVisible('rr-ratio-' + mode, !isLadder);
+    setGroupVisible('trail-trigger-pct-' + mode, !isLadder);
+    setGroupVisible('trail-sl-pct-' + mode, !isLadder);
+    const ladderRow = document.getElementById('ladder-ratio-row-' + mode);
+    if (ladderRow) ladderRow.style.display = isLadder ? '' : 'none';
+}
+
+function _factorRiskOptionList(rule, kind) {
+    if (rule === 'range15_pct') {
+        return [
+            ['0.10', '10% of 15m area'],
+            ['0.15', '15% of 15m area'],
+            ['0.20', '20% of 15m area'],
+            ['0.50', '50% of 15m area'],
+            ['0.75', '75% of 15m area'],
+        ];
+    }
+    return [['1', '1 x ATR'], ['1.5', '1.5 x ATR'], ['2', '2 x ATR'], ['2.5', '2.5 x ATR'], ['3', '3 x ATR']];
+}
+
+function onFactorRiskAnchorChange(mode, kind) {
+    const ruleEl = document.getElementById('factor-' + kind + '-rule-' + mode);
+    const valEl = document.getElementById('factor-' + kind + '-value-' + mode);
+    if (!ruleEl || !valEl) return;
+    const current = valEl.value;
+    const options = _factorRiskOptionList(ruleEl.value, kind);
+    valEl.innerHTML = '';
+    let found = false;
+    options.forEach(([value, label]) => {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = label;
+        if (String(current) === value) found = true;
+        valEl.appendChild(opt);
+    });
+    if (!found && current !== '') {
+        const opt = document.createElement('option');
+        opt.value = current;
+        opt.textContent = current;
+        valEl.appendChild(opt);
+    }
+    if (current !== '') valEl.value = current;
+}
+
+function syncFactorRiskControls(mode) {
+    onFactorRiskAnchorChange(mode, 'sl');
+}
+
 function onRrModeChange(mode) {
     const sel = document.getElementById('conf-rrmode-' + mode);
     const isGrid = !!(sel && sel.value === 'grid');
@@ -743,6 +853,8 @@ function updateMlParamSummary(mode) {
 }
 
 function onStrategyChange(mode) {
+    const el = document.getElementById('strategy-' + mode);
+    _setStrategySelect(mode, el ? el.value : DEFAULT_STRATEGY_PARAMS.strategy);
     updateStrategyParamVisibility(mode);
 }
 
@@ -906,6 +1018,19 @@ function collectStrategyParams(mode) {
         return Number.isNaN(n) ? fallback : n;
     };
     const _val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+    const _paramVal = (idBase, key, fallback) => {
+        const el = document.getElementById(idBase + '-' + mode);
+        if (el) return el.value;
+        return applied[key] != null ? applied[key] : fallback;
+    };
+    const _paramNum = (idBase, key, fallback) => {
+        const n = Number(_paramVal(idBase, key, fallback));
+        return Number.isFinite(n) ? n : fallback;
+    };
+    const _paramInt = (idBase, key, fallback) => {
+        const n = parseInt(_paramVal(idBase, key, fallback), 10);
+        return Number.isNaN(n) ? fallback : n;
+    };
     const cidEl = document.getElementById('contract-' + mode);
     const sizeEl = document.getElementById('size-' + mode);
     const contractId = (cidEl && cidEl.value) || DEFAULT_STRATEGY_PARAMS.contract_id;
@@ -942,24 +1067,29 @@ function collectStrategyParams(mode) {
     const tfs = selTfs.length ? selTfs : ['15m'];
     const method = tfs.length >= 2 ? 'overlap' : 'single';
     const tfCombo = method === 'overlap' ? tfs : [];
-    const factorSessionVaFilter = String(applied.factor_session_va_filter || 'outside') === 'outside' ? 'outside' : 'off';
+    const factorSessionVaFilter = String(_paramVal('factor-va-filter', 'factor_session_va_filter', 'off')) === 'outside' ? 'outside' : 'off';
     const areaTimeframe = (strategy === 'factor' && factorSessionVaFilter === 'outside') ? 'session' : tfs[0];
     const overlapTradeEl = document.getElementById('tr-overlap-trade-tf-' + mode);
     const overlapTradeTf = normalizeTrendOverlapTradeTf(
         (overlapTradeEl && overlapTradeEl.value) || applied.tr_overlap_trade_tf
     );
     const _factorFamily = (v) => {
-        const s = String(v || 'icefishball').toLowerCase();
-        return ['emapmo', 'momentum_reversion', 'icefishball'].includes(s) ? s : 'icefishball';
+        const s = String(v || 'emapmo').toLowerCase();
+        return ['emapmo', 'momentum_reversion', 'icefishball'].includes(s) ? s : 'emapmo';
     };
     const _factorSide = (v) => {
-        const s = String(v || 'all').toLowerCase();
-        return ['all', 'long_only', 'short_only'].includes(s) ? s : 'all';
+        const s = String(v || 'long_only').toLowerCase();
+        return ['all', 'long_only', 'short_only'].includes(s) ? s : 'long_only';
     };
     const _factorRule = (v, fallback) => {
         const s = String(v || fallback || 'atr').toLowerCase();
-        return ['fixed', 'atr', 'atr_blend', 'range15_pct', 'trend_ticks', 'trend_rr'].includes(s) ? s : fallback;
+        return ['atr', 'atr_blend', 'range15_pct'].includes(s) ? s : fallback;
     };
+    const rrRaw = Math.max(0.1, Math.min(6, parseFloat(_mlSelectValue('rr-ratio-' + mode, '2')) || 2));
+    const rrInt = Math.max(1, Math.min(6, parseInt(_mlSelectValue('rr-ratio-' + mode, '2'), 10) || 2));
+    const factorSlRule = _factorRule(_paramVal('factor-sl-rule', 'factor_sl_rule', 'atr_blend'), 'atr_blend');
+    const factorSlValue = _paramNum('factor-sl-value', 'factor_sl_value', 2.5) || 2.5;
+    const dailyMaxTrades = Math.max(0, _paramInt('factor-max-trades', 'factor_max_trades_per_day', 3));
     const params = {
         strategy: strategy,
         method: method,
@@ -983,7 +1113,7 @@ function collectStrategyParams(mode) {
         value_area_pct: _float('area-pct-' + mode, 0.80),
         area_timeframe: areaTimeframe,
         tr_overlap_trade_tf: overlapTradeTf,
-        rr_ratio: Math.max(1, Math.min(6, _int('rr-ratio-' + mode, 2))),
+        rr_ratio: rrInt,
         full_tp_lock: primary.full_tp_lock,
         one_trade_per_session_direction: true,
         tr_one_trade_per_session: _int('tr-session-limit-' + mode, 1) === 1,
@@ -995,6 +1125,7 @@ function collectStrategyParams(mode) {
         // 1.0.8: 出場模式(tp | ladder)+ 日虧斷路器(0=OFF)
         tr_exit_mode: (_mlSelectValue('tr-exit-mode-' + mode, 'tp') === 'ladder') ? 'ladder' : 'tp',
         tr_daily_loss_stop: Math.max(0, Math.min(6, _int('tr-daily-stop-' + mode, 0))),
+        tr_daily_win_stop: Math.max(0, Math.min(6, _int('tr-daily-win-stop-' + mode, 0))),  // 1.0.9: FULL WIN LOCK
         // 1.0.9: prevRV 波動閘 + fade 進場模式
         tr_prev_rv_gate: Math.max(0, Math.min(60, _int('tr-prev-rv-gate-' + mode, 0))),
         fade_entry_mode: (function (m) { return (m === 'rejection' || m === 'or15') ? m : 'limit'; })(_mlSelectValue('fade-entry-mode-' + mode, 'limit')),  // 1.0.9: +or15
@@ -1013,19 +1144,19 @@ function collectStrategyParams(mode) {
         pmo_sl_atr: Number(applied.pmo_sl_atr != null ? applied.pmo_sl_atr : 1.0) || 1.0,
         pmo_tp_atr: Number(applied.pmo_tp_atr != null ? applied.pmo_tp_atr : 1.0) || 1.0,
         pmo_max_hold_bars: parseInt(applied.pmo_max_hold_bars != null ? applied.pmo_max_hold_bars : 24, 10) || 24,
-        pmo_max_trades_per_day: parseInt(applied.pmo_max_trades_per_day != null ? applied.pmo_max_trades_per_day : 3, 10) || 3,
+        pmo_max_trades_per_day: dailyMaxTrades,
         pmo_warmup_bars: parseInt(applied.pmo_warmup_bars != null ? applied.pmo_warmup_bars : 150, 10) || 150,
         factor_timeframe_minutes: parseInt(applied.factor_timeframe_minutes != null ? applied.factor_timeframe_minutes : 5, 10) || 5,
-        factor_signal_family: _factorFamily(applied.factor_signal_family),
-        factor_side_mode: _factorSide(applied.factor_side_mode),
-        factor_pmo_signal_mode: ['normal', 'early', 'both'].includes(String(applied.factor_pmo_signal_mode || 'normal')) ? String(applied.factor_pmo_signal_mode || 'normal') : 'normal',
+        factor_signal_family: _factorFamily(_paramVal('factor-family', 'factor_signal_family', 'emapmo')),
+        factor_side_mode: _factorSide(_paramVal('factor-side', 'factor_side_mode', 'long_only')),
+        factor_pmo_signal_mode: ['normal', 'early', 'both'].includes(String(_paramVal('factor-pmo-mode', 'factor_pmo_signal_mode', 'early'))) ? String(_paramVal('factor-pmo-mode', 'factor_pmo_signal_mode', 'early')) : 'early',
         factor_session_va_filter: factorSessionVaFilter,
-        factor_sl_rule: _factorRule(applied.factor_sl_rule, 'trend_ticks'),
-        factor_tp_rule: _factorRule(applied.factor_tp_rule, 'trend_rr'),
-        factor_sl_value: Number(applied.factor_sl_value != null ? applied.factor_sl_value : 1.0) || 1.0,
-        factor_tp_value: Number(applied.factor_tp_value != null ? applied.factor_tp_value : 1.0) || 1.0,
-        factor_max_hold_bars: parseInt(applied.factor_max_hold_bars != null ? applied.factor_max_hold_bars : 24, 10) || 24,
-        factor_max_trades_per_day: parseInt(applied.factor_max_trades_per_day != null ? applied.factor_max_trades_per_day : 3, 10) || 3,
+        factor_sl_rule: factorSlRule,
+        factor_tp_rule: factorSlRule,
+        factor_sl_value: factorSlValue,
+        factor_tp_value: Number((factorSlValue * rrRaw).toFixed(6)),
+        factor_max_hold_bars: _paramInt('factor-hold', 'factor_max_hold_bars', 24) || 24,
+        factor_max_trades_per_day: dailyMaxTrades,
         factor_warmup_bars: parseInt(applied.factor_warmup_bars != null ? applied.factor_warmup_bars : 150, 10) || 150,
     };
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 參數區塊
@@ -1035,11 +1166,27 @@ function collectStrategyParams(mode) {
 function applyStrategyParams(mode, params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params);
     const _set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+    const _setChoice = (id, val, label) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const s = String(val);
+        if (!el.options) {
+            el.value = s;
+            return;
+        }
+        if (!Array.from(el.options).some(o => o.value === s)) {
+            const opt = document.createElement('option');
+            opt.value = s;
+            opt.textContent = label || s;
+            el.appendChild(opt);
+        }
+        el.value = s;
+    };
     const _setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
     const _ticks = (val, fallback) => Math.max(50, Math.min(200, parseInt(val != null ? val : fallback, 10) || fallback));
     p.strategy = normalizeStrategyName(p.strategy);
     _appliedStrategyParamsByMode[mode] = Object.assign({}, p);
-    _set('strategy-' + mode, p.strategy);
+    _setStrategySelect(mode, p.strategy);
     _set('area-pct-' + mode, (p.value_area_pct != null ? Number(p.value_area_pct) : 0.80).toFixed(2));
     _set('tr-overlap-trade-tf-' + mode, normalizeTrendOverlapTradeTf(p.tr_overlap_trade_tf));
     const cidEl = document.getElementById('contract-' + mode);
@@ -1091,8 +1238,18 @@ function applyStrategyParams(mode, params) {
 
     writeLeg('tr');
 
-    const rrVal = Math.max(1, Math.min(6, parseInt(p.rr_ratio != null ? p.rr_ratio : 2, 10) || 2));
-    _set('rr-ratio-' + mode, String(rrVal));
+    let rrVal = Math.max(1, Math.min(6, parseFloat(p.rr_ratio != null ? p.rr_ratio : 2) || 2));
+    if (p.strategy === 'factor') {
+        const slRule = String(p.factor_sl_rule || '').toLowerCase();
+        const tpRule = String(p.factor_tp_rule || '').toLowerCase();
+        const slValue = Number(p.factor_sl_value);
+        const tpValue = Number(p.factor_tp_value);
+        if (slRule && tpRule && slRule === tpRule && Number.isFinite(slValue) && slValue > 0 && Number.isFinite(tpValue) && tpValue > 0) {
+            rrVal = Math.max(0.1, Math.min(6, tpValue / slValue));
+        }
+    }
+    const rrText = (Number.isInteger(rrVal) ? String(rrVal) : rrVal.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''));
+    _setChoice('rr-ratio-' + mode, rrText, rrText + ' x SL');
     onRrChange(mode);
 
     _set('confirm-bars-' + mode, String(p.breakout_confirm_bars != null ? p.breakout_confirm_bars : 7));
@@ -1100,11 +1257,38 @@ function applyStrategyParams(mode, params) {
     // 1.0.8: 出場模式 + 日虧斷路器
     _set('tr-exit-mode-' + mode, String(p.tr_exit_mode || 'tp') === 'ladder' ? 'ladder' : 'tp');
     _set('tr-daily-stop-' + mode, String(Math.max(0, Math.min(6, parseInt(p.tr_daily_loss_stop != null ? p.tr_daily_loss_stop : 0, 10) || 0))));
+    _set('tr-daily-win-stop-' + mode, String(Math.max(0, Math.min(6, parseInt(p.tr_daily_win_stop != null ? p.tr_daily_win_stop : 0, 10) || 0))));  // 1.0.9: FULL WIN LOCK
     // 1.0.9: prevRV 波動閘 + fade 進場模式
     _set('tr-prev-rv-gate-' + mode, String(Math.max(0, Math.min(60, parseInt(p.tr_prev_rv_gate != null ? p.tr_prev_rv_gate : 0, 10) || 0))));
     _set('fade-entry-mode-' + mode, (function (m) { return (m === 'rejection' || m === 'or15') ? m : 'limit'; })(String(p.fade_entry_mode || 'limit')));  // 1.0.9: +or15
 
-    // ML (confluence) params — restored when the preset uses the ML strategy.
+    // FACTOR params restored when the preset uses the factor strategy.
+    const _factorFamilyValue = (v) => {
+        const s = String(v || 'emapmo').toLowerCase();
+        return ['emapmo', 'icefishball', 'momentum_reversion'].includes(s) ? s : 'emapmo';
+    };
+    const _factorSideValue = (v) => {
+        const s = String(v || 'long_only').toLowerCase();
+        return ['all', 'long_only', 'short_only'].includes(s) ? s : 'long_only';
+    };
+    const _factorPmoValue = (v) => {
+        const s = String(v || 'early').toLowerCase();
+        return ['normal', 'early', 'both'].includes(s) ? s : 'early';
+    };
+    const _factorRuleValue = (v, fallback) => {
+        const s = String(v || fallback).toLowerCase();
+        return ['atr', 'atr_blend', 'range15_pct'].includes(s) ? s : fallback;
+    };
+    _setChoice('factor-family-' + mode, _factorFamilyValue(p.factor_signal_family));
+    _setChoice('factor-side-' + mode, _factorSideValue(p.factor_side_mode));
+    _setChoice('factor-pmo-mode-' + mode, _factorPmoValue(p.factor_pmo_signal_mode));
+    _setChoice('factor-va-filter-' + mode, String(p.factor_session_va_filter || 'off') === 'outside' ? 'outside' : 'off');
+    _setChoice('factor-sl-rule-' + mode, _factorRuleValue(p.factor_sl_rule, 'atr_blend'));
+    _setChoice('factor-sl-value-' + mode, String(p.factor_sl_value != null ? p.factor_sl_value : 2.5));
+    _setChoice('factor-hold-' + mode, String(p.factor_max_hold_bars != null ? p.factor_max_hold_bars : 24));
+    _setChoice('factor-max-trades-' + mode, String(p.factor_max_trades_per_day != null ? p.factor_max_trades_per_day : (p.pmo_max_trades_per_day != null ? p.pmo_max_trades_per_day : 3)));
+
+    // ML confluence params restored when the preset uses the ML strategy.
     const _prob = (v) => {
         const n = Number(v);
         if (!Number.isFinite(n) || n <= 0) return '0';
@@ -1150,6 +1334,9 @@ function applyStrategyParams(mode, params) {
     setOverlapTfCombo(mode, selectedTfs);
     updateOverlapTradeTfControl(mode);
 
+    // Preset model is authoritative. Re-apply it after trend helper refreshes so
+    // FACTOR/DAY ZONE/DISTRIBUTION presets cannot leave stale TREND-only UI.
+    _setStrategySelect(mode, p.strategy);
     updateStrategyParamVisibility(mode);
     syncZoneFilterUI();
     updateMlParamSummary(mode);
@@ -1177,31 +1364,95 @@ function isFixedPreset(name) {
     return Array.isArray(_presetsCache.fixed_presets) && _presetsCache.fixed_presets.includes(name);
 }
 
+const PRESET_MODEL_ORDER = ['TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO', 'FACTOR'];
+
+function _presetNameMeta(name) {
+    const raw = String(name || '');
+    const fixed = /\s+\*$/.test(raw);
+    const s = raw.replace(/\s+\*$/, '').replace(/^SWEEP\s+/i, '').trim();
+    const compactDated = s.match(/^(\d{4})\s+(TREND|DAY ZONE|DISTRIBUTION|PMO|FACTOR)\s+#(\d+)\s*(.*)$/i);
+    const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(TREND|DAY ZONE|DISTRIBUTION|PMO|FACTOR)\s+#(\d+)\s*(.*)$/i);
+    const legacy = s.match(/^(TREND|DAY ZONE|DISTRIBUTION|PMO|FACTOR)\s+#(\d+)\s*(.*)$/i);
+    if (compactDated) {
+        return {
+            fixed,
+            date: compactDated[1],
+            time: '',
+            model: compactDated[2].toUpperCase(),
+            num: parseInt(compactDated[3], 10) || 0,
+            tail: compactDated[4] || '',
+        };
+    }
+    if (dottedDated) {
+        return {
+            fixed,
+            date: dottedDated[1].replace('.', ''),
+            time: dottedDated[2] || '',
+            model: dottedDated[3].toUpperCase(),
+            num: parseInt(dottedDated[4], 10) || 0,
+            tail: dottedDated[5] || '',
+        };
+    }
+    if (legacy) {
+        return {
+            fixed,
+            date: '',
+            time: '',
+            model: legacy[1].toUpperCase(),
+            num: parseInt(legacy[2], 10) || 0,
+            tail: legacy[3] || '',
+        };
+    }
+    return { fixed, date: '', time: '', model: '', num: 0, tail: s };
+}
+
 function _presetSortRank(name) {
-    const s = String(name || '').toUpperCase();
-    if (s.includes(' TREND #')) return 10;
-    if (s.includes(' DAY ZONE #')) return 20;
-    if (s.includes(' DISTRIBUTION #')) return 30;
-    if (s.includes(' PMO #')) return 40;
-    if (s.includes(' FACTOR #')) return 50;
-    return 100;
+    const meta = _presetNameMeta(name);
+    const idx = PRESET_MODEL_ORDER.indexOf(meta.model);
+    return idx >= 0 ? (idx + 1) * 10 : 100;
+}
+
+function _presetDateSortValue(meta) {
+    if (!meta || !meta.date) return -1;
+    const compact = String(meta.date || '').replace('.', '');
+    const parts = compact.length === 4
+        ? [compact.slice(0, 2), compact.slice(2, 4)]
+        : String(meta.date || '').split('.');
+    const t = (meta.time || '00:00').split(':');
+    const month = parseInt(parts[0], 10) || 0;
+    const day = parseInt(parts[1], 10) || 0;
+    const hour = parseInt(t[0], 10) || 0;
+    const minute = parseInt(t[1], 10) || 0;
+    return (((month * 32) + day) * 24 + hour) * 60 + minute;
 }
 
 function _presetDisplayName(name) {
-    const s = String(name || '');
-    const m = s.match(/^(\d{2}\.\d{2})\s+(TREND|DAY ZONE|DISTRIBUTION|PMO|FACTOR)\s+#(\d+)\s+(.*)$/);
-    if (!m) return s;
-    const date = m[1];
-    const model = m[2].padEnd(7, ' ');
-    const num = ('#' + m[3]).padEnd(4, ' ');
-    return date + '  ' + model + num + m[4];
+    const meta = _presetNameMeta(name);
+    if (!meta.model) return String(name || '');
+    const dt = (meta.date || '----').padEnd(4, ' ');
+    const model = meta.model.padEnd(12, ' ');
+    const num = ('#' + meta.num).padEnd(4, ' ');
+    return dt + ' ' + model + num + meta.tail + (meta.fixed ? ' *' : '');
+}
+
+function _comparePresetNames(a, b) {
+    const ma = _presetNameMeta(a);
+    const mb = _presetNameMeta(b);
+    const ra = _presetSortRank(a);
+    const rb = _presetSortRank(b);
+    if (ra !== rb) return ra - rb;
+    const da = _presetDateSortValue(ma);
+    const db = _presetDateSortValue(mb);
+    if (da !== db) return db - da;
+    if (ma.num !== mb.num) return ma.num - mb.num;
+    return String(a).localeCompare(String(b), undefined, { numeric: true });
 }
 
 function _namingDatePrefix(d) {
     const dt = d instanceof Date ? d : new Date();
     const mm = String(dt.getMonth() + 1).padStart(2, '0');
     const dd = String(dt.getDate()).padStart(2, '0');
-    return mm + '.' + dd;
+    return mm + dd;
 }
 
 function _namingModelFromParams(params) {
@@ -1282,13 +1533,21 @@ function buildPresetParamToken(params) {
     if (normalizeStrategyName(p.strategy) === 'factor') {
         const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : null);
         const va = String(p.factor_session_va_filter || 'off') === 'outside' ? 'VA80OUT' : 'VAOFF';
+        const fam = String(p.factor_signal_family || 'emapmo').toLowerCase();
+        const famLabel = fam === 'icefishball'
+            ? 'KDJMA'
+            : (fam === 'momentum_reversion' ? 'MREV' : 'EMAPMO');
+        const side = String(p.factor_side_mode || 'all').toLowerCase();
+        const sideLabel = side === 'all' ? 'both' : side;
         return [
             'FACTOR',
-            String(p.factor_signal_family || 'icefishball').toUpperCase(),
+            famLabel,
+            sideLabel,
+            String(p.factor_pmo_signal_mode || 'normal'),
             va,
             String(p.factor_timeframe_minutes || 5) + 'm',
-            'SL' + String(p.factor_sl_rule || 'trend_ticks'),
-            'TP' + String(p.factor_tp_rule || 'trend_rr'),
+            'SL' + String(p.factor_sl_rule || 'atr_blend') + String(p.factor_sl_value != null ? p.factor_sl_value : ''),
+            'TP' + String(p.factor_tp_rule || 'atr_blend') + String(p.factor_tp_value != null ? p.factor_tp_value : ''),
             String(p.tr_exit_mode || 'tp').toUpperCase(),
             'H' + String(p.factor_max_hold_bars != null ? p.factor_max_hold_bars : 24),
             market,
@@ -1358,9 +1617,19 @@ function buildPresetName(params, purpose, model) {
     const px = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
     const day = _namingDatePrefix();
     const a = _normalizeNamingModel(model || _namingModelFromParams(px));
-    const n = _nextPresetNumber(a, day);
     const use = _sanitizePresetPurpose(purpose, suggestedPresetPurpose(px));
-    return day + ' ' + a + ' #' + n + ' ' + use + ' ' + buildPresetParamToken(px);
+    const tail = ' ' + use + ' ' + buildPresetParamToken(px);
+    // 1.0.9 FIX: #N 唯一性保證 — 同名(同日同模型同參數 token)重存會直接覆蓋舊 preset,
+    // 造成「命名重複」假象;現在往上找第一個未被占用的 #N。
+    let n = _nextPresetNumber(a, day);
+    const exists = (nm) => !!((_presetsCache && _presetsCache.presets) || {})[nm];
+    let name = day + ' ' + a + ' #' + n + tail;
+    let guard = 0;
+    while (exists(name) && guard++ < 99) {
+        n += 1;
+        name = day + ' ' + a + ' #' + n + tail;
+    }
+    return name;
 }
 
 async function fetchPresets() {
@@ -1381,9 +1650,8 @@ async function savePreset(mode) {
             conf_model_name: (modelSel && modelSel.value) || _activeModelName || null,
         });
     }
-    const purpose = prompt('Preset purpose (4-5 chars):', suggestedPresetPurpose(params));
-    if (purpose == null) return;
-    const name = buildPresetName(params, purpose);
+    const defaultName = buildPresetName(params, suggestedPresetPurpose(params));
+    const name = prompt('Preset name:', defaultName);
     if (!name || !name.trim()) return;
     try {
         const saveResp = await fetch(API + '/presets/save', {
@@ -1426,13 +1694,35 @@ async function loadPreset(mode) {
     } catch(e) { /* ignore */ }
 }
 
+function _setPresetDropdownValue(mode, name) {
+    const sel = document.getElementById('preset-' + mode);
+    if (!sel || !name) return;
+    if (!Array.from(sel.options || []).some(o => o.value === name)) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = _presetDisplayName(isFixedPreset(name) ? name + ' *' : name);
+        sel.appendChild(opt);
+    }
+    sel.value = name;
+}
+
+function syncMainAccountPresetToPanels(silent) {
+    const slotSel = document.getElementById('live-acct-preset-' + LIVE_MAIN_SLOT);
+    const name = (slotSel && slotSel.value) || '';
+    const preset = name ? (((_presetsCache && _presetsCache.presets) || {})[name]) : null;
+    if (!name || !preset) return false;
+    _setPresetDropdownValue('bt', name);
+    _setPresetDropdownValue('live', name);
+    applyStrategyParams('bt', preset);
+    applyStrategyParams('live', preset);
+    if (!silent) {
+        log('ACCOUNT MAIN preset applied to Backtest/Live panels: ' + _presetDisplayName(name), 'info');
+    }
+    return true;
+}
+
 function refreshPresetDropdowns() {
-    const names = Object.keys(_presetsCache.presets || {}).sort((a, b) => {
-        const ra = _presetSortRank(a);
-        const rb = _presetSortRank(b);
-        if (ra !== rb) return ra - rb;
-        return String(a).localeCompare(String(b), undefined, { numeric: true });
-    });
+    const names = Object.keys(_presetsCache.presets || {}).sort(_comparePresetNames);
     ['bt', 'live'].forEach(function(mode) {
         const sel = document.getElementById('preset-' + mode);
         if (!sel) return;
@@ -1946,8 +2236,9 @@ async function loadAccounts() {
 
         // Default to practice
         const practice = data.accounts.find(a => a.is_practice);
-        currentAccount = practice || data.accounts[0];
+        currentAccount = (data.accounts.find(a => a.is_main) || practice || data.accounts[0]);
         updateAccountBadge();
+        setTimeout(_focusMainLiveAccount, 0);
         try { initLiveSlots(); } catch (e) {}   // 1.0.9: 填入兩帳號槽
 
         // Populate live monitor account dropdown
@@ -1979,8 +2270,68 @@ async function loadAccounts() {
 }
 
 let liveAccount = null;
+const LIVE_MAIN_SLOT = 1;
+const LIVE_MINOR_SLOT = 2;
+
+function liveSlotLabel(slot) {
+    return Number(slot) === LIVE_MAIN_SLOT ? 'ACCOUNT MAIN' : 'ACCOUNT MINOR';
+}
+
+function _liveSlotAccountId(slot) {
+    const el = document.getElementById('live-acct-select-' + slot);
+    const id = parseInt((el && el.value) || '', 10);
+    return Number.isFinite(id) ? id : 0;
+}
+
+function getMainLiveAccountId() {
+    return _liveSlotAccountId(LIVE_MAIN_SLOT);
+}
+
+function getMainLiveAccount() {
+    const slotEl = document.getElementById('live-acct-select-' + LIVE_MAIN_SLOT);
+    const id = getMainLiveAccountId();
+    if (id) return (allAccounts || []).find(a => Number(a.id) === Number(id)) || null;
+    if (!slotEl) return currentAccount || liveAccount || null;
+    return null;
+}
+
+function _renderLiveAccountInfo(acc, capitalOverride) {
+    const info = document.getElementById('live-account-info');
+    if (!info) return;
+    if (!acc) { info.innerHTML = ''; return; }
+    const isPractice = !!acc.is_practice || String(acc.account_type || '').toLowerCase() === 'practice';
+    const type = isPractice ? 'PRACTICE' : 'FUNDED';
+    const capital = capitalOverride != null ? Number(capitalOverride) : Number(acc.balance || 0);
+    info.innerHTML = '<span style="color:var(--text2);">' + type + '</span> | Balance: <span style="color:var(--green);">$' +
+        capital.toLocaleString(undefined, {maximumFractionDigits: 0}) + '</span>';
+    if (!isPractice) info.innerHTML += '<br><span style="color:var(--red);">WARNING: FUNDED ACCOUNT</span>';
+}
+
+function _focusMainLiveAccount() {
+    const acc = getMainLiveAccount();
+    if (!acc) return null;
+    liveAccount = acc;
+    currentAccount = acc;
+    updateAccountBadge();
+    _renderLiveAccountInfo(acc);
+    const legacy = document.getElementById('live-account-select');
+    if (legacy) {
+        const hasOption = Array.from(legacy.options || []).some(o => String(o.value) === String(acc.id));
+        if (hasOption) legacy.value = String(acc.id);
+    }
+    return acc;
+}
+
+function getMainLivePresetParams(fallback) {
+    const sel = document.getElementById('live-acct-preset-' + LIVE_MAIN_SLOT);
+    const name = (sel && sel.value) || '';
+    const presets = (_presetsCache && _presetsCache.presets) || {};
+    return (name && presets[name]) ? presets[name] : (fallback || {});
+}
 
 function onLiveAccountSwitch() {
+    const focused = _focusMainLiveAccount();
+    if (focused) return;
     const id = parseInt(document.getElementById('live-account-select').value);
     liveAccount = allAccounts.find(a => a.id === id) || null;
     // Save selection
@@ -1989,16 +2340,7 @@ function onLiveAccountSwitch() {
     currentAccount = liveAccount;
     updateAccountBadge();
 
-    const info = document.getElementById('live-account-info');
-    if (liveAccount) {
-        const type = liveAccount.is_practice ? 'PRACTICE' : 'FUNDED';
-        info.innerHTML = '<span style="color:var(--text2);">' + type + '</span> | Balance: <span style="color:var(--green);">$' + liveAccount.balance.toLocaleString(undefined, {maximumFractionDigits: 0}) + '</span>';
-        if (!liveAccount.is_practice) {
-            info.innerHTML += '<br><span style="color:var(--red);">WARNING: FUNDED ACCOUNT</span>';
-        }
-    } else {
-        info.innerHTML = '';
-    }
+    _renderLiveAccountInfo(liveAccount);
 }
 
 let _liveInterval = null;
@@ -2070,8 +2412,9 @@ function updateLiveTopBar() {
         stratEl.textContent = s;
     }
 
-    if (currentAccount) {
-        document.getElementById('lv-capital').textContent = '$' + currentAccount.balance.toLocaleString(undefined, {maximumFractionDigits: 0});
+    const topAccount = getMainLiveAccount() || currentAccount;
+    if (topAccount) {
+        document.getElementById('lv-capital').textContent = '$' + Number(topAccount.balance || 0).toLocaleString(undefined, {maximumFractionDigits: 0});
     }
 }
 
@@ -2462,6 +2805,7 @@ function renderLiveRiskGates(st) {
 }
 
 async function pollLiveStatus() {
+    const statusAccount = _focusMainLiveAccount() || liveAccount;
     // Always update market session (even without engine)
     const session = getMarketSession();
     const elSession = document.getElementById('lv-session');
@@ -2471,7 +2815,7 @@ async function pollLiveStatus() {
 
     try {
         // 1.0.9: 頂欄/圖表跟隨目前聚焦的帳號(liveAccount);未設則走 primary 引擎
-        const resp = await fetch(API + '/live/status' + (liveAccount && liveAccount.id ? ('?account_id=' + liveAccount.id) : ''));
+        const resp = await fetch(API + '/live/status' + (statusAccount && statusAccount.id ? ('?account_id=' + statusAccount.id) : ''));
         if (!resp.ok) return;
         const st = await resp.json();
         renderLiveRiskGates(st);   // 1.0.9: 風控閘狀態列(running / stopped 皆更新)
@@ -2875,7 +3219,7 @@ async function pollLiveStatus() {
                     time: Math.floor(Date.now() / 1000) + localOffset,
                     position: isLong ? 'belowBar' : 'aboveBar',
                     color: '#ffa726',
-                    shape: 'circle',
+                    shape: isLong ? 'arrowUp' : 'arrowDown',
                     text: 'PENDING' + (decision ? '\n' + decision : ''),
                 });
             }
@@ -2894,7 +3238,7 @@ async function pollLiveStatus() {
                     time: Math.floor(Date.now() / 1000) + localOffset,
                     position: posIsLong ? 'belowBar' : 'aboveBar',
                     color: '#ffa726',
-                    shape: 'circle',
+                    shape: posIsLong ? 'arrowUp' : 'arrowDown',
                     text: 'OPEN' + (decision ? '\n' + decision : ''),
                 });
             }
@@ -4073,7 +4417,8 @@ async function refreshTradeHistoryForCurrentAccount(refresh) {
     if (_tradeHistoryRefreshInFlight) return;
     _tradeHistoryRefreshInFlight = true;
     try {
-        const accId = (liveAccount && liveAccount.id) ? liveAccount.id : (currentAccount ? currentAccount.id : 0);
+        const mainAcc = _focusMainLiveAccount() || getMainLiveAccount();
+        const accId = mainAcc ? mainAcc.id : (currentAccount ? currentAccount.id : 0);
         await fetchAndDrawTradeHistory(refresh, accId);
     } finally {
         _tradeHistoryRefreshInFlight = false;
@@ -4229,7 +4574,8 @@ async function connectAPI() {
         try { refreshTfZones(true); } catch (e) {}
 
         // Fetch actual trades from TopstepX (refresh cache) for the active account
-        const accId = currentAccount ? currentAccount.id : 0;
+        const mainAcc = _focusMainLiveAccount() || getMainLiveAccount() || currentAccount;
+        const accId = mainAcc ? mainAcc.id : 0;
         await fetchAndDrawTradeHistory(true, accId);
 
     } catch(e) {
@@ -4573,42 +4919,56 @@ function renderSweepTable(sortKey) {
             (onlyAcc ? ' ★通過 / ' + (_sweepData.results || []).length + ' 全部' : ' 變體') +
             ' | 排序: ' + k + '(點欄位標題換排序)| PF first' + modelSummary;
     }
-    const th = (key, label) => '<th style="cursor:pointer;' +
+    const th = (key, label, tip) => '<th style="cursor:pointer;' +
         (key === k ? 'color:var(--amber);' : '') +
-        '" onclick="renderSweepTable(\'' + key + '\')">' + label + '</th>';
+        '"' + (tip ? ' title="' + tip + '"' : '') +
+        ' onclick="renderSweepTable(\'' + key + '\')">' + label + '</th>';
     const money = (v, pos) => '<span style="color:var(--' + (v >= 0 ? (pos || 'green') : 'red') + ');">' +
         (v >= 0 ? '+' : '') + Math.round(v) + '</span>';
+    // 1.0.9: params 拆成 model / risk 兩欄(risk = 封鎖型設定;sweep 不掃 risk 變體)
+    const RISK_KEYS = ['tr_daily_loss_stop', 'tr_daily_win_stop', 'tr_prev_rv_gate',
+        'tr_allowed_sessions', 'tr_one_trade_per_session', 'factor_max_trades_per_day',
+        'pmo_max_trades_per_day'];
+    const fmtParams = (p, riskSide) => Object.keys(p || {})
+        .filter(kk => kk !== 'strategy' && (RISK_KEYS.includes(kk) === riskSide))
+        .map(kk => kk.replace(/^(tr_|factor_|sigma_|fade_|pmo_)/, '') + '=' +
+            (Array.isArray(p[kk]) ? p[kk].join('+') : p[kk]))
+        .join(' ') || '—';
+    const factorsOf = (r) => {
+        const p = r.params || {};
+        return p.factor_signal_family ? String(p.factor_signal_family).toUpperCase()
+            : (p.sigma_method ? ('ROLL' + (p.sigma_window_minutes || '') + ' ' + String(p.sigma_method).toUpperCase())
+            : (p.fade_entry_mode ? String(p.fade_entry_mode).toUpperCase() : (r.model || '—')));
+    };
     wrap.innerHTML = '<table><thead><tr>' +
-        '<th>#</th><th>MODEL</th><th>PARAMS</th><th>TRADES</th><th>WIN%</th>' +
-        th('pnl', 'PNL') + th('gain', 'GAIN') + th('loss', 'LOSS') + th('pf', 'PF') +
-        th('max_dd', 'MAXDD') + th('monthly_avg', 'M-AVG') + th('worst_day', 'WORST-D') +
-        th('expect', 'EXPECT') + th('score', 'SCORE') +
-        '<th title="1.0.9 P1: walk-forward 三段各自為正">WF</th>' +
-        '<th title="1.0.9 P1 接受標準: WF三段正 + 鄰域平原正 + 樣本≥80 + 期望>0">ACC</th>' +
-        '<th title="存成結構化 preset">+</th>' +
+        '<th>#</th><th title="縮放測試通過時顯示 MNQx3 / NQx1">CONTRACT</th><th>MODEL</th><th>FACTORS</th>' +
+        '<th>MODEL PARAMS</th><th>RISK PARAMS</th><th>TRADES</th>' +
+        th('monthly_avg', 'M-PNL', '月均 PnL(30.44 天歸一)') + th('pf', 'PF') +
+        th('max_dd', 'MAXDD') + th('worst_day', 'WORST-D') +
+        th('weekly_cv', 'W-VAR', '週變異 CV = 週PnL std / |mean|,<1 為穩') +
+        '<th title="walk-forward 三段各正">WF</th>' +
+        '<th title="ACC: 月PnL>3k · PF>1.5 · 月20筆 · DD<1k · 週CV<1(或縮放後通過)">ACC</th>' +
+        '<th title="存成結構化 preset(命名規則自動)">+</th>' +
         '</tr></thead><tbody>' +
-        rows.slice(0, 60).map((r, i) => {
-            const balBad = (r.pf || 0) < 1.4;   // gain/loss 失衡提示
+        rows.slice(0, 80).map((r, i) => {
             const segs = (r.seg_pnls || []).map(v => Math.round(v)).join(' / ');
-            const wf = r.wf_pass ? '✓' : '✗';
-            const acc = r.accept ? '★' : '—';
+            const sc = r.scaled || null;
+            const scale = r.contract_scale || 'MNQx1';
             return '<tr' + (r.accept ? ' style="background:rgba(0,229,160,0.06);"' : '') + '>' +
                 '<td style="color:var(--text2);">' + (i + 1) + '</td>' +
+                '<td style="color:' + (scale !== 'MNQx1' ? 'var(--amber)' : 'var(--text2)') + ';font-weight:600;">' + scale + '</td>' +
                 '<td style="color:var(--cyan);font-weight:600;">' + (r.model || 'TREND') + '</td>' +
-                '<td style="font-family:\'IBM Plex Mono\',monospace;">' + r.label + '</td>' +
-                '<td>' + r.trades + '</td>' +
-                '<td>' + ((r.win_rate || 0) * 100).toFixed(1) + '%</td>' +
-                '<td>' + money(r.pnl) + '</td>' +
-                '<td style="color:var(--text2);">+' + Math.round(r.gain) + '</td>' +
-                '<td style="color:var(--text2);">' + Math.round(r.loss) + '</td>' +
-                '<td style="color:' + (balBad ? 'var(--red)' : 'var(--green)') + ';">' + (r.pf || 0).toFixed(2) + '</td>' +
-                '<td style="color:var(--red);">' + Math.round(r.max_dd) + '</td>' +
-                '<td>' + money(r.monthly_avg || 0) + '</td>' +
+                '<td style="color:var(--text2);">' + factorsOf(r) + '</td>' +
+                '<td style="font-family:\'IBM Plex Mono\',monospace;font-size:10px;">' + fmtParams(r.params, false) + '</td>' +
+                '<td style="font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:var(--text3);">' + fmtParams(r.params, true) + '</td>' +
+                '<td>' + r.trades + ' <span style="color:var(--text3);font-size:9px;">(' + (r.trades_per_month || 0) + '/mo)</span></td>' +
+                '<td>' + money(sc ? sc.monthly_avg : (r.monthly_avg || 0)) + '</td>' +
+                '<td style="color:' + (((sc ? sc.pf : r.pf) || 0) >= 1.5 ? 'var(--green)' : 'var(--red)') + ';">' + ((sc ? sc.pf : r.pf) || 0).toFixed(2) + '</td>' +
+                '<td style="color:var(--red);">' + Math.round(sc ? sc.max_dd : r.max_dd) + '</td>' +
                 '<td style="color:var(--red);">' + Math.round(r.worst_day) + '</td>' +
-                '<td>' + (r.expect || 0).toFixed(1) + '</td>' +
-                '<td style="color:var(--amber);font-weight:bold;">' + (r.score || 0).toFixed(2) + '</td>' +
-                '<td title="' + segs + '" style="color:' + (r.wf_pass ? 'var(--green)' : 'var(--red)') + ';">' + wf + '</td>' +
-                '<td style="color:' + (r.accept ? 'var(--green)' : 'var(--text3)') + ';font-weight:bold;">' + acc + '</td>' +
+                '<td style="color:' + ((r.weekly_cv || 99) < 1 ? 'var(--green)' : 'var(--text2)') + ';">' + (r.weekly_cv != null ? r.weekly_cv.toFixed(2) : '—') + '</td>' +
+                '<td title="' + segs + '" style="color:' + (r.wf_pass ? 'var(--green)' : 'var(--red)') + ';">' + (r.wf_pass ? '✓' : '✗') + '</td>' +
+                '<td style="color:' + (r.accept ? 'var(--green)' : 'var(--text3)') + ';font-weight:bold;">' + (r.accept ? '★' : '—') + '</td>' +
                 '<td><button class="btn btn-outline btn-mini" style="padding:0 7px;font-size:12px;line-height:1.5;" onclick="saveSweepPreset(' + i + ')" title="存成 preset">+</button></td>' +
                 '</tr>';
         }).join('') + '</tbody></table>';
@@ -4631,7 +4991,7 @@ async function runBacktestSweep() {
     const sweepBtn = document.getElementById('btn-sweep');
     const btBtn = document.getElementById('btn-backtest');
     if (sweepBtn && sweepBtn.disabled) return;
-    const _resetSweepBtn = () => { if (sweepBtn) sweepBtn.textContent = 'SWEEP ALL STRATEGIES'; };
+    const _resetSweepBtn = () => { if (sweepBtn) sweepBtn.textContent = 'SWEEP'; };
     // 1.0.9: SWEEP 很吃 CPU/記憶體;和 live 引擎同時跑易造成卡頓/當機 → 先警告
     try {
         const lr = await fetch(API + '/live/status-all');
@@ -4643,13 +5003,29 @@ async function runBacktestSweep() {
     } catch (e) {}
     const dataOk = await _ensureBacktestData(sweepBtn || btBtn);
     if (!dataOk) { _resetSweepBtn(); return; }
-    if (!confirm('全策略參數掃描(TREND + DAY ZONE + DISTRIBUTION,約 350 變體,~10–15 分鐘,不動 CONTRACT/SIZE)。開始?')) { _resetSweepBtn(); return; }
+    if (!confirm('參數掃描(勾選的 model,MNQx1 + RISK 鎖定,~5–25 分鐘視勾選)。開始?')) { _resetSweepBtn(); return; }
 
     if (sweepBtn) { sweepBtn.disabled = true; sweepBtn.textContent = 'SWEEPING…'; }
     if (btBtn) btBtn.disabled = true;
     _showBottomTab('presets');
     const body = buildBacktestBody();
-    log('SWEEP 開始:全策略參數掃描(依 PF 排序)…', 'info');
+    // 1.0.9: run/lock 面板 — 只掃勾選的 model(全勾 = 不帶參數,後端跑全部)
+    const scopeEl = document.getElementById('sweep-model-scope-bt');
+    const scope = scopeEl ? String(scopeEl.value || 'ALL').toUpperCase() : 'ALL';
+    const _mm = [];
+    if (scope === 'ALL') {
+        _mm.push('TREND', 'DAY ZONE', 'DISTRIBUTION', 'FACTOR');
+    } else if (['TREND', 'DAY ZONE', 'DISTRIBUTION', 'FACTOR'].includes(scope)) {
+        _mm.push(scope);
+    } else {
+        if ((document.getElementById('sweep-m-trend') || {}).checked) _mm.push('TREND');
+        if ((document.getElementById('sweep-m-dayzone') || {}).checked) _mm.push('DAY ZONE');
+        if ((document.getElementById('sweep-m-dist') || {}).checked) _mm.push('DISTRIBUTION');
+        if ((document.getElementById('sweep-m-factor') || {}).checked) _mm.push('FACTOR');
+    }
+    if (!_mm.length) { log('至少勾一個 model 才能 SWEEP', 'warn'); _resetSweepBtn(); if (sweepBtn) sweepBtn.disabled = false; if (btBtn) btBtn.disabled = false; return; }
+    if (_mm.length < 4) body.sweep_models = _mm;
+    log('SWEEP 開始:' + _mm.join(' + ') + '(MNQx1 鎖定,依 PF 排序)…', 'info');
     _startBacktestProgress();
 
     let ok = false;
@@ -4668,7 +5044,7 @@ async function runBacktestSweep() {
         log('SWEEP 失敗: ' + e.message, 'error');
     } finally {
         _stopBacktestProgress(ok);
-        if (sweepBtn) { sweepBtn.disabled = false; sweepBtn.textContent = 'SWEEP ALL STRATEGIES'; }
+        if (sweepBtn) { sweepBtn.disabled = false; sweepBtn.textContent = 'SWEEP'; }
         if (btBtn) btBtn.disabled = false;
     }
 }
@@ -4679,11 +5055,18 @@ async function saveSweepPreset(i) {
     if (!r) { log('找不到該 sweep 列', 'warn'); return; }
     const rowStrat = (r.params && r.params.strategy)
         || (r.model === 'DAY ZONE' ? 'fade' : (r.model === 'DISTRIBUTION' ? 'sigma' : (r.model === 'FACTOR' ? 'factor' : 'trend')));
-    const base = collectStrategyParams('bt');
-    const params = Object.assign({}, base, r.params, { strategy: rowStrat });
-    const purpose = prompt('Preset purpose (4-5 chars):', suggestedPresetPurpose(params));
-    if (purpose == null) return;
-    const name = buildPresetName(params, purpose);
+    // 1.0.9 FIX: 一律用 sweep 存下的完整參數快照(preset_params)—— 逐位重現掃描條件。
+    // 舊法用「當前表單」當 base,表單的 session/size/trail/exit 會污染 preset,
+    // 導致回測結果與 sweep 榜單完全對不上(0708 事件)。
+    let params;
+    if (r.preset_params && Object.keys(r.preset_params).length) {
+        params = Object.assign({}, r.preset_params, { strategy: rowStrat });
+    } else {
+        log('此列無參數快照(舊 sweep 檔)— 回退表單合併,結果可能與榜單不符', 'warn');
+        params = Object.assign({}, collectStrategyParams('bt'), r.params, { strategy: rowStrat });
+    }
+    const defaultName = buildPresetName(params, suggestedPresetPurpose(params));
+    const name = prompt('Preset name:', defaultName);
     if (!name || !name.trim()) return;
     try {
         const resp = await fetch(API + '/presets/save', {
@@ -4691,8 +5074,16 @@ async function saveSweepPreset(i) {
             body: JSON.stringify({ name: name.trim(), params: params }),
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        await fetch(API + '/presets/use', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim(), mode: 'bt' }),
+        });
         await fetchPresets();
         refreshPresetDropdowns();
+        const btPreset = document.getElementById('preset-bt');
+        if (btPreset) btPreset.value = name.trim();
+        applyStrategyParams('bt', params);
         log('Sweep preset "' + name.trim() + '" saved ✓ (' + r.model + ' ' + r.label + ')', 'success');
     } catch (e) {
         log('Preset save error: ' + e.message, 'error');
@@ -4848,12 +5239,14 @@ function _signalMarkerFromApi(row) {
     const t = isoToChartTime(row.time);
     if (!t || isNaN(t)) return null;
     const dir = String(row.direction || '').toLowerCase();
-    const dirText = dir === 'long' ? ' L' : (dir === 'short' ? ' S' : '');
+    const isLong = dir === 'long' || dir === 'buy' || dir === 'l';
+    const isShort = dir === 'short' || dir === 'sell' || dir === 's';
+    const dirText = isLong ? ' L' : (isShort ? ' S' : '');
     return {
         time: t,
-        position: style.position,
+        position: isShort ? 'aboveBar' : 'belowBar',
         color: style.color,
-        shape: 'circle',
+        shape: isShort ? 'arrowDown' : 'arrowUp',
         text: style.label + dirText,
     };
 }
@@ -5037,7 +5430,7 @@ function _entryDecisionMarker(t, fallbackColor) {
         time: entryTime,
         position: isBuy ? 'belowBar' : 'aboveBar',
         color: fallbackColor || pnlColor,
-        shape: 'circle',
+        shape: isBuy ? 'arrowUp' : 'arrowDown',
         text: _tradePnlText(t) + (decision ? ' ' + decision : ''),
     };
 }
@@ -5629,9 +6022,27 @@ function renderMetrics(m, backtestTrades) {
         { label: 'RR RATIO',
           value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
           cls: rr_ratio > 1 ? 'pos' : 'neg' },
-        { label: 'WIN RATE', full: true,
-          value: ((backtestStats.win_rate || 0) * 100).toFixed(1) + '%' + paren(liveStats ? ((liveStats.win_rate || 0) * 100).toFixed(1) + '%' : ''),
-          cls: (backtestStats.win_rate || 0) >= 0.5 ? 'pos' : '' },
+        // 1.0.9: WIN RATE 拆成 LONG / SHORT 兩卡(自動兩兩對齊)
+        (function () {
+            let ln = 0, lw = 0;
+            (backtestTrades || []).forEach(t => {
+                const d = String(t.direction || '').toUpperCase();
+                if (d.includes('BUY') || d.includes('LONG')) { ln++; if ((t.pnl || 0) > 0) lw++; }
+            });
+            return { label: 'LONG WIN RATE',
+                value: (ln ? (lw / ln * 100).toFixed(1) : '--') + '%' + paren(ln + ' tr'),
+                cls: ln && lw / ln >= 0.5 ? 'pos' : '' };
+        })(),
+        (function () {
+            let sn = 0, sw = 0;
+            (backtestTrades || []).forEach(t => {
+                const d = String(t.direction || '').toUpperCase();
+                if (!(d.includes('BUY') || d.includes('LONG'))) { sn++; if ((t.pnl || 0) > 0) sw++; }
+            });
+            return { label: 'SHORT WIN RATE',
+                value: (sn ? (sw / sn * 100).toFixed(1) : '--') + '%' + paren(sn + ' tr'),
+                cls: sn && sw / sn >= 0.5 ? 'pos' : '' };
+        })(),
         { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },
@@ -6687,9 +7098,11 @@ function _restoreBacktestCache() {
 }
 // Script tag is at end of <body>, so the DOM is already parsed here.
 _restoreBacktestCache();
+// 1.0.9: 啟動即載入上一次 sweep 結果 → PRESETS 分頁一開就有可排序/可加入的榜單
+try { loadSweepResults(); } catch (e) {}
 
 // ════════════════════════════════════════════════════════════════════════
-// 1.0.9: Live 帳號槽 — ACCOUNT 1 / ACCOUNT 2 各自選帳號與 preset。
+// 1.0.9: Live account slots - ACCOUNT MAIN / ACCOUNT MINOR.
 //   GO LIVE 對真實帳號下單,由使用者手動觸發;app 絕不自動下單。
 // ════════════════════════════════════════════════════════════════════════
 function _acctEsc(s) {
@@ -6728,7 +7141,7 @@ async function initLiveSlots() {
         try { const pr = await fetch(API + '/presets'); if (pr.ok) { const pd = await pr.json(); if (pd && pd.presets) _presetsCache = pd; } } catch (e) {}
     }
     const accts = allAccounts || [];
-    const presetNames = Object.keys((_presetsCache && _presetsCache.presets) || {});
+    const presetNames = Object.keys((_presetsCache && _presetsCache.presets) || {}).sort(_comparePresetNames);
     const saved = _loadLiveSlots();
     [1, 2].forEach(slot => {
         const accSel = document.getElementById('live-acct-select-' + slot);
@@ -6744,23 +7157,38 @@ async function initLiveSlots() {
         if (preSel) {
             const cur = preSel.value;
             preSel.innerHTML = '<option value="">-- 選 preset --</option>' + presetNames.map(n =>
-                '<option value="' + _acctEsc(n) + '">' + _acctEsc(n) + '</option>').join('');
+                '<option value="' + _acctEsc(n) + '">' + _acctEsc(_presetDisplayName(n)) + '</option>').join('');
             const dp = cur || saved['preset' + slot] || '';
             if (dp && presetNames.includes(dp)) preSel.value = dp;
         }
     });
+    _focusMainLiveAccount();
+    syncMainAccountPresetToPanels(true);
+    refreshTradeHistoryForCurrentAccount(true);
     pollLiveSlots();
 }
 
-function onLiveSlotChange(slot) { _saveLiveSlots(); pollLiveSlots(); }
+function onLiveSlotChange(slot) {
+    _saveLiveSlots();
+    if (Number(slot) === LIVE_MAIN_SLOT) {
+        _focusMainLiveAccount();
+        syncMainAccountPresetToPanels(false);
+    }
+    pollLiveSlots();
+}
 
 async function liveSlotGoLive(slot) {
     const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
     const presetName = (document.getElementById('live-acct-preset-' + slot) || {}).value;
+    const slotName = liveSlotLabel(slot);
+    const slotNum = Number(slot);
+    if (!accId) { log(slotName + ': select account first', 'warn'); return; }
+    if (!presetName || !(_presetsCache.presets || {})[presetName]) { log(slotName + ': select preset first', 'warn'); return; }
     if (!accId) { log('ACCOUNT ' + slot + ':先選帳號', 'warn'); return; }
     if (!presetName || !(_presetsCache.presets || {})[presetName]) { log('ACCOUNT ' + slot + ':先選 preset', 'warn'); return; }
     // 兩槽不可選同一帳號
-    const other = parseInt((document.getElementById('live-acct-select-' + (slot === 1 ? 2 : 1)) || {}).value);
+    const other = parseInt((document.getElementById('live-acct-select-' + (slotNum === LIVE_MAIN_SLOT ? LIVE_MINOR_SLOT : LIVE_MAIN_SLOT)) || {}).value);
+    slot = slotNum === LIVE_MAIN_SLOT ? 'MAIN' : 'MINOR';
     if (other && other === accId) { log('兩個槽不可用同一帳號', 'warn'); return; }
     const acc = (allAccounts || []).find(a => a.id === accId);
     const warn = (acc && acc.account_type === 'express') ? '\n⚠ EXPRESS 真錢帳號,會下真單!' : '';
@@ -6783,6 +7211,7 @@ async function liveSlotGoLive(slot) {
 
 async function liveSlotStop(slot) {
     const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
+    slot = Number(slot) === LIVE_MAIN_SLOT ? 'MAIN' : 'MINOR';
     if (!accId) return;
     try { const r = await fetch(API + '/live/stop?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' STOP:' + _acctEsc(d.message || ''), 'info'); }
     catch (e) { log('ACCOUNT ' + slot + ' STOP 失敗:' + e.message, 'warn'); }
@@ -6791,6 +7220,7 @@ async function liveSlotStop(slot) {
 
 async function liveSlotFlatten(slot) {
     const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
+    slot = Number(slot) === LIVE_MAIN_SLOT ? 'MAIN' : 'MINOR';
     if (!accId) return;
     if (!confirm('ACCOUNT ' + slot + ' 緊急平倉帳號 ' + accId + '?')) return;
     try { const r = await fetch(API + '/live/flatten?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' FLATTEN:' + _acctEsc(d.message || ''), 'warn'); }
@@ -6800,7 +7230,10 @@ async function liveSlotFlatten(slot) {
 
 // 帶動圖表/頂欄跟隨指定帳號(沿用既有 live chart machinery)
 function _startLiveChartForAccount(acc, stratParams) {
-    if (acc) liveAccount = acc;
+    const mainAcc = _focusMainLiveAccount() || acc;
+    if (mainAcc) liveAccount = mainAcc;
+    stratParams = getMainLivePresetParams(stratParams);
+    syncMainAccountPresetToPanels(true);
     try {
         _zoneFilter.mode = 'live';
         const tfs = (stratParams.method === 'overlap' && stratParams.tf_combo && stratParams.tf_combo.length)

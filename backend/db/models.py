@@ -360,7 +360,9 @@ class StrategyParams:
     # (+2R 時 SL→entry,之後每 +1R 跟進 1R,恆落後峰值 2R)
     tr_exit_mode: str = "tp"               # "tp" | "ladder"
     # 1.0.8: 日虧斷路器 — 當個 Topstep 交易日虧損單數達 N 後停止新進場(0=OFF)
-    tr_daily_loss_stop: int = 0
+    tr_daily_loss_stop: int = 0            # 1.0.9 UI 更名 FULL LOSS LOCK
+    # 1.0.9: FULL WIN LOCK — 當日贏單數達 N 後停止新進場(0=OFF;落袋鎖利,同斷路器反向)
+    tr_daily_win_stop: int = 0
     # 1.0.9: prevRV regime gate — 前一交易日已實現波動落在近 N 日最高三分位 → 今日不進場
     # (回測 DD -42%;波動率自相關 +0.73 故前一日可預測)。0=OFF,>0=回看視窗天數
     tr_prev_rv_gate: int = 0

@@ -42,6 +42,16 @@ DISTRIBUTION_STOP_SPAN = (0.75, 1.0, 1.5)
 DISTRIBUTION_TARGET = ("half", "center")
 ALL_SESSIONS = ["ASIA", "EURO", "PRE", "RTH", "AH"]
 
+
+def _factor_family_label(family: str) -> str:
+    key = str(family or "").lower()
+    if key == "icefishball":
+        return "KDJMA"
+    if key == "momentum_reversion":
+        return "MREV"
+    return "EMAPMO"
+
+
 FACTOR_GRID = (
     # EMAPMO is the only new factor that showed an initial PF>2 candidate in
     # research, so it gets the widest PMO-mode sweep.
@@ -151,6 +161,39 @@ def build_trend_zone_timeline(
     return tl
 
 
+# 1.0.9: preset 快照允許鍵 — `+` 存 preset 時逐位重現 sweep 條件(不吃表單狀態)
+_PRESET_SNAPSHOT_KEYS = (
+    "strategy", "contract_id", "contract_size", "candle_seconds",
+    "value_area_pct", "area_timeframe", "method", "tf_combo", "tr_overlap_trade_tf",
+    "rr_ratio", "breakout_confirm_bars", "tr_exit_mode",
+    "tr_daily_loss_stop", "tr_daily_win_stop", "tr_prev_rv_gate",
+    "sl_ticks", "tr_sl_ticks", "tp_ticks", "tr_tp_ticks",
+    "trail_enabled", "tr_trail_enabled", "trail_trigger_pct", "tr_trail_trigger_pct",
+    "trail_sl_ticks", "tr_trail_sl_ticks", "trail_sl_pct", "tr_trail_sl_pct",
+    "full_tp_lock", "tr_full_tp_lock",
+    "one_trade_per_session_direction", "tr_one_trade_per_session", "tr_allowed_sessions",
+    "sigma_window_minutes", "sigma_method", "sigma_entry_mode", "sigma_accept_mode",
+    "sigma_start", "sigma_max", "sigma_target_mode", "sigma_stop_span",
+    "sigma_accept_sigma", "sigma_accept_bars",
+    "fade_tp_frac", "fade_entry_mode",
+    "pmo_timeframe_minutes", "pmo_signal_mode", "pmo_sl_atr", "pmo_tp_atr",
+    "pmo_max_hold_bars", "pmo_max_trades_per_day", "pmo_warmup_bars",
+    "factor_timeframe_minutes", "factor_signal_family", "factor_side_mode",
+    "factor_pmo_signal_mode", "factor_sl_rule", "factor_tp_rule",
+    "factor_sl_value", "factor_tp_value", "factor_max_hold_bars",
+    "factor_max_trades_per_day", "factor_warmup_bars", "factor_session_va_filter",
+)
+
+
+def _preset_snapshot(params: StrategyParams) -> dict:
+    out = {}
+    for k in _PRESET_SNAPSHOT_KEYS:
+        if hasattr(params, k):
+            v = getattr(params, k)
+            out[k] = list(v) if isinstance(v, (list, tuple)) else v
+    return out
+
+
 def _run_one(params: StrategyParams, candles: List[Candle], timeline: Optional[List[dict]]) -> dict:
     cid = params.contract_id
     config = BacktestConfig(
@@ -163,13 +206,30 @@ def _run_one(params: StrategyParams, candles: List[Candle], timeline: Optional[L
                             zone_timeline=timeline, record_equity=False).run(candles)
     m = result.metrics
     day = defaultdict(float)
+    week = defaultdict(float)          # 1.0.9: 週變異(CV)用
     trade_pnls = []
+    ordered_pnls: List[float] = []     # 1.0.9: 依序淨損益(scale 測試用)
     gain = loss = 0.0
+    long_n = long_w = short_n = short_w = 0   # 1.0.9: 多/空分開勝率
     for t in result.trades:
         p = t.pnl or 0.0
         dk = _topstep_trade_date(t.entry_time)
         day[dk] += p
         trade_pnls.append((dk, p))
+        ordered_pnls.append(float(p))
+        from datetime import date as _d2
+        _dd = _d2.fromisoformat(dk)
+        week[_dd.strftime("%G-W%V")] += p
+        _dir = str(getattr(t, "direction", "") or "").upper()
+        is_long = "BUY" in _dir or "LONG" in _dir
+        if is_long:
+            long_n += 1
+            if p > 0:
+                long_w += 1
+        else:
+            short_n += 1
+            if p > 0:
+                short_w += 1
         if p > 0:
             gain += p
         else:
@@ -212,6 +272,20 @@ def _run_one(params: StrategyParams, candles: List[Candle], timeline: Optional[L
         model = "FACTOR"
     else:
         model = "TREND"
+    # 1.0.9: 週變異 CV = std(週PnL) / |mean(週PnL)|(對齊 performance 卡 Σ/CV)
+    wvals = list(week.values())
+    weekly_std = weekly_cv = 0.0
+    if len(wvals) >= 2:
+        import statistics as _st
+        weekly_std = _st.pstdev(wvals)
+        wmean = sum(wvals) / len(wvals)
+        weekly_cv = (weekly_std / abs(wmean)) if abs(wmean) > 1e-9 else 99.0
+    span_days_out = 0
+    if day:
+        from datetime import date as _date3
+        ks = sorted(day.keys())
+        span_days_out = max(1, (_date3.fromisoformat(ks[-1]) - _date3.fromisoformat(ks[0])).days + 1)
+    trades_per_month = (float(m.total_trades) * 30.44 / span_days_out) if span_days_out else 0.0
     return {
         "seg_pnls": [round(x, 1) for x in seg_pnls],
         "seg_pfs": [round(x, 2) for x in seg_pfs],
@@ -219,6 +293,8 @@ def _run_one(params: StrategyParams, candles: List[Candle], timeline: Optional[L
         "wf_pass": bool(all(pnl > 0 and pf > 1.0 for pnl, pf in zip(seg_pnls, seg_pfs))),
         "trades": int(m.total_trades),
         "win_rate": round(float(m.win_rate), 4),
+        "long_trades": long_n, "long_win": round(long_w / long_n, 4) if long_n else 0.0,
+        "short_trades": short_n, "short_win": round(short_w / short_n, 4) if short_n else 0.0,
         "pnl": round(float(m.total_pnl), 1),
         "gain": round(gain, 1),
         "loss": round(loss, 1),
@@ -227,7 +303,32 @@ def _run_one(params: StrategyParams, candles: List[Candle], timeline: Optional[L
         "expect": round(float(m.expectancy), 2),
         "worst_day": round(min(day.values()) if day else 0.0, 1),
         "monthly_avg": round(monthly_rate, 1),
+        "trades_per_month": round(trades_per_month, 1),
+        "weekly_std": round(weekly_std, 1),
+        "weekly_cv": round(weekly_cv, 3),
         "score": round(float(m.total_pnl) / max(float(m.max_drawdown), 100.0), 3),
+        "_ordered_pnls": [round(x, 2) for x in ordered_pnls],   # scale 測試用(存檔前移除)
+        "preset_params": _preset_snapshot(params),   # 1.0.9: `+` 存 preset 逐位重現用
+    }
+
+
+def _scaled_stats(ordered_pnls: List[float], gross_mult: float,
+                  cost_old_rt: float, cost_new_rt: float, n_contracts: int) -> dict:
+    """把 1×MNQ 的逐筆淨損益換算成 N 張/另一合約:net' = (net+cost_old)*mult − cost_new*N。
+
+    PF/maxDD 由縮放後逐筆序列重建(trade-level equity peak-trough)。"""
+    scaled = [(p + cost_old_rt) * gross_mult - cost_new_rt * n_contracts for p in ordered_pnls]
+    g = sum(p for p in scaled if p > 0)
+    l = sum(-p for p in scaled if p < 0)
+    eq = peak = dd = 0.0
+    for p in scaled:
+        eq += p
+        peak = max(peak, eq)
+        dd = max(dd, peak - eq)
+    return {
+        "pnl": round(sum(scaled), 1),
+        "pf": round((g / l) if l > 0 else (999.0 if g > 0 else 0.0), 3),
+        "max_dd": round(dd, 1),
     }
 
 
@@ -470,7 +571,7 @@ def run_factor_sweep(
             "factor_warmup_bars": 150,
         }
         r["label"] = (
-            f"{str(family).upper()} {side} {pmo_mode} {rule} "
+            f"{_factor_family_label(str(family))} {side} {pmo_mode} {rule} "
             f"SL{float(sl_value):g} TP{float(tp_value):g} H{int(hold_bars)}"
         )
         results.append(r)
@@ -528,7 +629,7 @@ def run_factor_sweep(
             "factor_warmup_bars": 150,
         }
         r["label"] = (
-            f"{str(spec['family']).upper()} VA80 outside "
+            f"{_factor_family_label(str(spec['family']))} VA80 outside "
             f"{str(spec['exit_mode']).upper()} SLtrend TPrr H{int(spec['hold_bars'])}"
         )
         results.append(r)
@@ -544,8 +645,13 @@ def run_model_sweep(
     candles: List[Candle],
     base_params: StrategyParams,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
+    models: Optional[List[str]] = None,
 ) -> List[dict]:
     """Run sweeps for every live/backtest-ready model and return one result list."""
+    # 1.0.9: run/lock 面板 — 只跑勾選的 model(None=全跑);contract/size 鎖定 base(MNQx1)
+    want = {m.strip().upper() for m in (models or []) if str(m).strip()} or None
+    def _on(name):
+        return want is None or name in want
     trend_total = len(SWEEP_VA) + len(SWEEP_VA) * len(SWEEP_EXITS) * len(SWEEP_CONFIRM) * len(SWEEP_STOP)
     day_total = len(DAY_ZONE_ENTRY) * len(DAY_ZONE_SL) * len(DAY_ZONE_TP_FRAC) * len(DAY_ZONE_STOP) + len(DAY_ZONE_STOP)
     dist_total = (
@@ -564,16 +670,20 @@ def run_model_sweep(
 
     import gc
     out: List[dict] = []
-    out.extend(run_trend_sweep(candles, base_params, _wrap("TREND", done_offset)))
+    if _on("TREND"):
+        out.extend(run_trend_sweep(candles, base_params, _wrap("TREND", done_offset)))
     done_offset += trend_total
     gc.collect()   # 釋放 trend zone timeline(峰值記憶體)
-    out.extend(run_day_zone_sweep(candles, base_params, _wrap("DAY ZONE", done_offset)))
+    if _on("DAY ZONE"):
+        out.extend(run_day_zone_sweep(candles, base_params, _wrap("DAY ZONE", done_offset)))
     done_offset += day_total
     gc.collect()
-    out.extend(run_distribution_sweep(candles, base_params, _wrap("DISTRIBUTION", done_offset)))
+    if _on("DISTRIBUTION"):
+        out.extend(run_distribution_sweep(candles, base_params, _wrap("DISTRIBUTION", done_offset)))
     done_offset += dist_total
     gc.collect()
-    out.extend(run_factor_sweep(candles, base_params, _wrap("FACTOR", done_offset)))
+    if _on("FACTOR"):
+        out.extend(run_factor_sweep(candles, base_params, _wrap("FACTOR", done_offset)))
     _annotate_plateau_and_acceptance(out)
     gc.collect()
     return out
@@ -625,15 +735,37 @@ def _annotate_plateau_and_acceptance(results: List[dict]) -> None:
                     continue
             pos = sum(1 for v in vals if v > 0)
             r["plateau_pass"] = bool(vals and pos / len(vals) >= 0.6 and r.get("pnl", 0.0) > 0)
-            pnl = float(r.get("pnl", 0.0) or 0.0)
-            loss_abs = abs(float(r.get("loss", 0.0) or 0.0))
-            r["accept"] = bool(
-                r.get("wf_pass")
-                and r["plateau_pass"]
-                and int(r.get("trades", 0) or 0) >= 80
-                and float(r.get("expect", 0.0) or 0.0) > 0
-                and float(r.get("pf", 0.0) or 0.0) >= 2.0
-                and float(r.get("max_dd", 0.0) or 0.0) < 2000
-                and pnl > 0
-                and loss_abs < pnl
-            )
+            # ── 1.0.9 使用者 ACC 條件(2026-07-07)──
+            # ACC:月PnL>3000、PF>1.5、月均筆數≥20、maxDD<1000、週變異CV<1
+            # Scale 候選:月PnL 100..3000、PF>2、月均筆數>20、maxDD<500
+            #   → 換算 3×MNQ 與 1×NQ,縮放後過 ACC 就以該 contract 標記接受。
+            monthly = float(r.get("monthly_avg", 0.0) or 0.0)
+            pf = float(r.get("pf", 0.0) or 0.0)
+            tpm = float(r.get("trades_per_month", 0.0) or 0.0)
+            dd = float(r.get("max_dd", 0.0) or 0.0)
+            wcv = float(r.get("weekly_cv", 99.0) or 99.0)
+            base_ok = bool(r.get("wf_pass") and r["plateau_pass"])
+
+            def _acc(mon, pf_, dd_):
+                return mon > 3000 and pf_ > 1.5 and tpm >= 20 and dd_ < 1000 and wcv < 1.0
+
+            r["contract_scale"] = "MNQx1"
+            r["accept"] = bool(base_ok and _acc(monthly, pf, dd))
+            if (not r["accept"] and base_ok and 100 <= monthly <= 3000
+                    and pf > 2.0 and tpm > 20 and dd < 500):
+                pnls = r.get("_ordered_pnls") or []
+                span_factor = monthly / max(1e-9, float(r.get("pnl", 0.0) or 0.0))
+                # MNQ RT 成本 1.24;NQ RT 成本 3.80;NQ 點值 = 10×MNQ
+                for label, s in (
+                    ("MNQx3", _scaled_stats(pnls, 3.0, 1.24, 1.24, 3)),
+                    ("NQx1", _scaled_stats(pnls, 10.0, 1.24, 3.80, 1)),
+                ):
+                    s_monthly = s["pnl"] * span_factor
+                    if _acc(s_monthly, s["pf"], s["max_dd"]):
+                        r["accept"] = True
+                        r["contract_scale"] = label
+                        r["scaled"] = {"contract": label, "pnl": s["pnl"], "pf": s["pf"],
+                                       "max_dd": s["max_dd"], "monthly_avg": round(s_monthly, 1)}
+                        break
+        for r in model_rows:
+            r.pop("_ordered_pnls", None)   # 內部欄位不入存檔

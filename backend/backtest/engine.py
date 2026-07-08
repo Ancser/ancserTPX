@@ -142,6 +142,9 @@ class BacktestEngine:
         # 1.0.8: 日虧斷路器 — 當日虧損單數達 N 停新單(0=OFF)
         self._tr_daily_loss_stop = max(0, int(getattr(self.strategy_params, "tr_daily_loss_stop", 0) or 0))
         self._daily_loss_count: int = 0
+        # 1.0.9: FULL WIN LOCK — 當日贏 N 單停新單(0=OFF)
+        self._tr_daily_win_stop = max(0, int(getattr(self.strategy_params, "tr_daily_win_stop", 0) or 0))
+        self._daily_win_count: int = 0
         self._loss_count_date: Optional[str] = None
         # 1.0.9: prevRV regime gate — 前一日 RV 落在近 N 日最高三分位 → 今日不進場
         self._prev_rv_gate = max(0, int(getattr(self.strategy_params, "tr_prev_rv_gate", 0) or 0))
@@ -439,6 +442,7 @@ class BacktestEngine:
         if _ts_date != self._loss_count_date:
             self._loss_count_date = _ts_date
             self._daily_loss_count = 0
+            self._daily_win_count = 0   # 1.0.9: FULL WIN LOCK 換日重置
         # 1.0.9: prevRV regime gate — 日 rollover 時結算前一日 RV,決定今日是否封鎖
         if self._prev_rv_gate and _ts_date != self._rv_cur_day:
             if self._rv_day_closes and len(self._rv_day_closes) > 2:
@@ -617,6 +621,11 @@ class BacktestEngine:
                 # 1.0.8: 日虧斷路器 — 當日虧損單數達上限,今天不再開新單
                 if (self._tr_daily_loss_stop
                         and self._daily_loss_count >= self._tr_daily_loss_stop):
+                    self.trend_follow.notify_order_cancelled()
+                    return
+                # 1.0.9: FULL WIN LOCK — 當日贏單數達上限,落袋停手
+                if (self._tr_daily_win_stop
+                        and self._daily_win_count >= self._tr_daily_win_stop):
                     self.trend_follow.notify_order_cancelled()
                     return
                 # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單
@@ -1088,6 +1097,8 @@ class BacktestEngine:
         # 1.0.8: 日虧斷路器計數(任何原因的虧損出場都算一單虧)
         if pnl < 0:
             self._daily_loss_count += 1
+        elif pnl > 0:
+            self._daily_win_count += 1   # 1.0.9: FULL WIN LOCK 計數
         self._ladder_risk = 0.0
         self._ladder_max_r = 0.0
 
