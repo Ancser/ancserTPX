@@ -393,7 +393,8 @@ class StrategyParams:
     factor_signal_family: str = "emapmo"  # "emapmo" | "momentum_reversion" | "icefishball"
     factor_side_mode: str = "all"         # "all" | "long_only" | "short_only"
     factor_pmo_signal_mode: str = "normal"  # "normal" | "early" | "both"
-    factor_sl_rule: str = "atr"           # "fixed" | "atr" | "atr_blend" | "range15_pct"
+    factor_session_va_filter: str = "off"  # "off" | "outside"
+    factor_sl_rule: str = "atr"           # "fixed" | "atr" | "atr_blend" | "range15_pct" | "trend_ticks"
     factor_tp_rule: str = "atr"
     factor_sl_value: float = 1.5
     factor_tp_value: float = 2.0

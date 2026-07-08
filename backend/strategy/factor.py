@@ -4,7 +4,8 @@ Research and live assumptions:
 - Build completed 5m bars from 1m candles.
 - Evaluate the factor only after a 5m bar is complete.
 - Defer the signal to the next 5m open and submit a market order.
-- Risk can be fixed points, ATR, ATR blend, or a fraction of the last 15m range.
+- Risk can be fixed points, ATR, ATR blend, a fraction of the last 15m range,
+  or the same tick/RR rules used by TREND presets.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from backend.db.models import Candle, Direction, StrategyType, TradeSignal, get_tick_size
+from backend.strategy.volume_profile import VolumeProfileCalculator
 
 
 _UTC = timezone.utc
@@ -33,6 +35,87 @@ def _topstep_trade_date(ts: datetime) -> str:
     if ct.hour >= 17:
         ct = ct + timedelta(days=1)
     return ct.strftime("%Y-%m-%d")
+
+
+def _session_id(ts: datetime) -> str:
+    ts = _utc(ts)
+    h, m = ts.hour, ts.minute
+    if h >= 22:
+        return ts.strftime("%Y-%m-%d") + "-ASIA"
+    if h >= 20:
+        return ts.strftime("%Y-%m-%d") + "-AH"
+    if h > 13 or (h == 13 and m >= 30):
+        return ts.strftime("%Y-%m-%d") + "-RTH"
+    if h >= 11:
+        return ts.strftime("%Y-%m-%d") + "-PRE"
+    if h >= 7:
+        return ts.strftime("%Y-%m-%d") + "-EURO"
+    prev = ts - timedelta(days=1)
+    return prev.strftime("%Y-%m-%d") + "-ASIA"
+
+
+class _DevelopingSessionVa:
+    """Incremental developing session value area for live/backtest filtering."""
+
+    def __init__(self, tick_size: float, value_area_pct: float):
+        self.calc = VolumeProfileCalculator(tick_size=tick_size, value_area_pct=value_area_pct)
+        self.tick_size = tick_size
+        self.value_area_pct = value_area_pct
+        self.session_id: Optional[str] = None
+        self.profile: dict[float, int] = {}
+        self.poc: Optional[float] = None
+        self.vah: Optional[float] = None
+        self.val: Optional[float] = None
+
+    def reset(self) -> None:
+        self.session_id = None
+        self.profile = {}
+        self.poc = None
+        self.vah = None
+        self.val = None
+
+    def update(self, candle: Candle) -> None:
+        sid = _session_id(candle.timestamp)
+        if sid != self.session_id:
+            self.session_id = sid
+            self.profile = {}
+            self.poc = None
+            self.vah = None
+            self.val = None
+        self._add_candle(candle)
+        self._recompute()
+
+    def _round_tick(self, price: float) -> float:
+        return round(float(price) / self.tick_size) * self.tick_size
+
+    def _add_candle(self, candle: Candle) -> None:
+        volume = int(candle.volume or 0)
+        if volume <= 0:
+            return
+        high = self._round_tick(float(candle.high))
+        low = self._round_tick(float(candle.low))
+        if high <= low:
+            price = self._round_tick(float(candle.close))
+            self.profile[price] = self.profile.get(price, 0) + volume
+            return
+        ticks = round((high - low) / self.tick_size) + 1
+        vol_per_tick = int(volume / max(1, ticks))
+        if vol_per_tick <= 0:
+            vol_per_tick = 1
+        price = low
+        while price <= high + self.tick_size * 0.5:
+            rounded = self._round_tick(price)
+            self.profile[rounded] = self.profile.get(rounded, 0) + vol_per_tick
+            price += self.tick_size
+
+    def _recompute(self) -> None:
+        if not self.profile:
+            return
+        poc = self.calc._find_poc(self.profile)
+        vah, val = self.calc._calculate_value_area(self.profile, poc, self.value_area_pct)
+        self.poc = poc
+        self.vah = vah
+        self.val = val
 
 
 def _ema(values: list[Optional[float]], span: int) -> list[Optional[float]]:
@@ -96,6 +179,9 @@ class FactorSignalStrategy:
         self.pmo_signal_mode = str(getattr(p, "factor_pmo_signal_mode", "normal") or "normal").lower()
         if self.pmo_signal_mode not in {"normal", "early", "both"}:
             self.pmo_signal_mode = "normal"
+        self.session_va_filter = str(getattr(p, "factor_session_va_filter", "off") or "off").lower()
+        if self.session_va_filter not in {"off", "outside"}:
+            self.session_va_filter = "off"
         self.side_mode = str(getattr(p, "factor_side_mode", "all") or "all").lower()
         if self.side_mode not in {"all", "long_only", "short_only"}:
             self.side_mode = "all"
@@ -107,6 +193,14 @@ class FactorSignalStrategy:
         self.max_trades_per_day = max(0, int(getattr(p, "factor_max_trades_per_day", 3) or 0))
         self.warmup_bars = max(20, int(getattr(p, "factor_warmup_bars", 150) or 150))
         self.tick_size = max(0.0001, float(get_tick_size(getattr(p, "contract_id", ""))))
+        self.trend_sl_ticks = max(1, int(getattr(p, "tr_sl_ticks", getattr(p, "sl_ticks", 50)) or 50))
+        self.rr_ratio = max(1, min(6, int(getattr(p, "rr_ratio", 2) or 2)))
+        self.value_area_pct = max(0.50, min(0.95, float(getattr(p, "value_area_pct", 0.80) or 0.80)))
+        self._session_va = (
+            _DevelopingSessionVa(tick_size=self.tick_size, value_area_pct=self.value_area_pct)
+            if self.session_va_filter != "off"
+            else None
+        )
 
         self._bars: deque[Candle] = deque(maxlen=max(self.warmup_bars + 120, 320))
         self._working: Optional[dict[str, Any]] = None
@@ -126,6 +220,8 @@ class FactorSignalStrategy:
         self._deferred_signal = None
         self._daily_counts = {}
         self._state = "idle"
+        if self._session_va is not None:
+            self._session_va.reset()
 
     def reset_state_only(self):
         self._state = "idle"
@@ -163,7 +259,32 @@ class FactorSignalStrategy:
         self._state = "idle"
 
     def get_phase_label(self) -> str:
-        return f"FACTOR {self.signal_family} {len(self._bars)}/{self.warmup_bars}"
+        # 1.0.9: 信號型策略的即時狀態(取代 trend 突破階段)—— 家族/TF、當前指標值、
+        # ATR 狀態、是否正在觸發信號。自足計算,不依賴額外欄位(避免與其他改動衝突)。
+        fam = self.signal_family.upper()
+        n = len(self._bars)
+        if n < self.warmup_bars:
+            return f"{fam} 暖機 {n}/{self.warmup_bars} bars ({self.timeframe_minutes}m)"
+        atr = self._atr(14, 7)
+        atr_s = f"ATR{self.timeframe_minutes}m={atr:.2f}" if atr else "ATR=?"
+        try:
+            direction, detail = self._factor_direction()
+        except Exception:
+            direction, detail = None, {}
+        detail = detail or {}
+        if self.signal_family == "emapmo":
+            ind = f"PMO={detail.get('pmo', 0.0):.3f} SIG={detail.get('signal', 0.0):.3f}"
+        elif self.signal_family == "icefishball":
+            ind = f"KDJ-J={detail.get('j', 0.0):.1f} RSI={detail.get('rsi', 0.0):.1f}"
+        else:
+            ind = f"mom={detail.get('mom_norm', 0.0):.2f} rev(z)={detail.get('rev_z', 0.0):.2f}"
+        if direction is not None:
+            sig = "信號:做多↑" if direction == Direction.BUY else "信號:做空↓"
+        elif self._state in ("confirmed", "in_trade"):
+            sig = "持倉/掛單中"
+        else:
+            sig = "等待信號"
+        return f"{fam} {self.timeframe_minutes}m | {ind} | {atr_s} | {sig}"
 
     def _bucket_start(self, ts: datetime) -> datetime:
         ts = _utc(ts).replace(second=0, microsecond=0)
@@ -192,6 +313,9 @@ class FactorSignalStrategy:
         )
 
     def _ingest(self, candle: Candle) -> Optional[Candle]:
+        if self._session_va is not None:
+            self._session_va.update(candle)
+
         ts = _utc(candle.timestamp)
         if self.candle_seconds >= self.timeframe_minutes * 60:
             return Candle(
@@ -266,20 +390,54 @@ class FactorSignalStrategy:
         return max(float(b.high) for b in tail) - min(float(b.low) for b in tail)
 
     def _risk_width(self, rule: str, value: float) -> Optional[float]:
-        atr14 = self._atr(14, 7)
-        if atr14 is None or atr14 <= 0:
-            return None
         if rule == "fixed":
             width = value
+        elif rule == "trend_ticks":
+            width = self.trend_sl_ticks * self.tick_size
+        elif rule == "trend_rr":
+            width = self.trend_sl_ticks * self.tick_size * self.rr_ratio
         elif rule == "atr_blend":
+            atr14 = self._atr(14, 7)
+            if atr14 is None or atr14 <= 0:
+                return None
             atr50 = self._atr(50, 25) or atr14
             width = ((atr14 + atr50) / 2.0) * value
         elif rule == "range15_pct":
+            atr14 = self._atr(14, 7)
+            if atr14 is None or atr14 <= 0:
+                return None
             rng = self._range15() or atr14
             width = max(rng, atr14) * value
         else:
+            atr14 = self._atr(14, 7)
+            if atr14 is None or atr14 <= 0:
+                return None
             width = atr14 * value
         return max(self.tick_size, float(width))
+
+    def _session_va_allows(self, direction: Direction, signal_close: float) -> tuple[bool, dict[str, Any]]:
+        if self.session_va_filter == "off":
+            return True, {}
+        tracker = self._session_va
+        if tracker is None:
+            return False, {"session_va_filter": "no_zone"}
+        vah = float(tracker.vah if tracker.vah is not None else float("nan"))
+        val = float(tracker.val if tracker.val is not None else float("nan"))
+        if not math.isfinite(vah) or not math.isfinite(val):
+            return False, {"session_va_filter": "no_va"}
+        close = float(signal_close)
+        if direction == Direction.SELL:
+            ok = close > vah
+        else:
+            ok = close < val
+        return ok, {
+            "session_va_filter": self.session_va_filter,
+            "session_vah": vah,
+            "session_val": val,
+            "session_poc": float(tracker.poc if tracker.poc is not None else close),
+            "session_zone_id": tracker.session_id,
+            "signal_close": close,
+        }
 
     def _pmo_series(self) -> tuple[list[Optional[float]], list[Optional[float]]]:
         closes = [float(c.close) for c in self._bars]
@@ -405,6 +563,7 @@ class FactorSignalStrategy:
         final_bar_ts = pending["final_bar_ts"]
         zone_id = f"FACTOR:{self.signal_family}:{trade_date}:{side}:{final_bar_ts.isoformat()}"
         detail = pending.get("detail") or {}
+        filter_label = "" if self.session_va_filter == "off" else f" VA={self.session_va_filter}"
         return TradeSignal(
             strategy=StrategyType.TREND_FOLLOW,
             direction=direction,
@@ -415,7 +574,7 @@ class FactorSignalStrategy:
             zone_source="factor",
             reason=(
                 f"FACTOR {self.signal_family.upper()} {side.upper()} | "
-                f"SL={self.sl_rule}:{self.sl_value:g} TP={self.tp_rule}:{self.tp_value:g}"
+                f"SL={self.sl_rule}:{self.sl_value:g} TP={self.tp_rule}:{self.tp_value:g}{filter_label}"
             ),
             timestamp=candle.timestamp,
             breakout_range=risk,
@@ -429,6 +588,7 @@ class FactorSignalStrategy:
                 "labels": [
                     f"factor:{self.signal_family}",
                     f"side:{self.side_mode}",
+                    f"va_filter:{self.session_va_filter}",
                     f"sl:{self.sl_rule}:{self.sl_value:g}",
                     f"tp:{self.tp_rule}:{self.tp_value:g}",
                 ],
@@ -454,6 +614,10 @@ class FactorSignalStrategy:
         direction, detail = self._factor_direction()
         if direction is None:
             return None
+        ok, va_detail = self._session_va_allows(direction, float(final_bar.close))
+        if not ok:
+            return None
+        detail.update(va_detail)
         self._deferred_signal = {
             "direction": direction,
             "final_bar_ts": _utc(final_bar.timestamp),

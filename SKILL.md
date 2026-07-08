@@ -1,17 +1,6 @@
-# ancserTPX working rules
-
 NO EMOJI
-
-Conversation language: Chinese.
-
-## Version rule
-
-When making a product version commit, bump the visible app version by one patch
-number and use a commit title like:
-
-```text
-X.Y.Z feature / fix / study
-```
+chat in Chinese
+PF larger than 2, maxDD less 2k
 
 ## Preset naming rule
 
@@ -26,45 +15,8 @@ Rules:
 - `MM.DD` is the local save date, for example `06.24`.
 - `MODEL` is the actual strategy/model name: `TREND`, `DAY ZONE`, or
   `DISTRIBUTION`.
-- Do not use author/agent labels as preset/model names.
 - `#N` is the next number for that model on that date.
-- `purpose` should be a short 4-5 character summary when possible.
-- `contract-and-params` must include contract/size and all material strategy
-  controls, for example:
 
-```text
-MNQx1 RR1:3 POFF R80 W1m Trail50L5 SesON ASIA B4 TF2
-```
-
-## Model naming rule
-
-All newly trained model ids must use this fixed format:
-
-```text
-MM.DD MODEL #N contract-and-model-params
-```
-
-Example:
-
-```text
-07.06 DISTRIBUTION #1 MNQ RR1-3 B4 TF2 W1m
-```
-
-Use `RR1-3` instead of `RR1:3` in model ids because Windows filenames cannot
-contain `:`. The human description belongs in model metadata, not in the model
-id.
-
-Immutable model versions live in:
-
-```text
-data/models/registry/
-```
-
-The active live/backtest copy is:
-
-```text
-data/models/confluence_scorer.json
-```
 
 ## New model training workflow
 

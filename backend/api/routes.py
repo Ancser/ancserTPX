@@ -234,7 +234,20 @@ def _normalize_factor_side(value) -> str:
 
 def _normalize_factor_rule(value) -> str:
     v = str(value or "atr").strip().lower()
-    return v if v in ("fixed", "atr", "atr_blend", "range15_pct") else "atr"
+    aliases = {
+        "ticks": "trend_ticks",
+        "trend": "trend_ticks",
+        "trend_sl": "trend_ticks",
+        "rr": "trend_rr",
+        "trend_tp": "trend_rr",
+    }
+    v = aliases.get(v, v)
+    return v if v in ("fixed", "atr", "atr_blend", "range15_pct", "trend_ticks", "trend_rr") else "atr"
+
+
+def _normalize_factor_session_va_filter(value) -> str:
+    v = str(value or "off").strip().lower()
+    return "outside" if v in ("outside", "outside_va", "session_outside", "va_outside") else "off"
 
 
 def _normalize_factor_pmo_mode(value) -> str:
@@ -438,6 +451,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         factor_signal_family=_normalize_factor_family(getattr(req, "factor_signal_family", "emapmo")),
         factor_side_mode=_normalize_factor_side(getattr(req, "factor_side_mode", "all")),
         factor_pmo_signal_mode=_normalize_factor_pmo_mode(getattr(req, "factor_pmo_signal_mode", "normal")),
+        factor_session_va_filter=_normalize_factor_session_va_filter(getattr(req, "factor_session_va_filter", "off")),
         factor_sl_rule=_normalize_factor_rule(getattr(req, "factor_sl_rule", "atr")),
         factor_tp_rule=_normalize_factor_rule(getattr(req, "factor_tp_rule", "atr")),
         factor_sl_value=max(0.01, float(getattr(req, "factor_sl_value", 1.5) or 1.5)),
@@ -898,6 +912,7 @@ class BacktestRequest(BaseModel):
     factor_signal_family: str = "emapmo"
     factor_side_mode: str = "all"
     factor_pmo_signal_mode: str = "normal"
+    factor_session_va_filter: str = "off"
     factor_sl_rule: str = "atr"
     factor_tp_rule: str = "atr"
     factor_sl_value: float = 1.5
@@ -3511,6 +3526,7 @@ class LiveStartRequest(BaseModel):
     factor_signal_family: str = "emapmo"
     factor_side_mode: str = "all"
     factor_pmo_signal_mode: str = "normal"
+    factor_session_va_filter: str = "off"
     factor_sl_rule: str = "atr"
     factor_tp_rule: str = "atr"
     factor_sl_value: float = 1.5
@@ -4330,6 +4346,7 @@ _DEFAULT_PRESET_PARAMS = {
     "factor_signal_family": "emapmo",
     "factor_side_mode": "all",
     "factor_pmo_signal_mode": "normal",
+    "factor_session_va_filter": "off",
     "factor_sl_rule": "atr",
     "factor_tp_rule": "atr",
     "factor_sl_value": 1.5,

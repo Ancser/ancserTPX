@@ -150,7 +150,7 @@ class LiveTradingEngine:
             self.trend_follow = SessionTrendFollow(params=self.strategy_params)
         # 1.0.8: fade 前日 VP 計算器(僅 fade 模式使用)
         self._fade_vp = VolumeProfileCalculator(self.tick_size, value_area_pct)
-        # 1.0.8: 出場模式 "tp"(現行)| "ladder"(無 TP 階梯滾動,trend 專用)
+        # Exit mode: "tp" fixed target, or "ladder" for TREND/FACTOR.
         self._tr_exit_mode = (
             "ladder"
             if str(getattr(self.strategy_params, "tr_exit_mode", "tp") or "tp").lower() == "ladder"
@@ -1945,6 +1945,15 @@ class LiveTradingEngine:
         """
         if self.strategy_mode == "confluence":
             return self._get_confluence_phase()
+        # 1.0.9: 信號型策略(factor/pmo/sigma/fade)顯示各自的信號狀態
+        # (上次信號、ATR、指標值…),而不是套用只對 trend 有意義的「突破階段」。
+        if self.strategy_mode in ("factor", "pmo", "sigma", "fade"):
+            try:
+                label = self.trend_follow.get_phase_label()
+                if label:
+                    return str(label)
+            except Exception:
+                pass
         confirm = max(1, int(getattr(self.trend_follow, "CONFIRM_BARS", 1) or 1))
         tfs, breaking, total_count, _, _ = self._tf_breakout_summary()
         parts = []
@@ -2907,8 +2916,8 @@ class LiveTradingEngine:
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
         signal.original_entry_price = signal.entry_price
-        # 1.0.8: ladder 出場(trend 專用)— TP bracket 推遠到打不到,出場交給階梯 SL
-        if self._tr_exit_mode == "ladder" and self.strategy_mode == "trend":
+        # 1.0.8/1.0.10: ladder exit for TREND-compatible market-entry strategies.
+        if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
             far = self.LADDER_FAR_TP_TICKS * self.tick_size
             signal.tp_price = self._round_to_tick(
                 signal.entry_price + far
@@ -3096,9 +3105,10 @@ class LiveTradingEngine:
     async def _check_trailing_sl_live(self):
         """Live trailing SL: trigger at a configured fraction of TP, once.
 
-        1.0.8: tr_exit_mode="ladder"(trend 專用)改走多段階梯 _check_ladder_sl_live。
+        1.0.8/1.0.10: tr_exit_mode="ladder" runs the multi-step ladder for
+        TREND/FACTOR.
         """
-        if self._tr_exit_mode == "ladder" and self.strategy_mode == "trend":
+        if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
             await self._check_ladder_sl_live()
             return
         if self._trail_sl_triggered or not self._active_signal or not self._fill_price:

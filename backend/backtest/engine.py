@@ -813,9 +813,9 @@ class BacktestEngine:
         self._open_position = trade
         self._trail_sl_triggered = False
 
-        # 1.0.8: ladder 出場 — 記初始 R,把固定 TP 推到不可及(出場只剩滾動 SL / flatten)。
-        # 只作用於 trend;fade 的 TP=前日 POC 是策略定義,不動。
-        if self._tr_exit_mode == "ladder" and self.strategy_mode == "trend":
+        # 1.0.8/1.0.10: ladder exit for TREND-compatible market-entry strategies.
+        # DAY ZONE keeps its own target definition.
+        if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
             self._ladder_risk = abs(trade.entry_price - trade.sl_price)
             self._ladder_max_r = 0.0
             far = 1_000_000.0
@@ -974,8 +974,8 @@ class BacktestEngine:
         level before reaching TP (a high TP↶TRAIL count means trail is
         cutting off would-be winners).
         """
-        # 1.0.8: ladder 出場模式(trend 專用)— 多段棘輪,取代一次性 trail
-        if self._tr_exit_mode == "ladder" and self.strategy_mode == "trend":
+        # 1.0.8/1.0.10: ladder exit mode for TREND/FACTOR.
+        if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
             self._check_ladder_sl(candle)
             return
         if self._trail_sl_triggered:

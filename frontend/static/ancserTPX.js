@@ -135,6 +135,18 @@ const DEFAULT_STRATEGY_PARAMS = {
     pmo_max_hold_bars: 24,
     pmo_max_trades_per_day: 3,
     pmo_warmup_bars: 150,
+    factor_timeframe_minutes: 5,
+    factor_signal_family: 'icefishball',
+    factor_side_mode: 'all',
+    factor_pmo_signal_mode: 'normal',
+    factor_session_va_filter: 'outside',
+    factor_sl_rule: 'trend_ticks',
+    factor_tp_rule: 'trend_rr',
+    factor_sl_value: 1.0,
+    factor_tp_value: 1.0,
+    factor_max_hold_bars: 24,
+    factor_max_trades_per_day: 3,
+    factor_warmup_bars: 150,
     // 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 };
 
@@ -500,6 +512,7 @@ function normalizeStrategyName(value) {
     if (v === 'pmo') return 'pmo';
     if (v === 'sigma') return 'sigma';
     if (v === 'fade') return 'fade';   // 1.0.8: DAY ZONE 前日VA回歸
+    if (v === 'factor') return 'factor';
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 策略映射
     return 'trend';
 }
@@ -509,6 +522,7 @@ function strategyDisplayName(value) {
     if (v === 'fade') return 'DAY ZONE';
     if (v === 'sigma') return 'DISTRIBUTION';
     if (v === 'pmo') return 'PMO';
+    if (v === 'factor') return 'FACTOR';
     return 'TREND';
 }
 
@@ -550,6 +564,7 @@ function updateStrategyParamVisibility(mode) {
     const isFade = strategy === 'fade';   // 1.0.8
     const isSigma = strategy === 'sigma';
     const isPmo = strategy === 'pmo';
+    const isFactor = strategy === 'factor';
     const show = (id, on) => {
         const el = document.getElementById(id);
         if (el) el.style.display = on ? '' : 'none';
@@ -559,12 +574,12 @@ function updateStrategyParamVisibility(mode) {
     show('tr-params-' + mode, !isML && !isPmo);
     show('overlap-tf-row-' + mode, !isML && isTrend);
     show('tr-overlap-trade-row-' + mode, !isML && isTrend);
-    showControl('area-pct', !isML && (isTrend || isFade));
+    showControl('area-pct', !isML && (isTrend || isFade || isFactor));
     showControl('confirm-bars', !isML && isTrend);
-    showControl('tr-exit-mode', !isML && isTrend);
-    showControl('rr-ratio', !isML && isTrend);
-    showControl('trail-trigger-pct', !isML && isTrend);
-    showControl('trail-sl-pct', !isML && isTrend);
+    showControl('tr-exit-mode', !isML && (isTrend || isFactor));
+    showControl('rr-ratio', !isML && (isTrend || isFactor));
+    showControl('trail-trigger-pct', !isML && (isTrend || isFactor));
+    showControl('trail-sl-pct', !isML && (isTrend || isFactor));
     // ML Confluence params — shown only in confluence mode
     show('ml-params-' + mode, isML);
     if (isML) onRrModeChange(mode);
@@ -586,6 +601,8 @@ function updateStrategyParamVisibility(mode) {
         slText = 'DISTRIBUTION: preset rolling sigma SL / center TP';
     } else if (isPmo) {
         slText = 'PMO: completed 5m EMAPMO signal, ATR SL / ATR TP, market entry';
+    } else if (isFactor) {
+        slText = 'FACTOR: completed 5m Icefishball outside session VA80, market entry';
     } else {
         slText = 'TREND: POC↔VAH/VAL 間最低量節點 SL';
     }
@@ -618,7 +635,7 @@ function onExitModeChange(mode) {
     const strategy = normalizeStrategyName(
         (document.getElementById('strategy-' + mode) || {}).value
     );
-    if (strategy !== 'trend') return;
+    if (strategy !== 'trend' && strategy !== 'factor') return;
     const isLadder = !!(sel && sel.value === 'ladder');
     const dim = (id, off) => {
         const el = document.getElementById(id);
@@ -925,11 +942,24 @@ function collectStrategyParams(mode) {
     const tfs = selTfs.length ? selTfs : ['15m'];
     const method = tfs.length >= 2 ? 'overlap' : 'single';
     const tfCombo = method === 'overlap' ? tfs : [];
-    const areaTimeframe = tfs[0];
+    const factorSessionVaFilter = String(applied.factor_session_va_filter || 'outside') === 'outside' ? 'outside' : 'off';
+    const areaTimeframe = (strategy === 'factor' && factorSessionVaFilter === 'outside') ? 'session' : tfs[0];
     const overlapTradeEl = document.getElementById('tr-overlap-trade-tf-' + mode);
     const overlapTradeTf = normalizeTrendOverlapTradeTf(
         (overlapTradeEl && overlapTradeEl.value) || applied.tr_overlap_trade_tf
     );
+    const _factorFamily = (v) => {
+        const s = String(v || 'icefishball').toLowerCase();
+        return ['emapmo', 'momentum_reversion', 'icefishball'].includes(s) ? s : 'icefishball';
+    };
+    const _factorSide = (v) => {
+        const s = String(v || 'all').toLowerCase();
+        return ['all', 'long_only', 'short_only'].includes(s) ? s : 'all';
+    };
+    const _factorRule = (v, fallback) => {
+        const s = String(v || fallback || 'atr').toLowerCase();
+        return ['fixed', 'atr', 'atr_blend', 'range15_pct', 'trend_ticks', 'trend_rr'].includes(s) ? s : fallback;
+    };
     const params = {
         strategy: strategy,
         method: method,
@@ -985,6 +1015,18 @@ function collectStrategyParams(mode) {
         pmo_max_hold_bars: parseInt(applied.pmo_max_hold_bars != null ? applied.pmo_max_hold_bars : 24, 10) || 24,
         pmo_max_trades_per_day: parseInt(applied.pmo_max_trades_per_day != null ? applied.pmo_max_trades_per_day : 3, 10) || 3,
         pmo_warmup_bars: parseInt(applied.pmo_warmup_bars != null ? applied.pmo_warmup_bars : 150, 10) || 150,
+        factor_timeframe_minutes: parseInt(applied.factor_timeframe_minutes != null ? applied.factor_timeframe_minutes : 5, 10) || 5,
+        factor_signal_family: _factorFamily(applied.factor_signal_family),
+        factor_side_mode: _factorSide(applied.factor_side_mode),
+        factor_pmo_signal_mode: ['normal', 'early', 'both'].includes(String(applied.factor_pmo_signal_mode || 'normal')) ? String(applied.factor_pmo_signal_mode || 'normal') : 'normal',
+        factor_session_va_filter: factorSessionVaFilter,
+        factor_sl_rule: _factorRule(applied.factor_sl_rule, 'trend_ticks'),
+        factor_tp_rule: _factorRule(applied.factor_tp_rule, 'trend_rr'),
+        factor_sl_value: Number(applied.factor_sl_value != null ? applied.factor_sl_value : 1.0) || 1.0,
+        factor_tp_value: Number(applied.factor_tp_value != null ? applied.factor_tp_value : 1.0) || 1.0,
+        factor_max_hold_bars: parseInt(applied.factor_max_hold_bars != null ? applied.factor_max_hold_bars : 24, 10) || 24,
+        factor_max_trades_per_day: parseInt(applied.factor_max_trades_per_day != null ? applied.factor_max_trades_per_day : 3, 10) || 3,
+        factor_warmup_bars: parseInt(applied.factor_warmup_bars != null ? applied.factor_warmup_bars : 150, 10) || 150,
     };
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 參數區塊
     return params;
@@ -1141,12 +1183,13 @@ function _presetSortRank(name) {
     if (s.includes(' DAY ZONE #')) return 20;
     if (s.includes(' DISTRIBUTION #')) return 30;
     if (s.includes(' PMO #')) return 40;
+    if (s.includes(' FACTOR #')) return 50;
     return 100;
 }
 
 function _presetDisplayName(name) {
     const s = String(name || '');
-    const m = s.match(/^(\d{2}\.\d{2})\s+(TREND|DAY ZONE|DISTRIBUTION|PMO)\s+#(\d+)\s+(.*)$/);
+    const m = s.match(/^(\d{2}\.\d{2})\s+(TREND|DAY ZONE|DISTRIBUTION|PMO|FACTOR)\s+#(\d+)\s+(.*)$/);
     if (!m) return s;
     const date = m[1];
     const model = m[2].padEnd(7, ' ');
@@ -1166,12 +1209,13 @@ function _namingModelFromParams(params) {
     if (strategy === 'fade') return 'DAY ZONE';
     if (strategy === 'sigma') return 'DISTRIBUTION';
     if (strategy === 'pmo') return 'PMO';
+    if (strategy === 'factor') return 'FACTOR';
     return 'TREND';
 }
 
 function _normalizeNamingModel(model) {
     const value = String(model || '').trim().toUpperCase();
-    return ['TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO'].includes(value) ? value : 'TREND';
+    return ['TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO', 'FACTOR'].includes(value) ? value : 'TREND';
 }
 
 function _sanitizePresetPurpose(value, fallback) {
@@ -1235,6 +1279,22 @@ function buildPresetParamToken(params) {
             _contractPresetToken(p),
         ].join(' ');
     }
+    if (normalizeStrategyName(p.strategy) === 'factor') {
+        const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : null);
+        const va = String(p.factor_session_va_filter || 'off') === 'outside' ? 'VA80OUT' : 'VAOFF';
+        return [
+            'FACTOR',
+            String(p.factor_signal_family || 'icefishball').toUpperCase(),
+            va,
+            String(p.factor_timeframe_minutes || 5) + 'm',
+            'SL' + String(p.factor_sl_rule || 'trend_ticks'),
+            'TP' + String(p.factor_tp_rule || 'trend_rr'),
+            String(p.tr_exit_mode || 'tp').toUpperCase(),
+            'H' + String(p.factor_max_hold_bars != null ? p.factor_max_hold_bars : 24),
+            market,
+            _contractPresetToken(p),
+        ].join(' ');
+    }
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = p.conf_max_risk_ticks != null && Number(p.conf_max_risk_ticks) > 0
             ? ('R' + Number(p.conf_max_risk_ticks))
@@ -1280,6 +1340,7 @@ function suggestedPresetPurpose(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
     if (normalizeStrategyName(p.strategy) === 'sigma') return 'Distribution';
     if (normalizeStrategyName(p.strategy) === 'pmo') return 'PMO';
+    if (normalizeStrategyName(p.strategy) === 'factor') return 'Icefishball';
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = Number(p.conf_max_risk_ticks || 0);
         const prob = Number(p.conf_min_prob || 0);
@@ -2922,6 +2983,7 @@ async function pollLiveCandle() {
 
         if (updated > 0) {
             window._lastChartData.sort((a, b) => a.time - b.time);
+            refreshTfZones(!(_tfAllZones && _tfAllZones.length));
             refreshIndicatorSignalMarkers(false);
             _refreshAllMarkers();
             log('K線更新: ' + newestC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');
@@ -3457,6 +3519,68 @@ function _drawZoneLines(ctx, z, tf, lw, color, op, W, H, rightX, priceToY, tX) {
     // No text labels here: zones are represented visually by the range lines.
 }
 
+function _drawSessionDevelopingVa(ctx, W, H, priceToY, tX, vFrom, vTo) {
+    // 1.0.9: 畫「每一個 session」的生長 VA 白線(波浪曲線),整段歷史都顯示;
+    // 移除延伸到圖表右邊的水平直線(使用者要求)。已完成但無曲線的 session,
+    // 只在它自己的時間範圍內畫一段(不延伸到右邊)。
+    const sessions = (_tfAllZones || [])
+        .filter(z => String(z.timeframe || '').toLowerCase() === 'session')
+        .filter(z => Number.isFinite(Number(z.vah_80)) && Number.isFinite(Number(z.val_80)));
+    if (!sessions.length) return;
+
+    const rightX = Math.max(0, W - 60);
+    const makePts = (z, key) => (z.va_curve || []).map(p => {
+        const ts = p.ts || p.time || p.timestamp;
+        const value = Number(p[key]);
+        if (!ts || !Number.isFinite(value)) return null;
+        const time = isoToChartTime(ts);
+        if (vFrom !== null && vTo !== null && (time < vFrom || time > vTo)) return null;
+        const x = tX(ts);
+        const y = priceToY(value);
+        if (x === null || y === null || y < -80 || y > H + 80) return null;
+        return { x, y };
+    }).filter(Boolean);
+
+    const drawPts = (pts) => {
+        if (pts.length < 2) return;
+        ctx.beginPath();
+        pts.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
+        ctx.stroke();
+    };
+
+    ctx.save();
+    ctx.lineWidth = 1.25;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.90)';
+    ctx.setLineDash([]);
+    sessions.forEach(z => {
+        const vah = makePts(z, 'vah');
+        const val = makePts(z, 'val');
+        if (vah.length >= 2 || val.length >= 2) {
+            drawPts(vah);
+            drawPts(val);
+            return;
+        }
+        // 無生長曲線:進行中的 session 直接跳過(避免右延直線);
+        // 已完成的 session 只在 formed_at→left_at 之間畫一段。
+        if (!z.left_at) return;
+        const a = tX(z.formed_at);
+        const b = tX(z.left_at);
+        if (a === null || b === null) return;
+        const x0 = Math.max(0, a);
+        const x1 = Math.min(rightX, b);
+        if (x1 <= x0 + 2) return;
+        [Number(z.vah_80), Number(z.val_80)].forEach(v => {
+            const y = priceToY(v);
+            if (y === null || y < -80 || y > H + 80) return;
+            ctx.beginPath();
+            ctx.moveTo(x0, y);
+            ctx.lineTo(x1, y);
+            ctx.stroke();
+        });
+    });
+    ctx.restore();
+}
+
 // Render the selected-timeframe zones onto the VP overlay canvas.
 function renderTfZones() {
     const canvas = createVPOverlay();
@@ -3472,6 +3596,18 @@ function renderTfZones() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
+
+    const priceToY = (p) => { try { const y = candleSeries.priceToCoordinate(p); return y !== null ? y : -1; } catch (e) { return -1; } };
+    const tX = (iso) => { if (!iso) return null; try { return chart.timeScale().timeToCoordinate(isoToChartTime(iso)); } catch (e) { return null; } };
+
+    // Visible time range for viewport culling.
+    let vFrom = null, vTo = null;
+    try { const vr = chart.timeScale().getVisibleRange(); if (vr) { vFrom = vr.from; vTo = vr.to; } } catch (e) {}
+
+    // Always show the current session developing VA80 boundary in white.
+    if (_tfAllZones && _tfAllZones.length > 0) {
+        _drawSessionDevelopingVa(ctx, W, H, priceToY, tX, vFrom, vTo);
+    }
 
     // Once trade-decision overlays exist, suppress the generic bucket reference
     // lines (the tiny per-candle VAH/VAL segments). The decision overlay now
@@ -3502,13 +3638,6 @@ function renderTfZones() {
     const BT_COLOR = '255, 255, 255';   // backtest reference zones (dim)
     const LIVE_COLOR = '255, 165, 0';   // current/live zone (bright)
     const rightX = W - 60;
-
-    const priceToY = (p) => { try { const y = candleSeries.priceToCoordinate(p); return y !== null ? y : -1; } catch (e) { return -1; } };
-    const tX = (iso) => { if (!iso) return null; try { return chart.timeScale().timeToCoordinate(isoToChartTime(iso)); } catch (e) { return null; } };
-
-    // Visible time range for viewport culling
-    let vFrom = null, vTo = null;
-    try { const vr = chart.timeScale().getVisibleRange(); if (vr) { vFrom = vr.from; vTo = vr.to; } } catch (e) {}
 
     TF_ORDER.forEach(tf => {
         if (!tfs.has(tf)) return;
@@ -4095,6 +4224,10 @@ async function connectAPI() {
         // Fetch and display chart data (1m bars from connect — fresh, no settle delay)
         await fetchAndShowChart('1m');
 
+        // 1.0.9: 連線後立刻抓多 TF + session 生長區,讓「白色 VAH/VAL」在啟動就畫出來。
+        // 先前只有跑完 backtest 才 refreshTfZones → 啟動看不到白線(codex 沒修到的點)。
+        try { refreshTfZones(true); } catch (e) {}
+
         // Fetch actual trades from TopstepX (refresh cache) for the active account
         const accId = currentAccount ? currentAccount.id : 0;
         await fetchAndDrawTradeHistory(true, accId);
@@ -4545,7 +4678,7 @@ async function saveSweepPreset(i) {
     const r = (_sweepRenderedRows || [])[i];
     if (!r) { log('找不到該 sweep 列', 'warn'); return; }
     const rowStrat = (r.params && r.params.strategy)
-        || (r.model === 'DAY ZONE' ? 'fade' : (r.model === 'DISTRIBUTION' ? 'sigma' : 'trend'));
+        || (r.model === 'DAY ZONE' ? 'fade' : (r.model === 'DISTRIBUTION' ? 'sigma' : (r.model === 'FACTOR' ? 'factor' : 'trend')));
     const base = collectStrategyParams('bt');
     const params = Object.assign({}, base, r.params, { strategy: rowStrat });
     const purpose = prompt('Preset purpose (4-5 chars):', suggestedPresetPurpose(params));
@@ -4682,9 +4815,9 @@ let _liveMarkers = [];
 let _liveRealtimeMarkers = [];
 
 const INDICATOR_SIGNAL_STYLES = {
-    emapmo: { color: '#22d3ee', label: 'PMO', position: 'aboveBar' },
+    emapmo: { color: '#22d3ee', label: 'EMAPMO', position: 'aboveBar' },
     momentum_reversion: { color: '#a78bfa', label: 'MREV', position: 'belowBar' },
-    icefishball: { color: '#f59e0b', label: 'IFB', position: 'inBar' },
+    icefishball: { color: '#f59e0b', label: 'KDJMA', position: 'inBar' },  // icefishball 內部值 = KDJMA 信號
 };
 
 function _refreshAllMarkers() {
@@ -4759,9 +4892,9 @@ async function refreshIndicatorSignalMarkers(logSummary) {
         if (logSummary) {
             const counts = data.counts || {};
             const summary = [
-                'PMO ' + (counts.emapmo || 0),
+                'EMAPMO ' + (counts.emapmo || 0),
                 'MREV ' + (counts.momentum_reversion || 0),
-                'IFB ' + (counts.icefishball || 0),
+                'KDJMA ' + (counts.icefishball || 0),
             ].join(' / ');
             const key = data.shown + '|' + summary;
             if (key !== _lastIndicatorSignalLogKey) {

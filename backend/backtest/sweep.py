@@ -91,6 +91,31 @@ FACTOR_GRID = (
     ("icefishball", "short_only", "normal", "atr_blend", 2.0, 2.0, 24),
 )
 
+FACTOR_SESSION_VA_GRID = (
+    {
+        "family": "icefishball",
+        "side": "all",
+        "pmo_mode": "normal",
+        "sl_rule": "trend_ticks",
+        "tp_rule": "trend_rr",
+        "sl_value": 1.0,
+        "tp_value": 1.0,
+        "hold_bars": 24,
+        "exit_mode": "tp",
+    },
+    {
+        "family": "icefishball",
+        "side": "all",
+        "pmo_mode": "normal",
+        "sl_rule": "trend_ticks",
+        "tp_rule": "trend_rr",
+        "sl_value": 1.0,
+        "tp_value": 1.0,
+        "hold_bars": 24,
+        "exit_mode": "ladder",
+    },
+)
+
 
 def build_trend_zone_timeline(
     candles: List[Candle],
@@ -395,7 +420,7 @@ def run_factor_sweep(
     FACTOR is live/backtest compatible: completed 5m signal, market entry,
     volatility-aware SL/TP, optional max hold, and session filters.
     """
-    total = len(FACTOR_GRID)
+    total = len(FACTOR_GRID) + len(FACTOR_SESSION_VA_GRID)
     results: List[dict] = []
 
     for i, (family, side, pmo_mode, rule, sl_value, tp_value, hold_bars) in enumerate(FACTOR_GRID, start=1):
@@ -415,6 +440,7 @@ def run_factor_sweep(
         p.factor_signal_family = str(family)
         p.factor_side_mode = str(side)
         p.factor_pmo_signal_mode = str(pmo_mode)
+        p.factor_session_va_filter = "off"
         p.factor_sl_rule = str(rule)
         p.factor_tp_rule = str(rule)
         p.factor_sl_value = float(sl_value)
@@ -434,6 +460,7 @@ def run_factor_sweep(
             "factor_signal_family": str(family),
             "factor_side_mode": str(side),
             "factor_pmo_signal_mode": str(pmo_mode),
+            "factor_session_va_filter": "off",
             "factor_sl_rule": str(rule),
             "factor_tp_rule": str(rule),
             "factor_sl_value": float(sl_value),
@@ -449,6 +476,65 @@ def run_factor_sweep(
         results.append(r)
         if progress_cb and (i % 4 == 0 or i == total):
             progress_cb(i, total, "FACTOR " + r["label"])
+
+    offset = len(FACTOR_GRID)
+    for j, spec in enumerate(FACTOR_SESSION_VA_GRID, start=1):
+        p = copy.deepcopy(base_params)
+        p.strategy = "factor"
+        p.area_timeframe = "session"
+        p.value_area_pct = 0.80
+        p.method = "single"
+        p.tf_combo = []
+        p.tr_allowed_sessions = list(ALL_SESSIONS)
+        p.tr_one_trade_per_session = False
+        p.one_trade_per_session_direction = False
+        p.tr_exit_mode = str(spec["exit_mode"])
+        p.tr_daily_loss_stop = 1
+        p.trail_enabled = False
+        p.tr_trail_enabled = False
+        p.factor_timeframe_minutes = 5
+        p.factor_signal_family = str(spec["family"])
+        p.factor_side_mode = str(spec["side"])
+        p.factor_pmo_signal_mode = str(spec["pmo_mode"])
+        p.factor_session_va_filter = "outside"
+        p.factor_sl_rule = str(spec["sl_rule"])
+        p.factor_tp_rule = str(spec["tp_rule"])
+        p.factor_sl_value = float(spec["sl_value"])
+        p.factor_tp_value = float(spec["tp_value"])
+        p.factor_max_hold_bars = int(spec["hold_bars"])
+        p.factor_max_trades_per_day = 3
+        p.factor_warmup_bars = 150
+        r = _run_one(p, candles, None)
+        r["params"] = {
+            "strategy": "factor",
+            "area_timeframe": "session",
+            "value_area_pct": 0.80,
+            "tr_allowed_sessions": list(ALL_SESSIONS),
+            "tr_one_trade_per_session": False,
+            "one_trade_per_session_direction": False,
+            "tr_exit_mode": str(spec["exit_mode"]),
+            "tr_daily_loss_stop": 1,
+            "factor_timeframe_minutes": 5,
+            "factor_signal_family": str(spec["family"]),
+            "factor_side_mode": str(spec["side"]),
+            "factor_pmo_signal_mode": str(spec["pmo_mode"]),
+            "factor_session_va_filter": "outside",
+            "factor_sl_rule": str(spec["sl_rule"]),
+            "factor_tp_rule": str(spec["tp_rule"]),
+            "factor_sl_value": float(spec["sl_value"]),
+            "factor_tp_value": float(spec["tp_value"]),
+            "factor_max_hold_bars": int(spec["hold_bars"]),
+            "factor_max_trades_per_day": 3,
+            "factor_warmup_bars": 150,
+        }
+        r["label"] = (
+            f"{str(spec['family']).upper()} VA80 outside "
+            f"{str(spec['exit_mode']).upper()} SLtrend TPrr H{int(spec['hold_bars'])}"
+        )
+        results.append(r)
+        done = offset + j
+        if progress_cb and (done % 4 == 0 or done == total):
+            progress_cb(done, total, "FACTOR " + r["label"])
 
     _annotate_plateau_and_acceptance(results)
     return results
@@ -466,7 +552,7 @@ def run_model_sweep(
         len(DISTRIBUTION_WINDOWS) * len(DISTRIBUTION_METHODS) * len(DISTRIBUTION_ENTRY)
         * len(DISTRIBUTION_ACCEPT) * len(DISTRIBUTION_STOP_SPAN) * len(DISTRIBUTION_TARGET)
     )
-    factor_total = len(FACTOR_GRID)
+    factor_total = len(FACTOR_GRID) + len(FACTOR_SESSION_VA_GRID)
     grand_total = trend_total + day_total + dist_total + factor_total
     done_offset = 0
 
