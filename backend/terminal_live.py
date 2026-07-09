@@ -594,7 +594,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         ),
         pmo_sl_atr=max(0.1, _conf_float("pmo_sl_atr", 1.0)),
         pmo_tp_atr=max(0.1, _conf_float("pmo_tp_atr", 1.0)),
-        pmo_max_hold_bars=max(0, _conf_int("pmo_max_hold_bars", 24)),
+        pmo_max_hold_bars=0,   # 1.0.9: HOLD 5m system removed → SL/TP-only exits
         pmo_max_trades_per_day=max(0, _conf_int("pmo_max_trades_per_day", 3)),
         pmo_warmup_bars=max(20, _conf_int("pmo_warmup_bars", 150)),
         full_tp_lock=primary["lock"],

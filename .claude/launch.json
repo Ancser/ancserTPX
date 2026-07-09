@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "backend.main"],
       "port": 8001
+    },
+    {
+      "name": "ancserTPX-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "backend.main:app", "--host", "127.0.0.1", "--port", "8055"],
+      "port": 8055
     }
   ]
 }

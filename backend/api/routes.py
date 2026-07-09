@@ -445,7 +445,10 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         ),
         pmo_sl_atr=max(0.1, float(getattr(req, "pmo_sl_atr", 1.0) or 1.0)),
         pmo_tp_atr=max(0.1, float(getattr(req, "pmo_tp_atr", 1.0) or 1.0)),
-        pmo_max_hold_bars=max(0, int(getattr(req, "pmo_max_hold_bars", 24) or 0)),
+        # 1.0.9: HOLD 5m-candle system removed — exits are SL/TP only, always,
+        # for every current and future preset. Forced 0 here (authoritative for
+        # both backtest and live) so no stored/incoming value can re-enable it.
+        pmo_max_hold_bars=0,
         pmo_max_trades_per_day=max(0, int(getattr(req, "pmo_max_trades_per_day", 3) or 0)),
         pmo_warmup_bars=max(20, int(getattr(req, "pmo_warmup_bars", 150) or 150)),
         factor_timeframe_minutes=max(1, int(getattr(req, "factor_timeframe_minutes", 5) or 5)),
@@ -457,7 +460,8 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         factor_tp_rule=_normalize_factor_rule(getattr(req, "factor_tp_rule", "atr")),
         factor_sl_value=max(0.01, float(getattr(req, "factor_sl_value", 1.5) or 1.5)),
         factor_tp_value=max(0.01, float(getattr(req, "factor_tp_value", 2.0) or 2.0)),
-        factor_max_hold_bars=max(0, int(getattr(req, "factor_max_hold_bars", 24) or 0)),
+        # 1.0.9: HOLD 5m-candle system removed — FACTOR exits are SL/TP only. See pmo note above.
+        factor_max_hold_bars=0,
         factor_max_trades_per_day=max(0, int(getattr(req, "factor_max_trades_per_day", 3) or 0)),
         factor_warmup_bars=max(20, int(getattr(req, "factor_warmup_bars", 150) or 150)),
         area_timeframe=_normalize_area_timeframe(getattr(req, "area_timeframe", "15m")),
@@ -4373,7 +4377,7 @@ _DEFAULT_PRESET_PARAMS = {
     "pmo_signal_mode": "normal",
     "pmo_sl_atr": 1.0,
     "pmo_tp_atr": 1.0,
-    "pmo_max_hold_bars": 24,
+    "pmo_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
     "pmo_max_trades_per_day": 3,
     "pmo_warmup_bars": 150,
     "factor_timeframe_minutes": 5,
@@ -4385,7 +4389,7 @@ _DEFAULT_PRESET_PARAMS = {
     "factor_tp_rule": "atr",
     "factor_sl_value": 1.5,
     "factor_tp_value": 2.0,
-    "factor_max_hold_bars": 24,
+    "factor_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
     "factor_max_trades_per_day": 3,
     "factor_warmup_bars": 150,
     # 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
@@ -4432,27 +4436,15 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         data["presets"] = presets
         changed = True
 
-    # One-time preset migration.  The 06.24 market-entry confluence pass replaced
-    # the older 6/20-6/23 presets and the temporary liquidity-sweep presets.
-    # After this marker is written, user-saved presets are kept normally.
+    # Preserve user-saved presets across schema bumps. Older builds cleared the
+    # whole file here, which made manual presets appear to save and then vanish
+    # after the next /presets load.
     if data.get("preset_schema") != _PRESET_SCHEMA_VERSION:
-        presets.clear()
         data["preset_schema"] = _PRESET_SCHEMA_VERSION
-        data["last_used_bt"] = "default"
-        data["last_used_live"] = "default"
         changed = True
 
     for name, params in list(presets.items()):
         if not isinstance(params, dict):
-            continue
-        if not _preset_name_uses_allowed_model(str(name)):
-            presets.pop(name, None)
-            changed = True
-            continue
-        upper_name = str(name).upper()
-        if any(label in upper_name for label in (" CODEX ", " CLAUDE ", " FABLE ", " USER ")):
-            presets.pop(name, None)
-            changed = True
             continue
         strategy = str(params.get("strategy") or "").lower()
         # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend;+fade 放行
@@ -4470,6 +4462,12 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         if params.get("value_area_pct") != _va:
             params["value_area_pct"] = _va
             changed = True
+        # 1.0.9: HOLD 5m-candle system removed — force every stored preset to
+        # SL/TP-only exits (hold OFF). Applies to all current presets on load.
+        for _hold_key in ("factor_max_hold_bars", "pmo_max_hold_bars"):
+            if params.get(_hold_key) not in (0, None):
+                params[_hold_key] = 0
+                changed = True
         if normalized_strategy in ("trend", "sigma", "pmo", "factor") and "tr_allowed_sessions" not in params:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
             changed = True

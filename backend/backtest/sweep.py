@@ -546,7 +546,7 @@ def run_factor_sweep(
         p.factor_tp_rule = str(rule)
         p.factor_sl_value = float(sl_value)
         p.factor_tp_value = float(tp_value)
-        p.factor_max_hold_bars = int(hold_bars)
+        p.factor_max_hold_bars = 0   # 1.0.9: HOLD 5m system removed → sweep SL/TP-only (hold_bars ignored)
         p.factor_max_trades_per_day = 3
         p.factor_warmup_bars = 150
         r = _run_one(p, candles, None)
@@ -566,13 +566,13 @@ def run_factor_sweep(
             "factor_tp_rule": str(rule),
             "factor_sl_value": float(sl_value),
             "factor_tp_value": float(tp_value),
-            "factor_max_hold_bars": int(hold_bars),
+            "factor_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
             "factor_max_trades_per_day": 3,
             "factor_warmup_bars": 150,
         }
         r["label"] = (
             f"{_factor_family_label(str(family))} {side} {pmo_mode} {rule} "
-            f"SL{float(sl_value):g} TP{float(tp_value):g} H{int(hold_bars)}"
+            f"SL{float(sl_value):g} TP{float(tp_value):g} HOFF"
         )
         results.append(r)
         if progress_cb and (i % 4 == 0 or i == total):
@@ -602,7 +602,7 @@ def run_factor_sweep(
         p.factor_tp_rule = str(spec["tp_rule"])
         p.factor_sl_value = float(spec["sl_value"])
         p.factor_tp_value = float(spec["tp_value"])
-        p.factor_max_hold_bars = int(spec["hold_bars"])
+        p.factor_max_hold_bars = 0   # 1.0.9: HOLD 5m system removed → sweep SL/TP-only
         p.factor_max_trades_per_day = 3
         p.factor_warmup_bars = 150
         r = _run_one(p, candles, None)
@@ -624,13 +624,13 @@ def run_factor_sweep(
             "factor_tp_rule": str(spec["tp_rule"]),
             "factor_sl_value": float(spec["sl_value"]),
             "factor_tp_value": float(spec["tp_value"]),
-            "factor_max_hold_bars": int(spec["hold_bars"]),
+            "factor_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
             "factor_max_trades_per_day": 3,
             "factor_warmup_bars": 150,
         }
         r["label"] = (
             f"{_factor_family_label(str(spec['family']))} VA80 outside "
-            f"{str(spec['exit_mode']).upper()} SLtrend TPrr H{int(spec['hold_bars'])}"
+            f"{str(spec['exit_mode']).upper()} SLtrend TPrr HOFF"
         )
         results.append(r)
         done = offset + j

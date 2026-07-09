@@ -132,7 +132,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     pmo_signal_mode: 'normal',
     pmo_sl_atr: 1.0,
     pmo_tp_atr: 1.0,
-    pmo_max_hold_bars: 24,
+    pmo_max_hold_bars: 0,   // 1.0.9: HOLD 5m system removed → SL/TP-only exits
     pmo_max_trades_per_day: 3,
     pmo_warmup_bars: 150,
     factor_timeframe_minutes: 5,
@@ -144,7 +144,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     factor_tp_rule: 'atr_blend',
     factor_sl_value: 2.5,
     factor_tp_value: 2.0,
-    factor_max_hold_bars: 24,
+    factor_max_hold_bars: 0,   // 1.0.9: HOLD 5m system removed → SL/TP-only exits
     factor_max_trades_per_day: 3,
     factor_warmup_bars: 150,
     // 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
@@ -154,6 +154,9 @@ const _appliedStrategyParamsByMode = {
     bt: Object.assign({}, DEFAULT_STRATEGY_PARAMS),
     live: Object.assign({}, DEFAULT_STRATEGY_PARAMS),
 };
+const MODIFIED_PRESET_VALUE = '__unsaved_modified__';
+const _loadedPresetNameByMode = { bt: '', live: '' };
+let _presetDirtyTrackingBound = false;
 
 const MNQ_SIZE_CHOICES = [1, 2, 3, 5, 10];  // 1.0.8: sizing choices
 const TRAIL_TICK_STEP = 5;
@@ -534,6 +537,37 @@ function _setStrategySelect(mode, strategy) {
     }
     _appliedStrategyParamsByMode[mode].strategy = normalized;
     return normalized;
+}
+
+function _selectedPresetName(mode) {
+    const sel = document.getElementById('preset-' + mode);
+    const name = sel ? String(sel.value || '') : '';
+    return (name && name !== 'default' && name !== MODIFIED_PRESET_VALUE) ? name : '';
+}
+
+function _selectedPresetParams(mode) {
+    const name = _selectedPresetName(mode);
+    return name ? (((_presetsCache && _presetsCache.presets) || {})[name] || null) : null;
+}
+
+function reconcilePresetStrategyForDispatch(mode, params, context) {
+    const presetName = _selectedPresetName(mode);
+    const preset = _selectedPresetParams(mode);
+    if (!preset || !params) return params;
+    const presetStrategy = normalizeStrategyName(preset.strategy);
+    const payloadStrategy = normalizeStrategyName(params.strategy);
+    if (presetStrategy !== payloadStrategy) {
+        params.strategy = presetStrategy;
+        if (!_appliedStrategyParamsByMode[mode]) {
+            _appliedStrategyParamsByMode[mode] = Object.assign({}, DEFAULT_STRATEGY_PARAMS);
+        }
+        _appliedStrategyParamsByMode[mode].strategy = presetStrategy;
+        _setStrategySelect(mode, presetStrategy);
+        updateStrategyParamVisibility(mode);
+        log((context || 'PARAMS') + ': repaired model from selected preset "' +
+            _presetDisplayName(presetName) + '" (' + payloadStrategy + ' -> ' + presetStrategy + ')', 'warn');
+    }
+    return params;
 }
 
 function strategyDisplayName(value) {
@@ -1031,10 +1065,18 @@ function collectStrategyParams(mode) {
         const n = parseInt(_paramVal(idBase, key, fallback), 10);
         return Number.isNaN(n) ? fallback : n;
     };
+    const _allowedSessionsFromSelect = (idBase, key, fallback) => {
+        const el = document.getElementById(idBase + '-' + mode);
+        if (el) return normalizeAllowedSessions(el.value);
+        const source = Object.prototype.hasOwnProperty.call(applied, key) ? applied[key] : fallback;
+        return normalizeAllowedSessions(source);
+    };
     const cidEl = document.getElementById('contract-' + mode);
     const sizeEl = document.getElementById('size-' + mode);
     const contractId = (cidEl && cidEl.value) || DEFAULT_STRATEGY_PARAMS.contract_id;
-    const strategy = normalizeStrategyName(_val('strategy-' + mode));
+    const uiStrategy = normalizeStrategyName(_val('strategy-' + mode));
+    const strategy = normalizeStrategyName(applied.strategy || uiStrategy);
+    if (strategy !== uiStrategy) _setStrategySelect(mode, strategy);
     const clampTicks = (v, fallback) => Math.max(50, Math.min(200, v || fallback));
 
     const readLeg = (kind) => {
@@ -1089,6 +1131,9 @@ function collectStrategyParams(mode) {
     const rrInt = Math.max(1, Math.min(6, parseInt(_mlSelectValue('rr-ratio-' + mode, '2'), 10) || 2));
     const factorSlRule = _factorRule(_paramVal('factor-sl-rule', 'factor_sl_rule', 'atr_blend'), 'atr_blend');
     const factorSlValue = _paramNum('factor-sl-value', 'factor_sl_value', 2.5) || 2.5;
+    // 1.0.9: HOLD 5m-candle system removed — FACTOR exits are SL/TP only, always,
+    // for every current and future preset. Pinned 0 regardless of any stored value.
+    const factorHoldBars = 0;
     const dailyMaxTrades = Math.max(0, _paramInt('factor-max-trades', 'factor_max_trades_per_day', 3));
     const params = {
         strategy: strategy,
@@ -1117,9 +1162,7 @@ function collectStrategyParams(mode) {
         full_tp_lock: primary.full_tp_lock,
         one_trade_per_session_direction: true,
         tr_one_trade_per_session: _int('tr-session-limit-' + mode, 1) === 1,
-        tr_allowed_sessions: normalizeAllowedSessions(
-            _mlSelectValue('tr-allowed-sessions-' + mode, 'ASIA')
-        ),
+        tr_allowed_sessions: _allowedSessionsFromSelect('tr-allowed-sessions', 'tr_allowed_sessions', ['ASIA']),
         skip_zone_stability: false,
         breakout_confirm_bars: Math.max(1, Math.min(10, _int('confirm-bars-' + mode, 7))),
         // 1.0.8: 出場模式(tp | ladder)+ 日虧斷路器(0=OFF)
@@ -1155,7 +1198,7 @@ function collectStrategyParams(mode) {
         factor_tp_rule: factorSlRule,
         factor_sl_value: factorSlValue,
         factor_tp_value: Number((factorSlValue * rrRaw).toFixed(6)),
-        factor_max_hold_bars: _paramInt('factor-hold', 'factor_max_hold_bars', 24) || 24,
+        factor_max_hold_bars: factorHoldBars,
         factor_max_trades_per_day: dailyMaxTrades,
         factor_warmup_bars: parseInt(applied.factor_warmup_bars != null ? applied.factor_warmup_bars : 150, 10) || 150,
     };
@@ -1285,7 +1328,7 @@ function applyStrategyParams(mode, params) {
     _setChoice('factor-va-filter-' + mode, String(p.factor_session_va_filter || 'off') === 'outside' ? 'outside' : 'off');
     _setChoice('factor-sl-rule-' + mode, _factorRuleValue(p.factor_sl_rule, 'atr_blend'));
     _setChoice('factor-sl-value-' + mode, String(p.factor_sl_value != null ? p.factor_sl_value : 2.5));
-    _setChoice('factor-hold-' + mode, String(p.factor_max_hold_bars != null ? p.factor_max_hold_bars : 24));
+    _setChoice('factor-hold-' + mode, '0');   // 1.0.9: HOLD 5m system removed → always OFF (SL/TP-only)
     _setChoice('factor-max-trades-' + mode, String(p.factor_max_trades_per_day != null ? p.factor_max_trades_per_day : (p.pmo_max_trades_per_day != null ? p.pmo_max_trades_per_day : 3)));
 
     // ML confluence params restored when the preset uses the ML strategy.
@@ -1313,12 +1356,14 @@ function applyStrategyParams(mode, params) {
     _set('conf-trail-lock-' + mode, _pct(p.conf_trail_lock_pct));
     _set('conf-fulltplock-' + mode, String(parseInt(p.conf_full_tp_lock != null ? p.conf_full_tp_lock : 0, 10)));
     _set('conf-session-limit-' + mode, (p.conf_session_limit === false) ? '0' : '1');
-    _set('conf-allowed-sessions-' + mode, allowedSessionsSelectValue(
-        p.conf_allowed_sessions != null ? p.conf_allowed_sessions : ['ASIA']
-    ));
-    _set('tr-allowed-sessions-' + mode, allowedSessionsSelectValue(
-        p.tr_allowed_sessions != null ? p.tr_allowed_sessions : ['ASIA']
-    ));
+    // 1.0.9 FIX: a preset that stores `null` allowed-sessions means ALL sessions
+    // (dropdown value ""). The old `!= null ? : ['ASIA']` collapsed that ALL back
+    // to ASIA-only on reload, so a saved "ALL sessions" preset silently traded
+    // only ASIA → different backtest than the in-memory params it was saved from.
+    // Pass the value straight through (missing field still defaults to ASIA via
+    // DEFAULT_STRATEGY_PARAMS merged into `p`).
+    _set('conf-allowed-sessions-' + mode, allowedSessionsSelectValue(p.conf_allowed_sessions));
+    _set('tr-allowed-sessions-' + mode, allowedSessionsSelectValue(p.tr_allowed_sessions));
     if (p.conf_model_name) {
         _pendingPresetModelByMode[mode] = p.conf_model_name;
         _selectModelFromPreset(mode, p.conf_model_name);
@@ -1549,7 +1594,7 @@ function buildPresetParamToken(params) {
             'SL' + String(p.factor_sl_rule || 'atr_blend') + String(p.factor_sl_value != null ? p.factor_sl_value : ''),
             'TP' + String(p.factor_tp_rule || 'atr_blend') + String(p.factor_tp_value != null ? p.factor_tp_value : ''),
             String(p.tr_exit_mode || 'tp').toUpperCase(),
-            'H' + String(p.factor_max_hold_bars != null ? p.factor_max_hold_bars : 24),
+            'H' + (Number(p.factor_max_hold_bars || 0) > 0 ? String(p.factor_max_hold_bars) : 'OFF'),
             market,
             _contractPresetToken(p),
         ].join(' ');
@@ -1640,8 +1685,73 @@ async function fetchPresets() {
     return _presetsCache;
 }
 
+function requestPresetName(mode, defaultName) {
+    try {
+        if (typeof window.prompt === 'function') {
+            return Promise.resolve(window.prompt('Preset name:', defaultName));
+        }
+    } catch (e) {
+        // Some embedded browsers disable prompt(); fall back to an inline editor.
+    }
+    return new Promise(resolve => {
+        const sel = document.getElementById('preset-' + mode);
+        const group = sel ? sel.closest('.form-group') : null;
+        const actionRow = group ? group.nextElementSibling : null;
+        const anchor = actionRow || group || sel;
+        let wrap = document.getElementById('preset-save-inline-' + mode);
+        if (!wrap) {
+            wrap = document.createElement('div');
+            wrap.id = 'preset-save-inline-' + mode;
+            wrap.className = 'action-row';
+            wrap.style.marginTop = '6px';
+            const input = document.createElement('input');
+            input.id = 'preset-save-name-' + mode;
+            input.type = 'text';
+            input.style.flex = '1';
+            input.style.minWidth = '0';
+            input.style.background = '#05070b';
+            input.style.border = '1px solid rgba(100,220,255,0.24)';
+            input.style.color = 'var(--white)';
+            input.style.fontFamily = 'inherit';
+            input.style.fontSize = '10px';
+            input.style.padding = '7px 8px';
+            const ok = document.createElement('button');
+            ok.type = 'button';
+            ok.className = 'btn btn-outline btn-mini';
+            ok.textContent = 'OK';
+            const cancel = document.createElement('button');
+            cancel.type = 'button';
+            cancel.className = 'btn btn-outline btn-mini';
+            cancel.textContent = 'CANCEL';
+            wrap.appendChild(input);
+            wrap.appendChild(ok);
+            wrap.appendChild(cancel);
+            if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(wrap, anchor.nextSibling);
+            else document.body.appendChild(wrap);
+        }
+        const input = document.getElementById('preset-save-name-' + mode);
+        const buttons = wrap.querySelectorAll('button');
+        const ok = buttons[0];
+        const cancel = buttons[1];
+        const finish = (value) => {
+            wrap.style.display = 'none';
+            resolve(value);
+        };
+        input.value = defaultName;
+        wrap.style.display = 'flex';
+        input.focus();
+        input.select();
+        ok.onclick = () => finish(input.value);
+        cancel.onclick = () => finish(null);
+        input.onkeydown = (ev) => {
+            if (ev.key === 'Enter') finish(input.value);
+            if (ev.key === 'Escape') finish(null);
+        };
+    });
+}
+
 async function savePreset(mode) {
-    const params = collectStrategyParams(mode);
+    const params = reconcilePresetStrategyForDispatch(mode, collectStrategyParams(mode), 'SAVE PRESET');
     const confParams = collectConfluenceParams(mode);
     if (false && confParams) {
         const modelSel = document.getElementById('conf-model-' + mode);
@@ -1651,7 +1761,7 @@ async function savePreset(mode) {
         });
     }
     const defaultName = buildPresetName(params, suggestedPresetPurpose(params));
-    const name = prompt('Preset name:', defaultName);
+    const name = await requestPresetName(mode, defaultName);
     if (!name || !name.trim()) return;
     try {
         const saveResp = await fetch(API + '/presets/save', {
@@ -1660,14 +1770,19 @@ async function savePreset(mode) {
             body: JSON.stringify({ name: name.trim(), params: params }),
         });
         if (!saveResp.ok) throw new Error('HTTP ' + saveResp.status);
+        _presetsCache.presets = _presetsCache.presets || {};
+        _presetsCache.presets[name.trim()] = params;
         await fetch(API + '/presets/use', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: name.trim(), mode: mode }),
         });
         await fetchPresets();
+        _presetsCache.presets = _presetsCache.presets || {};
+        if (!_presetsCache.presets[name.trim()]) _presetsCache.presets[name.trim()] = params;
         refreshPresetDropdowns();
-        document.getElementById('preset-' + mode).value = name.trim();
+        _setPresetDropdownValue(mode, name.trim());
+        _loadedPresetNameByMode[mode] = name.trim();
         log('Preset "' + name.trim() + '" saved', 'success');
     } catch(e) {
         log('Preset save error: ' + e.message, 'error');
@@ -1679,9 +1794,11 @@ async function loadPreset(mode) {
     const name = sel.value;
     if (name === 'default') {
         applyStrategyParams(mode, DEFAULT_STRATEGY_PARAMS);
+        _loadedPresetNameByMode[mode] = '';
     } else if (_presetsCache.presets[name]) {
         const presetParams = _presetsCache.presets[name];
         applyStrategyParams(mode, presetParams);
+        _loadedPresetNameByMode[mode] = name;
         log('Preset "' + name + '" loaded', 'info');
     }
     // Record last used
@@ -1697,6 +1814,11 @@ async function loadPreset(mode) {
 function _setPresetDropdownValue(mode, name) {
     const sel = document.getElementById('preset-' + mode);
     if (!sel || !name) return;
+    if (name === MODIFIED_PRESET_VALUE) {
+        _ensureModifiedPresetOption(sel);
+        sel.value = MODIFIED_PRESET_VALUE;
+        return;
+    }
     if (!Array.from(sel.options || []).some(o => o.value === name)) {
         const opt = document.createElement('option');
         opt.value = name;
@@ -1704,6 +1826,40 @@ function _setPresetDropdownValue(mode, name) {
         sel.appendChild(opt);
     }
     sel.value = name;
+}
+
+function _ensureModifiedPresetOption(sel) {
+    if (!sel) return;
+    if (!Array.from(sel.options || []).some(o => o.value === MODIFIED_PRESET_VALUE)) {
+        const opt = document.createElement('option');
+        opt.value = MODIFIED_PRESET_VALUE;
+        opt.textContent = 'UNSAVED MODIFIED';
+        opt.disabled = true;
+        sel.insertBefore(opt, sel.options && sel.options.length ? sel.options[0] : null);
+    }
+}
+
+function markPresetModified(mode) {
+    const sel = document.getElementById('preset-' + mode);
+    if (!sel || sel.value === 'default' || sel.value === MODIFIED_PRESET_VALUE) return;
+    _loadedPresetNameByMode[mode] = sel.value;
+    _setPresetDropdownValue(mode, MODIFIED_PRESET_VALUE);
+}
+
+function initPresetDirtyTracking() {
+    if (_presetDirtyTrackingBound) return;
+    _presetDirtyTrackingBound = true;
+    ['bt', 'live'].forEach(mode => {
+        const root = document.getElementById(mode === 'bt' ? 'backtest-config-panel' : 'live-settings-panel');
+        if (!root) return;
+        const handler = (ev) => {
+            if (!ev || !ev.target) return;
+            if (ev.target.id === 'preset-' + mode) return;
+            markPresetModified(mode);
+        };
+        root.addEventListener('change', handler, true);
+        root.addEventListener('input', handler, true);
+    });
 }
 
 function syncMainAccountPresetToPanels(silent) {
@@ -1715,6 +1871,8 @@ function syncMainAccountPresetToPanels(silent) {
     _setPresetDropdownValue('live', name);
     applyStrategyParams('bt', preset);
     applyStrategyParams('live', preset);
+    _loadedPresetNameByMode.bt = name;
+    _loadedPresetNameByMode.live = name;
     if (!silent) {
         log('ACCOUNT MAIN preset applied to Backtest/Live panels: ' + _presetDisplayName(name), 'info');
     }
@@ -1734,6 +1892,10 @@ function refreshPresetDropdowns() {
             opt.textContent = _presetDisplayName(isFixedPreset(n) ? n + ' *' : n);
             sel.appendChild(opt);
         });
+        if (current === MODIFIED_PRESET_VALUE) {
+            _setPresetDropdownValue(mode, MODIFIED_PRESET_VALUE);
+            return;
+        }
         if (current && (current === 'default' || _presetsCache.presets[current])) {
             sel.value = current;
         }
@@ -1781,16 +1943,20 @@ async function initPresets() {
         btSel.value = lastBt;
         if (lastBt !== 'default' && _presetsCache.presets[lastBt]) {
             applyStrategyParams('bt', _presetsCache.presets[lastBt]);
+            _loadedPresetNameByMode.bt = lastBt;
         } else {
             applyStrategyParams('bt', DEFAULT_STRATEGY_PARAMS);
+            _loadedPresetNameByMode.bt = '';
         }
     }
     if (liveSel) {
         liveSel.value = lastLive;
         if (lastLive !== 'default' && _presetsCache.presets[lastLive]) {
             applyStrategyParams('live', _presetsCache.presets[lastLive]);
+            _loadedPresetNameByMode.live = lastLive;
         } else {
             applyStrategyParams('live', DEFAULT_STRATEGY_PARAMS);
+            _loadedPresetNameByMode.live = '';
         }
     }
 }
@@ -2115,6 +2281,7 @@ function decorateParamHelpDots() {
 
 document.addEventListener('DOMContentLoaded', () => {
     initChart();
+    initPresetDirtyTracking();
     decorateParamHelpDots();
     checkHealth();
     loadEnvConfig();
@@ -3404,6 +3571,7 @@ function initChart() {
         renderTfZones();
         redrawTradeDecisionOverlays();
         drawSessionDividers();
+        drawIndicatorSignalOverlay();
     }).observe(container);
 
     // Redraw VP overlay on scroll / zoom — continuous following via rAF
@@ -3415,6 +3583,7 @@ function initChart() {
             renderTfZones();
             redrawTradeDecisionOverlays();
             drawSessionDividers();
+            drawIndicatorSignalOverlay();
         });
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(_redrawOverlays);
@@ -4207,10 +4376,6 @@ function drawPositionTools(trades) {
         x1 = Math.min(chartW - 60, x1);
         if (x1 <= x0 + 4) return false;
 
-        const top = Math.min(yVAH, yVAL);
-        const h = Math.abs(yVAL - yVAH);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.055)';
-        ctx.fillRect(x0, top, x1 - x0, h);
         drawHLine(x0, x1, yVAH, 'rgba(255, 255, 255, 0.78)');
         drawHLine(x0, x1, yVAL, 'rgba(255, 255, 255, 0.78)');
         return true;
@@ -4684,7 +4849,7 @@ function applyDefaultChartView(chartData, zones) {
 }
 
 function buildBacktestBody() {
-    const params = collectStrategyParams('bt');
+    const params = reconcilePresetStrategyForDispatch('bt', collectStrategyParams('bt'), 'BACKTEST');
     // v1.0.6: ML (confluence, explainable) backtest is selected via the STRATEGY dropdown.
     const confParams = collectConfluenceParams('bt');
     if (false && confParams) {
@@ -5197,7 +5362,8 @@ async function runBacktest() {
 
 let _overlaySyncRAF = null;
 let _overlaySyncData = null;
-let _indicatorSignalMarkers = [];
+let _indicatorSignalRows = [];
+let _indicatorSignalCanvas = null;
 let _indicatorSignalsLoading = false;
 let _indicatorSignalsQueued = false;
 let _lastIndicatorSignalLogKey = '';
@@ -5205,15 +5371,22 @@ let _backtestMarkers = [];
 let _liveMarkers = [];
 let _liveRealtimeMarkers = [];
 
-const INDICATOR_SIGNAL_STYLES = {
-    emapmo: { color: '#22d3ee', label: 'EMAPMO', position: 'aboveBar' },
-    momentum_reversion: { color: '#a78bfa', label: 'MREV', position: 'belowBar' },
-    icefishball: { color: '#f59e0b', label: 'KDJMA', position: 'inBar' },  // icefishball 內部值 = KDJMA 信號
+const INDICATOR_SIGNAL_TYPES = {
+    // 1.0.9: EMAPMO shows a large up/down triangle above/below the candle
+    // (candle-body tint was invisible on 1m bars). long → up triangle under
+    // the low; short → down triangle over the high.
+    emapmo: { kind: 'triangle', radius: 8 },
+    momentum_reversion: { kind: 'bubble', radius: 16 },
+    icefishball: { kind: 'dot', radius: 6 },
 };
+const INDICATOR_LONG_RGB = '56, 189, 248';
+const INDICATOR_SHORT_RGB = '168, 85, 247';
+const INDICATOR_KDJMA_LONG_RGB = '250, 204, 21';
+const INDICATOR_KDJMA_SHORT_RGB = '244, 63, 94';
 
 function _refreshAllMarkers() {
     if (!candleSeries) return;
-    let persistent = [..._indicatorSignalMarkers, ..._backtestMarkers, ..._liveMarkers];
+    let persistent = [..._backtestMarkers, ..._liveMarkers];
     let realtime = [..._liveRealtimeMarkers];
     // Drop markers whose time is before the first chart bar.
     // Lightweight Charts snaps older markers to the first bar → visual stacking.
@@ -5226,6 +5399,7 @@ function _refreshAllMarkers() {
     }
     const all = [...persistent, ...realtime].sort((a, b) => a.time - b.time);
     try { candleSeries.setMarkers(all); } catch(e) {}
+    drawIndicatorSignalOverlay();
 }
 
 function _setLiveRealtimeMarkers(markers) {
@@ -5233,22 +5407,215 @@ function _setLiveRealtimeMarkers(markers) {
     _refreshAllMarkers();
 }
 
-function _signalMarkerFromApi(row) {
+function _signalRowFromApi(row) {
     if (!row || !row.time) return null;
-    const style = INDICATOR_SIGNAL_STYLES[row.type] || { color: '#e5e7eb', label: 'SIG', position: 'aboveBar' };
     const t = isoToChartTime(row.time);
     if (!t || isNaN(t)) return null;
     const dir = String(row.direction || '').toLowerCase();
     const isLong = dir === 'long' || dir === 'buy' || dir === 'l';
     const isShort = dir === 'short' || dir === 'sell' || dir === 's';
-    const dirText = isLong ? ' L' : (isShort ? ' S' : '');
     return {
-        time: t,
-        position: isShort ? 'aboveBar' : 'belowBar',
-        color: style.color,
-        shape: isShort ? 'arrowDown' : 'arrowUp',
-        text: style.label + dirText,
+        ...row,
+        chartTime: t,
+        direction: isShort ? 'short' : (isLong ? 'long' : ''),
+        type: String(row.type || '').toLowerCase(),
     };
+}
+
+function createIndicatorSignalCanvas() {
+    if (_indicatorSignalCanvas) return _indicatorSignalCanvas;
+    const container = document.getElementById('chart-container');
+    if (!container) return null;
+    const canvas = document.createElement('canvas');
+    canvas.id = 'indicator-signal-overlay';
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:5;';
+    container.appendChild(canvas);
+    _indicatorSignalCanvas = canvas;
+    return canvas;
+}
+
+function clearIndicatorSignalOverlay() {
+    if (!_indicatorSignalCanvas) return;
+    const ctx = _indicatorSignalCanvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, _indicatorSignalCanvas.width, _indicatorSignalCanvas.height);
+}
+
+function _findCandleAtChartTime(chartTime) {
+    const cd = window._lastChartData || [];
+    let lo = 0;
+    let hi = cd.length - 1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const mt = cd[mid].time;
+        if (mt === chartTime) return cd[mid];
+        if (mt < chartTime) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return null;
+}
+
+function _indicatorSignalPrice(row) {
+    const candidates = [row.price, row.entry_price, row.close, row.open];
+    for (const value of candidates) {
+        const n = Number(value);
+        if (Number.isFinite(n)) return n;
+    }
+    const candle = _findCandleAtChartTime(row.chartTime);
+    if (candle) {
+        const close = Number(candle.close);
+        if (Number.isFinite(close)) return close;
+    }
+    return null;
+}
+
+function _indicatorTimeToX(sec, W, visibleRange) {
+    if (sec == null || !Number.isFinite(sec)) return null;
+    let x = null;
+    try { x = chart.timeScale().timeToCoordinate(sec); } catch (_) {}
+    if (x !== null && x !== undefined) return x;
+    if (visibleRange && visibleRange.to > visibleRange.from) {
+        return (sec - visibleRange.from) * (W / (visibleRange.to - visibleRange.from));
+    }
+    return null;
+}
+
+function _drawIndicatorBubble(ctx, x, y, radius, rgb) {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(' + rgb + ', 0.60)';
+    ctx.fill();
+}
+
+function _drawKdjmaDot(ctx, x, y, radius, rgb) {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(' + rgb + ', 0.60)';
+    ctx.fill();
+}
+
+// 1.0.9: EMAPMO signal triangle. dir='long' → up triangle sitting just below
+// the bar low; dir='short' → down triangle just above the bar high. yRef is the
+// screen-Y of the bar low (long) or high (short).
+function _drawIndicatorTriangle(ctx, cx, yRef, dir, rgb) {
+    const half = 8;      // half base width
+    const height = 13;   // triangle height (large, visible on 1m bars)
+    const gap = 6;       // gap between bar and triangle
+    ctx.beginPath();
+    if (dir === 'short') {
+        const topY = yRef - gap - height;   // above the high, apex points down
+        ctx.moveTo(cx - half, topY);
+        ctx.lineTo(cx + half, topY);
+        ctx.lineTo(cx, topY + height);
+    } else {
+        const botY = yRef + gap + height;   // below the low, apex points up
+        ctx.moveTo(cx - half, botY);
+        ctx.lineTo(cx + half, botY);
+        ctx.lineTo(cx, botY - height);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(' + rgb + ', 0.95)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(' + rgb + ', 1)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+}
+
+function _baseCandleBar(bar) {
+    return {
+        time: bar.time,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+    };
+}
+
+// 1.0.9: EMAPMO no longer tints candle bodies (too small to see on 1m). It is
+// drawn as a triangle in drawIndicatorSignalOverlay instead. Kept as a no-op so
+// existing call sites need no change; strips any stale per-bar signal colors.
+function applyIndicatorSignalCandleColors() {
+    if (!candleSeries || !window._lastChartData || window._lastChartData.length === 0) return;
+    let needsReset = false;
+    const nextData = window._lastChartData.map(bar => {
+        if (bar.color || bar.borderColor) { needsReset = true; return _baseCandleBar(bar); }
+        return bar;
+    });
+    if (!needsReset) return;
+    let logicalRange = null;
+    try { logicalRange = chart && chart.timeScale().getVisibleLogicalRange(); } catch (_) {}
+    window._lastChartData = nextData;
+    try { candleSeries.setData(nextData); } catch (_) {}
+    if (logicalRange) {
+        try { chart.timeScale().setVisibleLogicalRange(logicalRange); } catch (_) {}
+    }
+}
+
+function drawIndicatorSignalOverlay() {
+    if (!chart || !candleSeries) return;
+    const canvas = createIndicatorSignalCanvas();
+    if (!canvas) return;
+    const container = document.getElementById('chart-container');
+    if (!container) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    if (!_indicatorSignalRows || _indicatorSignalRows.length === 0) return;
+
+    let visibleRange = null;
+    try { visibleRange = chart.timeScale().getVisibleRange(); } catch (_) {}
+
+    for (const row of _indicatorSignalRows) {
+        const spec = INDICATOR_SIGNAL_TYPES[row.type];
+        if (!spec) continue;
+        const t = Number(row.chartTime);
+        if (!Number.isFinite(t)) continue;
+        if (visibleRange && (t < visibleRange.from - 300 || t > visibleRange.to + 300)) continue;
+
+        const x = _indicatorTimeToX(t, W, visibleRange);
+        if (x === null || x < -80 || x > W + 80) continue;
+
+        const dir = row.direction === 'short' ? 'short' : 'long';
+        const rgb = dir === 'short' ? INDICATOR_SHORT_RGB : INDICATOR_LONG_RGB;
+
+        if (spec.kind === 'triangle') {
+            // 1.0.9: EMAPMO — anchor to the bar's high (short) / low (long)
+            const candle = _findCandleAtChartTime(t);
+            const refPrice = candle
+                ? (dir === 'short' ? candle.high : candle.low)
+                : _indicatorSignalPrice(row);
+            if (refPrice === null || refPrice === undefined) continue;
+            let yRef = null;
+            try { yRef = candleSeries.priceToCoordinate(Number(refPrice)); } catch (_) {}
+            if (yRef === null || yRef === undefined || yRef < -80 || yRef > H + 80) continue;
+            _drawIndicatorTriangle(ctx, x, yRef, dir, rgb);
+            continue;
+        }
+
+        const price = _indicatorSignalPrice(row);
+        if (price === null) continue;
+        let y = null;
+        try { y = candleSeries.priceToCoordinate(price); } catch (_) {}
+        if (y === null || y === undefined || y < -80 || y > H + 80) continue;
+
+        if (spec.kind === 'bubble') {
+            _drawIndicatorBubble(ctx, x, y, spec.radius, rgb);
+        } else if (spec.kind === 'dot') {
+            const dotRgb = dir === 'short' ? INDICATOR_KDJMA_SHORT_RGB : INDICATOR_KDJMA_LONG_RGB;
+            _drawKdjmaDot(ctx, x, y, spec.radius, dotRgb);
+        }
+    }
 }
 
 async function refreshIndicatorSignalMarkers(logSummary) {
@@ -5263,23 +5630,26 @@ async function refreshIndicatorSignalMarkers(logSummary) {
         if (!resp.ok) return;
         const data = await resp.json();
         if (data.skipped) {
-            _indicatorSignalMarkers = [];
+            _indicatorSignalRows = [];
+            applyIndicatorSignalCandleColors();
             _refreshAllMarkers();
+            clearIndicatorSignalOverlay();
             if (logSummary && data.skipped !== _lastIndicatorSignalLogKey) {
                 _lastIndicatorSignalLogKey = data.skipped;
-                log('MNQ signal markers skipped: ' + data.skipped, 'info');
+                log('MNQ signal overlay skipped: ' + data.skipped, 'info');
             }
             return;
         }
 
         const seen = new Set();
-        _indicatorSignalMarkers = (data.signals || []).map(_signalMarkerFromApi).filter(m => {
-            if (!m) return false;
-            const key = m.time + '|' + m.text;
+        _indicatorSignalRows = (data.signals || []).map(_signalRowFromApi).filter(row => {
+            if (!row) return false;
+            const key = row.chartTime + '|' + row.type + '|' + row.direction + '|' + (row.subtype || '');
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
         });
+        applyIndicatorSignalCandleColors();
         _refreshAllMarkers();
 
         if (logSummary) {
@@ -5292,7 +5662,7 @@ async function refreshIndicatorSignalMarkers(logSummary) {
             const key = data.shown + '|' + summary;
             if (key !== _lastIndicatorSignalLogKey) {
                 _lastIndicatorSignalLogKey = key;
-                log('MNQ signal markers loaded: ' + summary + ' (' + (data.shown || 0) + ')', 'info');
+                log('MNQ signal overlay loaded: ' + summary + ' (' + (data.shown || 0) + ')', 'info');
             }
         }
     } catch(e) {
@@ -7195,6 +7565,7 @@ async function liveSlotGoLive(slot) {
     if (!confirm('GO LIVE (ACCOUNT ' + slot + ')\n帳號:' + (acc ? acc.name : accId) + '\npreset:' + presetName + warn)) return;
     const preset = _presetsCache.presets[presetName];
     const body = Object.assign({}, preset, { account_id: accId });
+    body.strategy = normalizeStrategyName(body.strategy);
     if (!body.contract_id) body.contract_id = fv('contract-id', 'CON.F.US.MNQ.U26');
     try {
         const resp = await fetch(API + '/live/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

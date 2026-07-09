@@ -392,7 +392,8 @@
                             </select>
                         </div>
                     </div>
-                    <input type="hidden" id="factor-hold-bt" value="24">
+                    <!-- 1.0.9: HOLD 5m-candle system removed — FACTOR exits are SL/TP only for every preset. Control retired; hidden input pins 0. -->
+                    <input type="hidden" id="factor-hold-bt" value="0">
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
@@ -833,7 +834,8 @@
                             </select>
                         </div>
                     </div>
-                    <input type="hidden" id="factor-hold-live" value="24">
+                    <!-- 1.0.9: HOLD 5m-candle system removed — FACTOR exits are SL/TP only for every preset. Control retired; hidden input pins 0. -->
+                    <input type="hidden" id="factor-hold-live" value="0">
                 </div>
                 <div class="form-row">
                     <div class="form-group" style="flex:1;">
@@ -1189,6 +1191,6 @@
     </div>
 </div>
 
-    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=3"></script>
+    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=4&signalstyle=3&holdoff=1&ematri=1"></script>
 </body>
 </html>

@@ -386,7 +386,7 @@ class StrategyParams:
     pmo_signal_mode: str = "normal"       # "normal" | "early"
     pmo_sl_atr: float = 1.0
     pmo_tp_atr: float = 1.0
-    pmo_max_hold_bars: int = 24           # 24 x 5m = 120 minutes
+    pmo_max_hold_bars: int = 0            # 1.0.9: HOLD 5m system removed → SL/TP-only exits
     pmo_max_trades_per_day: int = 3
     pmo_warmup_bars: int = 150
     # 1.0.10: Generic completed-candle factor strategy. Used when
@@ -400,7 +400,7 @@ class StrategyParams:
     factor_tp_rule: str = "atr"
     factor_sl_value: float = 1.5
     factor_tp_value: float = 2.0
-    factor_max_hold_bars: int = 24
+    factor_max_hold_bars: int = 0        # 1.0.9: HOLD 5m system removed → SL/TP-only exits
     factor_max_trades_per_day: int = 3
     factor_warmup_bars: int = 150
     # --- v1.0.6: explainable multi-timeframe confluence (ML scorer) ---

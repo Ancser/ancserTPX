@@ -179,17 +179,20 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
-*.json
-data/live_zones.json
-/data
 
-# Keep production ML scorer/model registry reproducible in git.
-# Other runtime data under /data stays ignored.
-!/data/
-/data/*
-!/data/models/
-/data/models/*
-!/data/models/confluence_scorer.json
-!/data/models/registry/
-/data/models/registry/*
-!/data/models/registry/*.json
+# ─── /data retention policy (1.0.9) ──────────────────────────────────────────
+# Keep ONLY two things under /data; ignore everything else so backtest / sweep /
+# ML / live-state / trades / ACCOUNT data are never uploaded:
+#   • data/presets.json   — strategy presets
+#   • data/store/         — accumulated 1m candle store (*.pkl + meta)
+# NOTE on branch switching: git leaves *ignored* files alone on checkout, so the
+# ignored data below is NOT lost when you switch branches — it just isn't tracked
+# or uploaded. presets.json + data/store/ stay trackable so you can commit them
+# (versioned backup → a deleted preset like #1 is then recoverable from history).
+data/*
+!data/presets.json
+!data/store/
+
+# Ad-hoc research scripts / exports (may contain account data) — never upload.
+scratchpad/
+*.local.py
