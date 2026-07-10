@@ -1,4 +1,4 @@
-﻿<!--
+<!--
   ============================================================
   文件: frontend/static/ancserTPX.html  (拆分自舊 index.html)
         ├─ ancserTPX.css   (樣式)
@@ -22,7 +22,7 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.7o">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.7s">
 </head>
 <body>
 
@@ -113,20 +113,20 @@
                 <button class="btn btn-outline btn-mini" onclick="deletePreset('bt')" title="Delete selected preset">DEL</button>
             </div>
             <div class="form-row">
-                <div class="form-group" style="flex:2;">
+                <div class="form-group fx2">
                     <label>CONTRACT</label>
                     <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt')">
                         <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
                         <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                     </select>
                 </div>
-                <div class="form-group" style="flex:1;">
+                <div class="form-group fx1">
                     <label>SIZE</label>
                     <select id="size-bt" onchange="updateTrailBounds('bt')"></select>
                 </div>
             </div>
             <div class="form-row">
-                <div class="form-group" style="flex:1;">
+                <div class="form-group fx1">
                     <label>MODEL</label>
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
                         <option value="trend" selected>TREND</option>
@@ -150,7 +150,7 @@
                     <button class="btn btn-outline btn-mini" onclick="retrainModel('bt')" title="用選定參數重新訓練此模型">RETRAIN</button>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>MIN PROB</label>
                         <select id="conf-minprob-bt" onchange="updateMlParamSummary('bt')">
                             <option value="0">OFF</option>
@@ -160,7 +160,7 @@
                             <option value="0.65" selected>0.65</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>EV FLOOR</label>
                         <select id="conf-evfloor-bt" onchange="updateMlParamSummary('bt')">
                             <option value="" selected>OFF (用勝率門檻)</option>
@@ -172,13 +172,13 @@
                     </div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>BAND (ticks)</label>
                         <select id="conf-band-bt" onchange="updateMlParamSummary('bt')">
                             <option value="4" selected>4</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>MIN DISTINCT TF</label>
                         <select id="conf-mintf-bt" onchange="updateMlParamSummary('bt')">
                             <option value="2" selected>2</option>
@@ -186,11 +186,11 @@
                     </div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>RR <span class="lbl-hint">(固定 1–6 · 支援 0.25)</span></label>
-                        <div style="display:flex;gap:6px;">
+                        <div class="flex-6">
                             <input type="hidden" id="conf-rrmode-bt" value="fixed">
-                            <select id="conf-rr-bt" style="flex:1.3;" onchange="updateMlParamSummary('bt')">
+                            <select id="conf-rr-bt" class="fx13" onchange="updateMlParamSummary('bt')">
                                 <option value="1.00">1:1</option>
                                 <option value="1.25">1:1.25</option>
                                 <option value="1.50">1:1.5</option>
@@ -209,11 +209,11 @@
                         </div>
                     </div>
                 </div>
-                <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
+                <div class="panel-title mt14">RISK MANAGEMENT</div>
                 <!-- TRAIL SL fixed: on trigger, move SL to +5% of TP (lock small positive). Only the trigger toggle is exposed. -->
                 <input type="hidden" id="conf-trail-lock-bt" value="0.05">
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>MAX RISK</label>
                         <select id="conf-maxrisk-bt" onchange="updateMlParamSummary('bt')">
                             <option value="0">OFF</option>
@@ -229,12 +229,12 @@
                             <option value="200">200t</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TRAIL TP TRIGGER</label>
                         <input type="hidden" id="conf-trail-trigger-bt" value="0.5">
                         <button type="button" class="toggle-field on" id="conf-trail-trigger-btn-bt" onclick="toggleTrailTrigger('bt')">50%</button>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>SL REF TF</label>
                         <select id="conf-slref-bt" onchange="updateMlParamSummary('bt')">
                             <option value="largest" selected>LARGEST</option>
@@ -243,14 +243,14 @@
                     </div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>SESSION MAX TRADE LIMIT</label>
                         <select id="conf-session-limit-bt" onchange="updateMlParamSummary('bt')">
                             <option value="1" selected>ON</option>
                             <option value="0">OFF</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>MARKET LIMIT</label>
                         <select id="conf-allowed-sessions-bt" onchange="updateMlParamSummary('bt')">
                             <option value="">ALL</option>
@@ -263,17 +263,17 @@
                         </select>
                     </div>
                 </div>
-                <div id="ml-param-summary-bt" style="font-size:10px;color:var(--text2);line-height:1.6;">
+                <div id="ml-param-summary-bt" class="note-sm">
                     PARAMS: 1m base · wait 1m · B4 · 2TF · RR1:5 · minProb 0.60 · EV off · maxRisk 80t · breakout off.<br>
                     RISK: trail 50% → SL +5% TP · session limit ON · market ASIA · size follows top selector.
                 </div>
             </div>
             <div id="tr-params-bt" style="margin-top:12px;">
-                <div class="panel-title" style="margin-top:14px;">MODEL SETTINGS</div>
+                <div class="panel-title mt14">MODEL SETTINGS</div>
                 <div class="form-row" id="entry-trigger-row-bt">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>ENTRY TRIGGER <span class="lbl-hint">(底層模型決定,不可改)</span></label>
-                        <input type="text" id="sl-model-display-bt" readonly value="TREND: completed candle + model confirmation" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
+                        <input type="text" id="sl-model-display-bt" readonly value="TREND: completed candle + model confirmation" class="input-ro-cyan">
                         <select id="entry-mode-bt" disabled style="display:none;" title="Entry type is fixed by each model implementation.">
                             <option value="market" selected>MARKET</option>
                             <option value="limit">LIMIT</option>
@@ -281,9 +281,9 @@
                     </div>
                 </div>
                 <div class="form-row" id="overlap-tf-row-bt">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TIMEFRAMES <span class="lbl-hint">(pick 1 = single; pick 2+ = overlap)</span></label>
-                        <div id="overlap-tf-bt" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
+                        <div id="overlap-tf-bt" class="tf-row">
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="15m" checked onchange="onTfSelectionChange('bt')"> 15m</label>
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="30m" onchange="onTfSelectionChange('bt')"> 30m</label>
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="1h" onchange="onTfSelectionChange('bt')"> 1h</label>
@@ -295,24 +295,24 @@
                     </div>
                 </div>
                 <div class="form-row" id="tr-overlap-trade-row-bt">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TRADE ZONE</label>
                         <select id="tr-overlap-trade-tf-bt" onchange="onOverlapTradeTfChange('bt')" disabled>
                             <option value="merged" selected>Merged overlap</option>
                             <option value="smallest">Smallest selected TF</option>
                         </select>
-                        <div id="tr-overlap-trade-hint-bt" style="font-size:10px;color:var(--text3);margin-top:4px;">JUDGE 15m / OVERLAP OFF / TRADE 15m</div>
+                        <div id="tr-overlap-trade-hint-bt" class="hint-sm">JUDGE 15m / OVERLAP OFF / TRADE 15m</div>
                     </div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>AREA %</label>
                         <select id="area-pct-bt" onchange="onAreaConfigChange('bt')">
                             <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
                             <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>CONFIRM</label>
                         <select id="confirm-bars-bt">
                             <option value="1">1</option><option value="2">2</option><option value="3">3</option>
@@ -336,7 +336,7 @@
                 </div>
                 <div id="factor-params-bt" style="display:none;">
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>FACTOR FAMILY</label>
                             <select id="factor-family-bt">
                                 <option value="emapmo" selected>EMAPMO</option>
@@ -344,7 +344,7 @@
                                 <option value="momentum_reversion">MREV</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SIDE</label>
                             <select id="factor-side-bt">
                                 <option value="all">BOTH</option>
@@ -354,7 +354,7 @@
                         </div>
                     </div>
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SIGNAL MODE</label>
                             <select id="factor-pmo-mode-bt">
                                 <option value="normal">NORMAL</option>
@@ -362,7 +362,7 @@
                                 <option value="both">BOTH</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>VA FILTER</label>
                             <select id="factor-va-filter-bt">
                                 <option value="off" selected>OFF</option>
@@ -371,7 +371,7 @@
                         </div>
                     </div>
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SL ANCHOR</label>
                             <select id="factor-sl-rule-bt" onchange="onFactorRiskAnchorChange('bt','sl')">
                                 <option value="atr">ATR</option>
@@ -379,7 +379,7 @@
                                 <option value="range15_pct">AREA15 %</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SL INPUT</label>
                             <select id="factor-sl-value-bt">
                                 <option value="0.5">0.5</option>
@@ -396,14 +396,14 @@
                     <input type="hidden" id="factor-hold-bt" value="0">
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TP ANCHOR</label>
                         <select id="tr-exit-mode-bt" onchange="onExitModeChange('bt')">
                             <option value="tp" selected>FIXED RATIO</option>
                             <option value="ladder">LADDER RATIO</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TP INPUT <span id="rr-ratio-bt-val" style="color:var(--accent)">1:2</span></label>
                         <select id="rr-ratio-bt" onchange="onRrChange('bt')">
                             <option value="1">1 x SL</option><option value="2" selected>2 x SL</option>
@@ -420,14 +420,14 @@
                     </select>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TRAIL TP TRIGGER</label>
                         <select id="trail-trigger-pct-bt" onchange="updateTrailBounds('bt')">
                             <option value="0">OFF</option>
                             <option value="0.05" selected>5%</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>
                             TRAIL SL <span id="trail-sl-pct-bt-val" style="color:var(--accent)">+10% TP</span>
                             <span id="trail-sl-ticks-bt-val" style="color:var(--text2)">20t / $30.00</span>
@@ -436,7 +436,7 @@
                         <input type="hidden" id="trail-sl-ticks-bt" value="20">
                     </div>
                 </div>
-                <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
+                <div class="panel-title mt14">RISK MANAGEMENT</div>
                 <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
                 <div class="form-group">
                     <label>DAILY MAX TRADE LIMIT</label>
@@ -476,14 +476,14 @@
                     </select>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>SESSION MAX TRADE LIMIT</label>
                         <select id="tr-session-limit-bt">
                             <option value="1" selected>ON</option>
                             <option value="0">OFF</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>MARKET LIMIT</label>
                         <select id="tr-allowed-sessions-bt">
                             <option value="">ALL</option>
@@ -503,7 +503,7 @@
                 <!-- 1.0.9: 全策略參數掃描(TREND+DAY ZONE+DISTRIBUTION),依 PF 排序,結果進 PRESETS 分頁 -->
                 <!-- 1.0.9: sweep run/lock 面板 — 勾選要跑的 model;contract/size + risk 鎖定 -->
                 <div style="display:flex;gap:6px;align-items:flex-end;">
-                    <button class="btn btn-amber" id="btn-sweep" onclick="runBacktestSweep()" disabled style="flex:1;">SWEEP</button>
+                    <button class="btn btn-amber fx1" id="btn-sweep" onclick="runBacktestSweep()" disabled>SWEEP</button>
                     <div class="form-group" style="flex:1;margin:0;">
                         <label>SWEEP MODEL <span class="lbl-hint">MNQx1 + risk locked</span></label>
                         <select id="sweep-model-scope-bt">
@@ -555,20 +555,20 @@
                     <button class="btn btn-outline btn-mini" onclick="deletePreset('live')" title="Delete selected preset">DEL</button>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:2;">
+                    <div class="form-group fx2">
                         <label>CONTRACT</label>
                         <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live')">
                             <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
                             <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>SIZE</label>
                         <select id="size-live" onchange="updateTrailBounds('live')"></select>
                     </div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>MODEL</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
                             <option value="trend" selected>TREND</option>
@@ -592,7 +592,7 @@
                         <button class="btn btn-outline btn-mini" onclick="retrainModel('live')" title="用選定參數重新訓練此模型">RETRAIN</button>
                     </div>
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>MIN PROB</label>
                             <select id="conf-minprob-live" onchange="updateMlParamSummary('live')">
                                 <option value="0">OFF</option>
@@ -602,7 +602,7 @@
                                 <option value="0.65" selected>0.65</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>EV FLOOR</label>
                             <select id="conf-evfloor-live" onchange="updateMlParamSummary('live')">
                                 <option value="" selected>OFF (用勝率門檻)</option>
@@ -614,13 +614,13 @@
                         </div>
                     </div>
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>BAND (ticks)</label>
                             <select id="conf-band-live" onchange="updateMlParamSummary('live')">
                                 <option value="4" selected>4</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>MIN DISTINCT TF</label>
                             <select id="conf-mintf-live" onchange="updateMlParamSummary('live')">
                                 <option value="2" selected>2</option>
@@ -628,11 +628,11 @@
                         </div>
                     </div>
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>RR <span class="lbl-hint">(固定 1–6 · 支援 0.25)</span></label>
-                            <div style="display:flex;gap:6px;">
+                            <div class="flex-6">
                                 <input type="hidden" id="conf-rrmode-live" value="fixed">
-                                <select id="conf-rr-live" style="flex:1.3;" onchange="updateMlParamSummary('live')">
+                                <select id="conf-rr-live" class="fx13" onchange="updateMlParamSummary('live')">
                                     <option value="1.00">1:1</option>
                                     <option value="1.25">1:1.25</option>
                                     <option value="1.50">1:1.5</option>
@@ -651,11 +651,11 @@
                             </div>
                         </div>
                     </div>
-                    <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
+                    <div class="panel-title mt14">RISK MANAGEMENT</div>
                     <!-- TRAIL SL fixed: on trigger, move SL to +5% of TP (lock small positive). Only the trigger toggle is exposed. -->
                     <input type="hidden" id="conf-trail-lock-live" value="0.05">
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>MAX RISK</label>
                             <select id="conf-maxrisk-live" onchange="updateMlParamSummary('live')">
                                 <option value="0">OFF</option>
@@ -671,12 +671,12 @@
                                 <option value="200">200t</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>TRAIL TP TRIGGER</label>
                             <input type="hidden" id="conf-trail-trigger-live" value="0.5">
                             <button type="button" class="toggle-field on" id="conf-trail-trigger-btn-live" onclick="toggleTrailTrigger('live')">50%</button>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SL REF TF</label>
                             <select id="conf-slref-live" onchange="updateMlParamSummary('live')">
                                 <option value="largest" selected>LARGEST</option>
@@ -685,14 +685,14 @@
                         </div>
                     </div>
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SESSION MAX TRADE LIMIT</label>
                             <select id="conf-session-limit-live" onchange="updateMlParamSummary('live')">
                                 <option value="1" selected>ON</option>
                                 <option value="0">OFF</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>MARKET LIMIT</label>
                             <select id="conf-allowed-sessions-live" onchange="updateMlParamSummary('live')">
                                 <option value="">ALL</option>
@@ -705,17 +705,17 @@
                             </select>
                         </div>
                     </div>
-                    <div id="ml-param-summary-live" style="font-size:10px;color:var(--text2);line-height:1.6;">
+                    <div id="ml-param-summary-live" class="note-sm">
                         PARAMS: 1m base · wait 1m · B4 · 2TF · RR1:5 · minProb 0.60 · EV off · maxRisk 80t · breakout off.<br>
                         RISK: trail 50% → SL +5% TP · session limit ON · market ASIA · size follows top selector.
                     </div>
                 </div>
                 <div id="tr-params-live" style="margin-top:12px;">
-                    <div class="panel-title" style="margin-top:14px;">MODEL SETTINGS</div>
+                    <div class="panel-title mt14">MODEL SETTINGS</div>
                     <div class="form-row" id="entry-trigger-row-live">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>ENTRY TRIGGER <span class="lbl-hint">(底層模型決定,不可改)</span></label>
-                            <input type="text" id="sl-model-display-live" readonly value="TREND: completed candle + model confirmation" style="background:var(--bg3);color:var(--cyan);cursor:default;font-size:11px;">
+                            <input type="text" id="sl-model-display-live" readonly value="TREND: completed candle + model confirmation" class="input-ro-cyan">
                             <select id="entry-mode-live" disabled style="display:none;" title="Entry type is fixed by each model implementation.">
                                 <option value="market" selected>MARKET</option>
                                 <option value="limit">LIMIT</option>
@@ -723,9 +723,9 @@
                         </div>
                     </div>
                     <div class="form-row" id="overlap-tf-row-live">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>TIMEFRAMES <span class="lbl-hint">(pick 1 = single; pick 2+ = overlap)</span></label>
-                            <div id="overlap-tf-live" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0;">
+                            <div id="overlap-tf-live" class="tf-row">
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="15m" checked onchange="onTfSelectionChange('live')"> 15m</label>
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="30m" onchange="onTfSelectionChange('live')"> 30m</label>
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="1h" onchange="onTfSelectionChange('live')"> 1h</label>
@@ -737,24 +737,24 @@
                     </div>
                 </div>
                 <div class="form-row" id="tr-overlap-trade-row-live">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TRADE ZONE</label>
                         <select id="tr-overlap-trade-tf-live" onchange="onOverlapTradeTfChange('live')" disabled>
                             <option value="merged" selected>Merged overlap</option>
                             <option value="smallest">Smallest selected TF</option>
                         </select>
-                        <div id="tr-overlap-trade-hint-live" style="font-size:10px;color:var(--text3);margin-top:4px;">JUDGE 15m / OVERLAP OFF / TRADE 15m</div>
+                        <div id="tr-overlap-trade-hint-live" class="hint-sm">JUDGE 15m / OVERLAP OFF / TRADE 15m</div>
                     </div>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>AREA %</label>
                             <select id="area-pct-live" onchange="onAreaConfigChange('live')">
                                 <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
                                 <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>CONFIRM</label>
                             <select id="confirm-bars-live">
                                 <option value="1">1</option><option value="2">2</option><option value="3">3</option>
@@ -778,7 +778,7 @@
                 </div>
                 <div id="factor-params-live" style="display:none;">
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>FACTOR FAMILY</label>
                             <select id="factor-family-live">
                                 <option value="emapmo" selected>EMAPMO</option>
@@ -786,7 +786,7 @@
                                 <option value="momentum_reversion">MREV</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SIDE</label>
                             <select id="factor-side-live">
                                 <option value="all">BOTH</option>
@@ -796,7 +796,7 @@
                         </div>
                     </div>
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SIGNAL MODE</label>
                             <select id="factor-pmo-mode-live">
                                 <option value="normal">NORMAL</option>
@@ -804,7 +804,7 @@
                                 <option value="both">BOTH</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>VA FILTER</label>
                             <select id="factor-va-filter-live">
                                 <option value="off" selected>OFF</option>
@@ -813,7 +813,7 @@
                         </div>
                     </div>
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SL ANCHOR</label>
                             <select id="factor-sl-rule-live" onchange="onFactorRiskAnchorChange('live','sl')">
                                 <option value="atr">ATR</option>
@@ -821,7 +821,7 @@
                                 <option value="range15_pct">AREA15 %</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SL INPUT</label>
                             <select id="factor-sl-value-live">
                                 <option value="0.5">0.5</option>
@@ -838,14 +838,14 @@
                     <input type="hidden" id="factor-hold-live" value="0">
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TP ANCHOR</label>
                         <select id="tr-exit-mode-live" onchange="onExitModeChange('live')">
                             <option value="tp" selected>FIXED RATIO</option>
                             <option value="ladder">LADDER RATIO</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TP INPUT <span id="rr-ratio-live-val" style="color:var(--accent)">1:2</span></label>
                         <select id="rr-ratio-live" onchange="onRrChange('live')">
                             <option value="1">1 x SL</option><option value="2" selected>2 x SL</option>
@@ -862,14 +862,14 @@
                     </select>
                 </div>
                 <div class="form-row">
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>TRAIL TP TRIGGER</label>
                         <select id="trail-trigger-pct-live" onchange="updateTrailBounds('live')">
                             <option value="0">OFF</option>
                             <option value="0.05" selected>5%</option>
                         </select>
                     </div>
-                    <div class="form-group" style="flex:1;">
+                    <div class="form-group fx1">
                         <label>
                             TRAIL SL <span id="trail-sl-pct-live-val" style="color:var(--accent)">+10% TP</span>
                             <span id="trail-sl-ticks-live-val" style="color:var(--text2)">20t / $30.00</span>
@@ -878,7 +878,7 @@
                         <input type="hidden" id="trail-sl-ticks-live" value="20">
                     </div>
                 </div>
-                <div class="panel-title" style="margin-top:14px;">RISK MANAGEMENT</div>
+                <div class="panel-title mt14">RISK MANAGEMENT</div>
                 <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
                 <div class="form-group">
                     <label>DAILY MAX TRADE LIMIT</label>
@@ -918,14 +918,14 @@
                     </select>
                 </div>
                     <div class="form-row">
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>SESSION MAX TRADE LIMIT</label>
                             <select id="tr-session-limit-live">
                                 <option value="1" selected>ON</option>
                                 <option value="0">OFF</option>
                             </select>
                         </div>
-                        <div class="form-group" style="flex:1;">
+                        <div class="form-group fx1">
                             <label>MARKET LIMIT</label>
                             <select id="tr-allowed-sessions-live">
                                 <option value="">ALL</option>
@@ -945,40 +945,40 @@
                  GO/STOP/FLAT、以及合併進標題的即時狀態。狀態走 /live/status-all。 -->
             <div class="panel">
                 <div class="panel-title">ACCOUNT MAIN</div>
-                <select id="live-acct-select-1" onchange="onLiveSlotChange(1)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選帳號 --</option></select>
-                <select id="live-acct-preset-1" onchange="onLiveSlotChange(1)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選 preset --</option></select>
-                <div style="display:flex;gap:6px;margin-top:8px;">
-                    <button class="btn btn-green" onclick="liveSlotGoLive(1)" style="flex:1;">GO LIVE</button>
-                    <button class="btn btn-amber" onclick="liveSlotStop(1)" style="flex:1;">STOP</button>
-                    <button class="btn btn-red" onclick="liveSlotFlatten(1)" style="flex:1;">FLAT</button>
+                <select id="live-acct-select-1" onchange="onLiveSlotChange(1)" class="slot-input"><option value="">-- 選帳號 --</option></select>
+                <select id="live-acct-preset-1" onchange="onLiveSlotChange(1)" class="slot-input" style="margin-top:6px;"><option value="">-- 選 preset --</option></select>
+                <div class="slot-btnrow">
+                    <button class="btn btn-green fx1" onclick="liveSlotGoLive(1)">GO LIVE</button>
+                    <button class="btn btn-amber fx1" onclick="liveSlotStop(1)">STOP</button>
+                    <button class="btn btn-red fx1" onclick="liveSlotFlatten(1)">FLAT</button>
                 </div>
-                <div style="color:var(--text2);font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2.0;margin-top:8px;">
-                    <div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text3);" id="live-slot-dot-1"></span>STATUS: <span id="live-slot-status-1" style="color:var(--text3);letter-spacing:1px;">—</span></div>
-                    <div style="padding-left:14px;">PHASE: <span id="live-slot-phase-1" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">MODE: <span id="live-slot-mode-1" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">MARKET: <span id="live-slot-mkt-1" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">日虧斷路: <span id="live-slot-dl-1" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">波動閘: <span id="live-slot-rv-1" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">DAILY PNL: <span id="live-slot-pnl-1" style="color:var(--text3);">--</span></div>
+                <div class="slot-status">
+                    <div class="slot-head"><span class="slot-dot" id="live-slot-dot-1"></span>STATUS: <span id="live-slot-status-1" style="color:var(--text3);letter-spacing:1px;">—</span></div>
+                    <div class="slot-line">PHASE: <span id="live-slot-phase-1" class="c-t3">--</span></div>
+                    <div class="slot-line">MODE: <span id="live-slot-mode-1" class="c-t3">--</span></div>
+                    <div class="slot-line">MARKET: <span id="live-slot-mkt-1" class="c-t3">--</span></div>
+                    <div class="slot-line">日虧斷路: <span id="live-slot-dl-1" class="c-t3">--</span></div>
+                    <div class="slot-line">波動閘: <span id="live-slot-rv-1" class="c-t3">--</span></div>
+                    <div class="slot-line">DAILY PNL: <span id="live-slot-pnl-1" class="c-t3">--</span></div>
                 </div>
             </div>
             <div class="panel">
                 <div class="panel-title">ACCOUNT MINOR</div>
-                <select id="live-acct-select-2" onchange="onLiveSlotChange(2)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選帳號 --</option></select>
-                <select id="live-acct-preset-2" onchange="onLiveSlotChange(2)" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:7px;margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;"><option value="">-- 選 preset --</option></select>
-                <div style="display:flex;gap:6px;margin-top:8px;">
-                    <button class="btn btn-green" onclick="liveSlotGoLive(2)" style="flex:1;">GO LIVE</button>
-                    <button class="btn btn-amber" onclick="liveSlotStop(2)" style="flex:1;">STOP</button>
-                    <button class="btn btn-red" onclick="liveSlotFlatten(2)" style="flex:1;">FLAT</button>
+                <select id="live-acct-select-2" onchange="onLiveSlotChange(2)" class="slot-input"><option value="">-- 選帳號 --</option></select>
+                <select id="live-acct-preset-2" onchange="onLiveSlotChange(2)" class="slot-input" style="margin-top:6px;"><option value="">-- 選 preset --</option></select>
+                <div class="slot-btnrow">
+                    <button class="btn btn-green fx1" onclick="liveSlotGoLive(2)">GO LIVE</button>
+                    <button class="btn btn-amber fx1" onclick="liveSlotStop(2)">STOP</button>
+                    <button class="btn btn-red fx1" onclick="liveSlotFlatten(2)">FLAT</button>
                 </div>
-                <div style="color:var(--text2);font-family:'IBM Plex Mono',monospace;font-size:11px;line-height:2.0;margin-top:8px;">
-                    <div style="display:flex;align-items:center;gap:8px;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text3);" id="live-slot-dot-2"></span>STATUS: <span id="live-slot-status-2" style="color:var(--text3);letter-spacing:1px;">—</span></div>
-                    <div style="padding-left:14px;">PHASE: <span id="live-slot-phase-2" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">MODE: <span id="live-slot-mode-2" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">MARKET: <span id="live-slot-mkt-2" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">日虧斷路: <span id="live-slot-dl-2" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">波動閘: <span id="live-slot-rv-2" style="color:var(--text3);">--</span></div>
-                    <div style="padding-left:14px;">DAILY PNL: <span id="live-slot-pnl-2" style="color:var(--text3);">--</span></div>
+                <div class="slot-status">
+                    <div class="slot-head"><span class="slot-dot" id="live-slot-dot-2"></span>STATUS: <span id="live-slot-status-2" style="color:var(--text3);letter-spacing:1px;">—</span></div>
+                    <div class="slot-line">PHASE: <span id="live-slot-phase-2" class="c-t3">--</span></div>
+                    <div class="slot-line">MODE: <span id="live-slot-mode-2" class="c-t3">--</span></div>
+                    <div class="slot-line">MARKET: <span id="live-slot-mkt-2" class="c-t3">--</span></div>
+                    <div class="slot-line">日虧斷路: <span id="live-slot-dl-2" class="c-t3">--</span></div>
+                    <div class="slot-line">波動閘: <span id="live-slot-rv-2" class="c-t3">--</span></div>
+                    <div class="slot-line">DAILY PNL: <span id="live-slot-pnl-2" class="c-t3">--</span></div>
                 </div>
             </div>
         </div>
@@ -991,20 +991,20 @@
             <!-- Live Top Bar -->
             <div id="live-top-bar" style="display:none;position:absolute;top:0;left:0;right:0;z-index:20;background:rgba(8,9,13,0.92);border-bottom:1px solid var(--border-h);backdrop-filter:blur(8px);font-family:'IBM Plex Mono',monospace;font-size:11px;">
                 <div style="display:flex;align-items:stretch;height:28px;">
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MARKET: <span id="lv-session" style="color:var(--amber);margin-left:6px;">--</span></div>
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">STRAT: <span id="lv-strategy" style="color:var(--cyan);margin-left:6px;">--</span></div>
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">MODE: <span id="lv-mode" style="color:var(--green);margin-left:6px;">--</span></div>
-                    <div style="display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);padding:0 12px;">持倉: <span id="lv-position" style="color:var(--text2);margin-left:6px;">FLAT</span></div>
+                    <div class="lv-cell">MARKET: <span id="lv-session" style="color:var(--amber);margin-left:6px;">--</span></div>
+                    <div class="lv-cell">STRAT: <span id="lv-strategy" style="color:var(--cyan);margin-left:6px;">--</span></div>
+                    <div class="lv-cell">MODE: <span id="lv-mode" style="color:var(--green);margin-left:6px;">--</span></div>
+                    <div class="lv-cell">持倉: <span id="lv-position" style="color:var(--text2);margin-left:6px;">FLAT</span></div>
                     <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:0 8px;">資金: <span id="lv-capital" style="color:var(--green);margin-left:6px;">--</span></div>
                 </div>
                 <!-- 1.0.9: Risk-gate 狀態列 — 每個封鎖型限制目前是否生效(綠=通行 / 灰=OFF / 紅=封鎖·休息) -->
                 <div id="lv-riskgate-row" style="display:flex;align-items:center;height:22px;border-top:1px solid var(--border);padding:0 12px;font-size:10px;letter-spacing:0.3px;gap:6px;flex-wrap:wrap;">
                     <span style="color:var(--text3);font-weight:600;margin-right:2px;white-space:nowrap;">風控閘</span>
-                    <span id="lv-rg-market" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;">盤段 --</span>
-                    <span id="lv-rg-session" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;">日限 --</span>
-                    <span id="lv-rg-dailyloss" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;">日虧 --</span>
-                    <span id="lv-rg-prevrv" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;">波動閘 --</span>
-                    <span id="lv-rg-tplock" style="padding:1px 6px;border-radius:3px;border:1px solid var(--border);color:var(--text3);white-space:nowrap;display:none;">TP鎖 --</span>
+                    <span id="lv-rg-market" class="rg-chip">盤段 --</span>
+                    <span id="lv-rg-session" class="rg-chip">日限 --</span>
+                    <span id="lv-rg-dailyloss" class="rg-chip">日虧 --</span>
+                    <span id="lv-rg-prevrv" class="rg-chip">波動閘 --</span>
+                    <span id="lv-rg-tplock" class="rg-chip" style="display:none;">TP鎖 --</span>
                 </div>
                 <!-- Status line — its own row, adapts to ML (confluence) or Trend -->
                 <div style="display:flex;align-items:center;height:22px;border-top:1px solid var(--border);padding:0 12px;font-size:10px;letter-spacing:0.3px;">
@@ -1017,8 +1017,8 @@
                     <span>VAH: <span id="lv-z-vah" style="color:var(--cyan);">--</span></span>
                     <span>POC: <span id="lv-z-poc" style="color:var(--amber);font-weight:600;">--</span></span>
                     <span>VAL: <span id="lv-z-val" style="color:var(--cyan);">--</span></span>
-                    <span style="color:var(--text2);">100%: <span id="lv-z-h100" style="color:var(--text3);">--</span> ~ <span id="lv-z-l100" style="color:var(--text3);">--</span></span>
-                    <span>ID: <span id="lv-z-id" style="color:var(--text3);">--</span></span>
+                    <span style="color:var(--text2);">100%: <span id="lv-z-h100" class="c-t3">--</span> ~ <span id="lv-z-l100" class="c-t3">--</span></span>
+                    <span>ID: <span id="lv-z-id" class="c-t3">--</span></span>
                 </div>
                 <!-- Signal row (shown on confirmed break) -->
                 <div id="lv-signal-row" style="display:none;height:24px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:20px;font-size:10px;letter-spacing:0.5px;">
@@ -1026,7 +1026,7 @@
                     <span>ENTRY: <span id="lv-sig-entry" style="color:var(--amber);">--</span></span>
                     <span>SL: <span id="lv-sig-sl" style="color:var(--red);">--</span></span>
                     <span>TP: <span id="lv-sig-tp" style="color:var(--green);">--</span></span>
-                    <span id="lv-sig-status" style="color:var(--text3);">PENDING</span>
+                    <span id="lv-sig-status" class="c-t3">PENDING</span>
                 </div>
                 <!-- ML decision-basis banner (confluence): why the order fired + params -->
                 <div id="lv-confluence-row" style="display:none;min-height:22px;border-top:1px solid var(--border);align-items:center;justify-content:center;gap:8px;font-size:10px;letter-spacing:0.3px;padding:2px 10px;">
@@ -1040,6 +1040,20 @@
             <div id="lv-levels-panel" style="display:none;position:absolute;left:64px;top:72px;z-index:19;background:rgba(8,9,13,0.86);border:1px solid var(--border-h);border-radius:4px;backdrop-filter:blur(6px);font-family:'IBM Plex Mono',monospace;font-size:10px;max-height:48%;overflow-y:auto;min-width:208px;max-width:240px;">
                 <div style="padding:4px 8px;border-bottom:1px solid var(--border);color:var(--cyan);font-weight:600;letter-spacing:0.5px;">匯流區間 · 權重 · 距現價</div>
                 <div id="lv-levels-body" style="padding:2px 0;"></div>
+            </div>
+
+            <!-- 1.0.9: 左下角信號圖例 — 對應 drawIndicatorSignalOverlay 三種信號 + 進場箭頭 -->
+            <div id="signal-legend" style="position:absolute;left:8px;bottom:34px;z-index:6;pointer-events:none;background:rgba(8,9,13,0.72);border:1px solid var(--border);border-radius:4px;padding:5px 9px;font-family:'IBM Plex Mono',monospace;font-size:9px;line-height:1.8;color:var(--text2);backdrop-filter:blur(4px);letter-spacing:0.3px;">
+                <div><span style="color:rgb(56,189,248);">▲</span><span style="color:rgb(168,85,247);">▼</span> EMAPMO 多/空</div>
+                <div><span style="color:rgba(56,189,248,0.85);">●</span><span style="color:rgba(168,85,247,0.85);">●</span> MREV 多/空</div>
+                <div><span style="color:rgba(250,204,21,0.9);">●</span><span style="color:rgba(244,63,94,0.9);">●</span> KDJMA 多/空</div>
+                <div><span style="color:#00e5a0;">↑</span><span style="color:#ff4060;">↓</span> 回測進場 賺/虧 · <span style="color:#ffa726;">↑</span> LIVE</div>
+            </div>
+
+            <!-- 1.0.9: 圖表快捷鈕 — ⌖ 自動居中(鎖定縱向比例,拖拽跟隨中價) / ≫ 跳到最新 -->
+            <div id="chart-quick-btns">
+                <button id="btn-auto-center" class="chart-sq-btn" title="自動居中:鎖定目前縱向比例,左右拖拽時自動跟隨可視中價(再按一次關閉)" onclick="toggleAutoCenter()">⌖</button>
+                <button id="btn-scroll-latest" class="chart-sq-btn" title="跳到最新 K 線" onclick="scrollToLatest()">≫</button>
             </div>
 
         </div>
@@ -1114,11 +1128,7 @@
                 </div>
                 <!-- 1.0.8: 移除 LEARN RESULT 面板(btab-learn) -->
                 <div id="btab-pnl" class="hidden">
-                    <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;border-bottom:1px solid var(--border);">
-                        <span style="font-size:11px;color:var(--cyan);font-weight:600;letter-spacing:0.5px;">PNL CURVE · $2K 移動回撤線 (Topstep trailing DD)</span>
-                        <button id="btn-refresh-pnl" onclick="renderPnlCurve()" style="font-size:10px;padding:2px 8px;cursor:pointer;">刷新</button>
-                        <span id="pnl-curve-hint" style="font-size:10px;color:var(--text3);"></span>
-                    </div>
+                    <!-- 1.0.9: 移除標題列(標題/刷新鈕/統計 hint)— 只留曲線,切分頁時自動重繪 -->
                     <div id="pnl-curve-body" style="position:relative;width:100%;"></div>
                 </div>
                 <div id="btab-log" class="hidden">
@@ -1191,6 +1201,6 @@
     </div>
 </div>
 
-    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=4&signalstyle=3&holdoff=1&ematri=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1"></script>
 </body>
 </html>

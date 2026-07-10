@@ -26,6 +26,7 @@ from backend.db.models import (
     BarUnit, StrategyParams, _extract_symbol,
     current_quarterly_contract_id, normalize_contract_id_to_front,  # 1.0.8: 自動換月
 )
+from backend.live.account_roles import load_roles  # 1.0.9: main account + 每帳號 preset
 from backend.live.engine import LiveTradingEngine
 from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, normalize_allowed_sessions
 
@@ -38,7 +39,6 @@ TRAIL_TICK_STEP = 5
 # Keep in sync with backend.api.routes.ML_TIMEFRAMES so terminal honours the
 # same area-timeframe / overlap selections the web UI saves into presets.
 ML_TIMEFRAMES = ("15m", "30m", "1h", "4h")
-PRESET_SCHEMA_VERSION = "2026-07-03-sigma-resting"
 DEFAULT_PRESET_NAME = "TREND MNQx1 DEFAULT"
 DEFAULT_PRESET_PARAMS = {
     "strategy": "trend",
@@ -103,14 +103,25 @@ DEFAULT_PRESET_PARAMS = {
     "pmo_signal_mode": "normal",
     "pmo_sl_atr": 1.0,
     "pmo_tp_atr": 1.0,
-    "pmo_max_hold_bars": 24,
+    "pmo_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
     "pmo_max_trades_per_day": 3,
     "pmo_warmup_bars": 150,
+    # 1.0.9: FACTOR 策略預設(與 routes._DEFAULT_PRESET_PARAMS 同步)
+    "factor_timeframe_minutes": 5,
+    "factor_signal_family": "emapmo",
+    "factor_side_mode": "all",
+    "factor_pmo_signal_mode": "normal",
+    "factor_session_va_filter": "off",
+    "factor_sl_rule": "atr",
+    "factor_tp_rule": "atr",
+    "factor_sl_value": 1.5,
+    "factor_tp_value": 2.0,
+    "factor_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
+    "factor_max_trades_per_day": 3,
+    "factor_warmup_bars": 150,
     # 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 }
-PRESET_RENAMES = {}
-REMOVED_PRESET_NAMES = set()
-BUILTIN_PRESETS = {}
+# 1.0.9: PRESET_RENAMES/REMOVED/BUILTIN 清理邏輯移除 — presets.json 由 web 端維護
 
 logging.basicConfig(
     level=logging.INFO,
@@ -121,18 +132,48 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("ancserTPX.terminal")
 
 
-def _preset_name_uses_allowed_model(name: str) -> bool:
-    parts = str(name or "").split()
-    if len(parts) < 3:
-        return False
-    model_part = " ".join(parts[1:]).upper()
-    return (
-        model_part.startswith("TREND #")
-        or model_part.startswith("DAY ZONE #")
-        or model_part.startswith("DISTRIBUTION #")
-        or model_part.startswith("PMO #")
-        or model_part.startswith("FACTOR #")
-    )
+# 1.0.9: FACTOR 參數正規化 — 與 backend.api.routes 的同名函式保持同步。
+# (不直接 import routes:那會拉起整個 FastAPI 模組與其模組級狀態。)
+def _normalize_factor_family(value) -> str:
+    v = str(value or "emapmo").strip().lower()
+    aliases = {
+        "pmo": "emapmo",
+        "ema_pmo": "emapmo",
+        "mrev": "momentum_reversion",
+        "momentum": "momentum_reversion",
+        "kdjma": "icefishball",
+        "ifb": "icefishball",
+    }
+    v = aliases.get(v, v)
+    return v if v in ("emapmo", "momentum_reversion", "icefishball") else "emapmo"
+
+
+def _normalize_factor_side(value) -> str:
+    v = str(value or "all").strip().lower()
+    return v if v in ("all", "long_only", "short_only") else "all"
+
+
+def _normalize_factor_rule(value) -> str:
+    v = str(value or "atr").strip().lower()
+    aliases = {
+        "ticks": "trend_ticks",
+        "trend": "trend_ticks",
+        "trend_sl": "trend_ticks",
+        "rr": "trend_rr",
+        "trend_tp": "trend_rr",
+    }
+    v = aliases.get(v, v)
+    return v if v in ("fixed", "atr", "atr_blend", "range15_pct", "trend_ticks", "trend_rr") else "atr"
+
+
+def _normalize_factor_session_va_filter(value) -> str:
+    v = str(value or "off").strip().lower()
+    return "outside" if v in ("outside", "outside_va", "session_outside", "va_outside") else "off"
+
+
+def _normalize_factor_pmo_mode(value) -> str:
+    v = str(value or "normal").strip().lower()
+    return v if v in ("normal", "early", "both") else "normal"
 
 
 def _activate_preset_model(preset: Dict[str, Any]) -> None:
@@ -177,6 +218,12 @@ def _env_int(name: str, default: int = 0) -> int:
         return default
 
 
+# 1.0.9: 對齊 web(routes._ensure_builtin_presets)的 preset 載入行為:
+#   - schema 版本不同「不再清空」presets(web 早已改為保留使用者存檔)
+#   - 不再按名稱刪 preset、不再用 allowed_keys 剝欄位 —— presets.json 由
+#     web 端維護,terminal 只讀不寫,完整保留 factor_*/tr_*/新版欄位
+#   - 逐 preset 正規化與 web 相同:策略白名單(+factor)、自動換月、VA 吸附、
+#     HOLD 強制 0、預設 sessions、area_timeframe/tf_combo/method
 def _load_presets_file() -> dict:
     data = None
     try:
@@ -193,57 +240,18 @@ def _load_presets_file() -> dict:
     if not isinstance(presets, dict):
         presets = {}
         data["presets"] = presets
-    if data.get("preset_schema") != PRESET_SCHEMA_VERSION:
-        presets.clear()
-        data["preset_schema"] = PRESET_SCHEMA_VERSION
-        data["last_used_bt"] = "default"
-        data["last_used_live"] = "default"
     for name, params in list(presets.items()):
         if not isinstance(params, dict):
             continue
-        if not _preset_name_uses_allowed_model(str(name)):
-            presets.pop(name, None)
-            continue
-        upper_name = str(name).upper()
-        if any(label in upper_name for label in (" CODEX ", " CLAUDE ", " FABLE ", " USER ")):
-            presets.pop(name, None)
-            continue
         strategy = str(params.get("strategy") or "").lower()
-        # 1.0.8: mlc2 已移除 — 舊 preset 一律歸一化為 trend;+fade 放行
         params["strategy"] = strategy if strategy in ("fade", "sigma", "pmo", "factor") else "trend"
-        # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         params["contract_id"] = normalize_contract_id_to_front(params.get("contract_id") or "")
-        allowed_keys = {
-            "strategy", "tp_ticks", "sl_ticks", "trail_sl_ticks", "trail_sl_pct",
-            "trail_trigger_pct", "trail_enabled", "candle_seconds", "contract_id",
-            "contract_size", "full_tp_lock", "one_trade_per_session_direction",
-            "value_area_pct", "area_timeframe", "method", "tf_combo",
-            "tr_overlap_trade_tf",
-            "tr_exit_mode", "tr_daily_loss_stop", "tr_daily_win_stop",  # 1.0.8: ladder 出場 + 日虧斷路器
-            "tr_prev_rv_gate", "fade_tp_frac", "fade_entry_mode",  # 1.0.9
-            "sigma_window_minutes", "sigma_method", "sigma_entry_mode",
-            "sigma_accept_mode", "sigma_start", "sigma_max",
-            "sigma_target_mode", "sigma_stop_span", "sigma_accept_sigma",
-            "sigma_accept_bars",
-            "pmo_timeframe_minutes", "pmo_signal_mode", "pmo_sl_atr", "pmo_tp_atr",
-            "pmo_max_hold_bars", "pmo_max_trades_per_day", "pmo_warmup_bars",
-            "rr_ratio", "breakout_confirm_bars", "skip_zone_stability",
-            "tr_tp_ticks", "tr_sl_ticks", "tr_trail_sl_ticks", "tr_trail_sl_pct",
-            "tr_trail_trigger_pct", "tr_trail_enabled", "tr_full_tp_lock",
-            "tr_one_trade_per_session", "tr_allowed_sessions",
-            "conf_band_ticks", "conf_min_distinct_tf", "conf_rr", "conf_model_name",
-            "conf_wait_minutes", "conf_base_minutes", "conf_min_prob",
-            "conf_ev_floor", "conf_rr_grid", "conf_use_scorer",
-            "conf_enable_breakout", "conf_max_risk_ticks", "conf_sl_reference_tf", "conf_trail_trigger_pct",
-            "conf_trail_lock_pct", "conf_full_tp_lock",
-            "conf_session_limit", "conf_allowed_sessions", "conf_shadow",
-            # 1.0.8: 移除 mlc2_* allowed keys(ml_consolidation_v2 已刪除)
-        }
-        for key in list(params.keys()):
-            if key not in allowed_keys:
-                params.pop(key, None)
-        params["value_area_pct"] = _normalize_value_area_pct(params.get("value_area_pct"))  # 1.0.8: 保留 70/80
-        if params["strategy"] in ("trend", "sigma", "pmo") and "tr_allowed_sessions" not in params:
+        params["value_area_pct"] = _normalize_value_area_pct(params.get("value_area_pct"))
+        # 1.0.9: HOLD 5m 系統已移除 — 一律 SL/TP-only
+        for hold_key in ("factor_max_hold_bars", "pmo_max_hold_bars"):
+            if params.get(hold_key) not in (0, None):
+                params[hold_key] = 0
+        if params["strategy"] in ("trend", "sigma", "pmo", "factor") and "tr_allowed_sessions" not in params:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
         area_tf = str(params.get("area_timeframe") or "15m").lower()
         if area_tf not in ML_TIMEFRAMES and area_tf != "session":
@@ -252,32 +260,10 @@ def _load_presets_file() -> dict:
         params["tf_combo"] = [t for t in (params.get("tf_combo") or []) if t in ML_TIMEFRAMES]
         if params.get("method") == "overlap" and len(params["tf_combo"]) < 2:
             params["method"] = "single"
-        new_name = None
-        if str(name).startswith("BR "):
-            new_name = "TR " + str(name)[3:]
-        if new_name and new_name != name:
-            if new_name not in presets:
-                presets[new_name] = params
-            del presets[name]
-    for old_name, new_name in PRESET_RENAMES.items():
-        if old_name in presets:
-            presets[new_name] = presets.pop(old_name)
-            for key in ("last_used_bt", "last_used_live"):
-                if data.get(key) == old_name:
-                    data[key] = new_name
-    for name in REMOVED_PRESET_NAMES:
-        presets.pop(name, None)
-    for name, params in BUILTIN_PRESETS.items():
-        if presets.get(name) != params:
-            presets[name] = dict(params)
-    if not presets:
-        data["last_used_bt"] = "default"
-        data["last_used_live"] = "default"
     if data.get("last_used_bt") != "default" and data.get("last_used_bt") not in presets:
         data["last_used_bt"] = "default"
     if data.get("last_used_live") != "default" and data.get("last_used_live") not in presets:
         data["last_used_live"] = "default"
-    data["fixed_presets"] = []
     return data
 
 
@@ -393,10 +379,20 @@ def _resolve_trail_ticks(trail_ticks: Any, trail_pct: Any, sl_ticks: Any, tp_tic
     return _clamp_trail_ticks(trail_ticks, sl_ticks, tp_ticks, trigger_pct)
 
 
-def _load_default_preset() -> tuple[str, Dict[str, Any], str]:
+def _load_default_preset(account_id: Optional[str] = None) -> tuple[str, Dict[str, Any], str]:
     data = _load_presets_file()
     presets = data.get("presets") or {}
-    candidates = [
+    candidates: List[tuple[str, Any]] = []
+    # 1.0.9: 優先用 account_roles.json 裡「這個帳號指定的 preset」
+    # (web LIVE 面板每帳號一 preset 的設定),其次才是全域 last-used。
+    if account_id:
+        try:
+            acc_cfg = (load_roles().get("accounts") or {}).get(str(account_id)) or {}
+            if acc_cfg.get("preset"):
+                candidates.append(("account_roles", acc_cfg["preset"]))
+        except Exception:
+            pass
+    candidates += [
         ("last_used_live", data.get("last_used_live")),
         ("last_used_bt", data.get("last_used_bt")),
     ]
@@ -418,6 +414,8 @@ def _load_default_preset() -> tuple[str, Dict[str, Any], str]:
 
 
 def _select_account(accounts: list[dict]) -> Optional[dict]:
+    """帳號優先序:.env TOPSTEPX_ACCOUNT_ID > account_roles.json 的 main account
+    > 第一個 PRACTICE > 第一個 canTrade。"""
     active = [a for a in accounts if a.get("canTrade", False)]
     if not active:
         return None
@@ -428,6 +426,19 @@ def _select_account(accounts: list[dict]) -> Optional[dict]:
             if int(acc.get("id") or 0) == wanted:
                 return acc
         raise RuntimeError(f"TOPSTEPX_ACCOUNT_ID={wanted} was not found in active accounts")
+
+    # 1.0.9: 用 web LIVE 面板設定的固定主帳號(account_roles.json)
+    try:
+        main_id = str(load_roles().get("main_account_id") or "")
+    except Exception:
+        main_id = ""
+    if main_id:
+        for acc in active:
+            if str(acc.get("id")) == main_id:
+                logger.info("Using main account from account_roles.json: %s (%s)",
+                            acc.get("name", ""), main_id)
+                return acc
+        logger.warning("main_account_id=%s 不在可交易帳號內,改用 fallback 順序", main_id)
 
     practice = [a for a in active if "PRAC" in str(a.get("name", "")).upper()]
     return (practice or active)[0]
@@ -489,8 +500,10 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
 
     # v1.0.6: confluence (explainable ML) mode — driven by preset["strategy"].
     # 1.0.8: +fade(前日 VA 回歸)
+    # 1.0.9: +factor(EMAPMO / MREV / KDJMA)— 修復:之前漏了 factor,
+    # FACTOR preset 會被靜默降級成 trend 突破策略跑。
     strategy_mode = str(preset.get("strategy") or "trend").lower()
-    if strategy_mode not in ("fade", "sigma", "pmo"):
+    if strategy_mode not in ("fade", "sigma", "pmo", "factor"):
         strategy_mode = "trend"
 
     def _conf_float(key, default):
@@ -562,6 +575,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
             "ladder" if str(preset.get("tr_exit_mode") or "tp").lower() == "ladder" else "tp"
         ),
         tr_daily_loss_stop=max(0, min(9, _conf_int("tr_daily_loss_stop", 0))),
+        tr_daily_win_stop=max(0, min(9, _conf_int("tr_daily_win_stop", 0))),  # 1.0.9: 日盈休息(之前漏傳)
         # 1.0.9: prevRV regime gate + fade 專用
         tr_prev_rv_gate=max(0, min(60, _conf_int("tr_prev_rv_gate", 0))),
         fade_tp_frac=float(preset.get("fade_tp_frac", 0.75) or 0.75),
@@ -597,6 +611,19 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         pmo_max_hold_bars=0,   # 1.0.9: HOLD 5m system removed → SL/TP-only exits
         pmo_max_trades_per_day=max(0, _conf_int("pmo_max_trades_per_day", 3)),
         pmo_warmup_bars=max(20, _conf_int("pmo_warmup_bars", 150)),
+        # 1.0.9: FACTOR 參數(與 routes 的 StrategyParams 組裝同步)
+        factor_timeframe_minutes=max(1, _conf_int("factor_timeframe_minutes", 5)),
+        factor_signal_family=_normalize_factor_family(preset.get("factor_signal_family", "emapmo")),
+        factor_side_mode=_normalize_factor_side(preset.get("factor_side_mode", "all")),
+        factor_pmo_signal_mode=_normalize_factor_pmo_mode(preset.get("factor_pmo_signal_mode", "normal")),
+        factor_session_va_filter=_normalize_factor_session_va_filter(preset.get("factor_session_va_filter", "off")),
+        factor_sl_rule=_normalize_factor_rule(preset.get("factor_sl_rule", "atr")),
+        factor_tp_rule=_normalize_factor_rule(preset.get("factor_tp_rule", "atr")),
+        factor_sl_value=max(0.01, _conf_float("factor_sl_value", 1.5)),
+        factor_tp_value=max(0.01, _conf_float("factor_tp_value", 2.0)),
+        factor_max_hold_bars=0,  # 1.0.9: HOLD 5m system removed → SL/TP-only exits
+        factor_max_trades_per_day=max(0, _conf_int("factor_max_trades_per_day", 3)),
+        factor_warmup_bars=max(20, _conf_int("factor_warmup_bars", 150)),
         full_tp_lock=primary["lock"],
         one_trade_per_session_direction=bool(preset.get("one_trade_per_session_direction", True)),
         tr_one_trade_per_session=bool(preset.get("tr_one_trade_per_session", True)),
@@ -664,8 +691,6 @@ async def run_terminal_live() -> int:
         logger.error("Missing TOPSTEPX_USERNAME or TOPSTEPX_API_KEY in .env")
         return 2
 
-    preset_name, preset, preset_source = _load_default_preset()
-
     client = TopstepXClient(username=username, api_key=api_key, use_demo=use_demo)
     engine: Optional[LiveTradingEngine] = None
     stop_event = asyncio.Event()
@@ -684,14 +709,18 @@ async def run_terminal_live() -> int:
     try:
         logger.info("ancserTPX terminal starting")
         logger.info("API: %s | user=%s", "demo" if use_demo else "production", username)
-        logger.info("Preset: %s (%s)", preset_name, preset_source)
-        _activate_preset_model(preset)
 
         await client.authenticate()
         accounts = await client.get_accounts()
         account = _select_account(accounts)
         if not account:
             raise RuntimeError("No active tradable account found")
+
+        # 1.0.9: 先選帳號,preset 才能按「每帳號指定」優先(account_roles.json),
+        # 其次 last_used_live → last_used_bt → default。
+        preset_name, preset, preset_source = _load_default_preset(str(account["id"]))
+        logger.info("Preset: %s (%s)", preset_name, preset_source)
+        _activate_preset_model(preset)
 
         contract_id = (
             str(preset.get("contract_id") or "").strip()

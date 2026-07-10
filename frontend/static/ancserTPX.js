@@ -3560,6 +3560,8 @@ function initChart() {
         borderUpColor: '#888888',
         wickDownColor: '#555555',
         wickUpColor: '#888888',
+        // 1.0.9: 自動居中(⌖ 鈕)— 開啟時鎖定縱向比例,只平移中心跟隨可視中價
+        autoscaleInfoProvider: (original) => _autoCenterProvider(original),
     });
 
     new ResizeObserver(() => {
@@ -3908,7 +3910,8 @@ function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
             const right = Math.min(W, Math.max(x1, x2));
             if (right <= 0 || left >= W || right - left < 2) return;
 
-            ctx.fillRect(left, 0, right - left, H);
+            // 1.0.9: 移除整列淡紅底填色(fillRect)— 疊在其他半透明層上會
+            // 變成灰白色豎柱;斜線 + 標籤已足夠標示禁交易時段。
             ctx.save();
             ctx.beginPath();
             ctx.rect(left, 0, right - left, H);
@@ -4293,7 +4296,143 @@ function drawFadeDailyLevels(zones) {
 // -- Decision-zone overlay --
 // Draw only the primary VAH/VAL range used by each trade decision.
 
+// ── 1.0.9: 自動居中(固定比例)+ 一鍵到最新 ──────────────────
+// ⌖ 開啟時:縱向比例(價格/像素)鎖定在開啟當下的值,左右拖拽瀏覽歷史時
+// 視窗中心自動平滑跟隨「可視 K 線的中價」(類似跟著 200EMA 走),不需要
+// 手動上下拉;candle ratio 不會被 autoscale 改變,只平移中心。
+let _autoCenterOn = false;
+let _acSpan = null;    // 鎖定的可視價格跨度(= 開啟當下的縱向比例)
+let _acMid = null;     // 平滑後的中心價
+let _acKickRAF = null;
+
+function _visibleMidPrice() {
+    try {
+        const vr = chart.timeScale().getVisibleRange();
+        const cd = window._lastChartData || [];
+        if (!vr || !cd.length) return null;
+        let i0 = _nearestBarIndex(vr.from);
+        let i1 = _nearestBarIndex(vr.to);
+        if (i0 === null || i1 === null) return null;
+        if (i1 < i0) { const t = i0; i0 = i1; i1 = t; }
+        // zoom out 時可視 bar 數以萬計 — 取樣最多 ~400 根算高低即可
+        const step = Math.max(1, Math.floor((i1 - i0) / 400));
+        let lo = Infinity, hi = -Infinity;
+        for (let i = i0; i <= i1; i += step) {
+            const b = cd[i];
+            if (b.low < lo) lo = b.low;
+            if (b.high > hi) hi = b.high;
+        }
+        if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+        return (lo + hi) / 2;
+    } catch (_) { return null; }
+}
+
+function _autoCenterProvider(original) {
+    const base = original();
+    if (!_autoCenterOn || !_acSpan) return base;
+    const target = _visibleMidPrice();
+    if (target === null) return base;
+    // 平滑滑動:每次重算向目標移動 35% — 拖拽時有緩動的「slide」感
+    _acMid = (_acMid === null) ? target : _acMid + (target - _acMid) * 0.35;
+    // 尚未收斂 → 排一次重算,放開拖拽後會自己滑到定位
+    if (Math.abs(target - _acMid) > _acSpan * 0.002) _acScheduleKick();
+    const half = _acSpan / 2;
+    return { priceRange: { minValue: _acMid - half, maxValue: _acMid + half } };
+}
+
+function _acScheduleKick() {
+    if (_acKickRAF) return;
+    _acKickRAF = requestAnimationFrame(() => {
+        _acKickRAF = null;
+        // 重套 autoScale 觸發重算(provider 會再被呼叫一次)
+        try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
+        try { chart.timeScale().applyOptions({}); } catch (_) {}
+    });
+}
+
+function toggleAutoCenter() {
+    _autoCenterOn = !_autoCenterOn;
+    const btn = document.getElementById('btn-auto-center');
+    if (_autoCenterOn) {
+        // 鎖定當下的縱向比例:用座標反推目前可視價格跨度
+        _acSpan = null;
+        try {
+            const container = document.getElementById('chart-container');
+            const paneH = container.clientHeight - _timeAxisHeight();
+            const pTop = candleSeries.coordinateToPrice(0);
+            const pBot = candleSeries.coordinateToPrice(paneH);
+            if (pTop != null && pBot != null && Number.isFinite(pTop) && Number.isFinite(pBot)) {
+                _acSpan = Math.abs(pTop - pBot);
+            }
+        } catch (_) {}
+        _acMid = null;
+        if (!_acSpan) {
+            _autoCenterOn = false;
+            log('自動居中開啟失敗(無法取得目前縱向比例)', 'warn');
+        } else {
+            try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
+            log('自動居中 ON — 縱向比例鎖定,拖拽自動跟隨可視中價', 'info');
+        }
+    } else {
+        // 回復預設 autoscale(範圍重新由資料決定)
+        try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
+        log('自動居中 OFF — 回復預設 autoscale', 'info');
+    }
+    if (btn) btn.classList.toggle('active', _autoCenterOn);
+    _acScheduleKick();
+}
+
+function scrollToLatest() {
+    try { chart.timeScale().scrollToRealTime(); } catch (_) {}
+}
+
 let posToolCanvas = null;
+
+// 1.0.9: 時間→X 統一走「最近 bar 索引 + logicalToCoordinate」。
+// timeToCoordinate 對非整分時間(live 成交帶秒數)或可視範圍外回 null;
+// 舊 fallback 按可視「秒數」線性外推,遇到週末/維護縫隙會把幾分鐘的單
+// 畫成超寬的半透明長方形(zoom out 特別明顯)。bar 索引空間不受縫隙影響。
+function _nearestBarIndex(sec) {
+    const cd = window._lastChartData;
+    if (!cd || cd.length === 0) return null;
+    let lo = 0, hi = cd.length - 1;
+    if (sec <= cd[0].time) return 0;
+    if (sec >= cd[hi].time) return hi;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cd[mid].time < sec) lo = mid + 1; else hi = mid;
+    }
+    return (lo > 0 && (sec - cd[lo - 1].time) <= (cd[lo].time - sec)) ? lo - 1 : lo;
+}
+
+function _timeToXViaBars(sec) {
+    if (sec == null || !Number.isFinite(sec)) return null;
+    let x = null;
+    try { x = chart.timeScale().timeToCoordinate(sec); } catch (_) {}
+    if (x !== null && x !== undefined) return x;
+    const idx = _nearestBarIndex(sec);
+    if (idx === null) return null;
+    // 1.0.9: 最近 bar 和目標時間差 > 30 分鐘 = 該時間不在已載入的資料範圍內。
+    // live trade history 回溯 60 天,比圖表資料更早的交易會被 clamp 到第 1 根
+    // bar,紅綠框畫在錯誤的位置(「飛出去」)。回 null → 該筆不畫框。
+    // backtest 交易一定落在資料範圍內,不受影響。
+    const cd = window._lastChartData;
+    if (Math.abs(cd[idx].time - sec) > 1800) return null;
+    try {
+        const xi = chart.timeScale().logicalToCoordinate(idx);
+        if (xi !== null && xi !== undefined) return xi;
+    } catch (_) {}
+    return null;
+}
+
+// 1.0.9: 底部時間軸高度 — 覆蓋層繪製夾在價格窗格內用
+function _timeAxisHeight() {
+    try {
+        const h = chart.timeScale().height();
+        if (h > 0) return h;
+    } catch (_) {}
+    return 28;
+}
 
 function createPosToolCanvas() {
     if (posToolCanvas) return posToolCanvas;
@@ -4324,23 +4463,18 @@ function drawPositionTools(trades) {
     const chartW = container.clientWidth;
     const chartH = container.clientHeight;
 
+    // 1.0.9: 繪製夾在價格窗格內 — 交易框/區間線不再蓋住底部時間軸
+    ctx.beginPath();
+    ctx.rect(0, 0, chartW, chartH - _timeAxisHeight());
+    ctx.clip();
+
     // Only draw trades whose entry is visible in the current viewport
     let drawn = 0;
     const maxDraw = 25; // limit to avoid clutter
 
-    // 1.0.8: 時間→X 座標,timeToCoordinate 對可視範圍外回 null 時改用
-    // 可視區秒/像素線性外推 — 修復 zoom in/out 時框寬退化成固定像素的問題。
-    const timeToX = (sec) => {
-        if (sec == null || !Number.isFinite(sec)) return null;
-        let x = null;
-        try { x = chart.timeScale().timeToCoordinate(sec); } catch (_) {}
-        if (x !== null && x !== undefined) return x;
-        try {
-            const vr = chart.timeScale().getVisibleRange();
-            if (!vr || vr.to <= vr.from) return null;
-            return (sec - vr.from) * (chartW / (vr.to - vr.from));
-        } catch (_) { return null; }
-    };
+    // 1.0.9: 時間→X 改走 bar 索引映射(見 _timeToXViaBars)— 修復 zoom out 時
+    // 短單的紅綠底框被線性外推畫成超寬灰白色長方形的問題。
+    const timeToX = (sec) => _timeToXViaBars(sec);
 
     const drawHLine = (x0, x1, y, color) => {
         if (y === null || y < -50 || y > chartH + 50) return;
@@ -4442,6 +4576,13 @@ function drawPositionTools(trades) {
         const tp = tradePrice(t, ['original_tp_price', 'tp_price', 'tp']);
         if (!Number.isFinite(entry) || !Number.isFinite(sl) || !Number.isFinite(tp)) return false;
 
+        // 1.0.9: 進出場相隔 > 8 小時的「交易」是跨日配對殘影(本系統 SL/TP
+        // 內日出場,不會持倉 8h+)— 不畫底框,箭頭標記照常顯示。
+        if (t.entry_time && t.exit_time) {
+            const durSec = isoToChartTime(t.exit_time) - isoToChartTime(t.entry_time);
+            if (Number.isFinite(durSec) && durSec > 8 * 3600) return false;
+        }
+
         const yEntry = candleSeries.priceToCoordinate(entry);
         const ySL = candleSeries.priceToCoordinate(sl);
         const yTP = candleSeries.priceToCoordinate(tp);
@@ -4461,13 +4602,21 @@ function drawPositionTools(trades) {
         const redTop = Math.min(yEntry, ySL);
         const redH = Math.abs(ySL - yEntry);
 
+        // 1.0.9: SL/TP 價格在可視範圍外時,該側底色會撐滿整個豎列
+        // (zoom out 時看起來像灰白色大柱)→ 邊界不在窗格內就不畫該側。
+        // 高度 < 6px 的一側也不畫:zoom out 價格軸壓縮後,底色會退化成
+        // 超長的細條(使用者回報「高度不足時超長延伸」)。
+        const paneH = chartH - _timeAxisHeight();
+        const inPane = (yy) => yy >= -20 && yy <= paneH + 20;
+        const MIN_FILL_H = 6;
+
         ctx.save();
         ctx.setLineDash([]);
-        if (greenH > 1) {
+        if (greenH >= MIN_FILL_H && inPane(yEntry) && inPane(yTP)) {
             ctx.fillStyle = 'rgba(0, 229, 160, 0.105)';
             ctx.fillRect(x0, greenTop, xEnd - x0, greenH);
         }
-        if (redH > 1) {
+        if (redH >= MIN_FILL_H && inPane(yEntry) && inPane(ySL)) {
             ctx.fillStyle = 'rgba(255, 64, 96, 0.115)';
             ctx.fillRect(x0, redTop, xEnd - x0, redH);
         }
@@ -4480,7 +4629,8 @@ function drawPositionTools(trades) {
         if (drawn >= maxDraw) return;
 
         const entryTime = isoToChartTime(t.entry_time);
-        const entryX = chart.timeScale().timeToCoordinate(entryTime);
+        // 1.0.9: live 成交時間帶秒數,timeToCoordinate 直查會回 null → bar 索引映射
+        const entryX = timeToX(entryTime);
         if (entryX === null) return;
         if (entryX < -200 || entryX > chartW + 50) return;
 
@@ -5375,8 +5525,9 @@ const INDICATOR_SIGNAL_TYPES = {
     // 1.0.9: EMAPMO shows a large up/down triangle above/below the candle
     // (candle-body tint was invisible on 1m bars). long → up triangle under
     // the low; short → down triangle over the high.
-    emapmo: { kind: 'triangle', radius: 8 },
-    momentum_reversion: { kind: 'bubble', radius: 16 },
+    emapmo: { kind: 'triangle', radius: 6 },
+    // 1.0.9: MREV 泡泡縮小到與 KDJMA 圓點同尺寸 (16 → 6)
+    momentum_reversion: { kind: 'bubble', radius: 6 },
     icefishball: { kind: 'dot', radius: 6 },
 };
 const INDICATOR_LONG_RGB = '56, 189, 248';
@@ -5470,14 +5621,8 @@ function _indicatorSignalPrice(row) {
 }
 
 function _indicatorTimeToX(sec, W, visibleRange) {
-    if (sec == null || !Number.isFinite(sec)) return null;
-    let x = null;
-    try { x = chart.timeScale().timeToCoordinate(sec); } catch (_) {}
-    if (x !== null && x !== undefined) return x;
-    if (visibleRange && visibleRange.to > visibleRange.from) {
-        return (sec - visibleRange.from) * (W / (visibleRange.to - visibleRange.from));
-    }
-    return null;
+    // 1.0.9: 改走 bar 索引映射 — 時間線性外推在資料縫隙處會把信號畫錯位/疊在一起
+    return _timeToXViaBars(sec);
 }
 
 function _drawIndicatorBubble(ctx, x, y, radius, rgb) {
@@ -5498,9 +5643,10 @@ function _drawKdjmaDot(ctx, x, y, radius, rgb) {
 // the bar low; dir='short' → down triangle just above the bar high. yRef is the
 // screen-Y of the bar low (long) or high (short).
 function _drawIndicatorTriangle(ctx, cx, yRef, dir, rgb) {
-    const half = 8;      // half base width
-    const height = 13;   // triangle height (large, visible on 1m bars)
-    const gap = 6;       // gap between bar and triangle
+    // 1.0.9: 縮小到與 KDJMA 圓點 (r=6, 直徑12px) 相同視覺大小
+    const half = 6;      // half base width (base 12px)
+    const height = 10;   // triangle height
+    const gap = 4;       // gap between bar and triangle
     ctx.beginPath();
     if (dir === 'short') {
         const topY = yRef - gap - height;   // above the high, apex points down
@@ -5572,6 +5718,11 @@ function drawIndicatorSignalOverlay() {
     ctx.clearRect(0, 0, W, H);
 
     if (!_indicatorSignalRows || _indicatorSignalRows.length === 0) return;
+
+    // 1.0.9: 夾在價格窗格內 — 信號不再蓋住底部時間軸
+    ctx.beginPath();
+    ctx.rect(0, 0, W, H - _timeAxisHeight());
+    ctx.clip();
 
     let visibleRange = null;
     try { visibleRange = chart.timeScale().getVisibleRange(); } catch (_) {}
@@ -6729,7 +6880,6 @@ function _fmtTs(s) {
 // cumulative profit reaches +$2000. Mirrors Topstep's EOD trailing drawdown.
 function renderPnlCurve() {
     const host = document.getElementById('pnl-curve-body');
-    const hint = document.getElementById('pnl-curve-hint');
     if (!host) return;
 
     const css = getComputedStyle(document.documentElement);
@@ -6744,8 +6894,16 @@ function renderPnlCurve() {
     const trades = (backtestData && backtestData.trades) ? backtestData.trades.slice() : [];
     const done = trades.filter(t => t.pnl != null && (t.exit_time || t.entry_time));
 
+    // 1.0.9: live 已平倉交易(紫色曲線)。無回測時 live 直接當主曲線。
+    const liveDone = (window._liveCompletedTrades || [])
+        .filter(t => t.pnl != null && (t.exit_time || t.entry_time))
+        .slice()
+        .sort((a, b) => new Date(a.exit_time || a.entry_time) - new Date(b.exit_time || b.entry_time));
+    const baseIsLive = done.length === 0 && liveDone.length > 0;
+    if (baseIsLive) done.push(...liveDone);
+
     const content = host.closest('.bottom-content');
-    const headerH = 30;
+    const headerH = 0; // 1.0.9: 標題列已移除
     const W = Math.max(320, host.clientWidth || (content ? content.clientWidth : 600));
     const H = Math.max(220, (content ? content.clientHeight : 300) - headerH - 6);
     host.style.height = H + 'px';
@@ -6770,8 +6928,7 @@ function renderPnlCurve() {
         ctx.fillStyle = C.text2;
         ctx.font = '12px "IBM Plex Mono", monospace';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('尚無回測成交 — 先跑一次 BACKTEST', W / 2, H / 2);
-        if (hint) hint.textContent = '';
+        ctx.fillText('尚無成交 — 先跑 BACKTEST 或載入 LIVE 交易', W / 2, H / 2);
         return;
     }
 
@@ -6802,8 +6959,16 @@ function renderPnlCurve() {
     let breachIdx = -1;
     for (let i = 0; i < pts.length; i++) { if (pts[i].cum <= thrAt[i]) { breachIdx = i; break; } }
 
+    // 1.0.9: 回測存在時,live 曲線作為疊加層(各自按成交序號鋪滿整個寬度,非時間對齊)
+    let lpts = [];
+    if (!baseIsLive && liveDone.length) {
+        let lcum = 0;
+        lpts = liveDone.map(t => { lcum += (t.pnl || 0); return { cum: lcum }; });
+    }
+
     let lo = -DD, hi = DD * 0.25;
     for (const p of pts) { if (p.cum < lo) lo = p.cum; if (p.cum > hi) hi = p.cum; }
+    for (const p of lpts) { if (p.cum < lo) lo = p.cum; if (p.cum > hi) hi = p.cum; }
     for (const v of thrAt) { if (v < lo) lo = v; }
     const vpad = (hi - lo) * 0.08 || 100; lo -= vpad; hi += vpad;
 
@@ -6850,6 +7015,18 @@ function renderPnlCurve() {
     pts.forEach((p, i) => { const xi = x(i), yi = y(p.cum); i ? ctx.lineTo(xi, yi) : ctx.moveTo(xi, yi); });
     ctx.stroke();
 
+    // 1.0.9: live 累計 PnL 疊加曲線(紫色)
+    if (lpts.length) {
+        const m = lpts.length;
+        const xl = i => padL + (m <= 1 ? plotW / 2 : (i / (m - 1)) * plotW);
+        ctx.lineWidth = 1.6; ctx.strokeStyle = '#a855f7'; ctx.beginPath();
+        lpts.forEach((p, i) => { const xi = xl(i), yi = y(p.cum); i ? ctx.lineTo(xi, yi) : ctx.moveTo(xi, yi); });
+        ctx.stroke();
+        const ll = lpts[m - 1];
+        ctx.fillStyle = '#a855f7';
+        ctx.beginPath(); ctx.arc(xl(m - 1), y(ll.cum), 3, 0, Math.PI * 2); ctx.fill();
+    }
+
     const last = pts[n - 1];
     ctx.fillStyle = last.cum >= 0 ? C.green : C.red;
     ctx.beginPath(); ctx.arc(x(n - 1), y(last.cum), 3, 0, Math.PI * 2); ctx.fill();
@@ -6864,21 +7041,15 @@ function renderPnlCurve() {
     }
 
     ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-    ctx.fillStyle = C.cyan; ctx.fillText('— equity', padL + 4, padT + 2);
+    ctx.fillStyle = C.cyan;
+    ctx.fillText(baseIsLive ? '— live equity' : '— equity', padL + 4, padT + 2);
     ctx.fillStyle = locked ? C.green : C.amber;
     ctx.fillText(locked ? '— $2K DD (locked)' : '— $2K trailing DD', padL + 66, padT + 2);
-
-    if (hint) {
-        let peak = 0, maxDDfp = 0;
-        pts.forEach(p => { peak = Math.max(peak, p.cum); maxDDfp = Math.max(maxDDfp, peak - p.cum); });
-        hint.textContent = [
-            'final $' + Math.round(last.cum), 'peak $' + Math.round(peak),
-            'maxDD(峰) $' + Math.round(maxDDfp),
-            (breachIdx >= 0 ? '⚠ 觸及 $2K 線 (爆帳)' : '未觸及 $2K 線'),
-            (locked ? 'DD線已鎖定 break-even' : 'DD線在 -$' + Math.round(-finalThr)),
-        ].join('  ·  ');
-        hint.style.color = breachIdx >= 0 ? C.red : C.text3;
+    if (lpts.length) {
+        ctx.fillStyle = '#a855f7';
+        ctx.fillText('— live', padL + 200, padT + 2);
     }
+    // 1.0.9: 標題列統計 hint 已移除(final/peak/maxDD 文字)
 }
 
 function updateClock() {
@@ -7547,6 +7718,34 @@ function onLiveSlotChange(slot) {
     pollLiveSlots();
 }
 
+// 1.0.9: GO LIVE 成功後把槽位指派寫進 data/account_roles.json —
+// MAIN 槽帳號 = main_account_id,每帳號記 preset + live 旗標。
+// terminal 模式(backend.terminal_live)靠這個檔案自動跟隨 main 帳號與其 preset。
+async function _persistLiveRolesFromSlots() {
+    try {
+        const r = await fetch(API + '/accounts/roles');
+        const cur = r.ok ? (((await r.json()) || {}).roles || {}) : {};
+        const accounts = Object.assign({}, cur.accounts || {});
+        [LIVE_MAIN_SLOT, LIVE_MINOR_SLOT].forEach(s => {
+            const aid = (document.getElementById('live-acct-select-' + s) || {}).value || '';
+            const pre = (document.getElementById('live-acct-preset-' + s) || {}).value || '';
+            if (aid) accounts[String(aid)] = { preset: pre || null, live: true };
+        });
+        const mainId = (document.getElementById('live-acct-select-' + LIVE_MAIN_SLOT) || {}).value
+            || cur.main_account_id || '';
+        await fetch(API + '/accounts/roles', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                email: cur.email || '',
+                main_account_id: String(mainId),
+                accounts: accounts,
+            }),
+        });
+        log('帳號指派已存檔 (account_roles.json) — terminal 模式將跟隨', 'info');
+    } catch (e) { /* 設定持久化失敗不影響交易 */ }
+}
+
 async function liveSlotGoLive(slot) {
     const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
     const presetName = (document.getElementById('live-acct-preset-' + slot) || {}).value;
@@ -7574,6 +7773,7 @@ async function liveSlotGoLive(slot) {
         else {
             log('ACCOUNT ' + slot + ' GO LIVE acct ' + accId + ' preset=' + presetName + ' ✓', 'success');
             _startLiveChartForAccount(acc, preset);   // 帶動圖表 + 頂欄(跟隨此帳號)
+            _persistLiveRolesFromSlots();             // 1.0.9: 指派寫進 account_roles.json(terminal 跟隨)
         }
     } catch (e) { log('ACCOUNT ' + slot + ' 啟動連線失敗:' + e.message, 'warn'); }
     _saveLiveSlots();

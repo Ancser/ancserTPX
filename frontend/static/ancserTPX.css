@@ -147,6 +147,55 @@
 
         /* ── Layout ── */
         .main { display: flex; height: calc(100vh - 48px); }
+
+        /* ── 1.0.9: 小屏/半屏響應式 header ──
+           時鐘隱藏;頁籤列(DATA/BACKTEST/LIVE)換到第二行置中,
+           不再與 logo / CONNECTED 擠在同一行。
+           (必須排在 .main 一般規則之後,height:auto 才不會被蓋掉) */
+        @media (max-width: 900px) {
+            body { display: flex; flex-direction: column; }
+            /* 兩行 header:第一行 logo+狀態 36px,第二行頁籤 34px → 合計 70px(+1px border) */
+            .header {
+                height: auto;
+                flex-wrap: wrap;
+                padding: 0 12px;
+            }
+            .header h1 { height: 36px; display: flex; align-items: center; }
+            .header-right { gap: 10px; height: 36px; }
+            .header-tabs {
+                position: static;
+                transform: none;
+                order: 3;
+                flex-basis: 100%;
+                justify-content: center;
+                gap: 18px;
+                height: 34px;
+            }
+            .tab { padding: 0 4px; }
+            #clock { display: none; }
+            /* 日曆 overlay 的 top 跟著兩行 header 走(桌面版是 48px) */
+            #calendar-view { top: 71px; }
+            .main { flex: 1; min-height: 0; height: auto; }
+
+            /* 1.0.9: 小屏縱向佈局 — 圖表 30vh + info 面板 20vh,
+               其餘高度給參數/LIVE 面板(原左側欄),可捲動。 */
+            .main { flex-direction: column; }
+            .content { order: 1; flex: none; height: 50vh; min-height: 0; }
+            #chart-container { min-height: 0; }   /* 蓋掉 400px 下限,chart = 50vh − 20vh ≈ 30vh */
+            .bottom-panel {
+                height: 20vh !important;  /* 拖曳把手寫的是 inline height,需 !important 固定 */
+                min-height: 60px;
+                max-height: 20vh;
+            }
+            .sidebar {
+                order: 2;
+                width: 100%;
+                flex: 1 1 auto;
+                min-height: 0;
+                border-right: none;
+                border-top: 1px solid var(--border-h);
+            }
+        }
         .sidebar {
             width: 400px;
             background: var(--bg2);
@@ -1287,7 +1336,7 @@
         }
         .cal-weekhead span {
             text-align: center;
-            font-size: 12px; letter-spacing: 0.3px; font-weight: 600;
+            font-size: clamp(9px, 1vw, 12px); letter-spacing: 0.3px; font-weight: 600;
             color: rgba(255, 255, 255, 0.72);
             font-family: -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
         }
@@ -1303,8 +1352,11 @@
             border: 1px solid rgba(255, 255, 255, 0.22);
             border-radius: 0;
             margin: -0.5px;          /* overlap borders so cells merge (no double lines) */
-            padding: 5px 7px;
-            aspect-ratio: 1.5;       /* keep box ratio (no vertical stretch) */
+            padding: 4px clamp(2px, 0.7vw, 7px);  /* 1.0.9: 小屏收窄左右內距 */
+            /* 1.0.9: 移除 aspect-ratio 固定高 — 內容(BT+LIVE 兩行)比格子高時
+               會蓋到下一行、行列錯位、LIVE 被裁掉。改 min-height:行高由內容
+               決定,grid 同列格子自動等高,任何寬度都對齊、LIVE 永遠可見。 */
+            min-height: clamp(48px, 6.5vw, 96px);
             display: flex;
             flex-direction: column;
             align-items: center;     /* center contents horizontally */
@@ -1315,29 +1367,31 @@
         }
         .cal-cell.cal-empty { background: transparent; border-color: transparent; }
         .cal-cell.cal-today { border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan2); }
+        /* 1.0.9: 數字字級用 clamp() 隨視窗寬度按比例縮放 — 約 1300px 就開始縮,
+           80% 視窗寬已生效(使用者回報 2.1vw 版本縮得太晚,LIVE 數字被裁)。 */
         .cal-daynum {
-            font-size: 13px; color: rgba(255, 255, 255, 0.88); font-weight: 600;
+            font-size: clamp(10px, 1.1vw, 13px); color: rgba(255, 255, 255, 0.88); font-weight: 600;
             font-family: -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
             margin-bottom: 3px;
         }
         .cal-bt {
             font-family: -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
-            font-weight: 700; font-size: 21px;
+            font-weight: 700; font-size: clamp(11px, 1.6vw, 21px);
             line-height: 1.15;
         }
         .cal-bt-sub, .cal-live-sub {
-            font-size: 11px; color: rgba(255, 255, 255, 0.62); font-weight: 500;
+            font-size: clamp(8px, 0.95vw, 11px); color: rgba(255, 255, 255, 0.62); font-weight: 500;
             font-family: -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
         }
         .cal-live {
-            margin-top: 8px;         /* sit just below BT, not pinned to bottom */
+            margin-top: clamp(2px, 0.6vw, 8px);  /* sit just below BT, not pinned to bottom */
             font-family: -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
-            font-weight: 700; font-size: 15px;
+            font-weight: 700; font-size: clamp(9px, 1.2vw, 15px);
             line-height: 1.15;
             display: flex; align-items: baseline; justify-content: center; gap: 6px;
         }
         .cal-live .cal-live-tag {
-            font-size: 10px; letter-spacing: 0.3px; color: var(--text3); font-weight: 600;
+            font-size: clamp(7px, 0.85vw, 10px); letter-spacing: 0.3px; color: var(--text3); font-weight: 600;
             font-family: -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
         }
         /* Saturday column = weekly summary cell */
@@ -1345,7 +1399,7 @@
             background: var(--bg3);
         }
         .cal-week-label {
-            font-size: 12px; font-weight: 700; letter-spacing: 0.3px;
+            font-size: clamp(9px, 1vw, 12px); font-weight: 700; letter-spacing: 0.3px;
             color: #ffffff;
             font-family: -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
             margin-bottom: 3px;
@@ -1368,3 +1422,54 @@
         .cal-foot-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
         .cal-foot-dot.bt { background: var(--green); }
         .cal-foot-dot.live { background: var(--amber); }
+
+        /* ── 1.0.9: HTML 內聯樣式抽離 — 重複 style="..." 合併為共用 class ──
+           (清單見 docs/1.0.9_INLINE_STYLE_FIXLIST.md;JS 動態切換的
+            display:none 保留 inline,避免破壞 style.display 切換邏輯) */
+        .fx1 { flex: 1; }
+        .fx2 { flex: 2; }
+        .fx13 { flex: 1.3; }
+        .mt14 { margin-top: 14px; }
+        .c-t3 { color: var(--text3); }
+        .flex-6 { display: flex; gap: 6px; }
+        .note-sm { font-size: 10px; color: var(--text2); line-height: 1.6; }
+        .hint-sm { font-size: 10px; color: var(--text3); margin-top: 4px; }
+        .tf-row { display: flex; gap: 10px; flex-wrap: wrap; padding: 4px 0; }
+        .input-ro-cyan { background: var(--bg3); color: var(--cyan); cursor: default; font-size: 11px; }
+        /* LIVE 頂欄 cell / 風控閘 chip */
+        .lv-cell { display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--border); padding: 0 12px; }
+        .rg-chip { padding: 1px 6px; border-radius: 3px; border: 1px solid var(--border); color: var(--text3); white-space: nowrap; }
+        /* LIVE 帳號槽(MAIN/MINOR 兩份相同結構) */
+        .slot-input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+        .slot-btnrow { display: flex; gap: 6px; margin-top: 8px; }
+        .slot-status { color: var(--text2); font-family: 'IBM Plex Mono', monospace; font-size: 11px; line-height: 2.0; margin-top: 8px; }
+        .slot-head { display: flex; align-items: center; gap: 8px; }
+        .slot-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--text3); }
+        .slot-line { padding-left: 14px; }
+
+        /* ── 1.0.9: 圖表右下快捷方鈕(⌖ 自動居中 / ≫ 跳到最新) ── */
+        #chart-quick-btns {
+            position: absolute;
+            right: 72px;            /* 讓開右側價格軸 */
+            bottom: 34px;           /* 讓開底部時間軸 */
+            z-index: 6;
+            display: flex;
+            gap: 6px;
+        }
+        .chart-sq-btn {
+            width: 28px; height: 28px;
+            background: rgba(8, 9, 13, 0.78);
+            border: 1px solid var(--border-h);
+            border-radius: 4px;
+            color: var(--text2);
+            font-size: 14px; line-height: 1;
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .chart-sq-btn:hover { color: var(--cyan); border-color: var(--cyan); }
+        .chart-sq-btn.active {
+            color: var(--cyan);
+            border-color: var(--cyan);
+            background: rgba(100, 220, 255, 0.10);
+            box-shadow: 0 0 6px rgba(100, 220, 255, 0.35);
+        }
