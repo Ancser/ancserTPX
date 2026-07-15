@@ -42,6 +42,7 @@ from backend.strategy.volume_profile import VolumeProfileCalculator
 from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, normalize_allowed_sessions,
 )
+from backend.live.warmup import signal_warmup_progress
 # 1.0.8: 移除 ml_trend / ml_consolidation_v2 (mlc2) 相關 import
 #        (MLTrendBacktester / MLTrendBacktestConfig / precompute_vp_timeline / MLTrendConfig)
 #        mlc2 策略已整批刪除,僅保留 trend + confluence。
@@ -3660,47 +3661,98 @@ async def live_start(req: LiveStartRequest):
     except Exception as e:
         logger.warning(f"[LIVE START] Front-month resolve skipped: {e}")
 
-    # ── Fetch fresh candles for live warm-up (separate from backtest data) ──
-    # Don't overwrite _historical_candles — backtest needs the full dataset.
-    # Fallback: use last 2 days from existing data (cap to avoid slow warmup with 30-day set)
-    from datetime import datetime as _dt2, timedelta as _td2
-    _cutoff = _dt2.utcnow() - _td2(days=2)
-    live_warmup_candles = [c for c in _historical_candles
-                           if c.timestamp.replace(tzinfo=None) >= _cutoff]
-    if not live_warmup_candles:
-        live_warmup_candles = list(_historical_candles[-2880:])  # last ~2d of 1m
-    try:
-        from datetime import datetime, timedelta
-        now = datetime.utcnow()
-        fresh_start = (now - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        fresh_end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        logger.info(f"[LIVE START] Fetching fresh 1m candles: {fresh_start} ~ {fresh_end}")
-
-        fresh_candles = await _topstepx_client.get_historical_bars_paginated(
-            contract_id=req.contract_id,
-            unit=BarUnit.MINUTE,   # 1m — no settle delay (30s has ~6h lag)
-            unit_number=1,
-            start_time=fresh_start,
-            end_time=fresh_end,
-        )
-        if fresh_candles and len(fresh_candles) > 0:
-            live_warmup_candles = fresh_candles
-            logger.info(
-                f"[LIVE START] Fresh 1m candles loaded: {len(fresh_candles)} | "
-                f"range: {fresh_candles[0].timestamp} ~ {fresh_candles[-1].timestamp}"
-            )
-        else:
-            logger.warning("[LIVE START] Fresh fetch returned 0 candles, using existing data")
-    except Exception as e:
-        logger.error(f"[LIVE START] Failed to fetch fresh candles: {e} — using existing data")
-
-    live_warmup_candles = sorted(live_warmup_candles, key=lambda c: c.timestamp)
-    if len(live_warmup_candles) > 1:
-        live_warmup_candles = live_warmup_candles[:-1]
-
     contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
     value_area_pct = _normalize_value_area_pct(req.value_area_pct)
     live_strategy_params = _build_strategy_params_from_request(req, contract_size)
+
+    # ── Fetch fresh candles for live warm-up (separate from backtest data) ──
+    # A non-empty 2-day response can still be far too short on a weekend. Use
+    # the same completed-TF/session-aware count as the strategy and expand the
+    # range until FACTOR/PMO is genuinely ready.
+    # Don't overwrite _historical_candles — backtest needs the full dataset.
+    from datetime import datetime as _dt2, timedelta as _td2
+    _now = _dt2.utcnow()
+    live_warmup_candles = []
+    for _days in (2, 7, 14):
+        _cutoff = _now - _td2(days=_days)
+        _candidate = [
+            c for c in _historical_candles
+            if c.timestamp.replace(tzinfo=None) >= _cutoff
+        ]
+        if _candidate:
+            live_warmup_candles = sorted(_candidate, key=lambda c: c.timestamp)
+            if len(live_warmup_candles) > 1:
+                live_warmup_candles = live_warmup_candles[:-1]
+            _completed, _required = signal_warmup_progress(
+                live_warmup_candles,
+                live_strategy_params,
+            )
+            if _required == 0 or _completed >= _required:
+                break
+    if not live_warmup_candles:
+        live_warmup_candles = sorted(_historical_candles[-2880:], key=lambda c: c.timestamp)
+        if len(live_warmup_candles) > 1:
+            live_warmup_candles = live_warmup_candles[:-1]
+
+    try:
+        fresh_end = _now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        best_fresh = []
+        best_fresh_completed = -1
+        for days in (2, 7, 14):
+            fresh_start = (_now - _td2(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            logger.info(f"[LIVE START] Fetching fresh 1m candles ({days}d): {fresh_start} ~ {fresh_end}")
+            fresh_candles = await _topstepx_client.get_historical_bars_paginated(
+                contract_id=req.contract_id,
+                unit=BarUnit.MINUTE,   # 1m — no settle delay (30s has ~6h lag)
+                unit_number=1,
+                start_time=fresh_start,
+                end_time=fresh_end,
+            )
+            if not fresh_candles:
+                logger.warning(f"[LIVE START] Fresh {days}d fetch returned 0 candles")
+                continue
+            fresh_candidate = sorted(fresh_candles, key=lambda c: c.timestamp)
+            if len(fresh_candidate) > 1:
+                fresh_candidate = fresh_candidate[:-1]
+            completed, required = signal_warmup_progress(fresh_candidate, live_strategy_params)
+            if not best_fresh or completed > best_fresh_completed:
+                best_fresh = fresh_candidate
+                best_fresh_completed = completed
+            logger.info(
+                f"[LIVE START] Fresh 1m candles loaded ({days}d): {len(fresh_candidate)} | "
+                f"signal warmup={completed}/{required or '-'}"
+            )
+            if required == 0 or completed >= required:
+                best_fresh = fresh_candidate
+                best_fresh_completed = completed
+                break
+            logger.warning(
+                f"[LIVE START] Signal warmup insufficient: {completed}/{required}; "
+                "expanding history range"
+            )
+        if best_fresh:
+            fresh_completed, fresh_required = signal_warmup_progress(
+                best_fresh,
+                live_strategy_params,
+            )
+            fallback_completed, _ = signal_warmup_progress(
+                live_warmup_candles,
+                live_strategy_params,
+            )
+            if (
+                fresh_required == 0
+                or fresh_completed >= fresh_required
+                or fresh_completed >= fallback_completed
+            ):
+                live_warmup_candles = best_fresh
+            else:
+                logger.warning(
+                    f"[LIVE START] Fresh history remained incomplete "
+                    f"({fresh_completed}/{fresh_required}); keeping fuller stored "
+                    f"warmup ({fallback_completed}/{fresh_required})"
+                )
+    except Exception as e:
+        logger.error(f"[LIVE START] Failed to fetch fresh candles: {e} — using existing data")
 
     engine = LiveTradingEngine(
         client=_topstepx_client,

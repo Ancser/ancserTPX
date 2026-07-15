@@ -263,6 +263,31 @@ class FactorSignalStrategy:
         # ATR 狀態、是否正在觸發信號。自足計算,不依賴額外欄位(避免與其他改動衝突)。
         fam = self.signal_family.upper()
         n = len(self._bars)
+        if self.signal_family == "emapmo":
+            snapshot = self._emapmo_snapshot()
+            pmo_s = self._format_indicator(snapshot.get("pmo"), 5)
+            sig_s = self._format_indicator(snapshot.get("signal"), 5)
+            if n < self.warmup_bars:
+                missing = self.warmup_bars - n
+                return (
+                    f"{fam} 暖機不可交易: {self.timeframe_minutes}m完成={n} < 需求={self.warmup_bars} "
+                    f"(還差{missing}) | PMO={pmo_s} SIG={sig_s}"
+                )
+
+            atr = self._atr(14, 7)
+            atr_s = f"ATR{self.timeframe_minutes}m={atr:.2f}" if atr else "ATR=?"
+            direction = self._emapmo_direction(snapshot)
+            if self._state in ("confirmed", "in_trade"):
+                state = "持倉/掛單中"
+            elif direction is not None and self._side_allowed(direction):
+                state = "原始信號:做多↑" if direction == Direction.BUY else "原始信號:做空↓"
+            else:
+                state = self._emapmo_wait_label(snapshot)
+                if direction is not None and not self._side_allowed(direction):
+                    blocked = "做多" if direction == Direction.BUY else "做空"
+                    state += f" | {blocked}反向信號略過({self.side_mode})"
+            return f"{fam} {self.timeframe_minutes}m | PMO={pmo_s} SIG={sig_s} | {atr_s} | {state}"
+
         if n < self.warmup_bars:
             return f"{fam} 暖機 {n}/{self.warmup_bars} bars ({self.timeframe_minutes}m)"
         atr = self._atr(14, 7)
@@ -450,6 +475,157 @@ class FactorSignalStrategy:
         signal = _ema(pmo, 10)
         return pmo, signal
 
+    @staticmethod
+    def _format_indicator(value: Any, decimals: int = 3) -> str:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return "?"
+        if not math.isfinite(number):
+            return "?"
+        return f"{number:.{decimals}f}"
+
+    @staticmethod
+    def _condition_mark(ok: bool) -> str:
+        return "✓" if ok else "✗"
+
+    def _emapmo_snapshot(self) -> dict[str, Any]:
+        """One EMAPMO calculation shared by trading and the explainable status."""
+        result: dict[str, Any] = {
+            "pmo": None,
+            "signal": None,
+            "prev_pmo": None,
+            "prev_signal": None,
+            "p_gap_now": None,
+            "p_gap_prev": None,
+            "p_gap_prev2": None,
+            "q_gap_now": None,
+            "q_gap_prev": None,
+            "q_gap_prev2": None,
+            "normal_short": False,
+            "normal_long": False,
+            "early_short": False,
+            "early_long": False,
+        }
+        pmo, sig = self._pmo_series()
+        if pmo and pmo[-1] is not None:
+            result["pmo"] = float(pmo[-1])
+        if sig and sig[-1] is not None:
+            result["signal"] = float(sig[-1])
+        if len(pmo) < 2 or len(sig) < 2:
+            return result
+
+        p0, p1 = pmo[-2], pmo[-1]
+        s0, s1 = sig[-2], sig[-1]
+        if None in (p0, p1, s0, s1):
+            return result
+        assert p0 is not None and p1 is not None and s0 is not None and s1 is not None
+        result.update({
+            "pmo": float(p1),
+            "signal": float(s1),
+            "prev_pmo": float(p0),
+            "prev_signal": float(s0),
+            "normal_short": bool(p1 > 0.06 and p1 < s1 and p0 >= s0),
+            "normal_long": bool(p1 < -0.10 and p1 > s1 and p0 <= s0),
+        })
+
+        p_gap = [None if a is None or b is None else float(a - b) for a, b in zip(pmo, sig)]
+        q_gap = [None if a is None or b is None else float(b - a) for a, b in zip(pmo, sig)]
+        if len(p_gap) >= 3 and None not in (
+            p_gap[-1], p_gap[-2], p_gap[-3], q_gap[-1], q_gap[-2], q_gap[-3],
+        ):
+            pn, pp, pp2 = p_gap[-1], p_gap[-2], p_gap[-3]
+            qn, qp, qp2 = q_gap[-1], q_gap[-2], q_gap[-3]
+            assert None not in (pn, pp, pp2, qn, qp, qp2)
+            result.update({
+                "p_gap_now": float(pn),
+                "p_gap_prev": float(pp),
+                "p_gap_prev2": float(pp2),
+                "q_gap_now": float(qn),
+                "q_gap_prev": float(qp),
+                "q_gap_prev2": float(qp2),
+                "early_short": bool(s1 > 0.06 and pn < pp and p1 > s1 and pp < pp2),
+                "early_long": bool(s1 < -0.10 and qn < qp and p1 < s1 and qp < qp2),
+            })
+        return result
+
+    def _emapmo_direction(self, snapshot: dict[str, Any]) -> Optional[Direction]:
+        use_normal = self.pmo_signal_mode in {"normal", "both"}
+        use_early = self.pmo_signal_mode in {"early", "both"}
+        if (use_normal and snapshot["normal_short"]) or (use_early and snapshot["early_short"]):
+            return Direction.SELL
+        if (use_normal and snapshot["normal_long"]) or (use_early and snapshot["early_long"]):
+            return Direction.BUY
+        return None
+
+    def _emapmo_side_conditions(self, snapshot: dict[str, Any], direction: Direction) -> str:
+        pmo = float(snapshot.get("pmo") or 0.0)
+        signal = float(snapshot.get("signal") or 0.0)
+        prev_pmo = float(snapshot.get("prev_pmo") or 0.0)
+        prev_signal = float(snapshot.get("prev_signal") or 0.0)
+        side = "做多" if direction == Direction.BUY else "做空"
+
+        if direction == Direction.BUY:
+            normal_threshold = pmo < -0.10
+            normal_cross = pmo > signal and prev_pmo <= prev_signal
+            normal = (
+                f"{side} NORMAL[PMO<-0.10000(目前{pmo:.5f} {self._condition_mark(normal_threshold)}) "
+                f"AND PMO上穿SIG(前{prev_pmo:.5f}<={prev_signal:.5f}, "
+                f"現{pmo:.5f}>{signal:.5f} {self._condition_mark(normal_cross)})]"
+            )
+            gaps = (
+                snapshot.get("q_gap_prev2"),
+                snapshot.get("q_gap_prev"),
+                snapshot.get("q_gap_now"),
+            )
+            threshold = signal < -0.10
+            relation = pmo < signal
+            gap_ok = all(value is not None for value in gaps) and float(gaps[2]) < float(gaps[1]) < float(gaps[0])
+            gap_s = "→".join(self._format_indicator(value, 5) for value in gaps)
+            early = (
+                f"{side} EARLY[SIG<-0.10000(目前{signal:.5f} {self._condition_mark(threshold)}) "
+                f"AND PMO<SIG(目前{pmo:.5f}<{signal:.5f} {self._condition_mark(relation)}) "
+                f"AND 差值(SIG-PMO)連縮({gap_s} {self._condition_mark(gap_ok)})]"
+            )
+        else:
+            normal_threshold = pmo > 0.06
+            normal_cross = pmo < signal and prev_pmo >= prev_signal
+            normal = (
+                f"{side} NORMAL[PMO>0.06000(目前{pmo:.5f} {self._condition_mark(normal_threshold)}) "
+                f"AND PMO下穿SIG(前{prev_pmo:.5f}>={prev_signal:.5f}, "
+                f"現{pmo:.5f}<{signal:.5f} {self._condition_mark(normal_cross)})]"
+            )
+            gaps = (
+                snapshot.get("p_gap_prev2"),
+                snapshot.get("p_gap_prev"),
+                snapshot.get("p_gap_now"),
+            )
+            threshold = signal > 0.06
+            relation = pmo > signal
+            gap_ok = all(value is not None for value in gaps) and float(gaps[2]) < float(gaps[1]) < float(gaps[0])
+            gap_s = "→".join(self._format_indicator(value, 5) for value in gaps)
+            early = (
+                f"{side} EARLY[SIG>0.06000(目前{signal:.5f} {self._condition_mark(threshold)}) "
+                f"AND PMO>SIG(目前{pmo:.5f}>{signal:.5f} {self._condition_mark(relation)}) "
+                f"AND 差值(PMO-SIG)連縮({gap_s} {self._condition_mark(gap_ok)})]"
+            )
+
+        if self.pmo_signal_mode == "normal":
+            return normal
+        if self.pmo_signal_mode == "early":
+            return early
+        return f"{normal} OR {early}"
+
+    def _emapmo_wait_label(self, snapshot: dict[str, Any]) -> str:
+        directions = []
+        if self.side_mode in {"all", "long_only"}:
+            directions.append(Direction.BUY)
+        if self.side_mode in {"all", "short_only"}:
+            directions.append(Direction.SELL)
+        return "等待" + "；".join(
+            self._emapmo_side_conditions(snapshot, direction) for direction in directions
+        )
+
     def _factor_direction(self) -> tuple[Optional[Direction], dict[str, Any]]:
         if len(self._bars) < self.warmup_bars:
             return None, {}
@@ -457,29 +633,12 @@ class FactorSignalStrategy:
         closes = [float(c.close) for c in bars]
 
         if self.signal_family == "emapmo":
-            pmo, sig = self._pmo_series()
-            if len(pmo) < 3 or len(sig) < 3:
-                return None, {}
-            p0, p1 = pmo[-2], pmo[-1]
-            s0, s1 = sig[-2], sig[-1]
-            if None in (p0, p1, s0, s1):
-                return None, {}
-            assert p0 is not None and p1 is not None and s0 is not None and s1 is not None
-            normal_short = p1 > 0.06 and p1 < s1 and p0 >= s0
-            normal_long = p1 < -0.10 and p1 > s1 and p0 <= s0
-            p = [None if a is None or b is None else a - b for a, b in zip(pmo, sig)]
-            q = [None if a is None or b is None else b - a for a, b in zip(pmo, sig)]
-            early_short = early_long = False
-            if None not in (p[-1], p[-2], p[-3], q[-1], q[-2], q[-3]):
-                early_short = bool(s1 > 0.06 and p[-1] < p[-2] and p1 > s1 and p[-2] < p[-3])
-                early_long = bool(s1 < -0.10 and q[-1] < q[-2] and p1 < s1 and q[-2] < q[-3])
-            use_normal = self.pmo_signal_mode in {"normal", "both"}
-            use_early = self.pmo_signal_mode in {"early", "both"}
-            if (use_normal and normal_short) or (use_early and early_short):
-                return Direction.SELL, {"pmo": p1, "signal": s1}
-            if (use_normal and normal_long) or (use_early and early_long):
-                return Direction.BUY, {"pmo": p1, "signal": s1}
-            return None, {"pmo": p1, "signal": s1}
+            snapshot = self._emapmo_snapshot()
+            detail = {
+                "pmo": snapshot.get("pmo"),
+                "signal": snapshot.get("signal"),
+            }
+            return self._emapmo_direction(snapshot), detail
 
         if self.signal_family == "icefishball":
             if len(bars) < 10:

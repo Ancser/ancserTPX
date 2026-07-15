@@ -28,6 +28,7 @@ from backend.db.models import (
 )
 from backend.live.account_roles import load_roles  # 1.0.9: main account + 每帳號 preset
 from backend.live.engine import LiveTradingEngine
+from backend.live.warmup import signal_warmup_progress
 from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, normalize_allowed_sessions
 
 
@@ -656,9 +657,15 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
     )
 
 
-async def _fetch_warmup_candles(client: TopstepXClient, contract_id: str):
+async def _fetch_warmup_candles(
+    client: TopstepXClient,
+    contract_id: str,
+    params: Optional[StrategyParams] = None,
+):
     now = datetime.utcnow()
     end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    best: List = []
+    best_completed = -1
     for days in (2, 7, 14):
         start = (now - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         logger.info("Fetching warmup 1m candles (%sd): %s ~ %s", days, start, end)
@@ -671,15 +678,41 @@ async def _fetch_warmup_candles(client: TopstepXClient, contract_id: str):
         )
         if candles:
             candles = sorted(candles, key=lambda c: c.timestamp)
+            completed, required = signal_warmup_progress(candles, params) if params else (0, 0)
+            if not best or completed > best_completed:
+                best = candles
+                best_completed = completed
             logger.info(
                 "Warmup candles loaded: %s bars | %s ~ %s",
                 len(candles),
                 candles[0].timestamp.isoformat(),
                 candles[-1].timestamp.isoformat(),
             )
-            return candles
+            if required == 0 or completed >= required:
+                if required:
+                    logger.info(
+                        "Signal warmup ready: %s/%s completed bars",
+                        completed,
+                        required,
+                    )
+                return candles
+            logger.warning(
+                "Signal warmup insufficient: %s/%s completed bars in %sd; expanding range",
+                completed,
+                required,
+                days,
+            )
+            continue
         logger.warning("No warmup candles in the last %s day(s); retrying wider range", days)
-    return []
+    if best and params:
+        completed, required = signal_warmup_progress(best, params)
+        logger.warning(
+            "Signal warmup still incomplete after 14d: %s/%s completed bars; "
+            "engine will stay gated until ready",
+            completed,
+            required,
+        )
+    return best
 
 
 async def run_terminal_live() -> int:
@@ -740,7 +773,7 @@ async def run_terminal_live() -> int:
                 contract_id = await client.get_nq_contract_id()
 
         params = _build_strategy_params(preset, contract_id)
-        candles = await _fetch_warmup_candles(client, contract_id)
+        candles = await _fetch_warmup_candles(client, contract_id, params)
         if not candles:
             raise RuntimeError("No warmup candles returned from TopstepX")
 

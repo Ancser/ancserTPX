@@ -3560,7 +3560,7 @@ function initChart() {
         borderUpColor: '#888888',
         wickDownColor: '#555555',
         wickUpColor: '#888888',
-        // 1.0.9: 自動居中(⌖ 鈕)— 開啟時鎖定縱向比例,只平移中心跟隨可視中價
+        // 1.0.9: 自動居中(⌖ 鈕)— 開啟時鎖定縱向比例,中心跟隨中央 K 線 EMA200
         autoscaleInfoProvider: (original) => _autoCenterProvider(original),
     });
 
@@ -4296,48 +4296,90 @@ function drawFadeDailyLevels(zones) {
 // -- Decision-zone overlay --
 // Draw only the primary VAH/VAL range used by each trade decision.
 
-// ── 1.0.9: 自動居中(固定比例)+ 一鍵到最新 ──────────────────
-// ⌖ 開啟時:縱向比例(價格/像素)鎖定在開啟當下的值,左右拖拽瀏覽歷史時
-// 視窗中心自動平滑跟隨「可視 K 線的中價」(類似跟著 200EMA 走),不需要
-// 手動上下拉;candle ratio 不會被 autoscale 改變,只平移中心。
+// ── 1.0.9: 自動居中(EMA200 錨定)+ 一鍵到最新 ──────────────────
+// ⌖ 開啟時:縱向比例(價格/像素)鎖定在開啟當下的值;左右拖拽瀏覽歷史時
+// 視窗中心自動平滑跟隨「畫面中央 K 線的 EMA200」,不需要手動上下拉。
+// 縱向並沒有鎖死:拖拽的上下分量會即時調整相對 EMA 的偏移(_acOffset),
+// 之後繼續左右平移時偏移保留;candle ratio 不會被 autoscale 改變。
 let _autoCenterOn = false;
 let _acSpan = null;    // 鎖定的可視價格跨度(= 開啟當下的縱向比例)
 let _acMid = null;     // 平滑後的中心價
+let _acOffset = 0;     // 手動上下拖拽的偏移(相對 EMA200 錨點)
 let _acKickRAF = null;
+let _acEma = { src: null, n: 0, arr: null };   // EMA200 快取(資料變更時重算)
 
-function _visibleMidPrice() {
+function _acEmaArr() {
+    const cd = window._lastChartData || [];
+    if (!cd.length) return null;
+    if (_acEma.src === cd && _acEma.n === cd.length) return _acEma.arr;
+    const k = 2 / (200 + 1);
+    const arr = new Float64Array(cd.length);
+    let prev = cd[0].close;
+    for (let i = 0; i < cd.length; i++) {
+        prev = cd[i].close * k + prev * (1 - k);
+        arr[i] = prev;
+    }
+    _acEma = { src: cd, n: cd.length, arr };
+    return arr;
+}
+
+function _centerEmaPrice() {
     try {
         const vr = chart.timeScale().getVisibleRange();
-        const cd = window._lastChartData || [];
-        if (!vr || !cd.length) return null;
-        let i0 = _nearestBarIndex(vr.from);
-        let i1 = _nearestBarIndex(vr.to);
+        const ema = _acEmaArr();
+        if (!vr || !ema) return null;
+        const i0 = _nearestBarIndex(vr.from);
+        const i1 = _nearestBarIndex(vr.to);
         if (i0 === null || i1 === null) return null;
-        if (i1 < i0) { const t = i0; i0 = i1; i1 = t; }
-        // zoom out 時可視 bar 數以萬計 — 取樣最多 ~400 根算高低即可
-        const step = Math.max(1, Math.floor((i1 - i0) / 400));
-        let lo = Infinity, hi = -Infinity;
-        for (let i = i0; i <= i1; i += step) {
-            const b = cd[i];
-            if (b.low < lo) lo = b.low;
-            if (b.high > hi) hi = b.high;
-        }
-        if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
-        return (lo + hi) / 2;
+        const mid = Math.min(ema.length - 1, Math.max(0, Math.round((i0 + i1) / 2)));
+        const v = ema[mid];
+        return Number.isFinite(v) ? v : null;
     } catch (_) { return null; }
 }
 
 function _autoCenterProvider(original) {
     const base = original();
     if (!_autoCenterOn || !_acSpan) return base;
-    const target = _visibleMidPrice();
-    if (target === null) return base;
+    const anchor = _centerEmaPrice();
+    if (anchor === null) return base;
+    const target = anchor + _acOffset;
     // 平滑滑動:每次重算向目標移動 35% — 拖拽時有緩動的「slide」感
     _acMid = (_acMid === null) ? target : _acMid + (target - _acMid) * 0.35;
     // 尚未收斂 → 排一次重算,放開拖拽後會自己滑到定位
     if (Math.abs(target - _acMid) > _acSpan * 0.002) _acScheduleKick();
     const half = _acSpan / 2;
     return { priceRange: { minValue: _acMid - half, maxValue: _acMid + half } };
+}
+
+// 縱向手動偏移:拖拽的上下分量調整 _acOffset(橫向平移仍由圖表庫處理)。
+// 只攔 pane 區域 — 價格軸/時間軸上的拖拽(縮放)不干預。
+let _acDragBound = false;
+let _acDrag = null;   // { y0, off0 }
+
+function _acBindDrag() {
+    if (_acDragBound) return;
+    const el = document.getElementById('chart-container');
+    if (!el) return;
+    _acDragBound = true;
+    el.addEventListener('pointerdown', (e) => {
+        if (!_autoCenterOn || e.button !== 0) return;
+        const r = el.getBoundingClientRect();
+        let axW = 0;
+        try { axW = chart.priceScale('right').width() || 0; } catch (_) {}
+        if (e.clientX > r.right - axW) return;
+        if (e.clientY > r.bottom - _timeAxisHeight()) return;
+        _acDrag = { y0: e.clientY, off0: _acOffset };
+    });
+    window.addEventListener('pointermove', (e) => {
+        if (!_autoCenterOn || !_acDrag || !_acSpan) return;
+        const paneH = el.clientHeight - _timeAxisHeight();
+        if (paneH <= 0) return;
+        _acOffset = _acDrag.off0 + (e.clientY - _acDrag.y0) * (_acSpan / paneH);
+        _acScheduleKick();
+    });
+    const end = () => { _acDrag = null; };
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
 }
 
 function _acScheduleKick() {
@@ -4366,12 +4408,14 @@ function toggleAutoCenter() {
             }
         } catch (_) {}
         _acMid = null;
+        _acOffset = 0;
         if (!_acSpan) {
             _autoCenterOn = false;
             log('自動居中開啟失敗(無法取得目前縱向比例)', 'warn');
         } else {
+            _acBindDrag();
             try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
-            log('自動居中 ON — 縱向比例鎖定,拖拽自動跟隨可視中價', 'info');
+            log('自動居中 ON — 跟隨中央 K 線 EMA200,上下拖拽可調偏移', 'info');
         }
     } else {
         // 回復預設 autoscale(範圍重新由資料決定)
