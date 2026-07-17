@@ -40,6 +40,7 @@ from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
 from backend.backtest.engine import _topstep_trade_date  # 1.0.8: K線時間→交易日(fade 分日)
 from backend.broker.topstepx import TopstepXClient, order_error_meaning
+from backend.live.emapmo_messenger import EMAPMOSignalMessenger
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +305,19 @@ class LiveTradingEngine:
         self._trades_file = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "data", "trades.json"
+        )
+        # Bot-only daily win/loss counters.  This is deliberately separate
+        # from account DAILY PNL: discretionary/manual fills still belong in
+        # the account PnL display, but must not consume strategy risk gates.
+        # One file per account avoids cross-account overwrite races.
+        self._daily_risk_state_file = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "data", f"live_daily_risk_{int(self.account_id)}.json"
+        )
+        # One bounded signal-only notifier per live engine. Cross-account and
+        # cross-process idempotency is enforced by its 30-day SQLite ledger.
+        self._emapmo_messenger = EMAPMOSignalMessenger.from_env(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         )
         # daily_capital.json removed — PnL now read directly from API
 
@@ -762,6 +776,7 @@ class LiveTradingEngine:
         conf_payload: Optional[Dict] = None,
         original_sl_price: Optional[float] = None,
         original_tp_price: Optional[float] = None,
+        managed_by_engine: bool = False,
     ):
         """Append a single exit record to data/live_exits.json so trade-history
         can map fills (which only carry pnl) to true exit reason buckets
@@ -795,6 +810,8 @@ class LiveTradingEngine:
                 "original_sl_price": original_sl_price or sl_price,
                 "original_tp_price": original_tp_price or tp_price,
                 "direction": direction,
+                "managed_by_engine": bool(managed_by_engine),
+                "lock_eligible": bool(managed_by_engine),
                 "zone_id": zone_id,
                 "mode": conf_payload.get("mode") if conf_payload else None,
                 "side": conf_payload.get("side") if conf_payload else None,
@@ -943,6 +960,8 @@ class LiveTradingEngine:
                 "param_snapshot_id": getattr(self, "_param_snapshot_id", None),
                 "status": status,
                 "direction": signal.direction.value if signal else None,
+                "managed_by_engine": bool(signal is not None),
+                "lock_eligible": bool(signal is not None and status == "closed"),
                 "size": self.contract_size,
                 "order_id": order_plan.get("order_id"),
                 "sl_order_id": order_plan.get("sl_order_id", self._sl_order_id),
@@ -1055,6 +1074,107 @@ class LiveTradingEngine:
         except Exception:
             pass
         return None
+
+    def _persist_daily_bot_risk_state(self) -> None:
+        """Atomically persist bot-only daily lock counters for this account."""
+        payload = {
+            "version": 1,
+            "account_id": self.account_id,
+            "topstep_trade_date": self._today or self._get_topstep_trade_date(),
+            "bot_loss_count": max(0, int(self._daily_loss_count or 0)),
+            "bot_win_count": max(0, int(self._daily_win_count or 0)),
+            "updated_at": datetime.now(tz=_UTC_TZ).isoformat(),
+        }
+        path = self._daily_risk_state_file
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=True)
+            os.replace(tmp, path)
+        except Exception as exc:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            logger.warning("Failed to persist bot daily risk state: %s", exc)
+
+    def _restore_daily_bot_risk_state(self) -> bool:
+        """Restore same-session bot counters; stale/manual account PnL is ignored."""
+        today = self._today or self._get_topstep_trade_date()
+        data = self._read_json_list_or_dict(self._daily_risk_state_file)
+        valid = bool(
+            isinstance(data, dict)
+            and str(data.get("account_id")) == str(self.account_id)
+            and str(data.get("topstep_trade_date") or "") == str(today)
+        )
+        if valid:
+            try:
+                self._daily_loss_count = max(0, int(data.get("bot_loss_count") or 0))
+                self._daily_win_count = max(0, int(data.get("bot_win_count") or 0))
+            except (TypeError, ValueError):
+                valid = False
+
+        if not valid:
+            self._daily_loss_count = 0
+            self._daily_win_count = 0
+            self._persist_daily_bot_risk_state()
+            return False
+
+        if self._daily_loss_count or self._daily_win_count:
+            self._log_event(
+                "[RISK RESTORE] bot-only daily counters | "
+                f"loss={self._daily_loss_count} win={self._daily_win_count} "
+                f"trade_date={today}"
+            )
+        return True
+
+    def _record_daily_bot_outcome(
+        self,
+        pnl: Optional[float],
+        *,
+        program_owned: bool,
+    ) -> bool:
+        """Apply one close to bot gates only when the position came from a bot signal."""
+        if pnl is None:
+            return False
+        try:
+            value = float(pnl)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(value) or abs(value) < 1e-9:
+            return False
+
+        if not program_owned:
+            self._log_event(
+                f"[RISK] manual/untracked close ${value:+.2f} excluded from bot daily locks"
+            )
+            return False
+
+        if value > 0:
+            self._daily_win_count += 1
+            if (
+                self._tr_daily_win_stop
+                and self._daily_win_count >= self._tr_daily_win_stop
+            ):
+                self._log_event(
+                    f"[WIN LOCK] bot wins {self._daily_win_count}/{self._tr_daily_win_stop} "
+                    "-> stop new bot entries",
+                    "warn",
+                )
+        else:
+            self._daily_loss_count += 1
+            if self._tr_daily_loss_stop:
+                hit = self._daily_loss_count >= self._tr_daily_loss_stop
+                self._log_event(
+                    f"[LOSS LOCK] bot losses {self._daily_loss_count}/{self._tr_daily_loss_stop}"
+                    + (" -> stop new bot entries" if hit else ""),
+                    "warn" if hit else "info",
+                )
+
+        self._persist_daily_bot_risk_state()
+        return True
 
     def _lock_date_for_ts(self, ts_str: Optional[str]) -> Optional[str]:
         if not ts_str:
@@ -1532,6 +1652,12 @@ class LiveTradingEngine:
         if forced:
             return forced, exit_price, topstep_pnl, exit_time
 
+        # No active bot signal means the engine cannot prove ownership.  Keep
+        # the close for account audit/PnL, but never label or count it as a bot
+        # TP/SL.  This also makes restart-with-position handling conservative.
+        if signal is None:
+            return "manual", exit_price, topstep_pnl, exit_time
+
         if signal and exit_price is not None:
             tp_p = signal.tp_price
             sl_p = signal.sl_price
@@ -1708,6 +1834,8 @@ class LiveTradingEngine:
                 "daily_loss": {
                     "limit": self._tr_daily_loss_stop,
                     "count": self._daily_loss_count,
+                    "scope": "bot_only",
+                    "persistent": True,
                     "resting": bool(
                         self._tr_daily_loss_stop
                         and self._daily_loss_count >= self._tr_daily_loss_stop
@@ -2021,8 +2149,12 @@ class LiveTradingEngine:
         self._trades = []
         self._log = []
         self._reset_full_tp_counts()
-        self._daily_loss_count = 0     # 1.0.8: 日虧斷路器重置
-        self._daily_win_count = 0      # 1.0.9: FULL WIN LOCK 重置
+        self._daily_loss_count = 0
+        self._daily_win_count = 0
+        # Do not let STOP/GO LIVE or a process restart erase bot risk locks.
+        # Manual/account PnL is intentionally not reconstructed into these
+        # counters; only bot-owned outcomes written by this engine are loaded.
+        self._restore_daily_bot_risk_state()
         self._param_snapshot_id = self._register_param_snapshot()  # 1.0.8: 參數快照入庫
         try:   # 1.0.9: 本帳號設為 shadow replay 主帳號(其餘為跟單,忽略)
             from backend.backtest.shadow_replay import set_main_account
@@ -2142,6 +2274,23 @@ class LiveTradingEngine:
             f"策略={self.strategies}"
         )
 
+        # Starts only the bounded background worker; no Discord network call is
+        # made until a real live EMAPMO TradeSignal is enqueued.
+        try:
+            await self._emapmo_messenger.start()
+            if self._emapmo_messenger.enabled:
+                self._log_event(
+                    "[EMAPMO MESSENGER] ready | "
+                    f"mode={self._emapmo_messenger.delivery_mode} | "
+                    f"history={self._emapmo_messenger.history_days}d"
+                )
+        except Exception as exc:
+            # Notification setup must never prevent the trading engine starting.
+            self._log_event(
+                f"[EMAPMO MESSENGER] disabled: {exc.__class__.__name__}",
+                "error",
+            )
+
         # Start main loop
         self._task = asyncio.create_task(self._main_loop())
 
@@ -2179,6 +2328,14 @@ class LiveTradingEngine:
             self._pending_signal = None
             self._pending_conf_payload = None
             self._pending_created_at = None
+
+        try:
+            await self._emapmo_messenger.stop()
+        except Exception as exc:
+            self._log_event(
+                f"[EMAPMO MESSENGER] stop error: {exc.__class__.__name__}",
+                "error",
+            )
 
         self._log_event("引擎已停止")
 
@@ -2429,8 +2586,9 @@ class LiveTradingEngine:
             # API's closedPnl/openPnl reset automatically at CME day boundary
             self._daily_pnl = 0.0
             self._reset_full_tp_counts()
-            self._daily_loss_count = 0     # 1.0.8: 日虧斷路器重置
-            self._daily_win_count = 0      # 1.0.9: FULL WIN LOCK 重置
+            self._daily_loss_count = 0
+            self._daily_win_count = 0
+            self._persist_daily_bot_risk_state()
             self._log_event(
                 f"新交易日 — PnL 重置 (CT 17:00)"
             )
@@ -2525,6 +2683,13 @@ class LiveTradingEngine:
         from datetime import time as _time
         session_start = _time(22, 0)
         if utc_time >= self.FLATTEN_TIME_UTC and utc_time < session_start:
+            if (
+                self.strategy_mode == "factor"
+                and not self._open_position
+                and not self._pending_order_id
+            ):
+                # Keep completed-bar factor indicators warm while orders are blocked.
+                self.trend_follow.observe(candle, [], True)
             if self._open_position:
                 self._log_event("PT 12:45 收盤平倉")
                 await self.flatten_now()
@@ -2656,6 +2821,28 @@ class LiveTradingEngine:
         signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
         if signal and self.strategy_mode in ("sigma", "pmo", "factor", "fade"):
             signal.zone_source = self.strategy_mode
+
+        # Report the actionable indicator TradeSignal itself. This is before
+        # broker/risk-gate I/O, and enqueue_from_live only copies bounded arrays
+        # into a non-blocking background queue.
+        if signal:
+            try:
+                queued = self._emapmo_messenger.enqueue_from_live(
+                    signal,
+                    self.trend_follow,
+                    self.contract_id,
+                    self.contract_size,
+                )
+                if queued:
+                    self._log_event(
+                        f"[EMAPMO MESSENGER] queued {signal.direction.value} "
+                        f"{getattr(signal, 'zone_id', '')}"
+                    )
+            except Exception as exc:
+                self._log_event(
+                    f"[EMAPMO MESSENGER] enqueue skipped: {exc.__class__.__name__}",
+                    "error",
+                )
 
         if signal and not self._pending_order_id:
             # 1.0.9: prevRV regime gate — 前一日高波動 → 今日不進場
@@ -3715,28 +3902,18 @@ class LiveTradingEngine:
                             f"Full TP count: {_sig_for_log.strategy.value} "
                             f"{self._full_tp_counts[key]}/{lock}"
                         )
-                # 1.0.8: 日虧斷路器 — 統計當日虧損單(以 Topstep pnl 為準,缺則以價差推)
+                # Bot-only daily locks.  Account DAILY PNL remains broker-wide,
+                # but discretionary/manual positions must never consume the
+                # strategy's loss/win allowance.
                 _pnl_for_stop = topstep_pnl
                 if (_pnl_for_stop is None and entry_fill
                         and actual_exit_price is not None and _sig_for_log):
                     _mult = 1.0 if _sig_for_log.direction == Direction.BUY else -1.0
                     _pnl_for_stop = (float(actual_exit_price) - float(entry_fill)) * _mult
-                if _pnl_for_stop is not None and _pnl_for_stop > 0:
-                    self._daily_win_count += 1   # 1.0.9: FULL WIN LOCK 計數
-                    if (self._tr_daily_win_stop
-                            and self._daily_win_count >= self._tr_daily_win_stop):
-                        self._log_event(
-                            f"[WIN LOCK] 今日贏單 {self._daily_win_count}/{self._tr_daily_win_stop} → 落袋停手",
-                            "warn")
-                if _pnl_for_stop is not None and _pnl_for_stop < 0:
-                    self._daily_loss_count += 1
-                    if self._tr_daily_loss_stop:
-                        _hit = self._daily_loss_count >= self._tr_daily_loss_stop
-                        self._log_event(
-                            f"[斷路器] 今日虧損單 {self._daily_loss_count}/{self._tr_daily_loss_stop}"
-                            + (" → 今日停止新單" if _hit else ""),
-                            "warn" if _hit else "info",
-                        )
+                self._record_daily_bot_outcome(
+                    _pnl_for_stop,
+                    program_owned=_sig_for_log is not None,
+                )
 
                 # Cancel residual orders — each in own try/except so one failure
                 # doesn't block the other
@@ -3777,7 +3954,12 @@ class LiveTradingEngine:
                 self._pending_age = 0
                 self._pending_created_at = None
 
-                await self._sweep_contract_open_orders("close")
+                if _sig_for_log is not None:
+                    await self._sweep_contract_open_orders("close")
+                else:
+                    self._log_event(
+                        "[RISK] manual/untracked close: preserving external contract orders"
+                    )
 
                 self._trades.append({
                     "time": exit_time_dt.isoformat(),
@@ -3811,6 +3993,7 @@ class LiveTradingEngine:
                         getattr(_sig_for_log, "original_tp_price", _sig_for_log.tp_price)
                         if _sig_for_log else None
                     ),
+                    managed_by_engine=_sig_for_log is not None,
                 )
 
                 # Durable explainable trade ledger (data/trades.json):
@@ -3827,15 +4010,20 @@ class LiveTradingEngine:
                     topstep_pnl=topstep_pnl,
                 )
 
-                # Notify strategy with actual exit reason
-                self.trend_follow.notify_trade_closed(exit_reason)
-                self._position_just_closed = True  # skip new entry this tick
+                # A discretionary close must not mutate the strategy state.
+                if _sig_for_log is not None:
+                    self.trend_follow.notify_trade_closed(exit_reason)
+                    self._position_just_closed = True  # skip new entry this tick
                 self._force_exit_reason = None
 
                 await self._refresh_account_snapshot("平倉後更新", emit_log=True, attempts=3)
 
             # ── Position size audit (every 5 min, skip 60s after entry) ──
-            if has_position:
+            # Size fail-safe is for positions opened by this engine.  An
+            # untracked/manual position must block new bot entries, but the
+            # engine must not flatten it merely because its size differs from
+            # the preset.
+            if has_position and self._active_signal is not None:
                 now_ts = time_mod.time()
                 grace_ok = not self._position_open_ts or (now_ts - self._position_open_ts >= 60)
                 if grace_ok and now_ts - self._last_safety_check >= 300:

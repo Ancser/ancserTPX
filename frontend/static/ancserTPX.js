@@ -2936,12 +2936,12 @@ function renderLiveRiskGates(st) {
     const sessOn = gates.session_limit ? !!gates.session_limit.on : false;
     setChip('lv-rg-session', '日限 ' + (sessOn ? 'ON' : 'OFF'), sessOn ? GREEN : GREY);
 
-    // ── 日虧斷路器:當日虧損單數達上限 → 休息(停新單) ──
+    // ── 程式虧損鎖:只計 bot-owned 交易，手動交易不消耗額度 ──
     const dl = gates.daily_loss || {};
     let dlText, dlColor;
-    if (!dl.limit) { dlText = '日虧 OFF'; dlColor = GREY; }
-    else if (dl.resting) { dlText = '日虧 休息 ' + (dl.count || 0) + '/' + dl.limit; dlColor = RED; }
-    else { dlText = '日虧 ' + (dl.count || 0) + '/' + dl.limit; dlColor = (dl.count || 0) > 0 ? AMBER : GREEN; }
+    if (!dl.limit) { dlText = '程式虧損 OFF'; dlColor = GREY; }
+    else if (dl.resting) { dlText = '程式虧損 休息 ' + (dl.count || 0) + '/' + dl.limit; dlColor = RED; }
+    else { dlText = '程式虧損 ' + (dl.count || 0) + '/' + dl.limit; dlColor = (dl.count || 0) > 0 ? AMBER : GREEN; }
     setChip('lv-rg-dailyloss', dlText, dlColor);
 
     // ── PREV-RV 波動閘:前一日高波動 → 今日封鎖 ──
@@ -2966,7 +2966,7 @@ function renderLiveRiskGates(st) {
 
     // ── 側欄 LIVE STATUS 鏡像(日虧 / 波動閘) ──
     const dlPanel = document.getElementById('live-rg-dailyloss-text');
-    if (dlPanel) { dlPanel.textContent = dlText.replace(/^日虧 /, ''); dlPanel.style.color = dlColor; }
+    if (dlPanel) { dlPanel.textContent = dlText.replace(/^程式虧損 /, ''); dlPanel.style.color = dlColor; }
     const rvPanel = document.getElementById('live-rg-prevrv-text');
     if (rvPanel) { rvPanel.textContent = rvText.replace(/^波動閘 /, ''); rvPanel.style.color = rvColor; }
 }

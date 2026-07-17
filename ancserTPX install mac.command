@@ -127,7 +127,7 @@ if [ -f ".env" ]; then
     echo "        .env found"
 else
     echo "        .env not found - creating blank..."
-    printf 'TOPSTEPX_USERNAME=\nTOPSTEPX_API_KEY=\n' > .env
+    printf 'TOPSTEPX_USERNAME=\nTOPSTEPX_API_KEY=\nEMAPMO_MESSENGER_ENABLED=false\nEMAPMO_DISCORD_WEBHOOK_URL=\nDISCORD_TOKEN=\nEMAPMO_DISCORD_CHANNEL_ID=\nEMAPMO_DISCORD_AUTH_MODE=bot\nEMAPMO_SIGNAL_HISTORY_DAYS=30\nEMAPMO_SIGNAL_CHART_BARS=96\nEMAPMO_SIGNAL_QUEUE_SIZE=8\nEMAPMO_SIGNAL_TIMEZONE=America/Chicago\n' > .env
     echo ""
     echo "  ============================================"
     echo "   Credentials will be saved from the Web UI"

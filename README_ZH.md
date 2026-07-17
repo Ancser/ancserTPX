@@ -203,6 +203,25 @@ Terminal 啟動檔不會開網頁，會直接啟動 LIVE engine。它會使用 `
 啟動 Web 或 Terminal 任一版本前，都會先停止舊的 ancserTPX Web/Terminal process，
 並清掉 app ports `8000-8010`，避免同時跑兩個 trading engine。
 
+### EMAPMO Discord 訊號圖
+
+Web LIVE 與 Terminal LIVE 共用同一個通知模組。只有 live engine 真正產生
+EMAPMO `TradeSignal` 時才會送出一則文字＋PNG 圖表；暖機、回測與一般狀態更新不會發送。
+
+在根目錄 `.env` 設定單一 Discord 頻道。建議使用該頻道的官方 webhook：
+
+```env
+EMAPMO_MESSENGER_ENABLED=true
+EMAPMO_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+EMAPMO_SIGNAL_HISTORY_DAYS=30
+```
+
+如需沿用 `ancserMessenger` 的 token，可改填 `DISCORD_TOKEN`、
+`EMAPMO_DISCORD_CHANNEL_ID` 與 `EMAPMO_DISCORD_AUTH_MODE`；個人 user token
+可能違反 Discord 規範，建議優先使用 webhook 或 bot token。通知歷史只存中繼資料於
+`data/messenger/emapmo_signals.sqlite3`，跨 Web／Terminal／多帳戶去重，預設保留 30 天，
+不保存 PNG，也不把歷史訊號常駐記憶體。
+
 ---
 
 ## License

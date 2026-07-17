@@ -530,6 +530,14 @@ class BacktestEngine:
         in_flatten_window = (
             candle_time >= self.FLATTEN_TIME_UTC and candle_time < SESSION_START
         )
+        if (
+            in_flatten_window
+            and self.strategy_mode == "factor"
+            and not self._open_position
+            and not self._pending_order
+        ):
+            # Keep completed-bar factor indicators warm while orders are blocked.
+            self.trend_follow.observe(candle, [], True)
         if in_flatten_window:
             if self._open_position:
                 self._force_exit(candle, ExitReason.FLATTEN)

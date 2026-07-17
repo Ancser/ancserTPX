@@ -13,6 +13,7 @@ websockets>=14.0
 # Data Processing
 pandas>=2.2
 numpy>=2.1
+matplotlib>=3.8                   # Headless EMAPMO signal charts
 
 # Database
 aiosqlite>=0.21                  # Async SQLite

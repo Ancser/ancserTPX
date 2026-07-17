@@ -106,6 +106,15 @@ if exist ".env" (
     (
         echo TOPSTEPX_USERNAME=
         echo TOPSTEPX_API_KEY=
+        echo EMAPMO_MESSENGER_ENABLED=false
+        echo EMAPMO_DISCORD_WEBHOOK_URL=
+        echo DISCORD_TOKEN=
+        echo EMAPMO_DISCORD_CHANNEL_ID=
+        echo EMAPMO_DISCORD_AUTH_MODE=bot
+        echo EMAPMO_SIGNAL_HISTORY_DAYS=30
+        echo EMAPMO_SIGNAL_CHART_BARS=96
+        echo EMAPMO_SIGNAL_QUEUE_SIZE=8
+        echo EMAPMO_SIGNAL_TIMEZONE=America/Chicago
     ) > .env
     echo.
     echo  ============================================

@@ -42,6 +42,14 @@ if not exist ".deps_installed" (
     echo done > .deps_installed
 )
 
+:: The EMAPMO messenger chart dependency was added after older installs had
+:: already created .deps_installed. Check it explicitly so charts never vanish.
+python -c "import matplotlib" >nul 2>&1
+if errorlevel 1 (
+    echo  Installing EMAPMO chart dependency...
+    pip install "matplotlib>=3.8" >nul 2>&1
+)
+
 echo.
 echo  ============================================
 echo   Starting terminal-only LIVE engine

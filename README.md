@@ -203,6 +203,28 @@ account, and the last used live preset from `data/presets.json`.
 Starting either Web or Terminal first stops any older ancserTPX Web/Terminal
 process and clears app ports `8000-8010`, so only one trading engine can run.
 
+### EMAPMO Discord signal chart
+
+Web LIVE and Terminal LIVE share one notifier. It posts one text message and PNG
+only when the live engine produces an actionable EMAPMO `TradeSignal`; warm-up,
+backtests, and ordinary status updates never post.
+
+Configure one Discord channel in the root `.env`. An official channel webhook is
+the preferred transport:
+
+```env
+EMAPMO_MESSENGER_ENABLED=true
+EMAPMO_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+EMAPMO_SIGNAL_HISTORY_DAYS=30
+```
+
+For compatibility with `ancserMessenger`, you may instead set `DISCORD_TOKEN`,
+`EMAPMO_DISCORD_CHANNEL_ID`, and `EMAPMO_DISCORD_AUTH_MODE`. Automating a personal
+user token may violate Discord's terms; prefer a webhook or bot token. Metadata-only
+history is stored in `data/messenger/emapmo_signals.sqlite3`, deduplicated across
+Web/Terminal/accounts, and retained for 30 days. PNG files and full history are not
+kept in memory.
+
 ---
 
 ## License
