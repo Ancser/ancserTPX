@@ -342,11 +342,11 @@ class SessionTrendFollow:
 
     def get_phase_label(self) -> str:
         if self._state == "confirmed":
-            d = "VAH↑" if self._breakout_direction == "up" else "VAL↓"
-            return f"突破掛單中 {d}"
+            d = "VAH UP" if self._breakout_direction == "up" else "VAL DOWN"
+            return f"BREAKOUT ORDER PENDING: {d}"
         if self._state == "in_trade":
-            return "持倉中"
-        return "等待突破"
+            return "IN POSITION"
+        return "Waiting for breakout"
 
     @property
     def raw_state(self) -> str:

@@ -2103,7 +2103,7 @@ async function onModelSelect(mode) {
     _pendingPresetModelByMode[mode] = name;
     _applyModelCombo(mode, rr, band, tf, brk);
     if (opt.dataset.trained !== '1') {
-        log('此模型尚未訓練', 'warn');
+        log('This model has not been trained yet.', 'warn');
         return;
     }
     try {
@@ -2116,11 +2116,11 @@ async function onModelSelect(mode) {
             _activeModelName = name;
             await loadModelRegistry();
             const runRr = parseFloat((document.getElementById('conf-rr-' + mode) || {}).value || '1');
-            log(`已啟用 ${name} (band ${Math.round(band)} · ${tf}TF · runtime RR 1:${_fmtConfRr(runRr)})`, 'success');
+            log(`Model activated: ${name} (band ${Math.round(band)} · ${tf}TF · runtime RR 1:${_fmtConfRr(runRr)})`, 'success');
         } else {
-            log('啟用模型失敗: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
+            log('Model activation failed: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
         }
-    } catch (e) { log('啟用模型失敗: ' + e, 'error'); }
+    } catch (e) { log('Model activation failed: ' + e, 'error'); }
 }
 
 async function retrainModel(mode) {
@@ -2135,8 +2135,8 @@ async function retrainModel(mode) {
     const minProb = String((document.getElementById('conf-minprob-' + mode) || {}).value || '0.65');
     const description = String((descriptionEl || {}).value || '').trim()
         || `RR${_fmtConfRr(rr)} B${band} TF${tf} prob${minProb} ui retrain`;
-    if (!confirm(`新增模型版本\ntrainer = ${trainer.toUpperCase()}\ndescription = ${description}\n需已載入歷史數據，訓練可能需要一段時間。`)) return;
-    log(`訓練新版本中 · ${trainer.toUpperCase()} · ${description}…`, 'info');
+    if (!confirm(`Create a new model version\ntrainer = ${trainer.toUpperCase()}\ndescription = ${description}\nHistorical data must already be loaded. Training may take some time.`)) return;
+    log(`Training new model version · ${trainer.toUpperCase()} · ${description}…`, 'info');
     try {
         const resp = await fetch(API + '/confluence/models/retrain', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2146,15 +2146,15 @@ async function retrainModel(mode) {
         });
         const data = await resp.json().catch(() => ({}));
         if (resp.ok && data.success) {
-            log(`✓ ${data.name} 訓練完成 · n=${data.n_samples} win=${(data.win_rate * 100).toFixed(0)}% `
-                + `oos=${Number(data.oos_auc).toFixed(2)} · 已啟用`, 'success');
+            log(`✓ ${data.name} training complete · n=${data.n_samples} win=${(data.win_rate * 100).toFixed(0)}% `
+                + `oos=${Number(data.oos_auc).toFixed(2)} · activated`, 'success');
             await loadModelRegistry();
             if (sel) sel.value = data.name;
             if (descriptionEl) descriptionEl.value = '';
         } else {
-            log('訓練失敗: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
+            log('Training failed: ' + (data.detail || ('HTTP ' + resp.status)), 'error');
         }
-    } catch (e) { log('訓練失敗: ' + e, 'error'); }
+    } catch (e) { log('Training failed: ' + e, 'error'); }
 }
 
 
@@ -2600,12 +2600,12 @@ async function refreshLiveZoneOverlay(stratParams) {
             if (zoneData.zones && zoneData.zones.length > 0) {
                 drawVolumeProfile(zoneData.zones);
                 drawBacktestZones(zoneData.zones);
-                log('偵測到 ' + zoneData.zones.length + ' 個盤整區間', 'success');
+                log('Detected ' + zoneData.zones.length + ' consolidation zone(s)', 'success');
                 if (window._lastChartData) {
                     applyDefaultChartView(window._lastChartData, zoneData.zones);
                 }
             } else {
-                log('未偵測到盤整區間', 'info');
+                log('No consolidation zones detected', 'info');
             }
         }
     } catch(e) {
@@ -2629,7 +2629,7 @@ async function goLive() {
 
     const statusEl = document.getElementById('live-status-text');
     statusEl.style.color = 'var(--amber)';
-    statusEl.textContent = '啟動中...';
+    statusEl.textContent = 'STARTING...';
     log('GO LIVE: account=' + liveAccount.name + ' (' + (liveAccount.is_practice ? 'practice' : 'FUNDED') + ')', 'info');
     const stratParams = collectStrategyParams('live');
 
@@ -2641,10 +2641,10 @@ async function goLive() {
         stratParams.conf_shadow = false;
         Object.assign(stratParams, confParams);
         const gateTxt = (stratParams.conf_ev_floor != null)
-            ? ('EV≥' + stratParams.conf_ev_floor + ' (EV優先)')
+            ? ('EV≥' + stratParams.conf_ev_floor + ' (EV priority)')
             : ('minProb=' + stratParams.conf_min_prob);
         const rrTxt = (Array.isArray(stratParams.conf_rr_grid) && stratParams.conf_rr_grid.length)
-            ? ('rrGrid=' + stratParams.conf_rr_grid.join('/') + ' (EV挑選)')
+            ? ('rrGrid=' + stratParams.conf_rr_grid.join('/') + ' (EV selection)')
             : ('rr=' + stratParams.conf_rr);
         log('ML CONFLUENCE: LIVE (places orders) base=1m ' + gateTxt
             + ' ' + rrTxt + ' band=' + stratParams.conf_band_ticks
@@ -2716,33 +2716,33 @@ async function goLive() {
         });
         const data = await resp.json();
         if (!resp.ok) {
-            log('交易引擎啟動失敗: ' + (data.detail || JSON.stringify(data)), 'warn');
+            log('Trading engine start failed: ' + (data.detail || JSON.stringify(data)), 'warn');
             statusEl.style.color = 'var(--amber)';
-            statusEl.textContent = '僅監控';
+            statusEl.textContent = 'MONITOR ONLY';
         } else {
             engineStarted = true;
-            log('交易引擎啟動成功 ✓ 開始運行', 'success'); // 1.0.8: 修復原亂碼字串
+            log('Trading engine started successfully ✓', 'success');
             refreshTfZones(true);
             setTimeout(() => refreshLiveZoneOverlay(stratParams), 0);
         }
     } catch(e) {
-        log('交易引擎連線失敗: ' + e.message + ' (僅監控模式)', 'warn');
+        log('Trading engine connection failed: ' + e.message + ' (monitor-only mode)', 'warn');
         statusEl.style.color = 'var(--amber)';
-        statusEl.textContent = '僅監控';
+        statusEl.textContent = 'MONITOR ONLY';
     }
 
     if (!engineStarted) _liveStartInProgress = false;
 
     if (engineStarted) {
         statusEl.style.color = 'var(--amber)';
-        statusEl.textContent = '啟動中...';
+        statusEl.textContent = 'STARTING...';
         const dot = document.getElementById('live-status-dot');
         if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
         const stopBtn = document.getElementById('btn-stop-live');
         if (stopBtn) stopBtn.disabled = true;
         const flattenBtn = document.getElementById('btn-flatten');
         if (flattenBtn) flattenBtn.disabled = true;
-        log('交易引擎啟動成功 ✓ 開始運行', 'success'); // 1.0.8: 修復原亂碼字串
+        log('Trading engine started successfully ✓', 'success');
     } else {
         const dot = document.getElementById('live-status-dot');
         if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
@@ -2751,7 +2751,7 @@ async function goLive() {
         if (stopBtn) stopBtn.disabled = true;
         const flattenBtn = document.getElementById('btn-flatten');
         if (flattenBtn) flattenBtn.disabled = true;
-        log('監控模式 — K線每秒更新 (交易引擎未啟動)', 'info');
+        log('Monitor-only mode — candles update every second (trading engine not running)', 'info');
     }
 
     // Auto-fetch real account state
@@ -2764,7 +2764,7 @@ async function stopLive() {
     try {
         const resp = await fetch(API + '/live/stop', { method: 'POST' });
         const data = await resp.json();
-        log('引擎已停止', 'info');
+        log('Trading engine stopped', 'info');
     } catch(e) {
         log('Stop error: ' + e.message, 'error');
     }
@@ -2791,11 +2791,11 @@ async function stopLive() {
 }
 
 async function flattenLive() {
-    if (!confirm('確認緊急平倉？')) return;
+    if (!confirm('Confirm emergency flatten?')) return;
     try {
         const resp = await fetch(API + '/live/flatten', { method: 'POST' });
         const data = await resp.json();
-        log('緊急平倉: ' + (data.message || 'OK'), 'warn');
+        log('Emergency flatten: ' + (data.message || 'OK'), 'warn');
     } catch(e) {
         log('Flatten error: ' + e.message, 'error');
     }
@@ -2886,7 +2886,7 @@ async function fetchRealState() {
             if (eng.log && eng.log.length > 0) {
                 html += '<div style="color:var(--amber);margin-top:4px;">ENGINE LOG (last 10):</div>';
                 eng.log.slice(-10).forEach(l => {
-                    html += '<div style="padding-left:8px;color:var(--text3);font-size:9px;">' + l + '</div>';
+                    html += '<div style="padding-left:8px;color:var(--text3);font-size:9px;white-space:pre-wrap;overflow-wrap:anywhere;">' + _acctEsc(l) + '</div>';
                 });
             }
             html += '</div>';
@@ -2922,34 +2922,34 @@ function renderLiveRiskGates(st) {
     const allowedLabel = st.active_allowed_sessions || st.trend_allowed_sessions || '';
     let marketOk, marketText;
     if (sess.label === 'CLOSED') {
-        marketOk = false; marketText = '盤段 休市';
+        marketOk = false; marketText = 'MARKET CLOSED';
     } else if (!allowedLabel || allowedLabel === 'ALL') {
-        marketOk = true; marketText = '盤段 ' + sess.label + '·ALL';
+        marketOk = true; marketText = 'MARKET ' + sess.label + '·ALL';
     } else {
         const allow = String(allowedLabel).split(/[+,]/).map(s => s.trim().toUpperCase());
         marketOk = allow.includes(sess.label);
-        marketText = '盤段 ' + sess.label + (marketOk ? '·允許' : '·盤段外');
+        marketText = 'MARKET ' + sess.label + (marketOk ? '·ALLOWED' : '·OUTSIDE');
     }
     setChip('lv-rg-market', marketText, marketOk ? GREEN : GREY);
 
     // ── 日限:每 zone/方向 一單 (session-direction lock 開關) ──
     const sessOn = gates.session_limit ? !!gates.session_limit.on : false;
-    setChip('lv-rg-session', '日限 ' + (sessOn ? 'ON' : 'OFF'), sessOn ? GREEN : GREY);
+    setChip('lv-rg-session', 'SESSION LIMIT ' + (sessOn ? 'ON' : 'OFF'), sessOn ? GREEN : GREY);
 
     // ── 程式虧損鎖:只計 bot-owned 交易，手動交易不消耗額度 ──
     const dl = gates.daily_loss || {};
     let dlText, dlColor;
-    if (!dl.limit) { dlText = '程式虧損 OFF'; dlColor = GREY; }
-    else if (dl.resting) { dlText = '程式虧損 休息 ' + (dl.count || 0) + '/' + dl.limit; dlColor = RED; }
-    else { dlText = '程式虧損 ' + (dl.count || 0) + '/' + dl.limit; dlColor = (dl.count || 0) > 0 ? AMBER : GREEN; }
+    if (!dl.limit) { dlText = 'BOT LOSS OFF'; dlColor = GREY; }
+    else if (dl.resting) { dlText = 'BOT LOSS LOCKED ' + (dl.count || 0) + '/' + dl.limit; dlColor = RED; }
+    else { dlText = 'BOT LOSS ' + (dl.count || 0) + '/' + dl.limit; dlColor = (dl.count || 0) > 0 ? AMBER : GREEN; }
     setChip('lv-rg-dailyloss', dlText, dlColor);
 
     // ── PREV-RV 波動閘:前一日高波動 → 今日封鎖 ──
     const rv = gates.prev_rv || {};
     let rvText, rvColor;
-    if (!rv.lookback) { rvText = '波動閘 OFF'; rvColor = GREY; }
-    else if (rv.blocking) { rvText = '波動閘 封鎖'; rvColor = RED; }
-    else { rvText = '波動閘 近' + rv.lookback + '日·通行'; rvColor = CYAN; }
+    if (!rv.lookback) { rvText = 'VOLATILITY OFF'; rvColor = GREY; }
+    else if (rv.blocking) { rvText = 'VOLATILITY BLOCKED'; rvColor = RED; }
+    else { rvText = 'VOLATILITY ' + rv.lookback + 'D·PASS'; rvColor = CYAN; }
     setChip('lv-rg-prevrv', rvText, rvColor);
 
     // ── TP 鎖(只在有設定時顯示) ──
@@ -2960,15 +2960,15 @@ function renderLiveRiskGates(st) {
             tpChip.style.display = 'none';
         } else {
             tpChip.style.display = '';
-            setChip('lv-rg-tplock', tp.locked ? 'TP鎖 鎖定' : 'TP鎖 armed', tp.locked ? RED : GREY);
+            setChip('lv-rg-tplock', tp.locked ? 'TP LOCK LOCKED' : 'TP LOCK ARMED', tp.locked ? RED : GREY);
         }
     }
 
     // ── 側欄 LIVE STATUS 鏡像(日虧 / 波動閘) ──
     const dlPanel = document.getElementById('live-rg-dailyloss-text');
-    if (dlPanel) { dlPanel.textContent = dlText.replace(/^程式虧損 /, ''); dlPanel.style.color = dlColor; }
+    if (dlPanel) { dlPanel.textContent = dlText.replace(/^BOT LOSS /, ''); dlPanel.style.color = dlColor; }
     const rvPanel = document.getElementById('live-rg-prevrv-text');
-    if (rvPanel) { rvPanel.textContent = rvText.replace(/^波動閘 /, ''); rvPanel.style.color = rvColor; }
+    if (rvPanel) { rvPanel.textContent = rvText.replace(/^VOLATILITY /, ''); rvPanel.style.color = rvColor; }
 }
 
 async function pollLiveStatus() {
@@ -2991,14 +2991,14 @@ async function pollLiveStatus() {
                 const statusEl = document.getElementById('live-status-text');
                 if (statusEl) {
                     statusEl.style.color = 'var(--amber)';
-                    statusEl.textContent = '啟動中...';
+                    statusEl.textContent = 'STARTING...';
                 }
                 const dot = document.getElementById('live-status-dot');
                 if (dot) {
                     dot.style.background = 'var(--amber)';
                     dot.style.boxShadow = '0 0 6px var(--amber)';
                 }
-                const phaseText = st.phase || '構建區間中...';
+                const phaseText = st.phase || 'BUILDING ZONES...';
                 const panelPhase = document.getElementById('live-position-text');
                 if (panelPhase) panelPhase.textContent = phaseText;
                 const phaseTopEl = document.getElementById('lv-phase-top');
@@ -3074,7 +3074,7 @@ async function pollLiveStatus() {
         const statusEl = document.getElementById('live-status-text');
         if (statusEl) {
             statusEl.style.color = 'var(--green)';
-            statusEl.textContent = '交易中';
+            statusEl.textContent = 'RUNNING';
         }
         const dot = document.getElementById('live-status-dot');
         if (dot) {
@@ -3154,7 +3154,7 @@ async function pollLiveStatus() {
         } else if (st.pending_order_id) {
             const age = st.pending_age || 0;
             const timeout = st.pending_timeout || 30;
-            posEl.textContent = '掛單中(' + age + '/' + timeout + 'min)';
+            posEl.textContent = 'PENDING (' + age + '/' + timeout + ' min)';
             posEl.style.color = 'var(--amber)';
         } else {
             posEl.textContent = 'FLAT';
@@ -3207,14 +3207,14 @@ async function pollLiveStatus() {
         const isMLmode = (st.strategy_mode === 'confluence') || st.confluence_mode;
         let modeText, modeColor;
         if (isMLmode) {
-            modeText = st.confluence_shadow ? '影子(不下單)' : '實盤';
+            modeText = st.confluence_shadow ? 'SHADOW (NO ORDERS)' : 'LIVE';
             modeColor = st.confluence_shadow ? 'var(--amber)' : 'var(--green)';
         } else {
             const amRaw = st.active_mode || '';
             const snRaw = st.strategy_mode || '';
             const am = amRaw ? strategyDisplayName(amRaw) : '';
             const sn = snRaw ? strategyDisplayName(snRaw) : '';
-            modeText = (am && am !== sn) ? am : '實盤';
+            modeText = (am && am !== sn) ? am : 'LIVE';
             modeColor = 'var(--green)';
         }
         const modeTopEl = document.getElementById('lv-mode');
@@ -3240,8 +3240,8 @@ async function pollLiveStatus() {
         const statusLabelEl = document.getElementById('lv-status-label');
         if (statusLabelEl) {
             statusLabelEl.textContent = isMLStatus
-                ? 'ML 狀態'
-                : (strategyDisplayName(st.strategy_mode || collectStrategyParams('live').strategy) + ' 狀態');
+                ? 'ML STATUS'
+                : (strategyDisplayName(st.strategy_mode || collectStrategyParams('live').strategy) + ' STATUS');
         }
         const phaseTopEl = document.getElementById('lv-phase-top');
         if (phaseTopEl) {
@@ -3281,7 +3281,7 @@ async function pollLiveStatus() {
                     html += '<div style="display:flex;justify-content:space-between;gap:8px;padding:1px 8px;'
                         + (inC ? 'background:rgba(0,229,160,0.10);' : '') + '">'
                         + '<span style="color:' + wColor + ';min-width:44px;font-weight:' + (inC ? '600' : '400') + ';">' + r.label + '</span>'
-                        + '<span style="color:var(--text2);min-width:50px;text-align:right;">權' + (r.weight != null ? r.weight.toFixed(1) : '--') + '</span>'
+                        + '<span style="color:var(--text2);min-width:50px;text-align:right;">W ' + (r.weight != null ? r.weight.toFixed(1) : '--') + '</span>'
                         + '<span style="color:' + dColor + ';min-width:50px;text-align:right;">' + dStr + '</span>'
                         + '</div>';
                 });
@@ -3497,7 +3497,7 @@ async function pollLiveCandle() {
             refreshTfZones(!(_tfAllZones && _tfAllZones.length));
             refreshIndicatorSignalMarkers(false);
             _refreshAllMarkers();
-            log('K線更新: ' + newestC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');
+            log('Candle update: ' + newestC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');
         }
     } catch(e) {
         // silent
@@ -4411,16 +4411,16 @@ function toggleAutoCenter() {
         _acOffset = 0;
         if (!_acSpan) {
             _autoCenterOn = false;
-            log('自動居中開啟失敗(無法取得目前縱向比例)', 'warn');
+            log('Auto-center could not start (current vertical scale unavailable)', 'warn');
         } else {
             _acBindDrag();
             try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
-            log('自動居中 ON — 跟隨中央 K 線 EMA200,上下拖拽可調偏移', 'info');
+            log('Auto-center ON — following the center candle EMA200; drag vertically to adjust offset', 'info');
         }
     } else {
         // 回復預設 autoscale(範圍重新由資料決定)
         try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
-        log('自動居中 OFF — 回復預設 autoscale', 'info');
+        log('Auto-center OFF — default autoscale restored', 'info');
     }
     if (btn) btn.classList.toggle('active', _autoCenterOn);
     _acScheduleKick();
@@ -5357,12 +5357,12 @@ async function runBacktestSweep() {
         if (lr.ok) {
             const ld = await lr.json();
             const running = (ld.engines || []).filter(e => e.status && e.status.running).length;
-            if (running > 0 && !confirm('偵測到 ' + running + ' 個 live 引擎在跑。\nSWEEP 很吃資源,和 live 同時跑可能卡頓甚至當機 — 建議先 STOP live。\n仍要繼續?')) { _resetSweepBtn(); return; }
+            if (running > 0 && !confirm('Detected ' + running + ' running live engine(s).\nSWEEP is resource intensive and may make live trading unresponsive. Stop live engines first when possible.\nContinue anyway?')) { _resetSweepBtn(); return; }
         }
     } catch (e) {}
     const dataOk = await _ensureBacktestData(sweepBtn || btBtn);
     if (!dataOk) { _resetSweepBtn(); return; }
-    if (!confirm('參數掃描(勾選的 model,MNQx1 + RISK 鎖定,~5–25 分鐘視勾選)。開始?')) { _resetSweepBtn(); return; }
+    if (!confirm('Start parameter sweep for the selected models (MNQx1, risk settings locked, about 5–25 minutes)?')) { _resetSweepBtn(); return; }
 
     if (sweepBtn) { sweepBtn.disabled = true; sweepBtn.textContent = 'SWEEPING…'; }
     if (btBtn) btBtn.disabled = true;
@@ -5382,9 +5382,9 @@ async function runBacktestSweep() {
         if ((document.getElementById('sweep-m-dist') || {}).checked) _mm.push('DISTRIBUTION');
         if ((document.getElementById('sweep-m-factor') || {}).checked) _mm.push('FACTOR');
     }
-    if (!_mm.length) { log('至少勾一個 model 才能 SWEEP', 'warn'); _resetSweepBtn(); if (sweepBtn) sweepBtn.disabled = false; if (btBtn) btBtn.disabled = false; return; }
+    if (!_mm.length) { log('Select at least one model before starting SWEEP', 'warn'); _resetSweepBtn(); if (sweepBtn) sweepBtn.disabled = false; if (btBtn) btBtn.disabled = false; return; }
     if (_mm.length < 4) body.sweep_models = _mm;
-    log('SWEEP 開始:' + _mm.join(' + ') + '(MNQx1 鎖定,依 PF 排序)…', 'info');
+    log('SWEEP started: ' + _mm.join(' + ') + ' (MNQx1 locked, sorted by PF)…', 'info');
     _startBacktestProgress();
 
     let ok = false;
@@ -5398,9 +5398,9 @@ async function runBacktestSweep() {
         renderSweepTable('pf');
         ok = true;
         const n = (_sweepData && (_sweepData.results || []).length) || 0;
-        log('SWEEP 完成 // ' + n + ' 變體 // 依 PF 排序,點 + 存成 preset', 'success');
+        log('SWEEP complete // ' + n + ' variants // sorted by PF; click + to save a preset', 'success');
     } catch (e) {
-        log('SWEEP 失敗: ' + e.message, 'error');
+        log('SWEEP failed: ' + e.message, 'error');
     } finally {
         _stopBacktestProgress(ok);
         if (sweepBtn) { sweepBtn.disabled = false; sweepBtn.textContent = 'SWEEP'; }
@@ -5411,7 +5411,7 @@ async function runBacktestSweep() {
 // 1.0.9: 把某個 sweep 結果列存成結構化命名 preset(base = 當前 backtest 表單,overlay = 該列掃出的參數)
 async function saveSweepPreset(i) {
     const r = (_sweepRenderedRows || [])[i];
-    if (!r) { log('找不到該 sweep 列', 'warn'); return; }
+    if (!r) { log('Sweep result row not found', 'warn'); return; }
     const rowStrat = (r.params && r.params.strategy)
         || (r.model === 'DAY ZONE' ? 'fade' : (r.model === 'DISTRIBUTION' ? 'sigma' : (r.model === 'FACTOR' ? 'factor' : 'trend')));
     // 1.0.9 FIX: 一律用 sweep 存下的完整參數快照(preset_params)—— 逐位重現掃描條件。
@@ -5421,7 +5421,7 @@ async function saveSweepPreset(i) {
     if (r.preset_params && Object.keys(r.preset_params).length) {
         params = Object.assign({}, r.preset_params, { strategy: rowStrat });
     } else {
-        log('此列無參數快照(舊 sweep 檔)— 回退表單合併,結果可能與榜單不符', 'warn');
+        log('This legacy sweep row has no parameter snapshot; falling back to form values, so results may differ', 'warn');
         params = Object.assign({}, collectStrategyParams('bt'), r.params, { strategy: rowStrat });
     }
     const defaultName = buildPresetName(params, suggestedPresetPurpose(params));
@@ -7733,7 +7733,7 @@ async function initLiveSlots() {
         const preSel = document.getElementById('live-acct-preset-' + slot);
         if (accSel) {
             const cur = accSel.value;
-            accSel.innerHTML = '<option value="">-- 選帳號 --</option>' + accts.map(a =>
+            accSel.innerHTML = '<option value="">-- SELECT ACCOUNT --</option>' + accts.map(a =>
                 '<option value="' + a.id + '">' + _acctEsc(a.name) + ' [' + String(a.account_type || '').toUpperCase() + '] $'
                 + Number(a.balance || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }) + '</option>').join('');
             let def = cur || saved['acct' + slot] || _defaultSlotAccount(slot, accts);
@@ -7741,7 +7741,7 @@ async function initLiveSlots() {
         }
         if (preSel) {
             const cur = preSel.value;
-            preSel.innerHTML = '<option value="">-- 選 preset --</option>' + presetNames.map(n =>
+            preSel.innerHTML = '<option value="">-- SELECT PRESET --</option>' + presetNames.map(n =>
                 '<option value="' + _acctEsc(n) + '">' + _acctEsc(_presetDisplayName(n)) + '</option>').join('');
             const dp = cur || saved['preset' + slot] || '';
             if (dp && presetNames.includes(dp)) preSel.value = dp;
@@ -7786,7 +7786,7 @@ async function _persistLiveRolesFromSlots() {
                 accounts: accounts,
             }),
         });
-        log('帳號指派已存檔 (account_roles.json) — terminal 模式將跟隨', 'info');
+        log('Account assignments saved (account_roles.json); terminal mode will follow them', 'info');
     } catch (e) { /* 設定持久化失敗不影響交易 */ }
 }
 
@@ -7797,15 +7797,15 @@ async function liveSlotGoLive(slot) {
     const slotNum = Number(slot);
     if (!accId) { log(slotName + ': select account first', 'warn'); return; }
     if (!presetName || !(_presetsCache.presets || {})[presetName]) { log(slotName + ': select preset first', 'warn'); return; }
-    if (!accId) { log('ACCOUNT ' + slot + ':先選帳號', 'warn'); return; }
-    if (!presetName || !(_presetsCache.presets || {})[presetName]) { log('ACCOUNT ' + slot + ':先選 preset', 'warn'); return; }
+    if (!accId) { log('ACCOUNT ' + slot + ': select an account first', 'warn'); return; }
+    if (!presetName || !(_presetsCache.presets || {})[presetName]) { log('ACCOUNT ' + slot + ': select a preset first', 'warn'); return; }
     // 兩槽不可選同一帳號
     const other = parseInt((document.getElementById('live-acct-select-' + (slotNum === LIVE_MAIN_SLOT ? LIVE_MINOR_SLOT : LIVE_MAIN_SLOT)) || {}).value);
     slot = slotNum === LIVE_MAIN_SLOT ? 'MAIN' : 'MINOR';
-    if (other && other === accId) { log('兩個槽不可用同一帳號', 'warn'); return; }
+    if (other && other === accId) { log('MAIN and MINOR cannot use the same account', 'warn'); return; }
     const acc = (allAccounts || []).find(a => a.id === accId);
-    const warn = (acc && acc.account_type === 'express') ? '\n⚠ EXPRESS 真錢帳號,會下真單!' : '';
-    if (!confirm('GO LIVE (ACCOUNT ' + slot + ')\n帳號:' + (acc ? acc.name : accId) + '\npreset:' + presetName + warn)) return;
+    const warn = (acc && acc.account_type === 'express') ? '\n⚠ EXPRESS FUNDED ACCOUNT: REAL ORDERS WILL BE PLACED!' : '';
+    if (!confirm('GO LIVE (ACCOUNT ' + slot + ')\nAccount: ' + (acc ? acc.name : accId) + '\nPreset: ' + presetName + warn)) return;
     const preset = _presetsCache.presets[presetName];
     const body = Object.assign({}, preset, { account_id: accId });
     body.strategy = normalizeStrategyName(body.strategy);
@@ -7813,13 +7813,13 @@ async function liveSlotGoLive(slot) {
     try {
         const resp = await fetch(API + '/live/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const data = await resp.json();
-        if (!resp.ok) { log('ACCOUNT ' + slot + ' 啟動失敗:' + _acctEsc(data.detail || JSON.stringify(data)), 'warn'); }
+        if (!resp.ok) { log('ACCOUNT ' + slot + ' start failed: ' + _acctEsc(data.detail || JSON.stringify(data)), 'warn'); }
         else {
             log('ACCOUNT ' + slot + ' GO LIVE acct ' + accId + ' preset=' + presetName + ' ✓', 'success');
             _startLiveChartForAccount(acc, preset);   // 帶動圖表 + 頂欄(跟隨此帳號)
             _persistLiveRolesFromSlots();             // 1.0.9: 指派寫進 account_roles.json(terminal 跟隨)
         }
-    } catch (e) { log('ACCOUNT ' + slot + ' 啟動連線失敗:' + e.message, 'warn'); }
+    } catch (e) { log('ACCOUNT ' + slot + ' start connection failed: ' + e.message, 'warn'); }
     _saveLiveSlots();
     setTimeout(pollLiveSlots, 400);
 }
@@ -7829,7 +7829,7 @@ async function liveSlotStop(slot) {
     slot = Number(slot) === LIVE_MAIN_SLOT ? 'MAIN' : 'MINOR';
     if (!accId) return;
     try { const r = await fetch(API + '/live/stop?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' STOP:' + _acctEsc(d.message || ''), 'info'); }
-    catch (e) { log('ACCOUNT ' + slot + ' STOP 失敗:' + e.message, 'warn'); }
+    catch (e) { log('ACCOUNT ' + slot + ' STOP failed: ' + e.message, 'warn'); }
     setTimeout(pollLiveSlots, 300);
 }
 
@@ -7837,9 +7837,9 @@ async function liveSlotFlatten(slot) {
     const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
     slot = Number(slot) === LIVE_MAIN_SLOT ? 'MAIN' : 'MINOR';
     if (!accId) return;
-    if (!confirm('ACCOUNT ' + slot + ' 緊急平倉帳號 ' + accId + '?')) return;
+    if (!confirm('Emergency flatten ACCOUNT ' + slot + ' (' + accId + ')?')) return;
     try { const r = await fetch(API + '/live/flatten?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' FLATTEN:' + _acctEsc(d.message || ''), 'warn'); }
-    catch (e) { log('ACCOUNT ' + slot + ' FLATTEN 失敗:' + e.message, 'warn'); }
+    catch (e) { log('ACCOUNT ' + slot + ' FLATTEN failed: ' + e.message, 'warn'); }
     setTimeout(pollLiveSlots, 300);
 }
 
@@ -7881,21 +7881,21 @@ function _liveSlotRenderStatus(slot, statusMap, sess) {
         return;
     }
     if (st && st.running) {
-        set('live-slot-status', '交易中', 'var(--green)');
+        set('live-slot-status', 'RUNNING', 'var(--green)');
         if (dot) { dot.style.background = 'var(--green)'; dot.style.boxShadow = '0 0 6px var(--green)'; }
         set('live-slot-phase', st.phase || '--', 'var(--text2)');
         const activeModeName = st.active_mode ? strategyDisplayName(st.active_mode) : '';
         const strategyModeName = st.strategy_mode ? strategyDisplayName(st.strategy_mode) : 'TREND';
-        const mode = st.confluence_shadow ? '影子(不下單)'
-            : ((activeModeName && activeModeName !== strategyModeName) ? activeModeName : '實盤');
+        const mode = st.confluence_shadow ? 'SHADOW (NO ORDERS)'
+            : ((activeModeName && activeModeName !== strategyModeName) ? activeModeName : 'LIVE');
         set('live-slot-mode', mode, 'var(--green)');
         const pnl = st.daily_pnl || 0;
         set('live-slot-pnl', (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0), pnl >= 0 ? 'var(--green)' : 'var(--red)');
         const g = st.risk_gates || {}, dl = g.daily_loss || {}, rv = g.prev_rv || {};
-        set('live-slot-dl', dl.limit ? (dl.resting ? ('休息 ' + (dl.count || 0) + '/' + dl.limit) : ((dl.count || 0) + '/' + dl.limit)) : 'OFF', dl.resting ? 'var(--red)' : 'var(--text2)');
-        set('live-slot-rv', rv.lookback ? (rv.blocking ? '封鎖' : '近' + rv.lookback + '日通行') : 'OFF', rv.blocking ? 'var(--red)' : 'var(--text2)');
+        set('live-slot-dl', dl.limit ? (dl.resting ? ('LOCKED ' + (dl.count || 0) + '/' + dl.limit) : ((dl.count || 0) + '/' + dl.limit)) : 'OFF', dl.resting ? 'var(--red)' : 'var(--text2)');
+        set('live-slot-rv', rv.lookback ? (rv.blocking ? 'BLOCKED' : rv.lookback + 'D PASS') : 'OFF', rv.blocking ? 'var(--red)' : 'var(--text2)');
     } else {
-        set('live-slot-status', st ? '已停' : '未啟動', 'var(--text3)');
+        set('live-slot-status', st ? 'STOPPED' : 'NOT STARTED', 'var(--text3)');
         if (dot) { dot.style.background = 'var(--text3)'; dot.style.boxShadow = 'none'; }
         ['live-slot-phase', 'live-slot-mode', 'live-slot-dl', 'live-slot-rv', 'live-slot-pnl'].forEach(b => set(b, '--', 'var(--text3)'));
     }

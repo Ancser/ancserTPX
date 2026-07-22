@@ -36,11 +36,11 @@ class ConnectionManager:
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.active.append(ws)
-        logger.info(f"WS 連接: {len(self.active)} 個客戶端")
+        logger.info(f"WS connected: {len(self.active)} client(s)")
 
     def disconnect(self, ws: WebSocket):
         self.active.remove(ws)
-        logger.info(f"WS 斷開: {len(self.active)} 個客戶端")
+        logger.info(f"WS disconnected: {len(self.active)} client(s)")
 
     async def broadcast(self, message: dict):
         """廣播給所有連接的前端"""

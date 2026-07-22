@@ -288,8 +288,8 @@ class BacktestEngine:
         inside a worker thread. Kept lightweight; never raises into the loop.
         """
         logger.info(
-            f"開始回測: {len(candles)} 根 K 線, "
-            f"初始資金=${self._capital:,.0f}"
+            f"Backtest started: {len(candles)} candles, "
+            f"initial capital=${self._capital:,.0f}"
         )
         self._reset()
 
@@ -315,7 +315,8 @@ class BacktestEngine:
                 self._near_data_end = True
                 if self._pending_order:
                     logger.debug(
-                        f"[LiveEdge] 距末尾 {remaining} 根K線，取消掛單，封鎖新信號"
+                        f"[LiveEdge] {remaining} candles remain; cancelling the pending order "
+                        "and blocking new signals"
                     )
                     self._cancel_pending_order()
             if _log_progress:
@@ -323,12 +324,12 @@ class BacktestEngine:
                 if _d != _prev_date:
                     _prev_date = _d
                     logger.info(
-                        f"[Backtest] {_d} | 進度 {i + 1}/{total} ({(i + 1) * 100 // total}%) "
-                        f"| 累計交易 {len(self._trades)} 筆"
+                        f"[Backtest] {_d} | progress {i + 1}/{total} ({(i + 1) * 100 // total}%) "
+                        f"| trades {len(self._trades)}"
                     )
                     if progress_cb is not None:
                         try:
-                            progress_cb(i + 1, total, f"{_d} | 交易 {len(self._trades)}")
+                            progress_cb(i + 1, total, f"{_d} | trades {len(self._trades)}")
                         except Exception:
                             pass
             self._process_candle(candle)
@@ -367,8 +368,8 @@ class BacktestEngine:
         )
 
         logger.info(
-            f"回測完成: {metrics.total_trades} 筆交易, "
-            f"勝率={metrics.win_rate:.1%}, PnL=${metrics.total_pnl:,.0f}"
+            f"Backtest complete: {metrics.total_trades} trades, "
+            f"win rate={metrics.win_rate:.1%}, PnL=${metrics.total_pnl:,.0f}"
         )
         return result
 
@@ -550,7 +551,7 @@ class BacktestEngine:
             candle_time >= self.PRE_FLATTEN_UTC and candle_time < SESSION_START
         )
         if in_pre_flatten and self._pending_order:
-            logger.debug("收盤前取消掛單")
+            logger.debug("Cancelling pending order before session close")
             self._cancel_pending_order()
 
         # Check SL/TP on open position
@@ -766,7 +767,7 @@ class BacktestEngine:
             else None
         )
         logger.debug(
-            f"掛單: {signal.strategy.value} {signal.direction.value} "
+            f"Pending order: {signal.strategy.value} {signal.direction.value} "
             f"limit @ {signal.entry_price:.2f} | SL={signal.sl_price:.2f} TP={signal.tp_price:.2f}"
         )
 
@@ -869,7 +870,7 @@ class BacktestEngine:
         })
 
         logger.debug(
-            f"入場: {trade.strategy.value} {trade.direction.value} "
+            f"Entry: {trade.strategy.value} {trade.direction.value} "
             f"@ {fill_price:.2f} | SL={trade.sl_price:.2f} TP={trade.tp_price:.2f}"
         )
 
@@ -1114,8 +1115,8 @@ class BacktestEngine:
         self.trend_follow.notify_trade_closed(reason.value)
 
         logger.debug(
-            f"出場: {reason.value} @ {exit_price:.2f} | "
-            f"PnL=${pnl:+.0f} | 資金=${self._capital:,.0f}"
+            f"Exit: {reason.value} @ {exit_price:.2f} | "
+            f"PnL=${pnl:+.0f} | capital=${self._capital:,.0f}"
         )
 
     def _force_exit(self, candle: Candle, reason: ExitReason):

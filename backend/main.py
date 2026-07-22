@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """應用生命週期"""
-    logger.info("ancserTPX 後端啟動中...")
+    logger.info("ancserTPX backend starting...")
     username = os.getenv("TOPSTEPX_USERNAME", "")
     logger.info(f"  .env loaded: username={username}, api_key={'***set***' if os.getenv('TOPSTEPX_API_KEY') else 'NOT SET'}")
     # 1.0.9 P0: 每日 20:10 UTC 影子重放(實盤 vs 同參數回測逐筆對賬)
@@ -59,13 +59,13 @@ async def lifespan(app: FastAPI):
     _shadow_task = _asyncio.create_task(shadow_replay_daily_task())
     yield
     _shadow_task.cancel()   # 1.0.9
-    logger.info("ancserTPX 後端關閉")
+    logger.info("ancserTPX backend stopped")
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title="ancserTPX",
-        description="TopstepX NQ 期貨自動交易系統",
+        description="TopstepX NQ futures automated trading system",
         version="1.0.6",
         lifespan=lifespan,
     )

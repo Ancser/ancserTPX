@@ -171,12 +171,14 @@ class EMAPMOStrategy:
         self._state = "idle"
 
     def get_phase_label(self) -> str:
-        if len(self._bars) < self.warmup_bars:
-            return f"PMO warming {len(self._bars)}/{self.warmup_bars}"
         pmo = "?" if self._last_pmo is None else f"{self._last_pmo:.3f}"
         sig = "?" if self._last_signal is None else f"{self._last_signal:.3f}"
         atr = "?" if self._last_atr is None else f"{self._last_atr:.2f}"
-        return f"PMO {self.signal_mode} {self.timeframe_minutes}m PMO={pmo} SIG={sig} ATR={atr}"
+        lines = [f"PMO {self.signal_mode.upper()} {self.timeframe_minutes}m"]
+        if len(self._bars) < self.warmup_bars:
+            lines.append(f"WARM-UP: {len(self._bars)}/{self.warmup_bars} completed bars (trading disabled)")
+        lines.extend([f"SIG: {sig}", f"PMO: {pmo}", f"ATR: {atr}"])
+        return "\n".join(lines)
 
     def _round_tick(self, price: float) -> float:
         return round(float(price) / self.tick_size) * self.tick_size

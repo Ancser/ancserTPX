@@ -736,7 +736,11 @@
         #lv-levels-panel::-webkit-scrollbar { width: 2px; }
         #lv-levels-panel::-webkit-scrollbar-thumb { background: var(--border-h); }
         #lv-levels-panel::-webkit-scrollbar-track { background: transparent; }
-        .log-entry { color: var(--text3); }
+        .log-entry {
+            color: var(--text3);
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
         .log-entry.info { color: var(--cyan); }
         .log-entry.success { color: var(--green); }
         .log-entry.error { color: var(--red); }
@@ -1439,6 +1443,31 @@
         /* LIVE 頂欄 cell / 風控閘 chip */
         .lv-cell { display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--border); padding: 0 12px; }
         .rg-chip { padding: 1px 6px; border-radius: 3px; border: 1px solid var(--border); color: var(--text3); white-space: nowrap; }
+        .live-status-row {
+            display: flex;
+            align-items: flex-start;
+            min-height: 22px;
+            height: auto;
+            border-top: 1px solid var(--border);
+            padding: 3px 12px;
+            font-size: 10px;
+            letter-spacing: 0.3px;
+        }
+        .live-status-label {
+            color: var(--cyan);
+            font-weight: 600;
+            margin-right: 8px;
+            white-space: nowrap;
+            line-height: 1.6;
+        }
+        .live-phase-text {
+            flex: 1;
+            min-width: 0;
+            color: var(--text1);
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            line-height: 1.6;
+        }
         /* LIVE 帳號槽(MAIN/MINOR 兩份相同結構) */
         .slot-input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
         .slot-btnrow { display: flex; gap: 6px; margin-top: 8px; }
@@ -1446,6 +1475,14 @@
         .slot-head { display: flex; align-items: center; gap: 8px; }
         .slot-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--text3); }
         .slot-line { padding-left: 14px; }
+        .slot-phase-line { line-height: 1.5; margin: 3px 0; }
+        .slot-phase-text {
+            display: inline-block;
+            max-width: calc(100% - 56px);
+            vertical-align: top;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+        }
 
         /* ── 1.0.9: 圖表右下快捷方鈕(⌖ 自動居中 / ≫ 跳到最新) ── */
         #chart-quick-btns {

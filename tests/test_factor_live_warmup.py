@@ -129,11 +129,12 @@ class FactorStatusTests(unittest.TestCase):
 
         label = strategy.get_phase_label()
 
-        self.assertIn("暖機不可交易", label)
-        self.assertIn("5m完成=11 < 需求=150", label)
-        self.assertIn("還差139", label)
-        self.assertRegex(label, r"PMO=-?\d+\.\d{3}")
-        self.assertRegex(label, r"SIG=-?\d+\.\d{3}")
+        lines = label.splitlines()
+        self.assertIn("EMAPMO WARM-UP: 11/150 completed 5m bars", lines[0])
+        self.assertIn("139 remaining; trading disabled", lines[0])
+        self.assertRegex(lines[1], r"^SIG: -?\d+\.\d{5}$")
+        self.assertRegex(lines[2], r"^PMO: -?\d+\.\d{5}$")
+        self.assertNotRegex(label, r"[\u3400-\u9fff]")
 
     def test_best_wait_status_lists_early_long_conditions_and_values(self):
         strategy = FactorSignalStrategy(_params())
@@ -157,12 +158,20 @@ class FactorStatusTests(unittest.TestCase):
         with patch.object(strategy, "_emapmo_snapshot", return_value=snapshot):
             label = strategy.get_phase_label()
 
-        self.assertIn("PMO=-0.08000 SIG=-0.07000", label)
-        self.assertIn("等待做多 EARLY", label)
-        self.assertIn("SIG<-0.10000(目前-0.07000", label)
-        self.assertIn("PMO<SIG(目前-0.08000<-0.07000", label)
-        self.assertIn("差值(SIG-PMO)連縮(0.03000→0.02000→0.01000", label)
-        self.assertNotIn("等待做空", label)
+        lines = label.splitlines()
+        self.assertEqual(lines[0], "EMAPMO 5m")
+        self.assertEqual(lines[1], "SIG: -0.07000")
+        self.assertEqual(lines[2], "PMO: -0.08000")
+        self.assertIn("Waiting for:", lines)
+        self.assertIn("LONG EARLY", lines)
+        self.assertIn("SIG < -0.10000: current=-0.07000 [WAIT]", lines)
+        self.assertIn("PMO < SIG: -0.08000 < -0.07000 [PASS]", lines)
+        self.assertIn(
+            "SIG - PMO gap shrinking: 0.03000 -> 0.02000 -> 0.01000 [PASS]",
+            lines,
+        )
+        self.assertNotIn("SHORT EARLY", lines)
+        self.assertNotRegex(label, r"[\u3400-\u9fff]")
 
     def test_long_only_status_does_not_advertise_short_as_tradeable(self):
         strategy = FactorSignalStrategy(_params())
@@ -186,9 +195,35 @@ class FactorStatusTests(unittest.TestCase):
         with patch.object(strategy, "_emapmo_snapshot", return_value=snapshot):
             label = strategy.get_phase_label()
 
-        self.assertNotIn("信號:做空↓", label)
-        self.assertIn("等待做多 EARLY", label)
-        self.assertIn("做空反向信號略過(long_only)", label)
+        self.assertNotIn("Signal: SHORT", label)
+        self.assertIn("LONG EARLY", label.splitlines())
+        self.assertIn("Blocked: SHORT signal ignored (long_only)", label.splitlines())
+
+    def test_short_early_status_displays_sig_pmo_relation_on_separate_lines(self):
+        strategy = FactorSignalStrategy(_params(factor_side_mode="short_only"))
+        strategy._bars.extend(_candles(datetime(2026, 7, 6, 22, 0, tzinfo=UTC), 150))
+        snapshot = {
+            "pmo": 0.08,
+            "signal": 0.07,
+            "prev_pmo": 0.09,
+            "prev_signal": 0.08,
+            "p_gap_now": 0.01,
+            "p_gap_prev": 0.02,
+            "p_gap_prev2": 0.03,
+            "q_gap_now": -0.01,
+            "q_gap_prev": -0.02,
+            "q_gap_prev2": -0.03,
+            "normal_short": False,
+            "normal_long": False,
+            "early_short": False,
+            "early_long": False,
+        }
+        with patch.object(strategy, "_emapmo_snapshot", return_value=snapshot):
+            lines = strategy.get_phase_label().splitlines()
+
+        self.assertEqual(lines[1], "SIG: 0.07000")
+        self.assertEqual(lines[2], "PMO: 0.08000")
+        self.assertIn("SIG < PMO: 0.07000 < 0.08000 [PASS]", lines)
 
     def test_refactored_direction_matches_original_formulas(self):
         strategy = FactorSignalStrategy(_params(tr_allowed_sessions=None))

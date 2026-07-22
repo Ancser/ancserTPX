@@ -64,20 +64,20 @@ ORDER_ERROR_CODES: Dict[int, str] = {
     1: "AccountNotFound",
     2: "OrderRejected",
     3: "InsufficientFunds",
-    4: "AccountViolation (風控規則阻擋, 例如日內虧損上限/部位上限)",
-    5: "OutsideTradingHours (非交易時段)",
+    4: "AccountViolation (blocked by a risk rule, such as the daily loss or position limit)",
+    5: "OutsideTradingHours (outside trading hours)",
     6: "OrderPending",
     7: "UnknownError",
-    8: "ContractNotFound (合約代碼錯誤)",
-    9: "ContractNotActive (合約未啟用/非可交易狀態, 常見於換月或合約到期)",
+    8: "ContractNotFound (invalid contract ID)",
+    9: "ContractNotActive (inactive or non-tradable contract, often due to rollover or expiry)",
 }
 
 
 def order_error_meaning(code: Optional[int]) -> str:
     try:
-        return ORDER_ERROR_CODES.get(int(code), f"未知錯誤碼({code})")
+        return ORDER_ERROR_CODES.get(int(code), f"Unknown error code ({code})")
     except (TypeError, ValueError):
-        return f"未知錯誤碼({code})"
+        return f"Unknown error code ({code})"
 
 
 # ── Futures contract month codes & auto front-month rollover ──────────────
@@ -192,14 +192,14 @@ class TopstepXClient:
 
         if not data.get("success"):
             raise AuthError(
-                f"認證失敗: {data.get('errorMessage', 'unknown error')}"
+                f"Authentication failed: {data.get('errorMessage', 'unknown error')}"
             )
 
         self.token = data["token"]
         self._token_acquired_at = datetime.now(timezone.utc)
         if self._http and not self._http.is_closed:
             self._http.headers.update({"Authorization": f"Bearer {self.token}"})
-        logger.info("TopstepX 認證成功")
+        logger.info("TopstepX authentication succeeded")
         return self.token
 
     def _token_refresh_due(self) -> bool:
@@ -232,7 +232,7 @@ class TopstepXClient:
 
                 # Token 過期 -> 重新認證
                 if resp.status_code == 401:
-                    logger.warning("Token 過期，重新認證...")
+                    logger.warning("Token expired; re-authenticating...")
                     await self.authenticate()
                     client = await self._ensure_http()
                     resp = await client.request(method, path, **kwargs)
@@ -240,7 +240,7 @@ class TopstepXClient:
                 # Rate limit — exponential backoff
                 if resp.status_code == 429:
                     for wait in (3, 5, 10):
-                        logger.warning(f"Rate limited (429), 等待 {wait}s...")
+                        logger.warning(f"Rate limited (429); waiting {wait}s...")
                         await asyncio.sleep(wait)
                         resp = await client.request(method, path, **kwargs)
                         if resp.status_code != 429:
@@ -298,7 +298,7 @@ class TopstepXClient:
                     closed_pnl=acc.get("closedPnl", 0),
                     daily_pnl=acc.get("openPnl", 0) + acc.get("closedPnl", 0),
                 )
-        raise ValueError(f"帳戶 {account_id} 不存在")
+        raise ValueError(f"Account {account_id} does not exist")
 
     # ── 合約 ─────────────────────────────────────────
 
@@ -324,7 +324,7 @@ class TopstepXClient:
             if "ENQ" in c.get("id", "") or "NQ" in c.get("name", "")
         ]
         if not nq_contracts:
-            raise ValueError("找不到 NQ 合約")
+            raise ValueError("No NQ contract found")
         # 按到期日排序，取最近的
         return nq_contracts[0]["id"]
 
@@ -462,7 +462,7 @@ class TopstepXClient:
         if contracts:
             return contracts[0]["id"]
 
-        raise ValueError(f"無法解析合約 ID: {short_id}")
+        raise ValueError(f"Could not resolve contract ID: {short_id}")
 
     # ── 歷史數據 ──────────────────────────────────────
 
@@ -552,7 +552,7 @@ class TopstepXClient:
                 interval=interval_str,
             ))
 
-        logger.info(f"取得 {len(candles)} 根 {interval_str} K 線")
+        logger.info(f"Retrieved {len(candles)} {interval_str} candles")
         return candles
 
     async def get_historical_bars_paginated(
@@ -683,12 +683,12 @@ class TopstepXClient:
                     return True
                 else:
                     logger.error(
-                        f"[BLOCK] 帳戶 {account_id} ({name}) 不是 Practice 帳戶！"
-                        f" Bot 測試期間禁止操作 Funded 帳戶。"
+                        f"[BLOCK] Account {account_id} ({name}) is not a Practice account."
+                        f" Funded-account operations are disabled while the bot is in testing."
                     )
                     return False
 
-        logger.error(f"帳戶 {account_id} 不存在")
+        logger.error(f"Account {account_id} does not exist")
         return False
 
     # ── 訂單 ─────────────────────────────────────────
@@ -973,7 +973,7 @@ class TopstepXClient:
         try:
             from signalrcore.hub_connection_builder import HubConnectionBuilder
         except ImportError:
-            raise ImportError("請安裝 signalrcore: pip install signalrcore")
+            raise ImportError("Install signalrcore: pip install signalrcore")
 
         hub_url = f"{self.DEFAULT_MARKET_HUB}?access_token={self.token}"
 
@@ -996,7 +996,7 @@ class TopstepXClient:
         self._signalr_market.on("GatewayDepth", self._on_depth)
 
         self._signalr_market.start()
-        logger.info("SignalR 市場數據連接成功")
+        logger.info("SignalR market data connected")
 
     def subscribe_trades(
         self, contract_id: str, callback: Callable
@@ -1017,7 +1017,7 @@ class TopstepXClient:
             self._signalr_market.send(
                 "SubscribeContractTrades", [contract_id]
             )
-            logger.info(f"訂閱 tick: {contract_id}")
+            logger.info(f"Subscribed to ticks: {contract_id}")
 
     def subscribe_quotes(
         self, contract_id: str, callback: Callable
@@ -1081,7 +1081,7 @@ class TopstepXClient:
         if self._http:
             await self._http.aclose()
             self._http = None
-        logger.info("TopstepX 連接已斷開")
+        logger.info("TopstepX disconnected")
 
 
 class AuthError(Exception):

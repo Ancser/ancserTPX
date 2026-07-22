@@ -439,7 +439,10 @@ def _select_account(accounts: list[dict]) -> Optional[dict]:
                 logger.info("Using main account from account_roles.json: %s (%s)",
                             acc.get("name", ""), main_id)
                 return acc
-        logger.warning("main_account_id=%s 不在可交易帳號內,改用 fallback 順序", main_id)
+        logger.warning(
+            "main_account_id=%s is not tradable; using the fallback account order",
+            main_id,
+        )
 
     practice = [a for a in active if "PRAC" in str(a.get("name", "")).upper()]
     return (practice or active)[0]
@@ -834,8 +837,15 @@ async def run_terminal_live() -> int:
                 pending = status.get("pending_order_id")
                 daily = float(status.get("daily_pnl") or 0)
                 phase = status.get("phase") or "--"
-                order = "持倉中" if pos else ("掛單中" if pending else "無")
-                logger.info("[LIVE] %s | 訂單: %s | daily_pnl=$%.0f", phase, order, daily)
+                order = "POSITION OPEN" if pos else ("ORDER PENDING" if pending else "NONE")
+                separator = "\n" if "\n" in phase else " | "
+                logger.info(
+                    "[LIVE] %s%sORDER: %s | daily_pnl=$%.0f",
+                    phase,
+                    separator,
+                    order,
+                    daily,
+                )
             await asyncio.sleep(1)
 
         logger.info("Stopping terminal live engine...")

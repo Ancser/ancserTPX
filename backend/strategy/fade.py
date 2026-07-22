@@ -104,10 +104,10 @@ class PrevDayFade:
 
     def get_phase_label(self) -> str:
         if self._state == "confirmed":
-            return "DAY ZONE 掛單中 VAL↑POC"
+            return "DAY ZONE pending order: VAL to POC"
         if self._state == "in_trade":
-            return "持倉中"
-        return "等待回踩前日 VAL"
+            return "IN POSITION"
+        return "Waiting for a retest of the previous-day VAL"
 
     @property
     def raw_state(self) -> str:
@@ -137,7 +137,7 @@ class PrevDayFade:
             order_type = "market"
             if tp - entry <= self.MIN_TP_TICKS * self.TICK_SIZE:
                 return None
-            reason = (f"DAY ZONE REJECTION(market) | 掃VAL {val:.2f} 收回 @ {entry:.2f} "
+            reason = (f"DAY ZONE REJECTION (market) | swept VAL {val:.2f}, reclaimed @ {entry:.2f} "
                       f"-> TP {tp:.2f} | SL {sl:.2f}")
         else:
             # 直接掛單:價格在前日 VA 內時掛 BUY LIMIT @ VAL(趨勢日離開區間不接)。
@@ -270,12 +270,12 @@ class OpeningRangeFade:
 
     def get_phase_label(self) -> str:
         if self._state == "confirmed":
-            return "OR15 假突破進場中"
+            return "OR15 false-break entry pending"
         if self._state == "in_trade":
-            return "持倉中"
+            return "IN POSITION"
         if self._or_high is not None and self._or_low is not None:
-            return f"OR15 完成 {self._or_low:.2f}~{self._or_high:.2f} 等假突破"
-        return "等待 RTH 開盤 15m 區間"
+            return f"OR15 complete: {self._or_low:.2f}-{self._or_high:.2f}; waiting for a false break"
+        return "Waiting for the RTH 15-minute opening range"
 
     @property
     def raw_state(self) -> str:
@@ -333,8 +333,9 @@ class OpeningRangeFade:
         self._last_key = key
         self._state = "confirmed"
 
-        reason = (f"OR15 假突破 {'高→空' if dsign < 0 else '低→多'} | OR {orl:.2f}~{orh:.2f} "
-                  f"entry {entry:.2f} -> TP {tp:.2f} SL {sl:.2f} | rng(前日VA)={rng:.2f}")
+        reason = (f"OR15 FALSE BREAK {'HIGH->SHORT' if dsign < 0 else 'LOW->LONG'} | "
+                  f"OR {orl:.2f}-{orh:.2f} | entry {entry:.2f} -> TP {tp:.2f} SL {sl:.2f} "
+                  f"| previous-day VA range={rng:.2f}")
         logger.info(f"[OR15DAYZONE] {'SELL' if dsign < 0 else 'BUY'} @ {entry:.2f} "
                     f"| SL={sl:.2f} TP={tp:.2f} | levels({lv['date']})")
         ts_utc = candle.timestamp.replace(tzinfo=timezone.utc) if candle.timestamp.tzinfo is None else candle.timestamp.astimezone(timezone.utc)

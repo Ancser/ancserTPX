@@ -148,7 +148,7 @@ class SessionZoneDetector:
             self._val_history = []
             self._candle_count_since_recalc = 0
             if event:
-                _logger.info(f"[SessionZone] 新 Session {session_id} | 上個 zone 已關閉")
+                _logger.info(f"[SessionZone] New session {session_id} | previous zone closed")
             # Start collecting from this candle
             self._create_zone(candle)
             return event
@@ -193,11 +193,11 @@ class SessionZoneDetector:
                 zone.status = ZoneStatus.ACTIVE
                 zone.mature = True  # permanent flag
                 _logger.info(
-                    f"[SessionZone] 區間成熟! {zone.zone_id} | "
+                    f"[SessionZone] Zone mature: {zone.zone_id} | "
                     f"POC={zone.poc:.2f} VAH={zone.vah_80:.2f} VAL={zone.val_80:.2f} | "
                     f"bars={zone.num_candles}"
                 )
-                return ZoneEvent("active", zone, message="區間成熟 — 等待突破")
+                return ZoneEvent("active", zone, message="Zone mature - waiting for breakout")
 
         return None
 
@@ -317,7 +317,7 @@ class SessionZoneDetector:
             timeframe="session",  # 1.0.8: UI 標籤/trade_tf 用
         )
         self._all_zones.append(self._active_zone)
-        _logger.info(f"[SessionZone] 建立 session zone {zone_id} @ {candle.timestamp}")
+        _logger.info(f"[SessionZone] Created session zone {zone_id} @ {candle.timestamp}")
 
     def _recalculate_vp(self):
         """Recalculate VP from all session candles."""

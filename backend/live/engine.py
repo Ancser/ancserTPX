@@ -18,6 +18,7 @@ import math
 import os
 import time as time_mod
 from datetime import datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 import httpx
@@ -41,6 +42,13 @@ from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fa
 from backend.backtest.engine import _topstep_trade_date  # 1.0.8: K線時間→交易日(fade 分日)
 from backend.broker.topstepx import TopstepXClient, order_error_meaning
 from backend.live.emapmo_messenger import EMAPMOSignalMessenger
+from backend.live.manual_guardian_launcher import (
+    GuardianLaunchStatus,
+    ManualGuardianLaunchSpec,
+    inspect_manual_position_guardian,
+    list_manual_position_guardians,
+    launch_manual_position_guardian,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +82,9 @@ class LiveTradingEngine:
     MIN_TP_BRACKET_TICKS = 1
     AUTO_OCO_FAILSAFE_SECONDS = 5 * 60
     AUTO_OCO_RETRY_SECONDS = 15.0
+    MANUAL_GUARDIAN_RETRY_SECONDS = 15.0
+    MANUAL_GUARDIAN_BUSY_TIMEOUT_SECONDS = 15.0
+    MANUAL_GUARDIAN_RECOVERY_SCAN_SECONDS = 15.0
     AUTO_OCO_SETTINGS_URL = "https://topstepx.com/settings?tab=risk-settings"
     FLATTEN_TIME_UTC = time(19, 45)     # UTC 19:45 = PT 12:45 flatten
     PRE_FLATTEN_UTC = time(19, 30)      # UTC 19:30 = PT 12:30 cancel pending
@@ -248,6 +259,18 @@ class LiveTradingEngine:
         self._protection_synced: bool = False     # Auto OCO child orders moved to strategy prices
         self._auto_oco_fail_safe_triggered: bool = False
         self._last_auto_oco_retry_ts: float = 0.0
+        # Manual/restart positions are protected by a detached, cross-process
+        # singleton.  The engine only performs a bounded launch hand-off; it
+        # never owns or polls the software-OCO orders itself.
+        self._manual_guardian_last_attempt_ts: float = 0.0
+        self._manual_guardian_last_position_id: Optional[int] = None
+        self._manual_guardian_last_log: Optional[str] = None
+        self._manual_guardian_unprotected_since: float = 0.0
+        self._manual_guardian_last_recovery_scan_ts: float = 0.0
+        self._manual_guardian_status: Dict[str, Any] = {
+            "status": "inactive",
+            "running": False,
+        }
         self._entry_time: Optional[datetime] = None  # when current position opened (UTC)
         self._force_exit_reason: Optional[str] = None  # set by flatten_now / emergency close
         self._daily_pnl: float = 0.0
@@ -490,6 +513,298 @@ class LiveTradingEngine:
         return contract == self.contract_id
 
     @staticmethod
+    def _manual_position_identity(position: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Normalize the exact broker identity of an untracked position."""
+        if not position:
+            return None
+
+        def positive_int(*keys: str) -> Optional[int]:
+            for key in keys:
+                raw = position.get(key)
+                if raw is None or raw == "":
+                    continue
+                try:
+                    value = abs(int(float(raw)))
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    return value
+            return None
+
+        position_id = positive_int("id", "positionId", "position_id")
+        size = positive_int("size", "quantity", "qty")
+        contract_id = str(
+            position.get("contractId")
+            or position.get("contract_id")
+            or position.get("contractID")
+            or ""
+        )
+        raw_entry = position.get("averagePrice")
+        if raw_entry in {None, ""}:
+            raw_entry = position.get("avgPrice", position.get("average_price"))
+        try:
+            entry = float(raw_entry)
+        except (TypeError, ValueError):
+            entry = float("nan")
+
+        side: Optional[str] = None
+        raw_side = position.get("side", position.get("positionSide"))
+        if raw_side is not None and raw_side != "":
+            text = str(raw_side).strip().lower()
+            if text in {"0", "buy", "bid", "long"}:
+                side = "long"
+            elif text in {"1", "sell", "ask", "short"}:
+                side = "short"
+        if side is None:
+            raw_type = position.get("type", position.get("positionType"))
+            text = str(raw_type).strip().lower()
+            if text in {"1", "long", "buy"}:
+                side = "long"
+            elif text in {"2", "short", "sell"}:
+                side = "short"
+
+        if (
+            position_id is None
+            or size is None
+            or not contract_id
+            or side is None
+            or not math.isfinite(entry)
+            or entry <= 0
+        ):
+            return None
+        return {
+            "position_id": position_id,
+            "contract_id": contract_id,
+            "side": side,
+            "size": size,
+            "entry_price": entry,
+            "creation_timestamp": str(
+                position.get("creationTimestamp")
+                or position.get("createdAt")
+                or position.get("timestamp")
+                or ""
+            ),
+        }
+
+    def _position_for_configured_contract(
+        self,
+        positions: Optional[List[Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        """Select this engine's contract instead of trusting broker list order."""
+        for position in positions or []:
+            contract_id = (
+                position.get("contractId")
+                or position.get("contract_id")
+                or position.get("contractID")
+            )
+            if contract_id == self.contract_id:
+                return position
+        return None
+
+    def _manual_guardian_plan(
+        self,
+        position: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Price an untracked position from the active completed-bar strategy state."""
+        identity = self._manual_position_identity(position)
+        if identity is None or identity["contract_id"] != self.contract_id:
+            return None
+
+        risk: Optional[float] = None
+        reward: Optional[float] = None
+        source = ""
+        if self.strategy_mode == "factor" and isinstance(self.trend_follow, FactorSignalStrategy):
+            risk = self.trend_follow._risk_width(
+                self.trend_follow.sl_rule,
+                self.trend_follow.sl_value,
+            )
+            reward = self.trend_follow._risk_width(
+                self.trend_follow.tp_rule,
+                self.trend_follow.tp_value,
+            )
+            source = (
+                f"factor {self.trend_follow.sl_rule}:{self.trend_follow.sl_value:g}/"
+                f"{self.trend_follow.tp_rule}:{self.trend_follow.tp_value:g}"
+            )
+        elif self.strategy_mode == "pmo" and isinstance(self.trend_follow, EMAPMOStrategy):
+            atr = self.trend_follow._atr14()
+            if atr is not None and atr > 0:
+                risk = max(self.tick_size, float(atr) * self.trend_follow.sl_atr)
+                reward = max(self.tick_size, float(atr) * self.trend_follow.tp_atr)
+                source = (
+                    f"pmo atr14:{float(atr):.5f} "
+                    f"sl:{self.trend_follow.sl_atr:g}/tp:{self.trend_follow.tp_atr:g}"
+                )
+        if risk is None or reward is None or risk <= 0 or reward <= 0:
+            return None
+
+        entry = float(identity["entry_price"])
+        if identity["side"] == "long":
+            sl_price = self._round_to_tick(entry - float(risk))
+            tp_price = self._round_to_tick(entry + float(reward))
+        else:
+            sl_price = self._round_to_tick(entry + float(risk))
+            tp_price = self._round_to_tick(entry - float(reward))
+        geometry_ok = (
+            sl_price < entry < tp_price
+            if identity["side"] == "long"
+            else tp_price < entry < sl_price
+        )
+        if not geometry_ok:
+            return None
+
+        market_safe = False
+        try:
+            market = float(self._last_market_price)
+        except (TypeError, ValueError):
+            market = float("nan")
+        if math.isfinite(market):
+            # A fresh limit/stop already crossed by the market could fill before
+            # the sibling exists. Existing persisted protection is resumed even
+            # outside this interval; only fresh creation is blocked here.
+            market_safe = min(sl_price, tp_price) < market < max(sl_price, tp_price)
+
+        return {
+            **identity,
+            "sl_price": float(sl_price),
+            "tp_price": float(tp_price),
+            "source": source,
+            "market_safe": market_safe,
+            "market_price": market if math.isfinite(market) else None,
+        }
+
+    @staticmethod
+    def _manual_guardian_terminal_status(status: str) -> bool:
+        normalized = str(status or "").strip().lower()
+        return (
+            normalized.startswith("finished_")
+            or normalized.startswith("blocked_external_")
+        )
+
+    def _log_manual_guardian_once(self, message: str, level: str = "info") -> None:
+        if message == self._manual_guardian_last_log:
+            return
+        self._manual_guardian_last_log = message
+        self._log_event(message, level)
+
+    def _manual_guardian_broker_env(self) -> Dict[str, str]:
+        """Pass the exact Web/Terminal broker identity without argv/log leakage."""
+        username = str(getattr(self.client, "username", "") or "").strip()
+        api_key = str(getattr(self.client, "api_key", "") or "").strip()
+        base_url = str(getattr(self.client, "base_url", "") or "").strip()
+        payload: Dict[str, str] = {}
+        if username:
+            payload["TOPSTEPX_USERNAME"] = username
+        if api_key:
+            payload["TOPSTEPX_API_KEY"] = api_key
+        if base_url:
+            payload["TOPSTEPX_BASE_URL"] = base_url
+            payload["TOPSTEPX_USE_DEMO"] = (
+                "true" if "demo" in base_url.lower() else "false"
+            )
+        return payload
+
+    async def _close_unprotected_manual_position(self, reason: str) -> bool:
+        """Close only this engine's exact manual contract after identity checks."""
+        expected = self._manual_position_identity(self._open_position)
+        if expected is None or self._active_signal is not None:
+            return False
+
+        exact_count = 0
+        absent_count = 0
+        for attempt in range(3):
+            try:
+                positions = await self.client.get_positions(self.account_id)
+            except Exception as exc:
+                self._log_manual_guardian_once(
+                    f"[MANUAL GUARDIAN] fail-safe identity check failed "
+                    f"({exc.__class__.__name__})",
+                    "error",
+                )
+                return False
+            current_row = self._position_for_configured_contract(positions)
+            current = self._manual_position_identity(current_row)
+            if current is None:
+                absent_count += 1
+                exact_count = 0
+            elif (
+                current["position_id"] == expected["position_id"]
+                and current["contract_id"] == expected["contract_id"]
+                and current["side"] == expected["side"]
+                and (
+                    not expected["creation_timestamp"]
+                    or not current["creation_timestamp"]
+                    or current["creation_timestamp"] == expected["creation_timestamp"]
+                )
+            ):
+                exact_count += 1
+                absent_count = 0
+            else:
+                self._log_manual_guardian_once(
+                    "[MANUAL GUARDIAN] fail-safe close blocked: live position identity changed",
+                    "error",
+                )
+                return False
+            if attempt < 2:
+                await asyncio.sleep(0.25)
+
+        if absent_count == 3:
+            return True
+        if exact_count < 2:
+            self._log_manual_guardian_once(
+                "[MANUAL GUARDIAN] fail-safe close waiting for stable position identity",
+                "error",
+            )
+            return False
+
+        self._log_event(
+            f"[MANUAL GUARDIAN] closing unprotected manual position: {reason}",
+            "error",
+        )
+        try:
+            response = await self.client.close_position(self.account_id, self.contract_id)
+        except Exception as exc:
+            self._log_event(
+                f"[MANUAL GUARDIAN] fail-safe close error ({exc.__class__.__name__})",
+                "error",
+            )
+            return False
+        if not getattr(response, "success", False):
+            self._log_event(
+                f"[MANUAL GUARDIAN] fail-safe close rejected: "
+                f"{getattr(response, 'error_message', None) or getattr(response, 'error_code', None)}",
+                "error",
+            )
+            return False
+
+        flat_count = 0
+        deadline = time_mod.monotonic() + 5.0
+        while time_mod.monotonic() < deadline:
+            try:
+                positions = await self.client.get_positions(self.account_id)
+            except Exception:
+                await asyncio.sleep(0.25)
+                continue
+            if self._position_for_configured_contract(positions) is None:
+                flat_count += 1
+                if flat_count >= 3:
+                    self._manual_guardian_status = {
+                        "status": "finished_unprotected_flattened",
+                        "running": False,
+                        "position_id": expected["position_id"],
+                        "reason": reason,
+                    }
+                    return True
+            else:
+                flat_count = 0
+            await asyncio.sleep(0.25)
+        self._log_event(
+            "[MANUAL GUARDIAN] fail-safe close accepted but flat was not verified",
+            "error",
+        )
+        return False
+
+    @staticmethod
     def _exit_api_side(signal: TradeSignal) -> int:
         return 1 if signal.direction == Direction.BUY else 0
 
@@ -542,7 +857,7 @@ class LiveTradingEngine:
         try:
             open_orders = await self.client.get_open_orders(self.account_id)
         except Exception as e:
-            self._log_event(f"[AUTO OCO] 掃描 SL/TP 失敗: {e}", "error")
+            self._log_event(f"[AUTO OCO] Failed to scan SL/TP orders: {e}", "error")
             return self._sl_order_id, self._tp_order_id
 
         sl_id, tp_id = self._select_auto_oco_orders(open_orders, signal)
@@ -555,7 +870,10 @@ class LiveTradingEngine:
     async def _sync_auto_oco_protection(self, signal: TradeSignal, wait_seconds: float = 4.0) -> bool:
         """Wait for Auto OCO SL/TP child orders and move them to strategy prices."""
         if not signal or not self._open_position:
-            self._log_event("[AUTO OCO] 無 signal 或無持倉，跳過保護單同步", "error")
+            self._log_event(
+                "[AUTO OCO] No signal or open position; skipping protection sync",
+                "error",
+            )
             return False
 
         deadline = time_mod.monotonic() + max(0.0, wait_seconds)
@@ -574,13 +892,16 @@ class LiveTradingEngine:
             if time_mod.monotonic() >= deadline:
                 self._protection_synced = False
                 self._log_event(
-                    f"[AUTO OCO] 等不到 {'+'.join(missing)} 子單；請確認 TopstepX 已啟用 Auto OCO preset",
+                    f"[AUTO OCO] Timed out waiting for {'+'.join(missing)} child order(s); "
+                    "confirm that a TopstepX Auto OCO preset is enabled",
                     "error",
                 )
                 return False
 
             if not waiting_logged:
-                self._log_event(f"[AUTO OCO] 等待 TopstepX 生成 {'+'.join(missing)} 子單...")
+                self._log_event(
+                    f"[AUTO OCO] Waiting for TopstepX to create {'+'.join(missing)} child order(s)..."
+                )
                 waiting_logged = True
             await asyncio.sleep(0.25)
 
@@ -600,10 +921,10 @@ class LiveTradingEngine:
                 signal.sl_price = sl_price
             else:
                 ok = False
-                self._log_event(f"[AUTO OCO] SL 修改失敗: {sl_resp.error_message}", "error")
+                self._log_event(f"[AUTO OCO] Failed to modify SL: {sl_resp.error_message}", "error")
         except Exception as e:
             ok = False
-            self._log_event(f"[AUTO OCO] SL 修改異常: {e}", "error")
+            self._log_event(f"[AUTO OCO] SL modification error: {e}", "error")
 
         try:
             tp_resp = await self.client.modify_order(
@@ -617,10 +938,10 @@ class LiveTradingEngine:
                 signal.tp_price = tp_price
             else:
                 ok = False
-                self._log_event(f"[AUTO OCO] TP 修改失敗: {tp_resp.error_message}", "error")
+                self._log_event(f"[AUTO OCO] Failed to modify TP: {tp_resp.error_message}", "error")
         except Exception as e:
             ok = False
-            self._log_event(f"[AUTO OCO] TP 修改異常: {e}", "error")
+            self._log_event(f"[AUTO OCO] TP modification error: {e}", "error")
 
         self._protection_synced = ok
         return ok
@@ -694,7 +1015,7 @@ class LiveTradingEngine:
             saved_at = datetime.fromisoformat(data["saved_at"])
             age_hours = (datetime.utcnow() - saved_at).total_seconds() / 3600
             if age_hours > 6:
-                self._log_event(f"Zone 快照過期 ({age_hours:.1f}h) — 重新偵測")
+                self._log_event(f"Zone snapshot expired ({age_hours:.1f}h); rebuilding")
                 return False
 
             # Overlap detector synthesizes merged zones live from its per-tf
@@ -702,7 +1023,10 @@ class LiveTradingEngine:
             # _completed_zones list to restore into, so skip the snapshot.
             if not hasattr(self.detector, "_completed_zones"):
                 # 1.0.8: overlap 與 session 生長 zone 皆無 _completed_zones,warm-up 重建
-                self._log_event("Overlap/Session 模式 — 略過 zone 快照 (由 warm-up K 線重建)")
+                self._log_event(
+                    "Overlap/Session mode: skipping the zone snapshot; "
+                    "warm-up candles will rebuild it"
+                )
                 return False
 
             active_id = data.get("active_zone_id")
@@ -711,7 +1035,7 @@ class LiveTradingEngine:
                 # Clock-bucket zones use a "B" prefix; skip anything older.
                 zid = zd.get("zone_id", "")
                 if not zid.startswith("B"):
-                    logger.info(f"跳過舊版 zone: {zid}")
+                    logger.info("Skipping legacy zone: %s", zid)
                     continue
                 profile = {}
                 for k, v in (zd.get("profile") or {}).items():
@@ -751,8 +1075,8 @@ class LiveTradingEngine:
 
             if loaded > 0:
                 self._log_event(
-                    f"載入 {loaded} 個 zone 快照 (存檔 {age_hours:.1f}h 前) | "
-                    f"活躍={active_id or 'None'}"
+                    f"Loaded {loaded} zone snapshot(s) saved {age_hours:.1f}h ago | "
+                    f"active={active_id or 'None'}"
                 )
                 return True
             return False
@@ -871,7 +1195,7 @@ class LiveTradingEngine:
                 }
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
-                self._log_event(f"[快照] 參數快照已入庫 snapshot_id={sid}")
+                self._log_event(f"[SNAPSHOT] Parameter snapshot saved | snapshot_id={sid}")
             return sid
         except Exception as e:
             logger.warning(f"param snapshot failed: {e}")
@@ -1302,7 +1626,10 @@ class LiveTradingEngine:
         try:
             open_orders = await self.client.get_open_orders(self.account_id)
         except Exception as e:
-            self._log_event(f"無法檢查 open orders，保留 breakout 鎖: {e}", "error")
+            self._log_event(
+                f"Unable to check open orders; preserving breakout locks: {e}",
+                "error",
+            )
             return
         if any(self._order_contract_matches(od) for od in (open_orders or [])):
             return
@@ -1340,7 +1667,7 @@ class LiveTradingEngine:
             os.makedirs(os.path.dirname(self._breakout_locks_file), exist_ok=True)
             with open(self._breakout_locks_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
-            self._log_event(f"清除 {removed} 個 stale pending breakout 鎖")
+            self._log_event(f"Removed {removed} stale pending breakout lock(s)")
         except Exception as e:
             logger.warning(f"Failed to prune stale breakout locks: {e}")
 
@@ -1516,7 +1843,10 @@ class LiveTradingEngine:
                 except (ValueError, TypeError):
                     continue
             if emit_log and count > 0:
-                self._log_event(f"[PNL] 從 trade history 計算: ${total_pnl:,.0f} ({count} closes)")
+                self._log_event(
+                    f"[PNL] Calculated from trade history: ${total_pnl:,.0f} "
+                    f"({count} closes)"
+                )
             return total_pnl
         except Exception as e:
             logger.warning(f"Failed to calc PnL from trades: {e}")
@@ -1607,7 +1937,7 @@ class LiveTradingEngine:
             try:
                 rows = await self.client.get_trade_history(self.account_id, days=2)
             except Exception as e:
-                self._log_event(f"[TOPSTEP EXIT] trade history 查詢失敗: {e}", "error")
+                self._log_event(f"[TOPSTEP EXIT] Trade-history query failed: {e}", "error")
                 rows = []
 
             candidates: List[tuple[datetime, Dict[str, Any]]] = []
@@ -1756,7 +2086,7 @@ class LiveTradingEngine:
                     await asyncio.sleep(0.5)
 
         if emit_log and last_error:
-            self._log_event(f"[PNL] {reason} 更新失敗: {last_error}", "error")
+            self._log_event(f"[PNL] {reason} update failed: {last_error}", "error")
         return False
 
     def _get_topstep_trade_date(self) -> str:
@@ -1807,6 +2137,11 @@ class LiveTradingEngine:
             "protection_synced": self._protection_synced,
             "auto_oco_fail_safe_triggered": self._auto_oco_fail_safe_triggered,
             "auto_oco_settings_url": self.AUTO_OCO_SETTINGS_URL,
+            "manual_guardian": (
+                dict(self._manual_guardian_status)
+                if self._open_position and self._active_signal is None
+                else {"status": "inactive", "running": False}
+            ),
             "trail_sl_triggered": self._trail_sl_triggered,
             "trail_trigger_pct": (
                 float(getattr(self.strategy_params, "conf_trail_trigger_pct", 0.0) or 0.0)
@@ -1879,7 +2214,7 @@ class LiveTradingEngine:
             "last_market_price": self._last_market_price,
             "fill_price": self._fill_price,
             "zones": self._get_zone_summary(),
-            "phase": self._get_phase() if self._running else "引擎已停止",
+            "phase": self._get_phase() if self._running else "ENGINE STOPPED",
             "trades": self._trades[-10:],
             "log": self._log[-20:],
             # v1.0.6: explainable confluence telemetry (None unless in that mode)
@@ -1910,22 +2245,22 @@ class LiveTradingEngine:
         active = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
         if active and is_mature:
-            return "穩定"
+            return "STABLE"
         if active:
             age_min = active.duration_minutes
             hours = age_min // 60
             mins = age_min % 60
-            return f"發展({hours}h{mins:02d}m)"
-        return "無"
+            return f"DEVELOPING ({hours}h{mins:02d}m)"
+        return "NONE"
 
     def _get_trade_zone_phase(self) -> str:
         """Current-zone gate. v1.0.6 never falls back to a previous/left zone."""
         active = self.detector.get_active_zone()
         if active and self.detector.is_zone_mature:
-            return "當前成熟區間"
+            return "CURRENT MATURE ZONE"
         if active:
-            return "等待成熟"
-        return "無"
+            return "WAITING FOR MATURITY"
+        return "NONE"
 
     def _get_order_phase(self) -> str:
         """Order status: delegate to strategy's get_phase_label() when possible."""
@@ -1933,13 +2268,13 @@ class LiveTradingEngine:
             age = self._position_age
             hours = age // 60
             mins = age % 60
-            return f"持倉中({hours}h{mins:02d}m)" if age > 0 else "持倉中"
+            return f"POSITION OPEN ({hours}h{mins:02d}m)" if age > 0 else "POSITION OPEN"
         if self._pending_order_id:
             age = self._pending_age
             timeout = self.trend_follow.PENDING_TIMEOUT_CANDLES
             if timeout >= 999:
-                return f"市價單中({age}s)"
-            return f"掛單中({age}/{timeout})"
+                return f"MARKET ORDER PENDING ({age}s)"
+            return f"ORDER PENDING ({age}/{timeout})"
 
         # Delegate to strategy's own label if it has one
         if hasattr(self.trend_follow, 'get_phase_label'):
@@ -1949,10 +2284,10 @@ class LiveTradingEngine:
         if trend_state == "watching":
             count = getattr(self.trend_follow, '_consecutive_outside', 0)
             total = getattr(self.trend_follow, 'BREAKOUT_CONFIRM_CANDLES', 5)
-            return f"確認突破中({count}/{total})"
+            return f"CONFIRMING BREAKOUT ({count}/{total})"
         if trend_state == "confirmed":
-            return "入場準備"
-        return "等待突破"
+            return "PREPARING ENTRY"
+        return "WAITING FOR BREAKOUT"
 
     def _get_order_short(self) -> str:
         """Order/position state only (no breakout text): 無 / 掛單中 / 持倉中."""
@@ -1960,14 +2295,14 @@ class LiveTradingEngine:
             age = self._position_age
             hours = age // 60
             mins = age % 60
-            return f"持倉中({hours}h{mins:02d}m)" if age > 0 else "持倉中"
+            return f"POSITION OPEN ({hours}h{mins:02d}m)" if age > 0 else "POSITION OPEN"
         if self._pending_order_id:
             age = self._pending_age
             timeout = self.trend_follow.PENDING_TIMEOUT_CANDLES
             if timeout >= 999:
-                return f"市價單中({age}s)"
-            return f"掛單中({age}/{timeout})"
-        return "無"
+                return f"MARKET ORDER PENDING ({age}s)"
+            return f"ORDER PENDING ({age}/{timeout})"
+        return "NONE"
 
     def _tf_detectors(self):
         """Return [(timeframe, ClockBucketZoneDetector), ...] for the active detector.
@@ -2036,7 +2371,7 @@ class LiveTradingEngine:
         """
         c = self.confluence
         if c is None:
-            return "ML 未初始化"
+            return "ML NOT INITIALIZED"
         try:
             have = len(c.zones_by_tf())
         except Exception:
@@ -2047,35 +2382,39 @@ class LiveTradingEngine:
         if ev_floor is not None:
             # EV-priority gate active: breakeven prob = 1/(1+RR).
             be = 1.0 / (1.0 + c.cfg.rr)
-            thr_txt = f"EV門檻≥{ev_floor:+.2f}(盈虧平衡勝率{be * 100:.0f}%)"
+            thr_txt = f"EV THRESHOLD >= {ev_floor:+.2f} (BREAKEVEN {be * 100:.0f}%)"
         elif c.min_score and c.min_score != 0.0:
             thr = 1.0 / (1.0 + math.exp(-c.min_score))
-            thr_txt = f"勝率門檻≥{thr * 100:.0f}%"
+            thr_txt = f"PROBABILITY THRESHOLD >= {thr * 100:.0f}%"
         else:
-            thr_txt = "勝率門檻 無"
+            thr_txt = "PROBABILITY THRESHOLD: NONE"
         rr_grid = getattr(c.cfg, "rr_grid", None)
-        rr_txt = (f"RR {'/'.join(f'{r:g}' for r in rr_grid)} (EV挑選)"
+        rr_txt = (f"RR {'/'.join(f'{r:g}' for r in rr_grid)} (EV SELECTED)"
                   if rr_grid else f"RR{c.cfg.rr:g}")
         parts = [
-            "ML匯流",
-            f"評分器 {c.scorer_source}",
+            "ML CONFLUENCE",
+            f"SCORER {c.scorer_source}",
             thr_txt,
-            f"匯流區間 {have}/{total}(需≥{need})",
-            f"帶寬{c.cfg.band_ticks:g}刻度 {rr_txt}",
+            f"CONFLUENCE ZONES {have}/{total} (NEED >= {need})",
+            f"BAND {c.cfg.band_ticks:g} TICKS {rr_txt}",
         ]
         order = self._get_order_short()
-        if order != "無":
+        if order != "NONE":
             parts.append(order)
         if self._conf_signals_log:
             last = self._conf_signals_log[-1]
-            mode_cn = "逆勢" if last.get("mode") == "reversion" else "順勢"
-            dir_cn = "做多" if str(last.get("direction", "")).lower() in ("buy", "long") else "做空"
+            mode_label = "REVERSION" if last.get("mode") == "reversion" else "MOMENTUM"
+            direction_label = (
+                "LONG"
+                if str(last.get("direction", "")).lower() in ("buy", "long")
+                else "SHORT"
+            )
             prob = last.get("prob")
-            tail = f"最近 {mode_cn}{dir_cn}"
+            tail = f"LATEST {mode_label} {direction_label}"
             if prob is not None:
-                tail += f" 勝率{prob * 100:.0f}%"
+                tail += f" PROBABILITY {prob * 100:.0f}%"
             parts.append(tail)
-        return " ｜ ".join(parts)
+        return " | ".join(parts)
 
     def _get_phase(self) -> str:
         """Per-timeframe breakout phase for the top-bar PHASE display, e.g.
@@ -2101,11 +2440,14 @@ class LiveTradingEngine:
             st = self._tf_breakout.get(tf, {"dir": None, "count": 0})
             c = int(st.get("count", 0) or 0)
             if c > 0:
-                arrow = "↑" if st.get("dir") == "up" else "↓"
-                parts.append(f"{tf}:突破中{arrow}({c}/{confirm}分)")
+                direction = "UP" if st.get("dir") == "up" else "DOWN"
+                parts.append(f"{tf}:BREAKOUT {direction} ({c}/{confirm} MIN)")
             else:
-                parts.append(f"{tf}:等待突破")
-        tail = f"縂突破區間({breaking}/{len(tfs)}) 縂突破時長({total_count}/{confirm}分)"
+                parts.append(f"{tf}:WAITING FOR BREAKOUT")
+        tail = (
+            f"TOTAL BREAKOUT ZONES ({breaking}/{len(tfs)}) "
+            f"TOTAL BREAKOUT DURATION ({total_count}/{confirm} MIN)"
+        )
         return "  ".join(parts) + "  " + tail
 
     def _get_zone_summary(self) -> List[Dict]:
@@ -2170,11 +2512,11 @@ class LiveTradingEngine:
             first_ts = historical_candles[0].timestamp.strftime("%Y-%m-%d %H:%M")
             last_ts = historical_candles[-1].timestamp.strftime("%Y-%m-%d %H:%M")
             self._log_event(
-                f"載入 {len(historical_candles)} 根歷史K線 | "
-                f"範圍: {first_ts} ~ {last_ts}"
+                f"Loaded {len(historical_candles)} historical candles | "
+                f"range: {first_ts} ~ {last_ts}"
             )
         else:
-            self._log_event("無歷史K線! warm-up 跳過", "error")
+            self._log_event("No historical candles; warm-up skipped", "error")
 
         # Warm up: feed historical candles to the zone detector and rebuild
         # breakout confirmation state without placing historical orders.
@@ -2230,34 +2572,39 @@ class LiveTradingEngine:
             direction = getattr(self.trend_follow, "_breakout_direction", None) or "?"
             armed = "YES" if getattr(self.trend_follow, "_armed", False) else "NO"
             self._log_event(
-                f"恢復突破確認狀態: dir={direction} count={confirm_count}/{confirm_total} armed={armed}"
+                f"Restored breakout confirmation state: dir={direction} "
+                f"count={confirm_count}/{confirm_total} armed={armed}"
             )
 
         active = self.detector.get_active_zone()
         is_mature = self.detector.is_zone_mature
         if active:
             self._log_event(
-                f"Warm-up 完成 | session zone {active.zone_id} | "
+                f"Warm-up complete | session zone {active.zone_id} | "
                 f"bars={active.num_candles} | mature={'YES' if is_mature else 'NO'} | "
                 f"POC={active.poc:.2f} VAH={active.vah_80:.2f} VAL={active.val_80:.2f}"
             )
         else:
-            self._log_event("Warm-up 完成 | 尚無 session zone")
+            self._log_event("Warm-up complete | no session zone")
 
         # Get initial account balance + today's PnL from account snapshot
         try:
             positions = await self.client.get_positions(self.account_id)
-            self._open_position = positions[0] if positions else None
+            self._open_position = self._position_for_configured_contract(positions)
             self._today = self._get_topstep_trade_date()
-            await self._refresh_account_snapshot("帳戶初始化", emit_log=True, attempts=2)
+            await self._refresh_account_snapshot("account initialization", emit_log=True, attempts=2)
         except Exception as e:
-            self._log_event(f"取得帳戶資訊失敗: {e}", "error")
+            self._log_event(f"Failed to get account information: {e}", "error")
+
+        # Resume exact-ID cleanup even when the account is currently flat; a
+        # prior process crash may have left one non-OCO sibling working.
+        self._resume_persisted_manual_guardian()
 
         await self._prune_stale_pending_breakout_locks()
         locked = self._load_breakout_locks()
         if locked:
             labels = ", ".join(f"{zid}:{direction}" for zid, direction in sorted(locked))
-            self._log_event(f"載入 breakout 鎖: {labels}")
+            self._log_event(f"Loaded breakout locks: {labels}")
 
         active = self.detector.get_active_zone()
         all_z = self.detector.get_all_zones()
@@ -2269,9 +2616,9 @@ class LiveTradingEngine:
                 f"bars={active.num_candles}"
             )
         self._log_event(
-            f"引擎啟動 [{ENGINE_VERSION}] | 帳戶={self.account_id} | "
-            f"區間={len(all_z)} | 活躍={active_info} | "
-            f"策略={self.strategies}"
+            f"Engine started [{ENGINE_VERSION}] | account={self.account_id} | "
+            f"zones={len(all_z)} | active={active_info} | "
+            f"strategies={self.strategies}"
         )
 
         # Starts only the bounded background worker; no Discord network call is
@@ -2309,13 +2656,17 @@ class LiveTradingEngine:
             try:
                 success = await self.client.cancel_order(self.account_id, self._pending_order_id)
                 if success:
-                    self._log_event(f"取消掛單 #{self._pending_order_id}")
+                    self._log_event(f"Cancelled pending order #{self._pending_order_id}")
                     if self._pending_signal:
                         self._release_breakout_lock(self._pending_signal)
                 else:
-                    self._log_event(f"取消掛單 #{self._pending_order_id} 失敗，保留 session-direction 鎖", "error")
+                    self._log_event(
+                        f"Failed to cancel pending order #{self._pending_order_id}; "
+                        "preserving the session-direction lock",
+                        "error",
+                    )
             except Exception as e:
-                self._log_event(f"取消掛單失敗: {e}", "error")
+                self._log_event(f"Failed to cancel pending order: {e}", "error")
             if self._pending_signal:
                 self._persist_trade_record(
                     exit_reason="cancelled", entry_time=self._entry_time,
@@ -2337,12 +2688,12 @@ class LiveTradingEngine:
                 "error",
             )
 
-        self._log_event("引擎已停止")
+        self._log_event("Engine stopped")
 
     async def cancel_pending_now(self):
         """Cancel pending order from UI. Returns True if cancelled."""
         if not self._pending_order_id:
-            self._log_event("無掛單可取消")
+            self._log_event("No pending order to cancel")
             return False
         await self._cancel_pending(release_breakout_lock=True)
         return True
@@ -2361,7 +2712,9 @@ class LiveTradingEngine:
         if reason in ("MARKET_FILL_INVALID", "MARKET_FILL_RISK"):
             self._force_exit_reason = "flatten"
 
-        self._log_event(f"[{reason}] 緊急 Market 平倉 side={'SELL' if side == 2 else 'BUY'}")
+        self._log_event(
+            f"[{reason}] Emergency market close | side={'SELL' if side == 2 else 'BUY'}"
+        )
         try:
             mkt_order = OrderRequest(
                 account_id=self.account_id,
@@ -2372,14 +2725,17 @@ class LiveTradingEngine:
             )
             resp = await self.client.place_order(mkt_order)
             if resp.success:
-                self._log_event(f"Market 平倉成功 #{resp.order_id}")
+                self._log_event(f"Market close succeeded #{resp.order_id}")
             else:
                 self._log_event(
-                    f"Market 平倉失敗: {resp.error_message} → 需手動平倉!",
+                    f"Market close failed: {resp.error_message}; manual close required",
                     "error"
                 )
         except Exception as e:
-            self._log_event(f"Market 平倉異常: {e} → 需手動平倉!", "error")
+            self._log_event(
+                f"Market close error: {e}; manual close required",
+                "error",
+            )
 
     async def flatten_now(self):
         """Emergency flatten all positions AND cancel any working SL/TP/entry orders.
@@ -2415,14 +2771,14 @@ class LiveTradingEngine:
                 await asyncio.gather(*cancel_tasks, return_exceptions=True)
             except Exception as e:
                 # gather with return_exceptions=True shouldn't throw, but be defensive
-                self._log_event(f"取消 working orders 異常: {e}", "error")
+                self._log_event(f"Error cancelling working orders: {e}", "error")
 
         # ── Net out any open position ──
         try:
             results = await self.client.flatten_all(self.account_id)
-            self._log_event(f"緊急平倉完成: {len(results)} orders")
+            self._log_event(f"Emergency flatten complete: {len(results)} order(s)")
         except Exception as e:
-            self._log_event(f"緊急平倉失敗: {e}", "error")
+            self._log_event(f"Emergency flatten failed: {e}", "error")
 
         # ── Final sweep: query broker for ANY remaining open orders on our
         # contract and force-cancel them. Catches orders we lost track of
@@ -2437,12 +2793,14 @@ class LiveTradingEngine:
                 if oid:
                     sweep_tasks.append(self._cancel_with_retry(oid, "SWEEP (flatten)"))
             if sweep_tasks:
-                self._log_event(f"flatten 後掃出 {len(sweep_tasks)} 張殘留 working order → 取消")
+                self._log_event(
+                    f"Found {len(sweep_tasks)} residual working order(s) after flatten; cancelling"
+                )
                 await asyncio.gather(*sweep_tasks, return_exceptions=True)
         except Exception as e:
-            self._log_event(f"flatten 殘留掃描失敗: {e}", "error")
+            self._log_event(f"Post-flatten residual-order scan failed: {e}", "error")
 
-        await self._refresh_account_snapshot("flatten 後更新", emit_log=True, attempts=3)
+        await self._refresh_account_snapshot("post-flatten refresh", emit_log=True, attempts=3)
 
         # ── Clear local references regardless of broker result ──
         self._open_position = None
@@ -2486,8 +2844,9 @@ class LiveTradingEngine:
         elapsed = time_mod.time() - self._position_open_ts if self._position_open_ts else 0.0
 
         self._log_event(
-            f"[AUTO OCO] 入場成交後 {elapsed / 60:.1f} 分鐘仍沒有 {missing_text}。"
-            f"可能沒有設置 Auto OCO，立即平倉並暫停運行。設定連結: {self.AUTO_OCO_SETTINGS_URL}",
+            f"[AUTO OCO] {missing_text} still missing {elapsed / 60:.1f} minutes after "
+            "the entry fill. Auto OCO may not be configured; flattening and pausing "
+            f"the engine now. Settings: {self.AUTO_OCO_SETTINGS_URL}",
             "error",
         )
 
@@ -2497,15 +2856,329 @@ class LiveTradingEngine:
             self._running = False
             self._save_zones()
             self._log_event(
-                f"[AUTO OCO] 沒有設置 Auto OCO，已經暫停運行。請到 {self.AUTO_OCO_SETTINGS_URL}",
+                f"[AUTO OCO] Auto OCO is not configured; the engine is paused. "
+                f"Open {self.AUTO_OCO_SETTINGS_URL}",
                 "error",
             )
 
     # ── Auto OCO fail-safe ─────────────────────────────────
 
+    def _resume_persisted_manual_guardian(self) -> None:
+        """Restart one account-owned guardian, including flat orphan cleanup."""
+        self._manual_guardian_last_recovery_scan_ts = time_mod.monotonic()
+        try:
+            snapshots = list_manual_position_guardians(self.account_id)
+        except Exception as exc:
+            self._log_event(
+                f"[MANUAL GUARDIAN] startup state scan failed ({exc.__class__.__name__})",
+                "error",
+            )
+            return
+        if not snapshots:
+            return
+        if any(item.running for item in snapshots):
+            running = next(item for item in snapshots if item.running)
+            self._manual_guardian_status = running.as_dict()
+            self._log_event(f"[MANUAL GUARDIAN] resumed account lock pid={running.pid}")
+            return
+
+        current = self._manual_position_identity(self._open_position)
+        candidates = []
+        for item in snapshots:
+            if item.error or self._manual_guardian_terminal_status(item.status):
+                continue
+            current_match = bool(current and current["position_id"] == item.position_id)
+            owns_exit = bool(item.sl_order_id or item.tp_order_id)
+            if not current_match and not owns_exit:
+                continue
+            if (
+                not item.contract_id
+                or item.side not in {"long", "short"}
+                or item.size is None
+                or item.entry_price is None
+                or item.sl_price is None
+                or item.tp_price is None
+            ):
+                self._log_event(
+                    f"[MANUAL GUARDIAN] incomplete persisted state p={item.position_id}; skipped",
+                    "error",
+                )
+                continue
+            candidates.append((current_match, str(item.updated_at or ""), item))
+        if not candidates:
+            return
+
+        # Account-wide singleton: current live position first, otherwise newest
+        # orphan-owning state. Remaining states are retried on the next restart.
+        _, _, snapshot = max(candidates, key=lambda row: (row[0], row[1]))
+        spec = ManualGuardianLaunchSpec(
+            account_id=self.account_id,
+            position_id=snapshot.position_id,
+            contract_id=str(snapshot.contract_id),
+            side=str(snapshot.side),
+            size=int(snapshot.size),
+            entry_price=float(snapshot.entry_price),
+            sl_price=float(snapshot.sl_price),
+            tp_price=float(snapshot.tp_price),
+            creation_timestamp=str(snapshot.creation_timestamp or ""),
+            poll_seconds=2.5,
+            state_path=Path(snapshot.state_path),
+        )
+        result = launch_manual_position_guardian(
+            spec,
+            broker_env=self._manual_guardian_broker_env(),
+        )
+        self._manual_guardian_status = {
+            **result.as_dict(),
+            "running": result.status == GuardianLaunchStatus.ALREADY_RUNNING,
+            "source": f"startup-resume:{snapshot.status}",
+            "sl_price": snapshot.sl_price,
+            "tp_price": snapshot.tp_price,
+        }
+        level = "info" if result.ok else "error"
+        self._log_event(
+            f"[MANUAL GUARDIAN] startup {result.status.value} p={snapshot.position_id}: "
+            f"{result.message}",
+            level,
+        )
+
+    async def _ensure_manual_position_guardian(self) -> None:
+        """Launch/resume the detached protector for one untracked position.
+
+        Fresh protection is created only when there are no unknown close-side
+        exits. Persisted owned exits are resumed by exact state IDs. No broker
+        order is placed or cancelled by this engine method.
+        """
+        if (
+            not self._open_position
+            or self._active_signal is not None
+            or self._pending_order_id is not None
+        ):
+            return
+        identity = self._manual_position_identity(self._open_position)
+        if identity is None or identity["contract_id"] != self.contract_id:
+            self._log_manual_guardian_once(
+                "[MANUAL GUARDIAN] invalid or unrelated position identity; no launch",
+                "error",
+            )
+            return
+
+        position_id = int(identity["position_id"])
+        if self._manual_guardian_last_position_id != position_id:
+            self._manual_guardian_last_position_id = position_id
+            self._manual_guardian_last_attempt_ts = 0.0
+            self._manual_guardian_last_log = None
+            self._manual_guardian_unprotected_since = time_mod.monotonic()
+        elif not self._manual_guardian_unprotected_since:
+            self._manual_guardian_unprotected_since = time_mod.monotonic()
+
+        try:
+            snapshot = inspect_manual_position_guardian(self.account_id, position_id)
+            self._manual_guardian_status = snapshot.as_dict()
+        except Exception as exc:
+            self._log_manual_guardian_once(
+                f"[MANUAL GUARDIAN] local state inspection failed ({exc.__class__.__name__})",
+                "error",
+            )
+            return
+
+        if snapshot.account_busy:
+            elapsed = time_mod.monotonic() - self._manual_guardian_unprotected_since
+            self._log_manual_guardian_once(
+                f"[MANUAL GUARDIAN] account protector is finishing position "
+                f"{snapshot.lock_position_id or '?'}; current position waits {elapsed:.0f}s",
+                "error",
+            )
+            if elapsed >= self.MANUAL_GUARDIAN_BUSY_TIMEOUT_SECONDS:
+                await self._close_unprotected_manual_position(
+                    "another account guardian did not release the singleton in time"
+                )
+            return
+
+        if snapshot.error:
+            self._log_manual_guardian_once(
+                f"[MANUAL GUARDIAN] blocked: {snapshot.error}",
+                "error",
+            )
+            return
+
+        identity_mismatch = False
+        if snapshot.state_exists:
+            saved_creation = getattr(snapshot, "creation_timestamp", None)
+            identity_mismatch = (
+                snapshot.contract_id != identity["contract_id"]
+                or snapshot.side != identity["side"]
+                or snapshot.entry_price is None
+                or (
+                    saved_creation
+                    and identity["creation_timestamp"]
+                    and saved_creation != identity["creation_timestamp"]
+                )
+            )
+            if identity_mismatch or snapshot.sl_price is None or snapshot.tp_price is None:
+                self._log_manual_guardian_once(
+                    "[MANUAL GUARDIAN] persisted state does not match the live position; blocked",
+                    "error",
+                )
+                return
+
+        if snapshot.running:
+            self._manual_guardian_unprotected_since = 0.0
+            if not snapshot.state_exists:
+                self._log_manual_guardian_once(
+                    f"[MANUAL GUARDIAN] pid={snapshot.pid} is starting; awaiting owned state"
+                )
+            else:
+                self._log_manual_guardian_once(
+                    f"[MANUAL GUARDIAN] running pid={snapshot.pid} "
+                    f"SL={snapshot.sl_price} TP={snapshot.tp_price}"
+                )
+            return
+        if snapshot.state_exists and self._manual_guardian_terminal_status(snapshot.status):
+            self._log_manual_guardian_once(
+                f"[MANUAL GUARDIAN] terminal state={snapshot.status} while position is still live",
+                "error",
+            )
+            await self._close_unprotected_manual_position(
+                f"persisted guardian is terminal ({snapshot.status})"
+            )
+            return
+
+        now_ts = time_mod.monotonic()
+        if (
+            self._manual_guardian_last_attempt_ts
+            and now_ts - self._manual_guardian_last_attempt_ts
+            < self.MANUAL_GUARDIAN_RETRY_SECONDS
+        ):
+            return
+        self._manual_guardian_last_attempt_ts = now_ts
+
+        if snapshot.state_exists:
+            plan = {
+                **identity,
+                "sl_price": float(snapshot.sl_price),
+                "tp_price": float(snapshot.tp_price),
+                "source": f"resume:{snapshot.status}",
+                "market_safe": True,
+            }
+        else:
+            plan = self._manual_guardian_plan(self._open_position)
+            if plan is None:
+                self._log_manual_guardian_once(
+                    "[MANUAL GUARDIAN] waiting for completed-bar Factor/PMO risk data",
+                    "error",
+                )
+                if (
+                    time_mod.monotonic() - self._manual_guardian_unprotected_since
+                    >= self.MANUAL_GUARDIAN_BUSY_TIMEOUT_SECONDS
+                ):
+                    await self._close_unprotected_manual_position(
+                        "strategy ATR risk data was unavailable"
+                    )
+                return
+            if not plan["market_safe"]:
+                self._log_manual_guardian_once(
+                    f"[MANUAL GUARDIAN] market={plan['market_price']} is outside fresh "
+                    f"SL={plan['sl_price']:.2f}/TP={plan['tp_price']:.2f}; closing",
+                    "error",
+                )
+                await self._close_unprotected_manual_position(
+                    "market already crossed the strategy SL/TP envelope"
+                )
+                return
+
+        # A state with an owned leg is resumed by exact persisted IDs. A fresh
+        # state (or one that never armed) must see zero unknown close-side exits.
+        if not snapshot.sl_order_id and not snapshot.tp_order_id:
+            try:
+                open_orders = await self.client.get_open_orders(self.account_id)
+            except Exception as exc:
+                self._log_manual_guardian_once(
+                    f"[MANUAL GUARDIAN] open-order preflight failed ({exc.__class__.__name__})",
+                    "error",
+                )
+                return
+            expected_close_side = 1 if identity["side"] == "long" else 0
+            conflicts: List[str] = []
+            for order in open_orders or []:
+                if not self._order_contract_matches(order):
+                    continue
+                order_type = self._order_type(order)
+                looks_like_exit = (
+                    order_type in {1, 4, 5}
+                    or self._order_float(order, "stopPrice", "stop_price") is not None
+                    or self._order_float(order, "limitPrice", "limit_price", "price") is not None
+                )
+                if not looks_like_exit:
+                    continue
+                order_side = self._order_side_api(order)
+                if order_side is None or order_side == expected_close_side:
+                    conflicts.append(str(self._order_id(order) or "unknown"))
+            if conflicts:
+                self._log_manual_guardian_once(
+                    "[MANUAL GUARDIAN] existing close-side order(s) "
+                    f"{','.join(conflicts)} found; refusing to adopt or duplicate",
+                    "error",
+                )
+                return
+
+        spec = ManualGuardianLaunchSpec(
+            account_id=int(self.account_id),
+            position_id=position_id,
+            contract_id=str(identity["contract_id"]),
+            side=str(identity["side"]),
+            size=int(identity["size"]),
+            entry_price=float(identity["entry_price"]),
+            sl_price=float(plan["sl_price"]),
+            tp_price=float(plan["tp_price"]),
+            creation_timestamp=str(identity["creation_timestamp"]),
+            poll_seconds=2.5,
+        )
+        try:
+            result = launch_manual_position_guardian(
+                spec,
+                broker_env=self._manual_guardian_broker_env(),
+            )
+            self._manual_guardian_status = {
+                **result.as_dict(),
+                "running": result.status == GuardianLaunchStatus.ALREADY_RUNNING,
+                "source": plan["source"],
+                "sl_price": plan["sl_price"],
+                "tp_price": plan["tp_price"],
+            }
+        except Exception as exc:
+            self._log_manual_guardian_once(
+                f"[MANUAL GUARDIAN] detached launch failed ({exc.__class__.__name__})",
+                "error",
+            )
+            return
+
+        if result.status == GuardianLaunchStatus.LAUNCHED:
+            self._log_manual_guardian_once(
+                f"[MANUAL GUARDIAN] detached launch pid={result.pid} | "
+                f"{plan['source']} | SL={plan['sl_price']:.2f} TP={plan['tp_price']:.2f}"
+            )
+        elif result.status == GuardianLaunchStatus.ALREADY_RUNNING:
+            self._log_manual_guardian_once(
+                f"[MANUAL GUARDIAN] already running pid={result.pid}"
+            )
+        else:
+            self._log_manual_guardian_once(
+                f"[MANUAL GUARDIAN] {result.status.value}: {result.message}",
+                "error",
+            )
+
     async def _monitor_auto_oco_protection(self) -> bool:
         """Retry Auto OCO sync every loop and fail-safe flatten when protection is missing."""
         if not self._open_position:
+            now_ts = time_mod.monotonic()
+            if (
+                not self._manual_guardian_last_recovery_scan_ts
+                or now_ts - self._manual_guardian_last_recovery_scan_ts
+                >= self.MANUAL_GUARDIAN_RECOVERY_SCAN_SECONDS
+            ):
+                self._manual_guardian_last_recovery_scan_ts = now_ts
+                self._resume_persisted_manual_guardian()
             return False
 
         if self._auto_oco_missing_timed_out():
@@ -2529,18 +3202,16 @@ class LiveTradingEngine:
                 if self._sl_order_id and self._tp_order_id and not self._protection_synced:
                     missing.append("PRICE")
                 self._log_event(
-                    f"持倉中 Auto OCO {'+'.join(missing)} 未同步 -> 重新掃描/修改",
+                    f"Open-position Auto OCO {'+'.join(missing)} is not synchronized; "
+                    "rescanning and modifying",
                     "error",
                 )
                 synced = await self._sync_auto_oco_protection(self._active_signal, wait_seconds=2.0)
                 if not synced and self._auto_oco_missing_timed_out():
                     await self._flatten_and_pause_missing_auto_oco()
                     return True
-        elif not self._sl_order_id or not self._tp_order_id:
-            self._log_event(
-                "持倉中無 SL/TP 且無 signal（重啟後或手動入場）-> 需手動設定 SL/TP",
-                "error",
-            )
+        else:
+            await self._ensure_manual_position_guardian()
 
         return False
 
@@ -2549,7 +3220,7 @@ class LiveTradingEngine:
     async def _main_loop(self):
         """Main trading loop — runs every 5 seconds."""
         interval = 5
-        self._log_event(f"主循環啟動 — 每{interval}秒輪詢")
+        self._log_event(f"Main loop started; polling every {interval} seconds")
 
         while self._running:
             try:
@@ -2558,15 +3229,15 @@ class LiveTradingEngine:
                 if self._disconnected:
                     self._disconnected = False
                     self._consecutive_errors = 0
-                    self._log_event("網路恢復 — 恢復交易", "info")
+                    self._log_event("Network restored; trading resumed", "info")
             except Exception as e:
                 self._consecutive_errors += 1
                 if not self._disconnected:
                     self._disconnected = True
-                    self._log_event(f"網路斷線: {e} — 暫停新單", "error")
+                    self._log_event(f"Network disconnected: {e}; new orders paused", "error")
                 elif self._consecutive_errors % 12 == 0:
                     self._log_event(
-                        f"仍然斷線 ({self._consecutive_errors} 次失敗): {e}",
+                        f"Still disconnected ({self._consecutive_errors} failures): {e}",
                         "error"
                     )
 
@@ -2590,7 +3261,7 @@ class LiveTradingEngine:
             self._daily_win_count = 0
             self._persist_daily_bot_risk_state()
             self._log_event(
-                f"新交易日 — PnL 重置 (CT 17:00)"
+                "New trading day; PnL reset (CT 17:00)"
             )
             self._refresh_fade_levels()    # 1.0.8: fade 前日水位換日重算
             self._refresh_prev_rv_gate()    # 1.0.9: regime gate 換日重算
@@ -2635,7 +3306,9 @@ class LiveTradingEngine:
             return
 
         if len(new_candles) > 1:
-            self._log_event(f"補回 {len(new_candles) - 1} 根斷線期間漏掉的 1m K 線")
+            self._log_event(
+                f"Recovered {len(new_candles) - 1} missed 1m candle(s) from the disconnect"
+            )
 
         for missed in new_candles[:-1]:
             self._ingest_catchup_candle(missed)
@@ -2671,8 +3344,10 @@ class LiveTradingEngine:
         current_minute = now.minute
         if current_minute != self._last_status_log_minute:
             self._last_status_log_minute = current_minute
+            phase = self._get_phase()
+            separator = "\n" if "\n" in phase else " | "
             self._log_event(
-                f"{self._get_phase()} | 訂單: {self._get_order_short()}"
+                f"{phase}{separator}ORDER: {self._get_order_short()}"
             )
 
         # Use UTC directly for time checks
@@ -2691,7 +3366,7 @@ class LiveTradingEngine:
                 # Keep completed-bar factor indicators warm while orders are blocked.
                 self.trend_follow.observe(candle, [], True)
             if self._open_position:
-                self._log_event("PT 12:45 收盤平倉")
+                self._log_event("PT 12:45 session-close flatten")
                 await self.flatten_now()
             if self._pending_order_id:
                 await self._cancel_pending(release_breakout_lock=True)
@@ -2699,7 +3374,7 @@ class LiveTradingEngine:
 
         # ── Pre-flatten: cancel pending (PT 12:30 = UTC 19:30) ──
         if utc_time >= self.PRE_FLATTEN_UTC and utc_time < session_start and self._pending_order_id:
-            self._log_event("PT 12:30 收盤前取消掛單")
+            self._log_event("PT 12:30 pre-close pending-order cancellation")
             await self._cancel_pending(release_breakout_lock=True)
 
         # ── Check if pending order filled ──
@@ -2737,7 +3412,7 @@ class LiveTradingEngine:
             self._pending_age += 1
             timeout = self.trend_follow.PENDING_TIMEOUT_CANDLES
             if self._pending_age >= timeout:
-                self._log_event(f"掛單超時 {timeout} 分鐘取消")
+                self._log_event(f"Pending order timed out after {timeout} minutes; cancelling")
                 await self._cancel_pending(release_breakout_lock=True)
 
         # Auto OCO protection is monitored before the candle gate; trailing still needs price.
@@ -2761,7 +3436,8 @@ class LiveTradingEngine:
         if not self._open_position and not self._pending_order_id:
             if self._sl_order_id or self._tp_order_id:
                 self._log_event(
-                    f"FLAT 但有殘留單 SL=#{self._sl_order_id} TP=#{self._tp_order_id} → 清除",
+                    f"FLAT with residual orders SL=#{self._sl_order_id} "
+                    f"TP=#{self._tp_order_id}; clearing",
                     "error"
                 )
                 for oid, label in [
@@ -2772,7 +3448,7 @@ class LiveTradingEngine:
                         try:
                             await self._cancel_with_retry(oid, label)
                         except Exception as e:
-                            self._log_event(f"清除 {label} #{oid} 失敗: {e}", "error")
+                            self._log_event(f"Failed to clear {label} #{oid}: {e}", "error")
                 self._sl_order_id = None
                 self._tp_order_id = None
                 self._active_signal = None
@@ -2814,7 +3490,7 @@ class LiveTradingEngine:
         # Safety: if strategy thinks it's confirmed but no order exists, reset
         if strat.raw_state == "confirmed" and not self._pending_order_id:
             self._log_event(
-                f"Strategy stuck in 'confirmed' but no pending order → reset"
+                "Strategy stuck in 'confirmed' with no pending order; resetting"
             )
             strat.reset()
 
@@ -2867,8 +3543,8 @@ class LiveTradingEngine:
                 count = self._full_tp_counts.get(self._strategy_group(signal.strategy), 0)
                 self._tp_locked = True
                 self._log_event(
-                    f"Full TP lock: {signal.strategy.value} {count}/{lock} TP — "
-                    f"暫停該策略新單至下一個 Topstep session"
+                    f"Full TP lock: {signal.strategy.value} {count}/{lock} TP; "
+                    "pausing new orders for this strategy until the next Topstep session"
                 )
                 self._unlock_signal_breakout(signal)
                 strat.notify_order_cancelled()
@@ -2876,7 +3552,8 @@ class LiveTradingEngine:
             if self._session_direction_is_locked(signal):
                 direction = self._breakout_direction_from_trade_direction(signal.direction.value)
                 self._log_event(
-                    f"Session-direction lock: zone={signal.zone_id} dir={direction} 已交易/已嘗試，跳過"
+                    f"Session-direction lock: zone={signal.zone_id} dir={direction} "
+                    "already traded/attempted; skipping"
                 )
                 self._unlock_signal_breakout(signal)
                 strat.notify_order_cancelled()
@@ -2922,33 +3599,35 @@ class LiveTradingEngine:
         # ── Chinese decision basis (判斷依據) — clearly states which zones (per
         # timeframe) formed the confluence, each zone's weight (各自的權重) and the
         # total weight (縂權重), plus the scorer's top feature contributions. ──
-        _FEATURE_CN = {
-            "mode_is_reversion": "逆勢偏好", "mean_band_pct": "帶寬位置",
-            "side_is_vah": "VAH側", "n_distinct_tf": "TF數量",
-            "largest_tf_rank": "最大TF階", "n_levels": "層級數",
-            "total_weight": "匯流強度", "cluster_width_ticks": "簇寬",
-            "dist_to_price_ticks": "距現價", "risk_ticks": "風險刻度",
-            "rel_dist_to_price": "相對距離(R)", "rr": "盈虧比",
+        _FEATURE_LABELS = {
+            "mode_is_reversion": "reversion preference", "mean_band_pct": "band position",
+            "side_is_vah": "VAH side", "n_distinct_tf": "TF count",
+            "largest_tf_rank": "largest TF rank", "n_levels": "level count",
+            "total_weight": "confluence strength", "cluster_width_ticks": "cluster width",
+            "dist_to_price_ticks": "distance to price", "risk_ticks": "risk ticks",
+            "rel_dist_to_price": "relative distance (R)", "rr": "risk/reward",
         }
-        mode_cn = "逆勢" if payload["mode"] == "reversion" else "順勢"
-        dir_cn = "做多" if signal.direction == Direction.BUY else "做空"
-        side_cn = "VAH壓力" if payload["side"] == "VAH" else "VAL支撐"
+        mode_label = "REVERSION" if payload["mode"] == "reversion" else "MOMENTUM"
+        direction_label = "LONG" if signal.direction == Direction.BUY else "SHORT"
+        side_label = "VAH RESISTANCE" if payload["side"] == "VAH" else "VAL SUPPORT"
         tfw = payload.get("tf_weights") or []
-        tfw_str = " ".join(f"{d['tf']}(權{d['weight']:g})" for d in tfw) \
+        tfw_str = " ".join(f"{d['tf']}(weight={d['weight']:g})" for d in tfw) \
             or "/".join(payload["tfs"])
         top = payload.get("explain", [])[:3]
-        contribs = "、".join(
-            f"{_FEATURE_CN.get(n, n)}{c:+.2f}" for (n, _v, _w, c) in top
+        contribs = ", ".join(
+            f"{_FEATURE_LABELS.get(n, n)}{c:+.2f}" for (n, _v, _w, c) in top
         )
         basis = (
-            f"判斷依據：{mode_cn}{dir_cn}（{side_cn}）"
-            f"｜匯流{len(payload['tfs'])}個區間 {tfw_str} 縂權重{payload['weight']:g}"
-            f"｜進場{payload['entry']} 止損{payload['sl']} 止盈{payload['tp']}"
-            f"｜勝率{payload['prob'] * 100:.0f}% 評分{payload['score']:+.2f} EV{payload.get('ev', 0.0):+.2f}"
-            f"｜關鍵權重：{contribs}"
-            f"｜評分器 {self.confluence.scorer_source}"
+            f"DECISION BASIS: {mode_label} {direction_label} ({side_label})"
+            f" | CONFLUENCE {len(payload['tfs'])} ZONES {tfw_str} "
+            f"TOTAL WEIGHT {payload['weight']:g}"
+            f" | ENTRY {payload['entry']} SL {payload['sl']} TP {payload['tp']}"
+            f" | PROBABILITY {payload['prob'] * 100:.0f}% "
+            f"SCORE {payload['score']:+.2f} EV {payload.get('ev', 0.0):+.2f}"
+            f" | KEY CONTRIBUTIONS: {contribs}"
+            f" | SCORER {self.confluence.scorer_source}"
         )
-        self._log_event(("【SHADOW】" if self._conf_shadow else "") + basis)
+        self._log_event(("[SHADOW] " if self._conf_shadow else "") + basis)
         # Stash the human-readable basis on the payload so the API/banner reuse it.
         payload["basis"] = basis
         payload["shadow"] = bool(self._conf_shadow)
@@ -3146,7 +3825,7 @@ class LiveTradingEngine:
         })
 
         side = 1 if signal.direction == Direction.BUY else 2
-        dir_label = "買" if signal.direction == Direction.BUY else "賣"
+        dir_label = "BUY" if signal.direction == Direction.BUY else "SELL"
 
         # ── Safety: validate entry price vs current market ──
         PRICE_SAFETY_MARGIN = 50.0  # points
@@ -3154,32 +3833,33 @@ class LiveTradingEngine:
             mkt = self._last_market_price
             if signal.direction == Direction.SELL and signal.entry_price < mkt - PRICE_SAFETY_MARGIN:
                 self._log_event(
-                    f"[SAFETY BLOCK] SELL LIMIT @ {signal.entry_price:.2f} 遠低於市價 {mkt:.2f} "
-                    f"(差 {mkt - signal.entry_price:.1f} pts) → 攔截",
+                    f"[SAFETY BLOCK] SELL LIMIT @ {signal.entry_price:.2f} is far below "
+                    f"market {mkt:.2f} (difference {mkt - signal.entry_price:.1f} pts); blocked",
                     "error"
                 )
                 return False
             if signal.direction == Direction.BUY and signal.entry_price > mkt + PRICE_SAFETY_MARGIN:
                 self._log_event(
-                    f"[SAFETY BLOCK] BUY LIMIT @ {signal.entry_price:.2f} 遠高於市價 {mkt:.2f} "
-                    f"(差 {signal.entry_price - mkt:.1f} pts) → 攔截",
+                    f"[SAFETY BLOCK] BUY LIMIT @ {signal.entry_price:.2f} is far above "
+                    f"market {mkt:.2f} (difference {signal.entry_price - mkt:.1f} pts); blocked",
                     "error"
                 )
                 return False
             self._log_event(
-                f"[SAFETY OK] {dir_label} LIMIT @ {signal.entry_price:.2f} | 市價={mkt:.2f} | "
-                f"差距={abs(signal.entry_price - mkt):.1f} pts"
+                f"[SAFETY OK] {dir_label} LIMIT @ {signal.entry_price:.2f} | market={mkt:.2f} | "
+                f"distance={abs(signal.entry_price - mkt):.1f} pts"
             )
         else:
             self._log_event(
-                f"[SAFETY BLOCK] 無市價參考, 拒絕下單! entry={signal.entry_price:.2f}",
+                f"[SAFETY BLOCK] No market-price reference; order rejected | "
+                f"entry={signal.entry_price:.2f}",
                 "error"
             )
             return False
 
         if signal.zone_id:
             self._log_event(
-                f"[ZONE] signal 使用 zone_id={signal.zone_id} | 策略={signal.strategy.value}"
+                f"[ZONE] Signal uses zone_id={signal.zone_id} | strategy={signal.strategy.value}"
             )
 
         stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
@@ -3209,23 +3889,24 @@ class LiveTradingEngine:
                 self._persist_breakout_lock(signal)
                 self._mark_session_direction_locked(signal)
                 self._log_event(
-                    f"掛單成功 #{resp.order_id} | {dir_label} LIMIT @ {signal.entry_price:.2f} | "
+                    f"Pending order placed #{resp.order_id} | {dir_label} LIMIT @ {signal.entry_price:.2f} | "
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
                     f"bracket SL={stop_loss_bracket['ticks']}t TP={take_profit_bracket['ticks']}t | "
-                    f"策略={signal.strategy.value}"
+                    f"strategy={signal.strategy.value}"
                 )
                 return True
             else:
                 self._log_event(
-                    f"掛單失敗: code={resp.error_code} ({order_error_meaning(resp.error_code)}) "
+                    f"Pending order failed: code={resp.error_code} ({order_error_meaning(resp.error_code)}) "
                     f"msg={resp.error_message} "
                     f"| entry={signal.entry_price:.2f} side={'BUY' if side == 1 else 'SELL'} "
-                    f"(api_side={0 if side == 1 else 1}) | 訂單遭 gateway 拒絕, 不會出現在 TopstepX",
+                    f"(api_side={0 if side == 1 else 1}) | gateway rejected the order; "
+                    "it will not appear in TopstepX",
                     "error"
                 )
                 return False
         except Exception as e:
-            self._log_event(f"下單異常: {e}", "error")
+            self._log_event(f"Order placement error: {e}", "error")
             return False
 
     async def _place_market_entry(self, signal: TradeSignal) -> bool:
@@ -3264,7 +3945,7 @@ class LiveTradingEngine:
             return False
 
         side = 1 if signal.direction == Direction.BUY else 2
-        dir_label = "買" if signal.direction == Direction.BUY else "賣"
+        dir_label = "BUY" if signal.direction == Direction.BUY else "SELL"
 
         stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
         order = OrderRequest(
@@ -3293,20 +3974,21 @@ class LiveTradingEngine:
                 self._persist_breakout_lock(signal)
                 self._mark_session_direction_locked(signal)
                 self._log_event(
-                    f"市價單 #{resp.order_id} | {dir_label} MKT @ ~{signal.entry_price:.2f} | "
+                    f"Market order #{resp.order_id} | {dir_label} MKT @ ~{signal.entry_price:.2f} | "
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
                     f"bracket SL={stop_loss_bracket['ticks']}t TP={take_profit_bracket['ticks']}t"
                 )
                 return True
             else:
                 self._log_event(
-                    f"市價單失敗: code={resp.error_code} ({order_error_meaning(resp.error_code)}) "
-                    f"msg={resp.error_message} | 訂單遭 gateway 拒絕, 不會出現在 TopstepX",
+                    f"Market order failed: code={resp.error_code} ({order_error_meaning(resp.error_code)}) "
+                    f"msg={resp.error_message} | gateway rejected the order; "
+                    "it will not appear in TopstepX",
                     "error"
                 )
                 return False
         except Exception as e:
-            self._log_event(f"市價單異常: {e}", "error")
+            self._log_event(f"Market-order error: {e}", "error")
             return False
 
     async def _check_trailing_sl_live(self):
@@ -3354,7 +4036,11 @@ class LiveTradingEngine:
             if not self._sl_order_id or not self._protection_synced:
                 synced = await self._sync_auto_oco_protection(sig, wait_seconds=2.0)
                 if not synced or not self._sl_order_id:
-                    self._log_event("[TRAIL SL] 找不到可修改的 Auto OCO SL，保留原保護單並等待下次重試", "error")
+                    self._log_event(
+                        "[TRAIL SL] No modifiable Auto OCO SL found; preserving the "
+                        "existing protection order and retrying later",
+                        "error",
+                    )
                     self._trail_sl_triggered = False
                     return
 
@@ -3373,12 +4059,16 @@ class LiveTradingEngine:
                     self._protection_synced = True
                 else:
                     self._log_event(
-                        f"[TRAIL SL] 修改 SL 失敗: {resp.error_message} → 原 Auto OCO SL 維持不動",
+                        f"[TRAIL SL] Failed to modify SL: {resp.error_message}; "
+                        "existing Auto OCO SL unchanged",
                         "error",
                     )
                     self._trail_sl_triggered = False
             except Exception as e:
-                self._log_event(f"[TRAIL SL] 修改 SL 異常: {e} → 原 Auto OCO SL 維持不動", "error")
+                self._log_event(
+                    f"[TRAIL SL] SL modification error: {e}; existing Auto OCO SL unchanged",
+                    "error",
+                )
                 self._trail_sl_triggered = False
             return
 
@@ -3423,7 +4113,11 @@ class LiveTradingEngine:
         if not self._sl_order_id or not self._protection_synced:
             synced = await self._sync_auto_oco_protection(sig, wait_seconds=2.0)
             if not synced or not self._sl_order_id:
-                self._log_event("[TRAIL SL] 找不到可修改的 Auto OCO SL，保留原保護單並等待下次重試", "error")
+                self._log_event(
+                    "[TRAIL SL] No modifiable Auto OCO SL found; preserving the "
+                    "existing protection order and retrying later",
+                    "error",
+                )
                 self._trail_sl_triggered = False
                 return
 
@@ -3440,12 +4134,16 @@ class LiveTradingEngine:
                 self._protection_synced = True
             else:
                 self._log_event(
-                    f"[TRAIL SL] 修改 SL 失敗: {resp.error_message} → 原 Auto OCO SL 維持不動",
+                    f"[TRAIL SL] Failed to modify SL: {resp.error_message}; "
+                    "existing Auto OCO SL unchanged",
                     "error",
                 )
                 self._trail_sl_triggered = False
         except Exception as e:
-            self._log_event(f"[TRAIL SL] 修改 SL 異常: {e} → 原 Auto OCO SL 維持不動", "error")
+            self._log_event(
+                f"[TRAIL SL] SL modification error: {e}; existing Auto OCO SL unchanged",
+                "error",
+            )
             self._trail_sl_triggered = False
         return
 
@@ -3494,14 +4192,17 @@ class LiveTradingEngine:
                 return
 
         self._log_event(
-            f"[LADDER] 峰值 {self._ladder_max_r:.2f}R → SL {new_sl:.2f} "
+            f"[LADDER] Peak {self._ladder_max_r:.2f}R -> SL {new_sl:.2f} "
             f"(entry{'+' if lock_r >= 0 else ''}{lock_r:g}R, R={risk:.2f}pt)"
         )
 
         if not self._sl_order_id or not self._protection_synced:
             synced = await self._sync_auto_oco_protection(sig, wait_seconds=2.0)
             if not synced or not self._sl_order_id:
-                self._log_event("[LADDER] 找不到可修改的 Auto OCO SL,下一 tick 重試", "error")
+                self._log_event(
+                    "[LADDER] No modifiable Auto OCO SL found; retrying on the next tick",
+                    "error",
+                )
                 return
 
         try:
@@ -3519,11 +4220,16 @@ class LiveTradingEngine:
                 self._protection_synced = True
             else:
                 self._log_event(
-                    f"[LADDER] 修改 SL 失敗: {resp.error_message} → 保留原 SL,下一 tick 重試",
+                    f"[LADDER] Failed to modify SL: {resp.error_message}; "
+                    "preserving the existing SL and retrying on the next tick",
                     "error",
                 )
         except Exception as e:
-            self._log_event(f"[LADDER] 修改 SL 異常: {e} → 保留原 SL,下一 tick 重試", "error")
+            self._log_event(
+                f"[LADDER] SL modification error: {e}; preserving the existing SL "
+                "and retrying on the next tick",
+                "error",
+            )
 
     async def _cancel_with_retry(self, order_id: Optional[int], label: str):
         """Cancel an order with retry."""
@@ -3531,15 +4237,15 @@ class LiveTradingEngine:
             return
         success = await self.client.cancel_order(self.account_id, order_id)
         if success:
-            self._log_event(f"取消殘留 {label} #{order_id}")
+            self._log_event(f"Cancelled residual {label} #{order_id}")
             return
         # First attempt failed — wait and retry once
         await asyncio.sleep(1)
         success = await self.client.cancel_order(self.account_id, order_id)
         if success:
-            self._log_event(f"取消殘留 {label} #{order_id} (重試成功)")
+            self._log_event(f"Cancelled residual {label} #{order_id} (retry succeeded)")
         else:
-            self._log_event(f"取消 {label} #{order_id} 失敗 (可能已成交)")
+            self._log_event(f"Failed to cancel {label} #{order_id} (possibly filled)")
 
     async def _pending_order_still_open(self, order_id: int) -> Optional[bool]:
         """Best-effort broker check after a pending-entry cancel failure.
@@ -3553,12 +4259,63 @@ class LiveTradingEngine:
         try:
             open_orders = await self.client.get_open_orders(self.account_id)
         except Exception as e:
-            self._log_event(f"檢查掛單 #{order_id} 狀態失敗: {e}", "error")
+            self._log_event(f"Failed to check pending order #{order_id}: {e}", "error")
             return None
         for order in open_orders or []:
             if self._order_id(order) == order_id:
                 return True
         return False
+
+    async def _pending_order_ledger_state(
+        self,
+        order_id: int,
+    ) -> Optional[tuple[Optional[int], int]]:
+        """Read the exact pending entry from the full ledger with a short retry."""
+        for attempt in range(2):
+            try:
+                rows = await self.client.get_orders(self.account_id)
+            except Exception as exc:
+                self._log_event(
+                    f"[PENDING VERIFY] order #{order_id} ledger failed "
+                    f"({exc.__class__.__name__})",
+                    "error",
+                )
+                rows = []
+            row = next((item for item in rows or [] if self._order_id(item) == order_id), None)
+            if row is not None:
+                status = self._order_int(row, "status", "orderStatus")
+                filled = abs(
+                    self._order_int(row, "fillVolume", "filledSize", "filledVolume") or 0
+                )
+                return status, filled
+            if attempt == 0:
+                await asyncio.sleep(0.25)
+        return None
+
+    async def _exact_engine_exit_pair_filled(
+        self,
+        sl_id: Optional[int],
+        tp_id: Optional[int],
+        expected_size: int,
+    ) -> bool:
+        """Prove both exact bot exits fully filled before closing a reversal."""
+        if not sl_id or not tp_id or expected_size <= 0:
+            return False
+        try:
+            rows = await self.client.get_orders(self.account_id)
+        except Exception:
+            return False
+        by_id = {self._order_id(row): row for row in rows or []}
+        for order_id in (int(sl_id), int(tp_id)):
+            row = by_id.get(order_id)
+            if row is None or self._order_int(row, "status", "orderStatus") != 2:
+                return False
+            filled = abs(
+                self._order_int(row, "fillVolume", "filledSize", "filledVolume", "size") or 0
+            )
+            if filled != expected_size:
+                return False
+        return True
 
     async def _cancel_pending(self, *, release_breakout_lock: bool = False):
         """Cancel the pending limit order. Retries up to 3 times."""
@@ -3570,16 +4327,20 @@ class LiveTradingEngine:
             try:
                 success = await self.client.cancel_order(self.account_id, oid)
                 if success:
-                    self._log_event(f"取消掛單 #{oid} (attempt {attempt+1})")
+                    self._log_event(f"Cancelled pending order #{oid} (attempt {attempt+1})")
                     cancelled = True
                     break
                 else:
                     self._log_event(
-                        f"取消掛單 #{oid} 失敗 attempt {attempt+1}/3",
+                        f"Failed to cancel pending order #{oid} (attempt {attempt+1}/3)",
                         "error"
                     )
             except Exception as e:
-                self._log_event(f"取消掛單 #{oid} 異常 attempt {attempt+1}/3: {e}", "error")
+                self._log_event(
+                    f"Pending-order cancellation error #{oid} "
+                    f"(attempt {attempt+1}/3): {e}",
+                    "error",
+                )
             if attempt < 2:
                 await asyncio.sleep(1)
 
@@ -3592,12 +4353,14 @@ class LiveTradingEngine:
                     delay_seconds=0.3,
                 )
                 self._log_event(
-                    f"取消掛單 #{oid} 失敗，但交易所已無此 open order → "
+                    f"Failed to cancel pending order #{oid}, but the exchange no longer "
+                    "reports it as open; "
                     +
                     (
-                        "trade_history 已有 close fill，保留 lock"
+                        "trade history contains a close fill, preserving the lock"
                         if maybe_close
-                        else "未見 Topstep close fill，視為未成交取消並釋放 lock"
+                        else "no Topstep close fill found, treating it as an unfilled "
+                        "cancellation and releasing the lock"
                     ),
                     "warn",
                 )
@@ -3622,8 +4385,12 @@ class LiveTradingEngine:
                 self._pending_age = 0
                 self._pending_created_at = None
                 return
-            suffix = "（broker 仍列為 open）" if still_open else "（無法確認 broker 狀態）"
-            self._log_event(f"取消掛單 #{oid} 3次均失敗{suffix}! 下個 tick 再試", "error")
+            suffix = "broker still reports it as open" if still_open else "broker status unknown"
+            self._log_event(
+                f"Failed to cancel pending order #{oid} after 3 attempts ({suffix}); "
+                "retrying on the next tick",
+                "error",
+            )
             return  # DON'T clear state — retry next tick
 
         if self._pending_signal:
@@ -3658,7 +4425,9 @@ class LiveTradingEngine:
             return True
         # If position exists but pending wasn't cleared yet (shouldn't happen)
         if self._open_position:
-            self._log_event(f"[BACKUP] 偵測到持倉但掛單未清除 → 清除")
+            self._log_event(
+                "[BACKUP] Position detected while pending order remains; clearing local state"
+            )
             self._pending_order_id = None
             self._pending_signal = None
             self._pending_conf_payload = None
@@ -3672,7 +4441,7 @@ class LiveTradingEngine:
         sig = self._pending_signal or self._active_signal
         if not sig or not self._open_position:
             self._log_event(
-                f"[AUTO OCO] _place_sl_tp 跳過: signal={sig is not None} "
+                f"[AUTO OCO] _place_sl_tp skipped: signal={sig is not None} "
                 f"position={self._open_position is not None}",
                 "error",
             )
@@ -3689,13 +4458,87 @@ class LiveTradingEngine:
           3. no change:         keep local position state aligned
         """
         try:
+            previous_position = self._open_position
+            previous_identity = self._manual_position_identity(previous_position)
             positions = await self.client.get_positions(self.account_id)
+            configured_position = self._position_for_configured_contract(positions)
+            if self._open_position is not None and configured_position is None:
+                # Position/searchOpen can omit a live position for more than one
+                # response. Require three consecutive misses before bot/manual
+                # close bookkeeping cancels exits or changes risk state.
+                for _ in range(2):
+                    await asyncio.sleep(0.25)
+                    confirmed = await self.client.get_positions(self.account_id)
+                    configured_position = self._position_for_configured_contract(confirmed)
+                    if configured_position is not None:
+                        break
+            replacement_position: Optional[Dict[str, Any]] = None
+            replacement_double_fill = False
+            current_identity = self._manual_position_identity(configured_position)
+            if previous_identity and current_identity:
+                creation_changed = bool(
+                    previous_identity["creation_timestamp"]
+                    and current_identity["creation_timestamp"]
+                    and previous_identity["creation_timestamp"]
+                    != current_identity["creation_timestamp"]
+                )
+                identity_changed = (
+                    previous_identity["position_id"] != current_identity["position_id"]
+                    or previous_identity["side"] != current_identity["side"]
+                    or creation_changed
+                )
+                if identity_changed:
+                    replacement_position = configured_position
+                    if (
+                        self._active_signal is not None
+                        and current_identity["side"] != previous_identity["side"]
+                        and current_identity["size"] == previous_identity["size"]
+                    ):
+                        replacement_double_fill = await self._exact_engine_exit_pair_filled(
+                            self._sl_order_id,
+                            self._tp_order_id,
+                            int(previous_identity["size"]),
+                        )
+                    self._log_event(
+                        f"[POSITION REPLACED] old={previous_identity['position_id']} "
+                        f"{previous_identity['side']} -> new={current_identity['position_id']} "
+                        f"{current_identity['side']}; reconciling old ownership first",
+                        "error",
+                    )
+                    configured_position = None
+            positions = [configured_position] if configured_position is not None else []
             was_open = self._open_position is not None
             has_position = positions and len(positions) > 0
+            pending_fill_confirmed = False
+
+            if has_position and self._pending_order_id:
+                pending_id = int(self._pending_order_id)
+                ledger = await self._pending_order_ledger_state(pending_id)
+                if ledger is None:
+                    self._open_position = positions[0]
+                    self._log_event(
+                        f"[PENDING COLLISION] position exists but entry #{pending_id} "
+                        "is not yet in the broker ledger; waiting without attribution",
+                        "error",
+                    )
+                    return
+                ledger_status, ledger_fill = ledger
+                pending_fill_confirmed = ledger_status == 2 or ledger_fill > 0
+                if not pending_fill_confirmed:
+                    self._log_event(
+                        f"[PENDING COLLISION] manual/restart position appeared while bot entry "
+                        f"#{pending_id} status={ledger_status} fill={ledger_fill}; cancelling entry",
+                        "error",
+                    )
+                    await self._cancel_pending(release_breakout_lock=True)
+                    if self._pending_order_id:
+                        self._open_position = positions[0]
+                        return
+
             self._open_position = positions[0] if has_position else None
 
             # ── Transition 1: Pending order just FILLED ──
-            if has_position and self._pending_order_id:
+            if has_position and self._pending_order_id and pending_fill_confirmed:
                 fill_price_raw = positions[0].get('averagePrice', positions[0].get('avgPrice'))
                 try:
                     self._fill_price = float(fill_price_raw) if fill_price_raw else None
@@ -3703,7 +4546,7 @@ class LiveTradingEngine:
                     self._fill_price = None
 
                 self._log_event(
-                    f"掛單成交! #{self._pending_order_id} | "
+                    f"Pending order filled #{self._pending_order_id} | "
                     f"fill={self._fill_price} | size={positions[0].get('size', '?')} | "
                     f"side={'LONG' if positions[0].get('side', 0) == 0 else 'SHORT'}"
                 )
@@ -3719,7 +4562,7 @@ class LiveTradingEngine:
                     if adverse_slippage > 5.0:
                         self._log_event(
                             f"[FILL MISMATCH] entry={entry:.2f} fill={self._fill_price:.2f} "
-                            f"不利滑價={adverse_slippage:.2f} pts (${adverse_dollars:.0f})",
+                            f"adverse slippage={adverse_slippage:.2f} pts (${adverse_dollars:.0f})",
                             "error"
                         )
                     elif price_improvement > 0:
@@ -3730,7 +4573,7 @@ class LiveTradingEngine:
                     else:
                         self._log_event(
                             f"[FILL OK] entry={entry:.2f} fill={self._fill_price:.2f} "
-                            f"不利滑價={adverse_slippage:.2f} pts (${adverse_dollars:.0f})"
+                            f"adverse slippage={adverse_slippage:.2f} pts (${adverse_dollars:.0f})"
                         )
 
                 if (
@@ -3751,7 +4594,7 @@ class LiveTradingEngine:
                         self._force_exit_reason = "flatten"
                         self._log_event(
                             f"[MARKET FILL BLOCK] fill={self._fill_price:.2f} | {detail} "
-                            f"→ emergency flatten before SL/TP sync",
+                            "-> emergency flatten before SL/TP sync",
                             "error",
                         )
                         await self._emergency_market_close(close_side, reason_code)
@@ -3801,13 +4644,17 @@ class LiveTradingEngine:
                 if self._pending_signal:
                     self._protection_synced = False
                     self._log_event(
-                        f"[AUTO OCO] 等待並修改 SL={self._pending_signal.sl_price:.2f} "
+                        f"[AUTO OCO] Waiting for child orders and setting "
+                        f"SL={self._pending_signal.sl_price:.2f} "
                         f"TP={self._pending_signal.tp_price:.2f} "
                         f"dir={self._pending_signal.direction.value}"
                     )
                     await self._place_sl_tp()
                 else:
-                    self._log_event("[SL/TP] 無 pending_signal 無法下 SL/TP!", "error")
+                    self._log_event(
+                        "[SL/TP] Cannot place SL/TP without a pending signal",
+                        "error",
+                    )
 
                 # Save signal for SL/TP retry, then clear pending state
                 self._active_signal = self._pending_signal  # keep for SL/TP reference
@@ -3836,24 +4683,31 @@ class LiveTradingEngine:
                 except (ValueError, TypeError):
                     self._fill_price = None
 
-                pos_side = positions[0].get('side', 0)
+                rogue_identity = self._manual_position_identity(positions[0])
+                rogue_side = rogue_identity["side"] if rogue_identity else None
 
                 if self._position_just_closed:
-                    # Double-fill: position just closed but a new one appeared
-                    # (the residual SL/TP order filled after the first one closed us)
-                    close_side = 2 if pos_side == 0 else 1  # opposite side to close
-                    self._log_event(
-                        f"DOUBLE-FILL 偵測! SL/TP 同時成交 → 緊急平倉 | "
-                        f"rogue side={'LONG' if pos_side == 0 else 'SHORT'} | "
-                        f"fill={self._fill_price}",
-                        "error"
-                    )
-                    await self._emergency_market_close(close_side, "DOUBLE_FILL")
+                    # This path only follows an engine-owned close because
+                    # discretionary closes never set `_position_just_closed`.
+                    if rogue_side not in {"long", "short"}:
+                        self._log_event(
+                            "DOUBLE-FILL detected but rogue side is unknown; using broker flatten",
+                            "error",
+                        )
+                        await self.flatten_now()
+                    else:
+                        close_side = 2 if rogue_side == "long" else 1
+                        self._log_event(
+                            "DOUBLE-FILL detected: SL and TP filled together; emergency close | "
+                            f"rogue side={rogue_side.upper()} | fill={self._fill_price}",
+                            "error"
+                        )
+                        await self._emergency_market_close(close_side, "DOUBLE_FILL")
                 else:
                     self._log_event(
-                        f"偵測到未追蹤的持倉 | fill={self._fill_price} | "
-                        f"side={'LONG' if pos_side == 0 else 'SHORT'} | "
-                        f"無 pending_order → 可能是手動入場或重啟後",
+                        f"Untracked position detected | fill={self._fill_price} | "
+                        f"side={(rogue_side or 'UNKNOWN').upper()} | "
+                        "no pending order; possible manual entry or post-restart position",
                         "error"
                     )
 
@@ -3889,7 +4743,7 @@ class LiveTradingEngine:
                 exit_time_dt = topstep_exit_time or datetime.utcnow()
 
                 self._log_event(
-                    f"持倉已平 ({exit_reason.upper()} 觸發){pnl_info}"
+                    f"Position closed ({exit_reason.upper()} triggered){pnl_info}"
                 )
                 if exit_reason == "tp" and _sig_for_log:
                     lock = self._full_tp_lock_for_strategy(_sig_for_log.strategy)
@@ -3940,15 +4794,15 @@ class LiveTradingEngine:
                         try:
                             await self._cancel_with_retry(oid, label)
                         except Exception as e:
-                            self._log_event(f"取消 {label} #{oid} 異常: {e}", "error")
+                            self._log_event(f"Error cancelling {label} #{oid}: {e}", "error")
 
                 # Cancel any pending entry order
                 if self._pending_order_id:
-                    self._log_event(f"取消殘留掛單 #{self._pending_order_id}")
+                    self._log_event(f"Cancelling residual pending order #{self._pending_order_id}")
                     try:
                         await self._cancel_with_retry(self._pending_order_id, "ENTRY")
                     except Exception as e:
-                        self._log_event(f"取消 ENTRY 異常: {e}", "error")
+                        self._log_event(f"ENTRY cancellation error: {e}", "error")
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
@@ -4016,7 +4870,25 @@ class LiveTradingEngine:
                     self._position_just_closed = True  # skip new entry this tick
                 self._force_exit_reason = None
 
-                await self._refresh_account_snapshot("平倉後更新", emit_log=True, attempts=3)
+                await self._refresh_account_snapshot("post-close refresh", emit_log=True, attempts=3)
+
+            if replacement_position is not None:
+                replacement_identity = self._manual_position_identity(replacement_position)
+                self._open_position = replacement_position
+                self._position_just_closed = False
+                if replacement_double_fill and replacement_identity is not None:
+                    close_side = 2 if replacement_identity["side"] == "long" else 1
+                    self._log_event(
+                        "[DOUBLE FILL] exact bot SL+TP fills created the replacement "
+                        "position; closing configured contract",
+                        "error",
+                    )
+                    await self._emergency_market_close(close_side, "DOUBLE_FILL")
+                else:
+                    # A close-and-reopen between polls is a new discretionary
+                    # position. Never attach the old bot signal or daily lock.
+                    await self._ensure_manual_position_guardian()
+                return
 
             # ── Position size audit (every 5 min, skip 60s after entry) ──
             # Size fail-safe is for positions opened by this engine.  An
@@ -4033,8 +4905,9 @@ class LiveTradingEngine:
                     if actual_size > 0 and actual_size != expected:
                         pos_side = positions[0].get('side', 0)
                         self._log_event(
-                            f"[SAFETY] 倉位不對等! 預期={expected} 實際={actual_size} "
-                            f"side={'LONG' if pos_side == 0 else 'SHORT'} → 緊急全平",
+                            f"[SAFETY] Position-size mismatch: expected={expected} "
+                            f"actual={actual_size} side={'LONG' if pos_side == 0 else 'SHORT'}; "
+                            "emergency flatten",
                             "error"
                         )
                         self._force_exit_reason = "flatten"
@@ -4079,7 +4952,8 @@ class LiveTradingEngine:
         if not prev_candles or len(prev_candles) < 60:
             self.trend_follow.set_levels(None)
             self._log_event(
-                f"[FADE] 前一交易日 K 線不足({len(prev_candles)} 根)— 無水位,今日不掛單",
+                f"[FADE] Insufficient previous-session candles ({len(prev_candles)}); "
+                "no levels, so no orders will be placed today",
                 "warn",
             )
             return
@@ -4087,15 +4961,15 @@ class LiveTradingEngine:
             vp = self._fade_vp.calculate(prev_candles)
         except ValueError as e:
             self.trend_follow.set_levels(None)
-            self._log_event(f"[FADE] 前日 VP 計算失敗: {e}", "error")
+            self._log_event(f"[FADE] Previous-session VP calculation failed: {e}", "error")
             return
         self.trend_follow.set_levels({
             "date": today, "poc": vp.poc, "vah": vp.vah, "val": vp.val,
         })
         self._log_event(
-            f"[FADE] 前日({prev_date},{len(prev_candles)}根)水位 | "
+            f"[FADE] Previous session ({prev_date}, {len(prev_candles)} candles) levels | "
             f"POC={vp.poc:.2f} VAH={vp.vah:.2f} VAL={vp.val:.2f} | "
-            f"今日 BUY LIMIT @ VAL → TP POC"
+            "today: BUY LIMIT @ VAL -> TP POC"
         )
 
     def _refresh_prev_rv_gate(self) -> None:
@@ -4126,8 +5000,9 @@ class LiveTradingEngine:
             cut = sorted(hist)[len(hist) * 2 // 3]
             self._gate_block_today = prev_rv >= cut
             self._log_event(
-                f"[REGIME] 前日 RV={prev_rv:.5f} vs 近{len(hist)}日高三分位 {cut:.5f} → "
-                + ("今日封鎖新單 🚫" if self._gate_block_today else "今日可交易 ✓"),
+                f"[REGIME] Previous RV={prev_rv:.5f} vs upper tercile over "
+                f"{len(hist)} days {cut:.5f}; "
+                + ("new orders blocked today" if self._gate_block_today else "trading allowed today"),
                 "warn" if self._gate_block_today else "info",
             )
         else:
@@ -4196,5 +5071,5 @@ class LiveTradingEngine:
                     pass
                 return closed_candles
         except Exception as e:
-            self._log_event(f"取得K線失敗: {e}", "error")
+            self._log_event(f"Failed to fetch candles: {e}", "error")
         return []

@@ -42,6 +42,10 @@ from backend.strategy.volume_profile import VolumeProfileCalculator
 from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, normalize_allowed_sessions,
 )
+from backend.strategy.factor import (
+    FACTOR_EMAPMO_HISTORY_BARS,
+    calculate_emapmo_snapshot,
+)
 from backend.live.warmup import signal_warmup_progress
 # 1.0.8: 移除 ml_trend / ml_consolidation_v2 (mlc2) 相關 import
 #        (MLTrendBacktester / MLTrendBacktestConfig / precompute_vp_timeline / MLTrendConfig)
@@ -673,50 +677,37 @@ def _signal_marker(
 
 
 def _collect_pmo_markers(bars: List[Candle], cutoff: Optional[datetime]) -> List[Dict[str, Any]]:
+    """Collect EMAPMO markers with the same bounded EMA seed as FACTOR.
+
+    FACTOR live/backtest retains a rolling completed-5m deque.  Calculating the
+    overlay once across the entire chart gives the EMA a different seed and can
+    draw a threshold signal that the trading strategy never saw.
+    """
     closes = [float(c.close) for c in bars]
-    roc: List[Optional[float]] = [None]
-    for i in range(1, len(closes)):
-        prev = closes[i - 1]
-        roc.append(None if prev == 0 else 100.0 * (closes[i] - prev) / prev)
-    first = _ema_series(roc, 100)
-    pmo = _ema_series([None if v is None else 10.0 * v for v in first], 50)
-    sig = _ema_series(pmo, 10)
 
     markers: List[Dict[str, Any]] = []
     for i in range(149, len(bars) - 1):
-        p0, p1 = pmo[i - 1], pmo[i]
-        s0, s1 = sig[i - 1], sig[i]
-        if None in (p0, p1, s0, s1):
+        start = max(0, i + 1 - FACTOR_EMAPMO_HISTORY_BARS)
+        snapshot = calculate_emapmo_snapshot(closes[start:i + 1])
+        p1 = snapshot.get("pmo")
+        s1 = snapshot.get("signal")
+        if p1 is None or s1 is None:
             continue
-        assert p0 is not None and p1 is not None and s0 is not None and s1 is not None
 
         subtypes: List[str] = []
         direction = ""
-        crossunder = p1 < s1 and p0 >= s0
-        crossover = p1 > s1 and p0 <= s0
-        if p1 > 0.06 and crossunder:
+        if snapshot["normal_short"]:
             subtypes.append("normal")
             direction = "short"
-        if p1 < -0.10 and crossover:
+        if snapshot["normal_long"]:
             subtypes.append("normal")
             direction = "long"
-
-        if i >= 2:
-            p_prev2, s_prev2 = pmo[i - 2], sig[i - 2]
-            if None not in (p_prev2, s_prev2):
-                assert p_prev2 is not None and s_prev2 is not None
-                diff0 = p0 - s0
-                diff1 = p1 - s1
-                diff_prev2 = p_prev2 - s_prev2
-                inv0 = s0 - p0
-                inv1 = s1 - p1
-                inv_prev2 = s_prev2 - p_prev2
-                if s1 > 0.06 and diff1 < diff0 and p1 > s1 and diff0 < diff_prev2:
-                    subtypes.append("early")
-                    direction = direction or "short"
-                if s1 < -0.10 and inv1 < inv0 and p1 < s1 and inv0 < inv_prev2:
-                    subtypes.append("early")
-                    direction = direction or "long"
+        if snapshot["early_short"]:
+            subtypes.append("early")
+            direction = direction or "short"
+        if snapshot["early_long"]:
+            subtypes.append("early")
+            direction = direction or "long"
 
         if not subtypes:
             continue
@@ -1781,7 +1772,7 @@ async def aggregate_data():
     global _historical_candles
 
     if not _historical_candles:
-        raise HTTPException(status_code=400, detail="請先拉取歷史數據")
+        raise HTTPException(status_code=400, detail="Fetch historical data first")
 
     candles_5m = BacktestEngine.aggregate_1m_to_5m(_historical_candles)
 
@@ -2150,7 +2141,10 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
     split = int(len(candles) * frac)
     train = candles[:split] if frac < 1.0 else candles
     if len(train) < (wait_bars + horizon_bars + 50):
-        raise ValueError(f"歷史數據太少 ({len(train)} bars)，請先載入完整歷史再學習。")
+        raise ValueError(
+            f"Insufficient historical data ({len(train)} bars). "
+            "Load the full history before training."
+        )
 
     cfg = ConfluenceConfig(band_ticks=req.band_ticks, min_distinct_tf=req.min_distinct_tf, rr=req.rr)
     cfg.direction_mode = "auto"
@@ -2160,7 +2154,10 @@ def _train_confluence_scorer_sync(candles, req: "ConfluenceTrainRequest") -> dic
     timeline = build_zone_timeline(train, timeframes, tick, MAX_RECENCY_DEPTH)
     X, y, modes, starts, ends = collect(train, timeline, cfg, req.stride, wait_bars, horizon_bars)
     if len(y) < 50:
-        raise ValueError(f"可標記樣本太少 ({len(y)})，降低 stride/min_distinct_tf 或載入更多數據。")
+        raise ValueError(
+            f"Too few labeled samples ({len(y)}). "
+            "Reduce stride/min_distinct_tf or load more data."
+        )
 
     # train_frac=1.0 (learn-and-live) leaves no held-out tail, so the embargoed
     # walk-forward inside evaluate_and_meta is the ONLY honest out-of-sample
@@ -2238,7 +2235,7 @@ async def confluence_train(req: ConfluenceTrainRequest):
     freshly written confluence_scorer.json. CPU-heavy fit runs off the event loop.
     """
     if not _historical_candles:
-        raise HTTPException(status_code=400, detail="請先拉取歷史數據再學習")
+        raise HTTPException(status_code=400, detail="Fetch historical data before training")
     candles = sorted(_historical_candles, key=lambda c: c.timestamp)
     try:
         return await asyncio.to_thread(_train_confluence_scorer_sync, candles, req)
@@ -2371,7 +2368,9 @@ def _retrain_model_sync(candles, req: "ModelRetrainRequest") -> dict:
     horizon_bars = max(1, round(req.horizon_min / base))
     train = candles
     if len(train) < (wait_bars + horizon_bars + 50):
-        raise ValueError(f"歷史數據太少 ({len(train)} bars)，請先載入完整歷史。")
+        raise ValueError(
+            f"Insufficient historical data ({len(train)} bars). Load the full history first."
+        )
 
     cfg = ConfluenceConfig(band_ticks=req.band_ticks,
                            min_distinct_tf=req.min_distinct_tf, rr=req.rr)
@@ -2382,7 +2381,10 @@ def _retrain_model_sync(candles, req: "ModelRetrainRequest") -> dict:
     timeline = build_zone_timeline(train, timeframes, tick, MAX_RECENCY_DEPTH)
     X, y, modes, starts, ends = collect(train, timeline, cfg, req.stride, wait_bars, horizon_bars)
     if len(y) < 50:
-        raise ValueError(f"可標記樣本太少 ({len(y)})，降低 stride/min_distinct_tf 或載入更多數據。")
+        raise ValueError(
+            f"Too few labeled samples ({len(y)}). "
+            "Reduce stride/min_distinct_tf or load more data."
+        )
 
     weights, b_raw, info = evaluate_and_meta(
         X, y, starts, ends, n_bars=len(train), embargo=wait_bars + horizon_bars,
@@ -2448,7 +2450,7 @@ def _retrain_model_sync(candles, req: "ModelRetrainRequest") -> dict:
 async def confluence_model_retrain(req: ModelRetrainRequest):
     """Train and append a new model version."""
     if not _historical_candles:
-        raise HTTPException(status_code=400, detail="請先拉取歷史數據再訓練")
+        raise HTTPException(status_code=400, detail="Fetch historical data before training")
     candles = sorted(_historical_candles, key=lambda c: c.timestamp)
     try:
         return await asyncio.to_thread(_retrain_model_sync, candles, req)
@@ -2487,7 +2489,7 @@ async def run_backtest(req: BacktestRequest):
     if not _historical_candles:
         raise HTTPException(
             status_code=400,
-            detail="請先通過 /api/data/fetch-historical 拉取數據"
+            detail="Fetch data through /api/data/fetch-historical first"
         )
 
     # v1.0.6: explainable confluence engine (separate, read-only path)
@@ -2579,13 +2581,13 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         else list(_historical_candles)
     )
 
-    _update_bt_progress("running", 0, len(candles), "回測中...")
+    _update_bt_progress("running", 0, len(candles), "Backtest in progress...")
 
     def _trend_progress(current, total, detail):
         _update_bt_progress("running", current, total, detail)
 
     result = await asyncio.to_thread(engine.run, candles, _trend_progress)
-    _update_bt_progress("done", len(candles), len(candles), "完成", status="done")
+    _update_bt_progress("done", len(candles), len(candles), "Complete", status="done")
     _backtest_results.append(result)
 
     trades_resp = []
@@ -2858,9 +2860,9 @@ async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
     """跑完整 multi-model 參數掃描(TREND / DAY ZONE / DISTRIBUTION),結果持久化供 SWEEP 分頁。"""
     global _sweep_running
     if _sweep_running:
-        raise HTTPException(400, "Sweep 已在執行中")
+        raise HTTPException(400, "A sweep is already running")
     if not _historical_candles:
-        raise HTTPException(400, "無歷史資料 — 請先 CONNECT / 載入資料")
+        raise HTTPException(400, "No historical data — connect and load data first")
 
     from backend.backtest.sweep import run_model_sweep
 
@@ -2924,7 +2926,7 @@ async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
             _gc.collect()   # 掃描後釋放記憶體
         except Exception as e:
             logger.warning(f"sweep archive failed: {e}")
-        _update_bt_progress("done", 1, 1, "sweep 完成", status="done")
+        _update_bt_progress("done", 1, 1, "Sweep complete", status="done")
         return payload
     finally:
         _sweep_running = False
@@ -3034,7 +3036,7 @@ async def shadow_replay_daily_task():
                 target += _td(days=1)
             await asyncio.sleep((target - now).total_seconds())
             if not _historical_candles:
-                logger.info("[shadow] 無歷史K線,跳過今日影子重放")
+                logger.info("[shadow] No historical candles; skipping today's shadow replay")
                 continue
             report = await asyncio.to_thread(_run_shadow_replay_sync, None)
             ok = report.get("day_pass")
@@ -3044,7 +3046,8 @@ async def shadow_replay_daily_task():
                 for r in report.get("reports", []) if "error" not in r
             ) or report.get("note", "no data")
             logger.warning(
-                f"[shadow] {report.get('date')} 影子重放 {'PASS ✅' if ok else 'FAIL ❌'} | {summary}"
+                f"[shadow] {report.get('date')} shadow replay "
+                f"{'PASS ✅' if ok else 'FAIL ❌'} | {summary}"
             )
         except asyncio.CancelledError:
             return
@@ -3654,7 +3657,7 @@ async def live_start(req: LiveStartRequest):
     try:
         resolved_cid = await _topstepx_client.get_front_month_contract_id(req.contract_id)
         if resolved_cid and resolved_cid != req.contract_id:
-            logger.info(f"[LIVE START] Auto-roll 合約 {req.contract_id} -> {resolved_cid}")
+            logger.info(f"[LIVE START] Auto-roll contract {req.contract_id} -> {resolved_cid}")
             req.contract_id = resolved_cid
         global _live_contract_id
         _live_contract_id = req.contract_id
