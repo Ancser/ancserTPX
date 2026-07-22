@@ -181,16 +181,15 @@ cython_debug/
 .cursorindexingignore
 
 # ─── /data retention policy (1.0.9) ──────────────────────────────────────────
-# Keep ONLY two things under /data; ignore everything else so backtest / sweep /
-# ML / live-state / trades / ACCOUNT data are never uploaded:
-#   • data/presets.json   — strategy presets
+# Keep ONLY the accumulated candle store under /data; ignore everything else so
+# backtest / sweep / ML / live-state / trades / ACCOUNT data are never uploaded.
+# Strategy presets stay private on this machine and must never be tracked.
 #   • data/store/         — accumulated 1m candle store (*.pkl + meta)
 # NOTE on branch switching: git leaves *ignored* files alone on checkout, so the
 # ignored data below is NOT lost when you switch branches — it just isn't tracked
-# or uploaded. presets.json + data/store/ stay trackable so you can commit them
-# (versioned backup → a deleted preset like #1 is then recoverable from history).
+# or uploaded. Keep private preset backups outside this repository.
 data/*
-!data/presets.json
+/data/presets.json
 !data/store/
 
 # Ad-hoc research scripts / exports (may contain account data) — never upload.
