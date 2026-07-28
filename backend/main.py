@@ -57,7 +57,14 @@ async def lifespan(app: FastAPI):
     import asyncio as _asyncio
     from backend.api.routes import shadow_replay_daily_task
     _shadow_task = _asyncio.create_task(shadow_replay_daily_task())
+    # 1.0.9: 跨商品資料累積 —— 在此之前只有「按連線」與「跑回測」會累積,
+    # 且只針對 UI 當下選中的合約。券商 1m 只保留 60 天,任何商品超過就會
+    # 出現永久補不回來的空洞(MES 尤其危險,平常沒人選它)。
+    # 這個背景任務與 UI 完全解耦:伺服器活著就累積 MNQ + MES。
+    from backend.data.accumulator import accumulator_task
+    _accum_task = _asyncio.create_task(accumulator_task(interval_s=3600))
     yield
+    _accum_task.cancel()    # 1.0.9
     _shadow_task.cancel()   # 1.0.9
     logger.info("ancserTPX backend stopped")
 
