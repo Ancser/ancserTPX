@@ -22,7 +22,7 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.7s&englishlog=1">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.9b&notrend=1&englishlog=1&i18n=1&research=1">
 </head>
 <body>
 
@@ -32,11 +32,13 @@
         1.0.8
         </span></h1>
     <div class="header-tabs">
-        <div class="tab" data-tab="calendar">Data</div>
+        <div class="tab" data-tab="calendar">Research</div>
         <div class="tab active" data-tab="backtest">Backtest</div>
         <div class="tab" data-tab="live">Live</div>
     </div>
     <div class="header-right">
+        <!-- 1.0.9: EN / 繁中 UI language switch -->
+        <button type="button" id="lang-toggle" class="lang-toggle" onclick="toggleLanguage()" title="Switch UI language">中</button>
         <div class="account-switcher">
             <span class="account-badge" id="account-badge">--</span>
         </div>
@@ -129,8 +131,7 @@
                 <div class="form-group fx1">
                     <label>MODEL</label>
                     <select id="strategy-bt" onchange="onStrategyChange('bt')">
-                        <option value="trend" selected>TREND</option>
-                        <option value="fade">DAY ZONE 前日VA回歸</option><!-- 1.0.8 -->
+                                                <option value="fade" selected>DAY ZONE Prev-Day VA Revert</option><!-- 1.0.9: TREND 已移除,DAY ZONE 成為預設 -->
                         <option value="sigma">DISTRIBUTION Rolling Fade</option>
                         <option value="pmo">PMO EMAPMO</option>
                         <option value="factor">FACTOR (EMAPMO / KDJMA / MREV)</option>
@@ -143,11 +144,11 @@
                 <input type="hidden" id="conf-base-bt" value="1">
                 <input type="hidden" id="conf-breakout-bt" value="0">
                 <div class="form-group">
-                    <label>MODEL <span class="lbl-hint">(版本庫 · 選擇即啟用)</span></label>
+                    <label>MODEL <span class="lbl-hint">(library · select = active)</span></label>
                     <select id="conf-model-bt" onchange="onModelSelect('bt')"><option value="">models loading…</option></select>
                 </div>
                 <div class="action-row">
-                    <button class="btn btn-outline btn-mini" onclick="retrainModel('bt')" title="用選定參數重新訓練此模型">RETRAIN</button>
+                    <button class="btn btn-outline btn-mini" onclick="retrainModel('bt')" title="Retrain this model with the selected params">RETRAIN</button>
                 </div>
                 <div class="form-row">
                     <div class="form-group fx1">
@@ -163,8 +164,8 @@
                     <div class="form-group fx1">
                         <label>EV FLOOR</label>
                         <select id="conf-evfloor-bt" onchange="updateMlParamSummary('bt')">
-                            <option value="" selected>OFF (用勝率門檻)</option>
-                            <option value="0">≥0 (所有正期望值)</option>
+                            <option value="" selected>OFF (use win-rate gate)</option>
+                            <option value="0">≥0 (all positive EV)</option>
                             <option value="0.1">≥0.10</option>
                             <option value="0.2">≥0.20</option>
                             <option value="0.3">≥0.30</option>
@@ -187,7 +188,7 @@
                 </div>
                 <div class="form-row">
                     <div class="form-group fx1">
-                        <label>RR <span class="lbl-hint">(固定 1–6 · 支援 0.25)</span></label>
+                        <label>RR <span class="lbl-hint">(fixed 1–6 · 0.25 step)</span></label>
                         <div class="flex-6">
                             <input type="hidden" id="conf-rrmode-bt" value="fixed">
                             <select id="conf-rr-bt" class="fx13" onchange="updateMlParamSummary('bt')">
@@ -272,7 +273,7 @@
                 <div class="panel-title mt14">MODEL SETTINGS</div>
                 <div class="form-row" id="entry-trigger-row-bt">
                     <div class="form-group fx1">
-                        <label>ENTRY TRIGGER <span class="lbl-hint">(底層模型決定,不可改)</span></label>
+                        <label>ENTRY TRIGGER <span class="lbl-hint">(fixed by model)</span></label>
                         <input type="text" id="sl-model-display-bt" readonly value="TREND: completed candle + model confirmation" class="input-ro-cyan">
                         <select id="entry-mode-bt" disabled style="display:none;" title="Entry type is fixed by each model implementation.">
                             <option value="market" selected>MARKET</option>
@@ -289,8 +290,8 @@
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="1h" onchange="onTfSelectionChange('bt')"> 1h</label>
                             <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-bt" value="4h" onchange="onTfSelectionChange('bt')"> 4h</label>
                             <!-- 1.0.8: 0.15.5 式整段 session 生長區間,與其他 TF 互斥 -->
-                            <label class="tf-chk" title="整段 session 生長區間 (0.15.5) — 與其他 TF 互斥"><input type="checkbox" class="overlap-tf-chk-bt" value="session" onchange="onTfSelectionChange('bt')"> SESSION</label>
-                            <label class="tf-chk" id="tf-day-chip-bt" style="display:none;" title="DAY ZONE 前日VA回歸 — 固定使用前一整個交易日"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
+                            <label class="tf-chk" title="Whole-session growing range (0.15.5) — exclusive with other TFs"><input type="checkbox" class="overlap-tf-chk-bt" value="session" onchange="onTfSelectionChange('bt')"> SESSION</label>
+                            <label class="tf-chk" id="tf-day-chip-bt" style="display:none;" title="DAY ZONE Prev-Day VA Revert — always uses the previous full trade day"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
                         </div>
                     </div>
                 </div>
@@ -327,18 +328,18 @@
                                 <!-- 1.0.9: 執行/出場參數群組在上(TP → SL 模型 → RR → TRAIL 相鄰),
                      封鎖型 risk gate(日虧斷路器 / PREV-RV / DAY ZONE 模式)移到下方 -->
                 <div class="form-group" id="fade-entry-mode-row-bt" style="display:none;">
-                    <label>DAY ZONE 進場模式</label>
+                    <label>DAY ZONE ENTRY MODE</label>
                     <select id="fade-entry-mode-bt" onchange="updateStrategyParamVisibility('bt')">
-                        <option value="limit" selected>LIMIT 直接掛 VAL(最穩)</option>
-                        <option value="rejection">REJECTION 掃回後市價</option>
-                        <option value="or15">OR15 開盤假突破(雙向·市價)</option>
+                        <option value="limit" selected>LIMIT resting at VAL (safest)</option>
+                        <option value="rejection">REJECTION sweep-back market</option>
+                        <option value="or15">OR15 open fake-break (2-way market)</option>
                     </select>
                 </div>
                 <div id="factor-params-bt" style="display:none;">
                     <div class="form-row">
                         <div class="form-group fx1">
                             <label>FACTOR FAMILY</label>
-                            <select id="factor-family-bt">
+                            <select id="factor-family-bt" onchange="syncEmapmoThresholdRow('bt')">
                                 <option value="emapmo" selected>EMAPMO</option>
                                 <option value="icefishball">KDJMA</option>
                                 <option value="momentum_reversion">MREV</option>
@@ -368,6 +369,22 @@
                                 <option value="off" selected>OFF</option>
                                 <option value="outside">OUTSIDE VA80</option>
                             </select>
+                        </div>
+                    </div>
+                    <!-- 1.0.9: EMAPMO 進場門檻滑桿(只有 EMAPMO 家族看得到)。
+                         PMO 由百分比 ROC 疊 EMA 而來,門檻是寫死的絕對值,
+                         所以不同商品/不同波動環境需要不同鬆緊度。
+                         1.00 = 原始 -0.100;數值越小門檻越鬆、訊號越多。 -->
+                    <div class="form-group emapmo-th-row" id="emapmo-th-row-bt">
+                        <label>
+                            EMAPMO 門檻 <span class="lbl-hint">(SIG / early)</span>
+                            <span id="emapmo-th-bt-val" class="emapmo-th-val">-0.100</span>
+                        </label>
+                        <input type="range" id="emapmo-th-bt" class="emapmo-th-slider"
+                               min="0.50" max="1.20" step="0.01" value="1.00"
+                               oninput="onEmapmoThresholdChange('bt')">
+                        <div class="emapmo-th-scale">
+                            <span>-0.050 鬆</span><span>-0.100 原始</span><span>-0.120 緊</span>
                         </div>
                     </div>
                     <div class="form-row">
@@ -449,7 +466,7 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>FULL LOSS LOCK <span class="lbl-hint">(僅程序交易；當日虧 N 單停新單,0=OFF)</span></label>
+                    <label>FULL LOSS LOCK <span class="lbl-hint">(bot only · N daily losses stop new orders, 0=OFF)</span></label>
                     <select id="tr-daily-stop-bt">
                         <option value="0" selected>OFF</option>
                         <option value="1">1</option><option value="2">2</option>
@@ -458,7 +475,7 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>FULL WIN LOCK <span class="lbl-hint">(當日贏 N 單落袋停手,0=OFF)</span></label>
+                    <label>FULL WIN LOCK <span class="lbl-hint">(bank N daily wins then stop, 0=OFF)</span></label>
                     <select id="tr-daily-win-stop-bt">
                         <option value="0" selected>OFF</option>
                         <option value="1">1</option><option value="2">2</option>
@@ -467,12 +484,12 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>HIGH VOLATILITY LOCK <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
+                    <label>HIGH VOLATILITY LOCK <span class="lbl-hint">(prev-day high vol pauses today, 0=OFF)</span></label>
                     <select id="tr-prev-rv-gate-bt">
                         <option value="0" selected>OFF</option>
-                        <option value="10">近10日</option>
-                        <option value="15">近15日</option>
-                        <option value="20">近20日</option>
+                        <option value="10">last 10d</option>
+                        <option value="15">last 15d</option>
+                        <option value="20">last 20d</option>
                     </select>
                 </div>
                 <div class="form-row">
@@ -571,8 +588,7 @@
                     <div class="form-group fx1">
                         <label>MODEL</label>
                         <select id="strategy-live" onchange="onStrategyChange('live')">
-                            <option value="trend" selected>TREND</option>
-                            <option value="fade">DAY ZONE 前日VA回歸</option><!-- 1.0.8 -->
+                                                        <option value="fade" selected>DAY ZONE Prev-Day VA Revert</option><!-- 1.0.9: TREND 已移除,DAY ZONE 成為預設 -->
                             <option value="sigma">DISTRIBUTION Rolling Fade</option>
                             <option value="pmo">PMO EMAPMO</option>
                             <option value="factor">FACTOR (EMAPMO / KDJMA / MREV)</option>
@@ -585,11 +601,11 @@
                     <input type="hidden" id="conf-base-live" value="1">
                     <input type="hidden" id="conf-breakout-live" value="0">
                     <div class="form-group">
-                        <label>MODEL <span class="lbl-hint">(版本庫 · 選擇即啟用)</span></label>
+                        <label>MODEL <span class="lbl-hint">(library · select = active)</span></label>
                         <select id="conf-model-live" onchange="onModelSelect('live')"><option value="">models loading…</option></select>
                     </div>
                     <div class="action-row">
-                        <button class="btn btn-outline btn-mini" onclick="retrainModel('live')" title="用選定參數重新訓練此模型">RETRAIN</button>
+                        <button class="btn btn-outline btn-mini" onclick="retrainModel('live')" title="Retrain this model with the selected params">RETRAIN</button>
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
@@ -605,8 +621,8 @@
                         <div class="form-group fx1">
                             <label>EV FLOOR</label>
                             <select id="conf-evfloor-live" onchange="updateMlParamSummary('live')">
-                                <option value="" selected>OFF (用勝率門檻)</option>
-                                <option value="0">≥0 (所有正期望值)</option>
+                                <option value="" selected>OFF (use win-rate gate)</option>
+                                <option value="0">≥0 (all positive EV)</option>
                                 <option value="0.1">≥0.10</option>
                                 <option value="0.2">≥0.20</option>
                                 <option value="0.3">≥0.30</option>
@@ -629,7 +645,7 @@
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>RR <span class="lbl-hint">(固定 1–6 · 支援 0.25)</span></label>
+                            <label>RR <span class="lbl-hint">(fixed 1–6 · 0.25 step)</span></label>
                             <div class="flex-6">
                                 <input type="hidden" id="conf-rrmode-live" value="fixed">
                                 <select id="conf-rr-live" class="fx13" onchange="updateMlParamSummary('live')">
@@ -714,7 +730,7 @@
                     <div class="panel-title mt14">MODEL SETTINGS</div>
                     <div class="form-row" id="entry-trigger-row-live">
                         <div class="form-group fx1">
-                            <label>ENTRY TRIGGER <span class="lbl-hint">(底層模型決定,不可改)</span></label>
+                            <label>ENTRY TRIGGER <span class="lbl-hint">(fixed by model)</span></label>
                             <input type="text" id="sl-model-display-live" readonly value="TREND: completed candle + model confirmation" class="input-ro-cyan">
                             <select id="entry-mode-live" disabled style="display:none;" title="Entry type is fixed by each model implementation.">
                                 <option value="market" selected>MARKET</option>
@@ -731,8 +747,8 @@
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="1h" onchange="onTfSelectionChange('live')"> 1h</label>
                                 <label class="tf-chk"><input type="checkbox" class="overlap-tf-chk-live" value="4h" onchange="onTfSelectionChange('live')"> 4h</label>
                                 <!-- 1.0.8: 0.15.5 式整段 session 生長區間,與其他 TF 互斥 -->
-                                <label class="tf-chk" title="整段 session 生長區間 (0.15.5) — 與其他 TF 互斥"><input type="checkbox" class="overlap-tf-chk-live" value="session" onchange="onTfSelectionChange('live')"> SESSION</label>
-                            <label class="tf-chk" id="tf-day-chip-live" style="display:none;" title="DAY ZONE 前日VA回歸 — 固定使用前一整個交易日"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
+                                <label class="tf-chk" title="Whole-session growing range (0.15.5) — exclusive with other TFs"><input type="checkbox" class="overlap-tf-chk-live" value="session" onchange="onTfSelectionChange('live')"> SESSION</label>
+                            <label class="tf-chk" id="tf-day-chip-live" style="display:none;" title="DAY ZONE Prev-Day VA Revert — always uses the previous full trade day"><input type="checkbox" value="day" checked disabled> DAY</label><!-- 1.0.8 fade -->
                             </div>
                     </div>
                 </div>
@@ -769,18 +785,18 @@
                                     <!-- 1.0.9: 執行/出場參數群組在上(TP → SL 模型 → RR → TRAIL 相鄰),
                      封鎖型 risk gate(日虧斷路器 / PREV-RV / DAY ZONE 模式)移到下方 -->
                 <div class="form-group" id="fade-entry-mode-row-live" style="display:none;">
-                    <label>DAY ZONE 進場模式</label>
+                    <label>DAY ZONE ENTRY MODE</label>
                     <select id="fade-entry-mode-live" onchange="updateStrategyParamVisibility('live')">
-                        <option value="limit" selected>LIMIT 直接掛 VAL(最穩)</option>
-                        <option value="rejection">REJECTION 掃回後市價</option>
-                        <option value="or15">OR15 開盤假突破(雙向·市價)</option>
+                        <option value="limit" selected>LIMIT resting at VAL (safest)</option>
+                        <option value="rejection">REJECTION sweep-back market</option>
+                        <option value="or15">OR15 open fake-break (2-way market)</option>
                     </select>
                 </div>
                 <div id="factor-params-live" style="display:none;">
                     <div class="form-row">
                         <div class="form-group fx1">
                             <label>FACTOR FAMILY</label>
-                            <select id="factor-family-live">
+                            <select id="factor-family-live" onchange="syncEmapmoThresholdRow('live')">
                                 <option value="emapmo" selected>EMAPMO</option>
                                 <option value="icefishball">KDJMA</option>
                                 <option value="momentum_reversion">MREV</option>
@@ -810,6 +826,22 @@
                                 <option value="off" selected>OFF</option>
                                 <option value="outside">OUTSIDE VA80</option>
                             </select>
+                        </div>
+                    </div>
+                    <!-- 1.0.9: EMAPMO 進場門檻滑桿(只有 EMAPMO 家族看得到)。
+                         PMO 由百分比 ROC 疊 EMA 而來,門檻是寫死的絕對值,
+                         所以不同商品/不同波動環境需要不同鬆緊度。
+                         1.00 = 原始 -0.100;數值越小門檻越鬆、訊號越多。 -->
+                    <div class="form-group emapmo-th-row" id="emapmo-th-row-live">
+                        <label>
+                            EMAPMO 門檻 <span class="lbl-hint">(SIG / early)</span>
+                            <span id="emapmo-th-live-val" class="emapmo-th-val">-0.100</span>
+                        </label>
+                        <input type="range" id="emapmo-th-live" class="emapmo-th-slider"
+                               min="0.50" max="1.20" step="0.01" value="1.00"
+                               oninput="onEmapmoThresholdChange('live')">
+                        <div class="emapmo-th-scale">
+                            <span>-0.050 鬆</span><span>-0.100 原始</span><span>-0.120 緊</span>
                         </div>
                     </div>
                     <div class="form-row">
@@ -891,7 +923,7 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>FULL LOSS LOCK <span class="lbl-hint">(僅程序交易；當日虧 N 單停新單,0=OFF)</span></label>
+                    <label>FULL LOSS LOCK <span class="lbl-hint">(bot only · N daily losses stop new orders, 0=OFF)</span></label>
                     <select id="tr-daily-stop-live">
                         <option value="0" selected>OFF</option>
                         <option value="1">1</option><option value="2">2</option>
@@ -900,7 +932,7 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>FULL WIN LOCK <span class="lbl-hint">(當日贏 N 單落袋停手,0=OFF)</span></label>
+                    <label>FULL WIN LOCK <span class="lbl-hint">(bank N daily wins then stop, 0=OFF)</span></label>
                     <select id="tr-daily-win-stop-live">
                         <option value="0" selected>OFF</option>
                         <option value="1">1</option><option value="2">2</option>
@@ -909,12 +941,12 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>HIGH VOLATILITY LOCK <span class="lbl-hint">(前一日高波動→今日停手,0=OFF)</span></label>
+                    <label>HIGH VOLATILITY LOCK <span class="lbl-hint">(prev-day high vol pauses today, 0=OFF)</span></label>
                     <select id="tr-prev-rv-gate-live">
                         <option value="0" selected>OFF</option>
-                        <option value="10">近10日</option>
-                        <option value="15">近15日</option>
-                        <option value="20">近20日</option>
+                        <option value="10">last 10d</option>
+                        <option value="15">last 15d</option>
+                        <option value="20">last 20d</option>
                     </select>
                 </div>
                     <div class="form-row">
@@ -1072,9 +1104,9 @@
                 <!-- 1.0.9: SWEEP 結果(全策略,依 PF 排序)+ 每列 + 存成結構化 preset -->
                 <div id="btab-presets" class="hidden">
                     <div style="display:flex;align-items:center;gap:12px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
-                        <span style="font-size:11px;color:var(--amber);font-weight:600;letter-spacing:0.5px;">SWEEP 結果 · 全策略 · 依 PF 排序</span>
-                        <label style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="sweep-filter-acc" onchange="renderSweepTable()"> 只顯示 ACC ★ 通過</label>
-                        <span id="sweep-meta" style="font-size:10px;color:var(--text3);">尚無結果 — 用側欄 <b>SWEEP</b>(約 10–15 分鐘)。</span>
+                        <span style="font-size:11px;color:var(--amber);font-weight:600;letter-spacing:0.5px;">SWEEP RESULTS · ALL MODELS · SORTED BY PF</span>
+                        <label style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="sweep-filter-acc" onchange="renderSweepTable()"> ACC ★ pass only</label>
+                        <span id="sweep-meta" style="font-size:10px;color:var(--text3);">No results yet — run sidebar <b>SWEEP</b> (~10–15 min).</span>
                     </div>
                     <div id="sweep-results-wrap" class="trade-table-wrap"></div>
                 </div>
@@ -1188,19 +1220,21 @@
         </div>
         <div id="order-compare-cards" class="order-compare-cards"></div>
     </div>
+    <!-- 1.0.9: RESEARCH robustness — 取代舊 Hunter/Sweep/Liquidity 摘要。
+         回測完成後在此顯示 Monte Carlo / Walk-Forward / Slippage 注入分析。 -->
     <div id="institution-panel" class="institution-panel">
         <div class="institution-head">
             <div>
                 <div class="institution-kicker">RESEARCH</div>
-                <div class="institution-title">Hunter / Sweep / Liquidity</div>
+                <div class="institution-title">Robustness — Monte Carlo · Walk-Forward · Slippage</div>
             </div>
-            <button class="cal-todaybtn" onclick="loadInstitutionResearch(true)">Refresh</button>
+            <button class="cal-todaybtn" onclick="renderResearchRobustness(true)">Refresh</button>
         </div>
-        <div id="institution-status" class="institution-status">Loading research summary...</div>
-        <div id="institution-content" class="institution-content"></div>
+        <div id="robustness-status" class="institution-status">Run a backtest first — analysis uses the latest backtest trades.</div>
+        <div id="robustness-content" class="institution-content"></div>
     </div>
 </div>
 
-    <script src="/static/ancserTPX.js?v=1.0.7o&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.9b&notrend=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=1"></script>
 </body>
 </html>

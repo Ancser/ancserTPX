@@ -318,7 +318,8 @@ class StrategyParams:
     Supports the legacy trend strategy and the explainable confluence scorer.
     Value Area is locked to 80% so live and backtest use the same zone width.
     """
-    strategy: str = "trend"
+    # 1.0.9: TREND 已移除(288 變體 0 通過);預設改為 factor
+    strategy: str = "factor"
     tp_ticks: int = 200                  # 50-200 tick
     sl_ticks: int = 50                   # 50-200 tick
     trail_sl_ticks: int = 10            # 0..TP ticks from entry after trail triggers
@@ -403,6 +404,11 @@ class StrategyParams:
     factor_max_hold_bars: int = 0        # 1.0.9: HOLD 5m system removed → SL/TP-only exits
     factor_max_trades_per_day: int = 3
     factor_warmup_bars: int = 150
+    # 1.0.9: PMO 進場門檻的波動縮放(1.0 = MNQ 原始行為;MES ≈ 0.55)
+    factor_pmo_threshold_scale: float = 1.0
+    # 1.0.9: 分開鬆綁 normal(比 PMO)/ early(比 SIG)門檻;0 = 沿用上面那個
+    factor_pmo_normal_scale: float = 0.0
+    factor_pmo_early_scale: float = 0.0
     # --- v1.0.6: explainable multi-timeframe confluence (ML scorer) ---
     # Activated when strategy == "confluence". The live engine then runs the
     # SAME ConfluenceBacktester logic (per-TF detectors + trained scorer) so
@@ -418,6 +424,15 @@ class StrategyParams:
     conf_use_scorer: bool = True           # True=trained JSON, False=heuristic prior
     conf_enable_breakout: bool = False     # include breakout-retrace candidate (False=momentum+reversion only)
     conf_max_risk_ticks: Optional[int] = None  # optional risk-width cap; None/0 = off
+    # 1.0.9: 全策略通用的單筆風險寬度上限(ticks)。None/0 = 不限(既有行為)。
+    # confluence 仍優先用 conf_max_risk_ticks;其餘策略吃這個。
+    max_risk_ticks: Optional[int] = None
+    # 1.0.9: TP 寬度上限(ticks,單口)—— prop firm 的 consistency rule:
+    # 單日獲利佔比過高會推高通關/出金門檻。
+    max_profit_ticks: Optional[int] = None
+    # 超過上限時的處理:clamp = 等比縮放 SL/TP(維持 RR)照樣進場;
+    # block = 直接跳過該訊號。
+    risk_cap_mode: str = "clamp"
     conf_sl_reference_tf: str = "largest"  # "largest" original behavior, "smallest" tightens SL/TP basis
     conf_allowed_sessions: Optional[List[str]] = field(default_factory=lambda: ["ASIA", "PRE"])
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---

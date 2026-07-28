@@ -1,0 +1,9 @@
+{
+  "frozen_through": null,
+  "segments": [],
+  "total_bars": 58647,
+  "first_ts": "2026-05-27T01:30:00+00:00",
+  "last_ts": "2026-07-24T20:59:00+00:00",
+  "updated_at": "2026-07-26T01:29:07.159109+00:00",
+  "source": "mes_deep_fetch stitched front-month"
+}

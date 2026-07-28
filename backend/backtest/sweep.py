@@ -26,10 +26,6 @@ from backend.strategy.consolidation import build_zone_detector
 logger = logging.getLogger(__name__)
 
 # 預設 grid(與 1.0.8 研究掃描一致):
-SWEEP_VA = (0.70, 0.80)
-SWEEP_EXITS = (("tp", 2), ("tp", 3), ("tp", 4), ("tp", 5), ("tp", 6), ("ladder", 4))
-SWEEP_CONFIRM = (2, 3, 4, 5)
-SWEEP_STOP = (0, 3, 4)
 DAY_ZONE_ENTRY = ("limit", "rejection")
 DAY_ZONE_SL = (80, 120, 160)
 DAY_ZONE_TP_FRAC = (0.50, 0.75, 1.00)
@@ -52,53 +48,68 @@ def _factor_family_label(family: str) -> str:
     return "EMAPMO"
 
 
+# 1.0.9: 網格座標改成 (family, side, pmo_mode, sl_rule, sl_value, rr) —— TP 不再
+# 是獨立的絕對值。原因:UI 送出的參數契約是(frontend/static/ancserTPX.js:1197)
+#     factor_tp_rule  = factor_sl_rule        # TP 規則永遠鏡射 SL
+#     factor_tp_value = factor_sl_value * rr  # rr ∈ 1..6
+# 舊網格把 tp_value 寫死成絕對 ATR 倍數且上限只到 4.0,於是 BEST preset
+# (atr_blend × SL2.5 × rr3 → TP7.5)整個掉在搜索空間之外 —— 實測 BEST PF 4.10,
+# 而舊網格冠軍(同訊號但 TP2)只有 2.95。用 rr 當座標後,每個變體都能原樣存成
+# preset,掃得到的一定調得出來。
+#
+# UI 的合法值(_factorRiskOptionList):
+#     atr / atr_blend → sl_value ∈ {1, 1.5, 2, 2.5, 3}
+#     range15_pct     → sl_value ∈ {0.10, 0.15, 0.20, 0.50, 0.75}
+# 這裡是 app 內建 sweep,為了維持約 10–15 分鐘的執行時間只取重點切片;
+# 完整 1890 格窮舉見 scripts/emapmo_full_sweep.py。
 FACTOR_GRID = (
-    # EMAPMO is the only new factor that showed an initial PF>2 candidate in
-    # research, so it gets the widest PMO-mode sweep.
-    ("emapmo", "all", "normal", "atr", 1.5, 2.0, 24),
-    ("emapmo", "all", "normal", "atr_blend", 1.5, 2.0, 24),
-    ("emapmo", "all", "normal", "atr_blend", 2.0, 2.0, 24),
-    ("emapmo", "all", "normal", "atr_blend", 2.5, 2.0, 24),
-    ("emapmo", "all", "early", "atr_blend", 1.5, 2.0, 24),
-    ("emapmo", "all", "both", "atr_blend", 1.5, 2.0, 24),
-    ("emapmo", "long_only", "normal", "atr", 1.5, 2.0, 24),
-    ("emapmo", "long_only", "normal", "atr_blend", 1.5, 2.0, 12),
-    ("emapmo", "long_only", "normal", "atr_blend", 1.5, 2.0, 24),
-    ("emapmo", "long_only", "normal", "atr_blend", 2.0, 2.0, 24),
-    ("emapmo", "long_only", "normal", "atr_blend", 2.5, 2.0, 24),
-    ("emapmo", "long_only", "normal", "atr_blend", 2.5, 4.0, 24),
-    ("emapmo", "long_only", "normal", "range15_pct", 0.5, 0.75, 24),
-    ("emapmo", "long_only", "early", "atr_blend", 1.5, 2.0, 24),
-    ("emapmo", "long_only", "early", "atr_blend", 2.5, 2.0, 24),
-    ("emapmo", "long_only", "both", "atr_blend", 1.5, 2.0, 24),
-    ("emapmo", "long_only", "both", "atr_blend", 2.5, 2.0, 24),
-    ("emapmo", "short_only", "normal", "atr", 1.5, 2.0, 24),
-    ("emapmo", "short_only", "normal", "atr_blend", 1.5, 2.0, 24),
-    ("emapmo", "short_only", "normal", "atr_blend", 2.5, 2.0, 24),
-    ("emapmo", "short_only", "early", "atr_blend", 1.5, 2.0, 24),
-    ("emapmo", "short_only", "both", "atr_blend", 1.5, 2.0, 24),
-    # Momentum-reversion and icefishball are lower-frequency / lower-confidence
-    # factors, so sweep side, volatility rule, and hold without PMO modes.
-    ("momentum_reversion", "all", "normal", "atr", 1.0, 1.5, 12),
-    ("momentum_reversion", "all", "normal", "atr_blend", 1.5, 2.0, 12),
-    ("momentum_reversion", "all", "normal", "atr_blend", 2.0, 2.0, 24),
-    ("momentum_reversion", "all", "normal", "range15_pct", 0.5, 0.75, 12),
-    ("momentum_reversion", "long_only", "normal", "atr", 1.0, 1.5, 12),
-    ("momentum_reversion", "long_only", "normal", "atr_blend", 1.5, 2.0, 12),
-    ("momentum_reversion", "long_only", "normal", "atr_blend", 2.0, 2.0, 24),
-    ("momentum_reversion", "short_only", "normal", "atr", 1.0, 1.5, 12),
-    ("momentum_reversion", "short_only", "normal", "atr_blend", 1.5, 2.0, 12),
-    ("momentum_reversion", "short_only", "normal", "atr_blend", 2.0, 2.0, 24),
-    ("icefishball", "all", "normal", "atr", 1.0, 1.5, 12),
-    ("icefishball", "all", "normal", "atr_blend", 1.5, 2.0, 12),
-    ("icefishball", "all", "normal", "atr_blend", 2.0, 2.0, 24),
-    ("icefishball", "all", "normal", "range15_pct", 0.5, 0.75, 12),
-    ("icefishball", "long_only", "normal", "atr", 1.0, 1.5, 12),
-    ("icefishball", "long_only", "normal", "atr_blend", 1.5, 2.0, 12),
-    ("icefishball", "long_only", "normal", "atr_blend", 2.0, 2.0, 24),
-    ("icefishball", "short_only", "normal", "atr", 1.0, 1.5, 12),
-    ("icefishball", "short_only", "normal", "atr_blend", 1.5, 2.0, 12),
-    ("icefishball", "short_only", "normal", "atr_blend", 2.0, 2.0, 24),
+    # EMAPMO: 唯一在研究中出現 PF>2 的因子,給最寬的 rr 掃描(含 BEST 的 rr3)。
+    ("emapmo", "all", "normal", "atr_blend", 1.5, 2),
+    ("emapmo", "all", "normal", "atr_blend", 2.5, 2),
+    ("emapmo", "all", "normal", "atr_blend", 2.5, 3),
+    ("emapmo", "all", "early", "atr_blend", 2.5, 3),
+    ("emapmo", "all", "both", "atr_blend", 2.5, 3),
+    ("emapmo", "long_only", "normal", "atr", 1.5, 2),
+    ("emapmo", "long_only", "normal", "atr", 2.5, 3),
+    ("emapmo", "long_only", "normal", "atr_blend", 1.5, 2),
+    ("emapmo", "long_only", "normal", "atr_blend", 2.0, 2),
+    ("emapmo", "long_only", "normal", "atr_blend", 2.5, 1),
+    ("emapmo", "long_only", "normal", "atr_blend", 2.5, 2),
+    ("emapmo", "long_only", "normal", "atr_blend", 2.5, 3),
+    ("emapmo", "long_only", "normal", "atr_blend", 2.5, 4),
+    ("emapmo", "long_only", "normal", "atr_blend", 2.5, 6),
+    ("emapmo", "long_only", "normal", "atr_blend", 3.0, 3),
+    ("emapmo", "long_only", "normal", "range15_pct", 0.20, 3),
+    ("emapmo", "long_only", "normal", "range15_pct", 0.50, 3),
+    ("emapmo", "long_only", "early", "atr_blend", 1.5, 2),
+    ("emapmo", "long_only", "early", "atr_blend", 2.5, 2),
+    ("emapmo", "long_only", "early", "atr_blend", 2.5, 3),   # ← BEST preset
+    ("emapmo", "long_only", "early", "atr_blend", 2.5, 4),
+    ("emapmo", "long_only", "early", "atr_blend", 3.0, 3),
+    ("emapmo", "long_only", "both", "atr_blend", 2.5, 2),
+    ("emapmo", "long_only", "both", "atr_blend", 2.5, 3),
+    ("emapmo", "short_only", "normal", "atr", 1.5, 2),
+    ("emapmo", "short_only", "normal", "atr_blend", 2.5, 2),
+    ("emapmo", "short_only", "normal", "atr_blend", 2.5, 3),
+    ("emapmo", "short_only", "early", "atr_blend", 2.5, 3),
+    ("emapmo", "short_only", "both", "atr_blend", 2.5, 3),
+    # Momentum-reversion 與 icefishball 頻率低、信心低,只掃 side / 規則 / rr。
+    ("momentum_reversion", "all", "normal", "atr", 1.0, 2),
+    ("momentum_reversion", "all", "normal", "atr_blend", 1.5, 2),
+    ("momentum_reversion", "all", "normal", "atr_blend", 2.0, 3),
+    ("momentum_reversion", "long_only", "normal", "atr", 1.0, 2),
+    ("momentum_reversion", "long_only", "normal", "atr", 1.0, 3),
+    ("momentum_reversion", "long_only", "normal", "atr_blend", 1.5, 2),
+    ("momentum_reversion", "long_only", "normal", "atr_blend", 2.0, 3),
+    ("momentum_reversion", "short_only", "normal", "atr", 1.0, 2),
+    ("momentum_reversion", "short_only", "normal", "atr_blend", 2.0, 3),
+    ("icefishball", "all", "normal", "atr", 1.0, 2),
+    ("icefishball", "all", "normal", "atr_blend", 1.5, 2),
+    ("icefishball", "all", "normal", "atr_blend", 2.0, 3),
+    ("icefishball", "long_only", "normal", "atr", 1.0, 2),
+    ("icefishball", "long_only", "normal", "atr_blend", 2.0, 3),
+    ("icefishball", "short_only", "normal", "atr", 1.0, 2),
+    ("icefishball", "short_only", "normal", "atr_blend", 2.0, 3),
 )
 
 FACTOR_SESSION_VA_GRID = (
@@ -127,41 +138,6 @@ FACTOR_SESSION_VA_GRID = (
 )
 
 
-def build_trend_zone_timeline(
-    candles: List[Candle],
-    area_timeframe: str = "15m",
-    value_area_pct: float = 0.80,
-    tick_size: float = 0.25,
-    max_recent: int = 10,
-) -> List[dict]:
-    """單 TF trend 用 zone timeline:每根 K 的 (recent zones, mature) 快照。
-
-    ClockBucket 已完成 zone 凍結不變 → 直接共享引用零拷貝;
-    參考列表只在 bucket 完成時變化。candles 必須已按時間排序
-    (timeline 模式引擎跳過內部排序,索引需對齊)。
-    """
-    det = build_zone_detector(
-        area_timeframe=area_timeframe, value_area_pct=value_area_pct,
-        tick_size=tick_size, max_recent=max_recent,
-    )
-    tl: List[dict] = []
-    last_n = -1
-    cur: List = []
-    for c in candles:
-        det.update(c)
-        n = det.completed_zone_count
-        if n != last_n:
-            last_n = n
-            cur = list(det.get_recent_zones())
-        tl.append({
-            "active": cur[-1] if cur else None,
-            "mature": bool(cur),
-            "recent": cur,
-        })
-    return tl
-
-
-# 1.0.9: preset 快照允許鍵 — `+` 存 preset 時逐位重現 sweep 條件(不吃表單狀態)
 _PRESET_SNAPSHOT_KEYS = (
     "strategy", "contract_id", "contract_size", "candle_seconds",
     "value_area_pct", "area_timeframe", "method", "tf_combo", "tr_overlap_trade_tf",
@@ -332,65 +308,8 @@ def _scaled_stats(ordered_pnls: List[float], gross_mult: float,
     }
 
 
-def run_trend_sweep(
-    candles: List[Candle],
-    base_params: StrategyParams,
-    progress_cb: Optional[Callable[[int, int, str], None]] = None,
-) -> List[dict]:
-    """跑完整 sweep grid。candles 必須已排序。回傳結果列表(未排序)。
-
-    base_params 提供固定項(合約、SL、trail、sessions 等);grid 只動
-    VA / 出場模式 / RR / confirm / 斷路器。
-    """
-    grid = [
-        (va, exit_mode, rr, c_bars, stop)
-        for va in SWEEP_VA
-        for (exit_mode, rr) in SWEEP_EXITS
-        for c_bars in SWEEP_CONFIRM
-        for stop in SWEEP_STOP
-    ]
-    total = len(grid) + len(SWEEP_VA)  # +timeline builds
-    done = 0
-    results: List[dict] = []
-    timelines = {}
-
-    for va in SWEEP_VA:
-        if progress_cb:
-            progress_cb(done, total, f"building zone timeline VA{int(va * 100)}")
-        timelines[va] = build_trend_zone_timeline(candles, "15m", va)
-        done += 1
-
-    for va, exit_mode, rr, c_bars, stop in grid:
-        p = copy.deepcopy(base_params)
-        p.strategy = "trend"
-        p.value_area_pct = va
-        p.area_timeframe = "15m"
-        p.method = "single"
-        p.tf_combo = []
-        p.tr_exit_mode = exit_mode
-        p.rr_ratio = int(rr)
-        p.breakout_confirm_bars = int(c_bars)
-        p.tr_daily_loss_stop = int(stop)
-        r = _run_one(p, candles, timelines[va])
-        r["params"] = {
-            "value_area_pct": va,
-            "tr_exit_mode": exit_mode,
-            "rr_ratio": int(rr),
-            "breakout_confirm_bars": int(c_bars),
-            "tr_daily_loss_stop": int(stop),
-        }
-        r["label"] = (
-            f"VA{int(va * 100)} "
-            f"{'ladder' if exit_mode == 'ladder' else 'RR' + str(rr)} "
-            f"C{c_bars} S{stop}"
-        )
-        results.append(r)
-        done += 1
-        if progress_cb and (done % 4 == 0 or done == total):
-            progress_cb(done, total, r["label"])
-
-    _annotate_plateau_and_acceptance(results)
-    return results
+# 1.0.9: run_trend_sweep / TREND_GRID / build_trend_zone_timeline 已移除 —
+# TREND 288 個變體 0 通過 MC+WF+PF>2。見 docs/1.0.9_DELETE_LIST.md。
 
 
 def run_day_zone_sweep(
@@ -524,7 +443,9 @@ def run_factor_sweep(
     total = len(FACTOR_GRID) + len(FACTOR_SESSION_VA_GRID)
     results: List[dict] = []
 
-    for i, (family, side, pmo_mode, rule, sl_value, tp_value, hold_bars) in enumerate(FACTOR_GRID, start=1):
+    for i, (family, side, pmo_mode, rule, sl_value, rr) in enumerate(FACTOR_GRID, start=1):
+        # UI 契約:TP 規則鏡射 SL 規則,TP 值 = SL 值 x rr(見 FACTOR_GRID 註解)
+        tp_value = float(sl_value) * float(rr)
         p = copy.deepcopy(base_params)
         p.strategy = "factor"
         p.area_timeframe = "15m"
@@ -534,6 +455,7 @@ def run_factor_sweep(
         p.tr_one_trade_per_session = False
         p.one_trade_per_session_direction = False
         p.tr_exit_mode = "tp"
+        p.rr_ratio = int(rr)
         p.tr_daily_loss_stop = 1
         p.trail_enabled = False
         p.tr_trail_enabled = False
@@ -556,6 +478,7 @@ def run_factor_sweep(
             "tr_one_trade_per_session": False,
             "one_trade_per_session_direction": False,
             "tr_exit_mode": "tp",
+            "rr_ratio": int(rr),
             "tr_daily_loss_stop": 1,
             "factor_timeframe_minutes": 5,
             "factor_signal_family": str(family),
@@ -572,7 +495,7 @@ def run_factor_sweep(
         }
         r["label"] = (
             f"{_factor_family_label(str(family))} {side} {pmo_mode} {rule} "
-            f"SL{float(sl_value):g} TP{float(tp_value):g} HOFF"
+            f"SL{float(sl_value):g} RR{int(rr)}(TP{tp_value:g}) HOFF"
         )
         results.append(r)
         if progress_cb and (i % 4 == 0 or i == total):
@@ -652,14 +575,13 @@ def run_model_sweep(
     want = {m.strip().upper() for m in (models or []) if str(m).strip()} or None
     def _on(name):
         return want is None or name in want
-    trend_total = len(SWEEP_VA) + len(SWEEP_VA) * len(SWEEP_EXITS) * len(SWEEP_CONFIRM) * len(SWEEP_STOP)
     day_total = len(DAY_ZONE_ENTRY) * len(DAY_ZONE_SL) * len(DAY_ZONE_TP_FRAC) * len(DAY_ZONE_STOP) + len(DAY_ZONE_STOP)
     dist_total = (
         len(DISTRIBUTION_WINDOWS) * len(DISTRIBUTION_METHODS) * len(DISTRIBUTION_ENTRY)
         * len(DISTRIBUTION_ACCEPT) * len(DISTRIBUTION_STOP_SPAN) * len(DISTRIBUTION_TARGET)
     )
     factor_total = len(FACTOR_GRID) + len(FACTOR_SESSION_VA_GRID)
-    grand_total = trend_total + day_total + dist_total + factor_total
+    grand_total = day_total + dist_total + factor_total
     done_offset = 0
 
     def _wrap(model: str, offset: int):
@@ -670,10 +592,6 @@ def run_model_sweep(
 
     import gc
     out: List[dict] = []
-    if _on("TREND"):
-        out.extend(run_trend_sweep(candles, base_params, _wrap("TREND", done_offset)))
-    done_offset += trend_total
-    gc.collect()   # 釋放 trend zone timeline(峰值記憶體)
     if _on("DAY ZONE"):
         out.extend(run_day_zone_sweep(candles, base_params, _wrap("DAY ZONE", done_offset)))
     done_offset += day_total

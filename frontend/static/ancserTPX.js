@@ -73,7 +73,8 @@ function refreshContractOptions() {
 document.addEventListener('DOMContentLoaded', refreshContractOptions);
 
 const DEFAULT_STRATEGY_PARAMS = {
-    strategy: 'trend',
+    // 1.0.9: TREND 已移除,預設策略改為 factor
+    strategy: 'factor',
     tp_ticks: 200,
     sl_ticks: 50,
     trail_sl_ticks: 10,
@@ -517,7 +518,9 @@ function normalizeStrategyName(value) {
     if (v === 'fade') return 'fade';   // 1.0.8: DAY ZONE 前日VA回歸
     if (v === 'factor') return 'factor';
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 策略映射
-    return 'trend';
+    // 1.0.9: TREND 已移除 —— 舊 preset 的 'trend' 一律落到 factor,
+    // 否則 _setChoice 找不到選項會自己補一個死選項回下拉選單。
+    return 'factor';
 }
 
 function _setStrategySelect(mode, strategy) {
@@ -645,6 +648,7 @@ function updateStrategyParamVisibility(mode) {
     // 1.0.9: fade 進場模式列僅 fade 顯示;唯讀 SL 模型顯示依策略/fade 子模式更新
     show('fade-entry-mode-row-' + mode, isFade);
     show('factor-params-' + mode, isFactor);
+    syncEmapmoThresholdRow(mode);   // 1.0.9: 門檻滑桿只在 EMAPMO 顯示
     let slText;
     if (isFade) {
         const fem = _mlSelectValue('fade-entry-mode-' + mode, 'limit');
@@ -1194,6 +1198,9 @@ function collectStrategyParams(mode) {
         factor_side_mode: _factorSide(_paramVal('factor-side', 'factor_side_mode', 'long_only')),
         factor_pmo_signal_mode: ['normal', 'early', 'both'].includes(String(_paramVal('factor-pmo-mode', 'factor_pmo_signal_mode', 'early'))) ? String(_paramVal('factor-pmo-mode', 'factor_pmo_signal_mode', 'early')) : 'early',
         factor_session_va_filter: factorSessionVaFilter,
+        // 1.0.9: EMAPMO 進場門檻滑桿 → early(SIG)門檻的縮放係數。
+        // 1.0 = 原始 -0.100;非 EMAPMO 家族送 1.0(引擎端等同不套用)。
+        factor_pmo_early_scale: _emapmoThresholdScale(mode),
         factor_sl_rule: factorSlRule,
         factor_tp_rule: factorSlRule,
         factor_sl_value: factorSlValue,
@@ -1326,6 +1333,7 @@ function applyStrategyParams(mode, params) {
     _setChoice('factor-side-' + mode, _factorSideValue(p.factor_side_mode));
     _setChoice('factor-pmo-mode-' + mode, _factorPmoValue(p.factor_pmo_signal_mode));
     _setChoice('factor-va-filter-' + mode, String(p.factor_session_va_filter || 'off') === 'outside' ? 'outside' : 'off');
+    _setEmapmoThreshold(mode, p.factor_pmo_early_scale);
     _setChoice('factor-sl-rule-' + mode, _factorRuleValue(p.factor_sl_rule, 'atr_blend'));
     _setChoice('factor-sl-value-' + mode, String(p.factor_sl_value != null ? p.factor_sl_value : 2.5));
     _setChoice('factor-hold-' + mode, '0');   // 1.0.9: HOLD 5m system removed → always OFF (SL/TP-only)
@@ -2009,15 +2017,13 @@ function _fmtModelLabel(m) {
     return `${active}${day} · ${trainer} · RR${Number(m.rr).toFixed(0)}${desc}${oos}`;
 }
 
+// 1.0.9: confluence/ML 已整批移除(後端模組、路由、模型檔都刪了),
+// 這裡保留空殼是為了讓其餘啟動流程不必改動 —— 呼叫端仍會叫它,但不再
+// 打已不存在的 /confluence/models(否則每次載入都會噴 404)。
+// 見 docs/1.0.9_DELETE_LIST.md。
 async function loadModelRegistry() {
-    try {
-        const resp = await fetch(API + '/confluence/models');
-        if (!resp.ok) return;
-        const data = await resp.json();
-        _modelRegistry = data.models || [];
-        _activeModelName = data.active_model || '';
-        ['bt', 'live'].forEach(_populateModelSelect);
-    } catch (e) { /* registry is optional; manual model parameters still work */ }
+    _modelRegistry = [];
+    _activeModelName = '';
 }
 
 function _populateModelSelect(mode) {
@@ -2330,8 +2336,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (mainEl) mainEl.style.display = 'none';
                 if (calView) calView.classList.remove('hidden');
                 liveTopBar.style.display = 'none';
-                loadInstitutionResearch();
-                renderCalendar();
+                renderCalendar();   // 1.0.9: robustness 面板由 renderCalendar 末端刷新
                 return;
             }
             if (mainEl) mainEl.style.display = '';
@@ -5263,8 +5268,8 @@ function renderSweepTable(sortKey) {
     rows.sort((a, b) => (Number(b[k]) || 0) - (Number(a[k]) || 0));
     _sweepRenderedRows = rows;   // 1.0.9: 供 + 存 preset(index 對齊渲染順序)
     if (!rows.length) {
-        wrap.innerHTML = '<div style="color:var(--text3);padding:16px;">沒有通過 ACC ★ 的變體 — 取消勾選以看全部。</div>';
-        if (meta) meta.textContent = '0 / ' + _sweepData.results.length + ' 通過 ACC ★';
+        wrap.innerHTML = '<div style="color:var(--text3);padding:16px;">' + t('No ACC ★ pass variants — untick the filter to see all.') + '</div>';
+        if (meta) meta.textContent = '0 / ' + _sweepData.results.length + ' ' + t('pass ACC ★');
         return;
     }
 
@@ -5275,8 +5280,8 @@ function renderSweepTable(sortKey) {
             ? (' | qualified: ' + Object.keys(byModel).map(m => m + '=' + ((byModel[m] || []).length)).join(' '))
             : '';
         meta.textContent = 'sweep @ ' + created + ' UTC | ' + rows.length +
-            (onlyAcc ? ' ★通過 / ' + (_sweepData.results || []).length + ' 全部' : ' 變體') +
-            ' | 排序: ' + k + '(點欄位標題換排序)| PF first' + modelSummary;
+            (onlyAcc ? ' ' + t('★ pass') + ' / ' + (_sweepData.results || []).length + ' ' + t('all') : ' ' + t('variants')) +
+            ' | ' + t('sort') + ': ' + k + ' (' + t('click column header to change') + ') | PF first' + modelSummary;
     }
     const th = (key, label, tip) => '<th style="cursor:pointer;' +
         (key === k ? 'color:var(--amber);' : '') +
@@ -6801,12 +6806,8 @@ function renderExecuteTrades(trades) {
 function classifyZoneType(z) {
     if (!z.formed_at) return '-';
     const code = getSessionCodeFromDate(new Date(z.formed_at));
-    if (code === 'ASIA') return '亞盤';
-    if (code === 'EURO') return '歐盤';
-    if (code === 'PRE') return '盤前';
-    if (code === 'RTH') return '早盤';
-    if (code === 'AH') return '盤後';
-    return '-';
+    // 1.0.9 i18n: EN 顯示代碼,繁中經 t() 對照(亞盤/歐盤/盤前/早盤/盤後)
+    return ['ASIA', 'EURO', 'PRE', 'RTH', 'AH'].indexOf(code) >= 0 ? t(code) : '-';
 }
 
 function zpad(n) { return n < 10 ? '0'+n : n; }
@@ -6972,7 +6973,7 @@ function renderPnlCurve() {
         ctx.fillStyle = C.text2;
         ctx.font = '12px "IBM Plex Mono", monospace';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('尚無成交 — 先跑 BACKTEST 或載入 LIVE 交易', W / 2, H / 2);
+        ctx.fillText(t('No trades yet — run BACKTEST or load LIVE trades'), W / 2, H / 2);
         return;
     }
 
@@ -7348,7 +7349,12 @@ async function _calFetchLive(force) {
     }
 }
 
-let _institutionResearchLoaded = false;
+// ════════════════════════════════════════════════════════════════════════
+// RESEARCH robustness (1.0.9) — Monte Carlo · Walk-Forward · Slippage.
+// Replaces the old Hunter/Sweep/Liquidity summary. Runs entirely client-side
+// on the latest backtest trades (cache-restored results work too); live fills
+// already loaded for the Research view feed the slippage measurement.
+// ════════════════════════════════════════════════════════════════════════
 
 function _researchNum(value, digits) {
     const n = Number(value);
@@ -7362,156 +7368,250 @@ function _researchClass(value) {
     return n > 0 ? 'institution-pos' : 'institution-neg';
 }
 
-function _researchBars(rows, valueKey, labelKey, limit) {
-    const picked = (rows || []).slice(0, limit || 8);
-    const maxAbs = Math.max(1, ...picked.map(r => Math.abs(Number(r[valueKey] || 0))));
-    return picked.map(r => {
-        const v = Number(r[valueKey] || 0);
-        const w = Math.max(3, Math.min(100, Math.abs(v) / maxAbs * 100));
-        const side = v >= 0 ? 'pos' : 'neg';
-        return '<div class="institution-bar-row">'
-            + '<span>' + String(r[labelKey] || r.event || r.rule || '') + '</span>'
-            + '<div class="institution-bar"><i class="' + side + '" style="width:' + w.toFixed(1) + '%"></i></div>'
-            + '<b class="' + _researchClass(v) + '">' + _researchNum(v, 1) + '</b>'
-            + '</div>';
-    }).join('');
+const _ROB_POINT_VALUE = { MNQ: 2, NQ: 20, ENQ: 20, MES: 5, ES: 50, MGC: 10, GC: 100, ZL: 600 };
+const _ROB_TICK = 0.25;
+// Documented EMAPMO market fill 2026-07-23 14:31Z: +3.5 pts vs strategy price.
+const _ROB_SLIP_ANCHOR_TICKS = 14;
+
+function _robTickValue(trades) {
+    const sym = String((trades[0] || {}).symbol || '/MNQ').replace('/', '').toUpperCase();
+    return (_ROB_POINT_VALUE[sym] || 2) * _ROB_TICK;
 }
 
-async function loadInstitutionResearch(force) {
-    if (_institutionResearchLoaded && !force) return;
-    const status = document.getElementById('institution-status');
-    const content = document.getElementById('institution-content');
-    if (!status || !content) return;
-    status.textContent = 'Loading research summary...';
-    try {
-        const resp = await fetch(API + '/research/institution/latest');
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        if (!data.available) {
-            status.textContent = data.message || 'No research output yet.';
-            content.innerHTML = '';
-            return;
-        }
-        _institutionResearchLoaded = true;
-        status.textContent = 'Data: ' + (data.data ? data.data.bars : '?') + ' bars'
-            + ' | ' + ((data.data && data.data.first) ? data.data.first.slice(0, 10) : '?')
-            + ' → ' + ((data.data && data.data.last) ? data.data.last.slice(0, 10) : '?')
-            + ' | updated ' + String(data.created_at || '').slice(0, 16).replace('T', ' ');
-
-        const findings = (data.findings || []).slice(0, 8)
-            .map(x => '<li>' + String(x) + '</li>').join('');
-        const stats = (data.event_stats || []).slice()
-            .sort((a, b) => Math.abs(Number(b.mean_ret_30 || 0)) - Math.abs(Number(a.mean_ret_30 || 0)))
-            .slice(0, 10)
-            .map(r => '<tr>'
-                + '<td title="' + String(r.note || '') + '">' + String(r.event || '') + '</td>'
-                + '<td>' + String(r.count || 0) + '</td>'
-                + '<td class="' + _researchClass(r.mean_ret_30) + '">' + _researchNum(r.mean_ret_30, 1) + '</td>'
-                + '<td>' + _researchNum(Number(r.short_rev_30 || 0) * 100, 1) + '%</td>'
-                + '<td>' + _researchNum(Number(r.long_rev_30 || 0) * 100, 1) + '%</td>'
-                + '<td>' + _researchNum(r.mean_mfe_up_30, 0) + '</td>'
-                + '<td>' + _researchNum(r.mean_mfe_down_30, 0) + '</td>'
-                + '</tr>').join('');
-        const folds = (((data.ml || {}).folds) || []).map(r => '<tr>'
-                + '<td>F' + r.fold + '</td>'
-                + '<td>' + _researchNum(r.auc, 3) + '</td>'
-                + '<td>' + _researchNum(Number(r.base_hit || 0) * 100, 1) + '%</td>'
-                + '<td>' + _researchNum(Number(r.top_decile_hit || 0) * 100, 1) + '%</td>'
-                + '<td class="' + _researchClass(r.top_decile_ret_ticks) + '">' + _researchNum(r.top_decile_ret_ticks, 1) + '</td>'
-                + '</tr>').join('');
-        const features = (((data.ml || {}).top_features) || []).slice(0, 12)
-            .map(x => '<li>' + String(x.feature) + ' · ' + _researchNum(x.importance, 4) + '</li>').join('');
-        const ruleRows = (data.strategy_scores || []).slice(0, 12)
-            .map(r => '<tr>'
-                + '<td title="' + String(r.trigger || '') + '">' + String(r.rule || '') + '</td>'
-                + '<td>' + String(r.session || '') + '/' + String(r.filter || '') + '</td>'
-                + '<td>' + String(r.trades || 0) + '</td>'
-                + '<td class="' + _researchClass(r.pnl) + '">' + _researchNum(r.pnl, 0) + '</td>'
-                + '<td>' + _researchNum(r.max_dd, 0) + '</td>'
-                + '<td>' + _researchNum(r.profit_factor, 2) + '</td>'
-                + '<td>' + _researchNum(Number(r.win_rate || 0) * 100, 1) + '%</td>'
-                + '<td class="' + _researchClass(r.total_loss) + '">' + _researchNum(r.total_loss, 0) + '</td>'
-                + '<td>' + String(r.target_ticks || '') + '/' + String(r.stop_ticks || '') + '/' + String(r.hold_bars || '') + '</td>'
-                + '</tr>').join('');
-        const eventBiasBars = _researchBars((data.event_stats || []).slice()
-            .sort((a, b) => Math.abs(Number(b.mean_ret_30 || 0)) - Math.abs(Number(a.mean_ret_30 || 0))), 'mean_ret_30', 'event', 8);
-        const regimeRows = (data.regime_stats || []).slice()
-            .sort((a, b) => Math.abs(Number(b.mean_ret_30 || 0)) - Math.abs(Number(a.mean_ret_30 || 0)))
-            .slice(0, 14)
-            .map(r => '<tr>'
-                + '<td>' + String(r.group || '') + ':' + String(r.value || '') + '</td>'
-                + '<td>' + String(r.bars || 0) + '</td>'
-                + '<td class="' + _researchClass(r.mean_ret_30) + '">' + _researchNum(r.mean_ret_30, 1) + '</td>'
-                + '<td>' + _researchNum(r.abs_ret_30, 1) + '</td>'
-                + '<td>' + _researchNum(r.mean_range, 1) + '</td>'
-                + '<td>' + _researchNum(Number(r.sweep_rate || 0) * 100, 2) + '%</td>'
-                + '</tr>').join('');
-        const validationRows = ((((data.edge_validation || {}).validations) || []).slice(0, 10))
-            .map(r => '<tr>'
-                + '<td class="' + (r.verdict === 'FAIL' ? 'institution-neg' : (r.verdict === 'PASS' ? 'institution-pos' : '')) + '">' + String(r.verdict || '') + '</td>'
-                + '<td title="' + String(r.name || '') + '">' + String(r.family || '') + '</td>'
-                + '<td>' + String(r.trades || 0) + '</td>'
-                + '<td class="' + _researchClass(r.pnl) + '">' + _researchNum(r.pnl, 0) + '</td>'
-                + '<td>' + _researchNum(r.max_dd, 0) + '</td>'
-                + '<td>' + _researchNum(r.profit_factor, 2) + '</td>'
-                + '<td class="' + _researchClass(r.total_loss) + '">' + _researchNum(r.total_loss, 0) + '</td>'
-                + '<td>' + String(r.bootstrap_mean_ci || '') + '</td>'
-                + '<td>' + _researchNum(r.monte_carlo_dd_p95, 0) + '</td>'
-                + '<td>' + String((r.reasons || []).join(', ')) + '</td>'
-                + '</tr>').join('');
-        const futuresPort = data.futures_repo_port || {};
-        const futuresRows = ((futuresPort.top || []).slice(0, 12))
-            .map(r => '<tr>'
-                + '<td class="' + (r.verdict === 'FAIL' ? 'institution-neg' : (r.verdict === 'PASS' ? 'institution-pos' : '')) + '">' + String(r.verdict || '') + '</td>'
-                + '<td>' + String(r.tf || '') + 'm</td>'
-                + '<td title="' + String(r.mom_window || '') + '/' + String(r.accel_lag || '') + '">' + String(r.family || '') + '</td>'
-                + '<td>' + String(r.direction_mode || '') + '</td>'
-                + '<td>' + String(r.session || '') + '</td>'
-                + '<td>' + String(r.trades || 0) + '</td>'
-                + '<td class="' + _researchClass(r.pnl) + '">' + _researchNum(r.pnl, 0) + '</td>'
-                + '<td>' + _researchNum(r.max_dd, 0) + '</td>'
-                + '<td>' + _researchNum(r.profit_factor, 2) + '</td>'
-                + '<td class="' + _researchClass(r.total_loss) + '">' + _researchNum(r.total_loss, 0) + '</td>'
-                + '<td>' + String(r.tp_atr || '') + '/' + String(r.sl_atr || '') + '/' + String(r.hold_bars || '') + '</td>'
-                + '<td>' + String(r.reasons || '') + '</td>'
-                + '</tr>').join('');
-        content.innerHTML =
-            '<div class="institution-grid">'
-            + '<div class="institution-card"><h3>FINDINGS</h3><ul class="institution-list">' + findings + '</ul></div>'
-            + '<div class="institution-card"><h3>ML WALK-FORWARD</h3>'
-            + '<div style="font-family:IBM Plex Mono,monospace;font-size:10px;color:var(--text2);margin-bottom:6px;">'
-            + 'AUC mean=' + _researchNum((data.ml || {}).mean_auc, 3)
-            + ' min=' + _researchNum((data.ml || {}).min_auc, 3)
-            + ' | target: ' + String((data.ml || {}).target || '') + '</div>'
-            + '<table class="institution-table"><thead><tr><th>Fold</th><th>AUC</th><th>Base</th><th>Top10</th><th>Ret</th></tr></thead><tbody>' + folds + '</tbody></table>'
-            + '</div>'
-            + '<div class="institution-card"><h3>EVENT STATS 30M</h3>'
-            + '<table class="institution-table"><thead><tr><th>Event</th><th>N</th><th>Mean</th><th>Short%</th><th>Long%</th><th>UpMFE</th><th>DnMFE</th></tr></thead><tbody>' + stats + '</tbody></table>'
-            + '</div>'
-            + '<div class="institution-card"><h3>EVENT BIAS</h3><div class="institution-bars">' + eventBiasBars + '</div></div>'
-            + '<div class="institution-card institution-wide"><h3>RULE SCORES</h3>'
-            + '<table class="institution-table"><thead><tr><th>Rule</th><th>Env</th><th>N</th><th>PNL</th><th>DD</th><th>PF</th><th>Win</th><th>Loss</th><th>TP/SL/H</th></tr></thead><tbody>' + ruleRows + '</tbody></table>'
-            + '</div>'
-            + '<div class="institution-card institution-wide"><h3>REGIME STATS</h3>'
-            + '<table class="institution-table"><thead><tr><th>Regime</th><th>Bars</th><th>Mean</th><th>Abs</th><th>Range</th><th>Sweep</th></tr></thead><tbody>' + regimeRows + '</tbody></table>'
-            + '</div>'
-            + '<div class="institution-card institution-wide"><h3>EDGE VALIDATION</h3>'
-            + '<table class="institution-table"><thead><tr><th>Verdict</th><th>Family</th><th>N</th><th>PNL</th><th>DD</th><th>PF</th><th>Loss</th><th>Boot CI</th><th>MC DD95</th><th>Reason</th></tr></thead><tbody>' + validationRows + '</tbody></table>'
-            + '</div>'
-            + '<div class="institution-card institution-wide"><h3>FUTURES REPO PORT</h3>'
-            + '<div style="font-family:IBM Plex Mono,monospace;font-size:10px;color:var(--text2);margin-bottom:6px;">'
-            + 'variants=' + String(futuresPort.tested_variants_with_trades || 0)
-            + ' | pass=' + String(futuresPort.passes || 0)
-            + ' | updated ' + String(futuresPort.created_at || '').slice(0, 16).replace('T', ' ')
-            + '</div>'
-            + '<table class="institution-table"><thead><tr><th>Verdict</th><th>TF</th><th>Family</th><th>Mode</th><th>Session</th><th>N</th><th>PNL</th><th>DD</th><th>PF</th><th>Loss</th><th>TP/SL/H</th><th>Reason</th></tr></thead><tbody>' + futuresRows + '</tbody></table>'
-            + '</div>'
-            + '<div class="institution-card"><h3>TOP FEATURES</h3><ul class="institution-list">' + features + '</ul></div>'
-            + '</div>';
-    } catch (e) {
-        status.textContent = 'Research load failed: ' + e.message;
-        content.innerHTML = '';
+function _robSeriesStats(pnls) {
+    let gain = 0, loss = 0, eq = 0, peak = 0, dd = 0, wins = 0;
+    for (const p of pnls) {
+        if (p > 0) { gain += p; wins++; } else loss += -p;
+        eq += p;
+        if (eq > peak) peak = eq;
+        if (peak - eq > dd) dd = peak - eq;
     }
+    return {
+        pnl: eq,
+        pf: loss > 0 ? gain / loss : (gain > 0 ? 999 : 0),
+        maxDd: dd,
+        win: pnls.length ? wins / pnls.length : 0,
+        n: pnls.length,
+    };
+}
+
+function _robMonteCarlo(pnls, iters) {
+    const n = pnls.length;
+    if (n < 10) return null;
+    iters = iters || 1000;
+    const totals = [], dds = [], pfs = [];
+    for (let i = 0; i < iters; i++) {
+        let eq = 0, peak = 0, dd = 0, gain = 0, loss = 0;
+        for (let j = 0; j < n; j++) {
+            const p = pnls[(Math.random() * n) | 0];
+            if (p > 0) gain += p; else loss += -p;
+            eq += p;
+            if (eq > peak) peak = eq;
+            if (peak - eq > dd) dd = peak - eq;
+        }
+        totals.push(eq);
+        dds.push(dd);
+        pfs.push(loss > 0 ? gain / loss : (gain > 0 ? 999 : 0));
+    }
+    totals.sort((a, b) => a - b);
+    dds.sort((a, b) => a - b);
+    pfs.sort((a, b) => a - b);
+    const q = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.round(p * (arr.length - 1))))];
+    return {
+        iters, totals,
+        pnlP5: q(totals, 0.05), pnlP50: q(totals, 0.50), pnlP95: q(totals, 0.95),
+        pLoss: totals.filter(v => v <= 0).length / iters,
+        ddP50: q(dds, 0.50), ddP95: q(dds, 0.95),
+        pDd2k: dds.filter(v => v > 2000).length / iters,
+        pfP5: q(pfs, 0.05),
+    };
+}
+
+function _robMcPass(mc) {
+    return !!mc && mc.pLoss <= 0.05 && mc.ddP95 < 2000 && mc.pfP5 > 1.0;
+}
+
+function _robWalkForward(trades) {
+    const rows = trades.filter(tr => tr.entry_time);
+    if (rows.length < 6) return null;
+    const times = rows.map(tr => new Date(tr.entry_time).getTime());
+    const t0 = Math.min(...times), t1 = Math.max(...times);
+    const span = Math.max(1, t1 - t0);
+    const segs = [[], [], []];
+    rows.forEach((tr, i) => {
+        const seg = Math.min(2, Math.floor((times[i] - t0) * 3 / span));
+        segs[seg].push(Number(tr.pnl) || 0);
+    });
+    const stats = segs.map(_robSeriesStats);
+    return { stats, pass: stats.every(s => s.n > 0 && s.pnl > 0 && s.pf > 1.0) };
+}
+
+// Measured slip: live fill vs the open of its 5m bar (the FACTOR backtest fill
+// assumption). Market-order fills land <120s after the 5m boundary and are not
+// deep price improvements; anything else is a limit fill and excluded. Falls
+// back to the documented EMAPMO anchor (14t = 3.5 pts) while the sample is
+// still too small to be trusted.
+function _robMeasureSlip() {
+    const out = { n: 0, medianTicks: null, usedTicks: _ROB_SLIP_ANCHOR_TICKS, anchor: true };
+    const live = _calLiveTrades || [];
+    const buf = _rawCandleBuffer || [];
+    if (!live.length || !buf.length) return out;
+    const openByTime = new Map();
+    for (const c of buf) openByTime.set(c.time, c.open);
+    const slips = [];
+    for (const tr of live) {
+        // _rawCandleBuffer uses chart time(UTC+本地位移)— fills 也得同基準
+        let ts;
+        try { ts = isoToChartTime(String(tr.entry_time)); } catch (e) { continue; }
+        if (!Number.isFinite(ts) || tr.entry_price == null) continue;
+        const dir = _tradeDir(tr);
+        if (dir !== 'buy' && dir !== 'sell') continue;
+        const m5 = Math.floor(ts / 300) * 300;
+        const open = openByTime.get(m5);
+        if (open == null) continue;
+        const sign = dir === 'buy' ? 1 : -1;
+        const slip = sign * (Number(tr.entry_price) - Number(open)) / _ROB_TICK;
+        if ((ts - m5) < 120 && slip >= -4 && slip <= 60) slips.push(slip);
+    }
+    slips.sort((a, b) => a - b);
+    out.n = slips.length;
+    if (slips.length) out.medianTicks = slips[Math.floor(slips.length / 2)];
+    if (slips.length >= 30) {
+        out.usedTicks = Math.max(0, out.medianTicks);
+        out.anchor = false;
+    }
+    return out;
+}
+
+function _robHistogram(totals) {
+    const bins = 18;
+    const min = totals[0], max = totals[totals.length - 1];
+    const w = (max - min) || 1;
+    const counts = new Array(bins).fill(0);
+    for (const v of totals) counts[Math.min(bins - 1, Math.floor((v - min) / w * bins))]++;
+    const peak = Math.max(...counts, 1);
+    let html = '<div class="rob-hist">';
+    for (let i = 0; i < bins; i++) {
+        const lo = min + w * i / bins;
+        const hi = min + w * (i + 1) / bins;
+        html += '<i class="' + (hi <= 0 ? 'neg' : 'pos') + '" style="height:'
+            + Math.max(4, counts[i] / peak * 100).toFixed(1) + '%" title="$'
+            + Math.round(lo) + ' .. $' + Math.round(hi) + ' : ' + counts[i] + '"></i>';
+    }
+    return html + '</div>';
+}
+
+function _robBadge(pass, passText, failText) {
+    return '<span class="rob-badge ' + (pass ? 'institution-pos' : 'institution-neg') + '">'
+        + t(pass ? passText : failText) + '</span>';
+}
+
+function renderResearchRobustness(force) {
+    const status = document.getElementById('robustness-status');
+    const content = document.getElementById('robustness-content');
+    if (!status || !content) return;
+    const trades = (backtestData && backtestData.trades)
+        ? backtestData.trades.filter(tr => tr.pnl != null) : [];
+    if (!trades.length) {
+        status.textContent = t('Run a backtest first — analysis uses the latest backtest trades.');
+        content.innerHTML = '';
+        return;
+    }
+    const pnls = trades.map(tr => Number(tr.pnl) || 0);
+    const base = _robSeriesStats(pnls);
+    const tickVal = _robTickValue(trades);
+    const times = trades.map(tr => new Date(tr.entry_time).getTime()).filter(Number.isFinite);
+    const d0 = times.length ? new Date(Math.min(...times)) : null;
+    const d1 = times.length ? new Date(Math.max(...times)) : null;
+    status.textContent = trades.length + ' ' + t('trades') + ' · '
+        + String((trades[0] || {}).symbol || '')
+        + (d0 ? (' · ' + d0.toISOString().slice(0, 10) + ' → ' + d1.toISOString().slice(0, 10)) : '')
+        + ' · PF ' + _researchNum(base.pf, 2)
+        + ' · PnL $' + Math.round(base.pnl)
+        + ' · maxDD $' + Math.round(base.maxDd);
+
+    // ── Monte Carlo ──────────────────────────────────────────
+    const mc = _robMonteCarlo(pnls, 1000);
+    let mcHtml;
+    if (!mc) {
+        mcHtml = '<div class="institution-status">' + t('Not enough trades (need ≥10).') + '</div>';
+    } else {
+        const row = (k, v, cls) => '<tr><td>' + t(k) + '</td><td class="' + (cls || '') + '">' + v + '</td></tr>';
+        mcHtml =
+            _robHistogram(mc.totals)
+            + '<table class="institution-table"><tbody>'
+            + row('Total PnL P5 / P50 / P95',
+                '$' + Math.round(mc.pnlP5) + ' / $' + Math.round(mc.pnlP50) + ' / $' + Math.round(mc.pnlP95),
+                _researchClass(mc.pnlP5))
+            + row('P(total loss)', _researchNum(mc.pLoss * 100, 1) + '%', mc.pLoss > 0.05 ? 'institution-neg' : 'institution-pos')
+            + row('maxDD P50 / P95', '$' + Math.round(mc.ddP50) + ' / $' + Math.round(mc.ddP95),
+                mc.ddP95 >= 2000 ? 'institution-neg' : 'institution-pos')
+            + row('P(maxDD > $2k)', _researchNum(mc.pDd2k * 100, 1) + '%', mc.pDd2k > 0.05 ? 'institution-neg' : 'institution-pos')
+            + row('PF P5', _researchNum(mc.pfP5, 2), mc.pfP5 > 1 ? 'institution-pos' : 'institution-neg')
+            + '</tbody></table>';
+    }
+
+    // ── Walk-forward ─────────────────────────────────────────
+    const wf = _robWalkForward(trades);
+    let wfHtml;
+    if (!wf) {
+        wfHtml = '<div class="institution-status">' + t('Not enough trades (need ≥6).') + '</div>';
+    } else {
+        wfHtml = '<table class="institution-table"><thead><tr><th>' + t('Segment')
+            + '</th><th>N</th><th>PnL</th><th>PF</th><th>' + t('Win%') + '</th></tr></thead><tbody>'
+            + wf.stats.map((s, i) => '<tr>'
+                + '<td>' + (i + 1) + '/3</td>'
+                + '<td>' + s.n + '</td>'
+                + '<td class="' + _researchClass(s.pnl) + '">$' + Math.round(s.pnl) + '</td>'
+                + '<td class="' + (s.pf > 1 ? 'institution-pos' : 'institution-neg') + '">' + _researchNum(s.pf, 2) + '</td>'
+                + '<td>' + _researchNum(s.win * 100, 1) + '%</td>'
+                + '</tr>').join('')
+            + '</tbody></table>';
+    }
+
+    // ── Slippage injection ───────────────────────────────────
+    const slip = _robMeasureSlip();
+    const sizes = trades.map(tr => Number(tr.size) || 1);
+    const used = Math.max(1, Math.round(slip.usedTicks));
+    const levels = [1, 2, 4, 8];
+    if (levels.indexOf(used) < 0) levels.push(used);
+    levels.sort((a, b) => a - b);
+    const slipRow = (lvl, stats, highlight) =>
+        '<tr' + (highlight ? ' class="rob-slip-used"' : '') + '>'
+        + '<td>' + (lvl === 0 ? t('original') : lvl + 't' + (highlight ? ' ★' : '')) + '</td>'
+        + '<td class="' + _researchClass(stats.pnl) + '">$' + Math.round(stats.pnl) + '</td>'
+        + '<td class="' + (stats.pf >= 1.5 ? 'institution-pos' : 'institution-neg') + '">' + _researchNum(stats.pf, 2) + '</td>'
+        + '<td>' + (lvl === 0 ? '—' : _researchNum((stats.pf / Math.max(base.pf, 1e-9) - 1) * 100, 1) + '%') + '</td>'
+        + '<td>$' + Math.round(stats.maxDd) + '</td>'
+        + '</tr>';
+    let slipHtml = '<div class="institution-status" style="margin-bottom:6px;">'
+        + t('Measured market-entry slip') + ': '
+        + (slip.anchor
+            ? (used + 't (' + t('anchor — documented EMAPMO fill; market-like live sample') + ' n=' + slip.n + ')')
+            : (used + 't (' + t('median of live market-like fills') + ' n=' + slip.n + ')'))
+        + ' · 1t = $' + _researchNum(tickVal, 2) + '/ct'
+        + '</div>'
+        + '<table class="institution-table"><thead><tr><th>' + t('RT slip')
+        + '</th><th>PnL</th><th>PF</th><th>ΔPF</th><th>maxDD</th></tr></thead><tbody>'
+        + slipRow(0, base, false)
+        + levels.map(lvl => slipRow(
+            lvl,
+            _robSeriesStats(pnls.map((p, i) => p - lvl * tickVal * sizes[i])),
+            lvl === used)).join('')
+        + '</tbody></table>'
+        + '<div class="rob-note">' + t('Market entries pay the full slip each round turn (bracket follows the fill). Limit entries skip entry slip but miss fills instead. Small-SL variants lose PF fastest — check the 8t+ rows before moving a model to market entry.') + '</div>';
+
+    const usedStats = _robSeriesStats(pnls.map((p, i) => p - used * tickVal * sizes[i]));
+    content.innerHTML =
+        '<div class="institution-grid">'
+        + '<div class="institution-card"><h3>' + t('MONTE CARLO') + ' · 1000×'
+        + (mc ? ' ' + _robBadge(_robMcPass(mc), 'PASS', 'FAIL') : '') + '</h3>' + mcHtml + '</div>'
+        + '<div class="institution-card"><h3>' + t('WALK-FORWARD') + ' · 3 ' + t('segments')
+        + (wf ? ' ' + _robBadge(wf.pass, 'PASS', 'FAIL') : '') + '</h3>' + wfHtml + '</div>'
+        + '<div class="institution-card institution-wide"><h3>' + t('SLIPPAGE INJECTION')
+        + ' ' + _robBadge(usedStats.pf >= 1.5, 'PF OK AFTER SLIP', 'PF DEGRADES BELOW 1.5') + '</h3>'
+        + slipHtml + '</div>'
+        + '</div>';
 }
 
 function calShiftMonth(delta) {
@@ -7644,6 +7744,7 @@ async function renderCalendar(force) {
     }
     renderWeeklyIncomeCurve(bt, live);
     renderOrderComparison();
+    renderResearchRobustness();   // 1.0.9: Monte Carlo / Walk-Forward / Slippage
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -7911,4 +8012,246 @@ async function pollLiveSlots() {
         if (r.ok) { const d = await r.json(); (d.engines || []).forEach(e => { statusMap[String(e.account_id)] = e.status || {}; }); }
     } catch (e) {}
     [1, 2].forEach(slot => _liveSlotRenderStatus(slot, statusMap, sess));
+}
+
+
+// ════════════════════════════════════════════════════════════════════════
+// UI language switch (1.0.9) — EN ⇄ 繁體中文.
+// Static chrome is translated by walking text nodes against I18N_ZH (original
+// English kept on each node, so switching back is lossless). Dynamic strings
+// rendered by JS go through t(). A MutationObserver re-translates any DOM the
+// app renders later (tables, panels) while Chinese is active.
+// ════════════════════════════════════════════════════════════════════════
+
+const UI_LANG_KEY = 'ancserTPX.uiLang';
+let UI_LANG = 'en';
+try { UI_LANG = localStorage.getItem(UI_LANG_KEY) === 'zh' ? 'zh' : 'en'; } catch (e) {}
+
+const I18N_ZH = {
+    // header / tabs
+    'Research': '研究', 'Backtest': '回測', 'Live': '實盤',
+    'USERNAME': '帳號', 'API KEY': 'API 金鑰', 'CONTRACT': '合約', 'CONTRACT ID': '合約代碼',
+    'INTERVAL': '週期', 'BARS': 'K棒數', 'FETCH FULL DATA': '抓取完整數據', 'CONNECT': '連線',
+    'MNQ (Micro NQ — $2/pt)': 'MNQ(微型 NQ — $2/點)', 'NQ (Mini NQ — $20/pt)': 'NQ(迷你 NQ — $20/點)',
+    'CUSTOM…': '自訂…', 'MNQ ($2/pt)': 'MNQ($2/點)', 'NQ ($20/pt)': 'NQ($20/點)',
+    'DISCONNECTED': '未連線', 'CONNECTED': '已連線',
+    // sidebar
+    'ENVIRONMENT': '環境', 'PRESET': '預設組', 'SAVE': '儲存', 'DEL': '刪除',
+    'SIZE': '手數', 'MODEL': '模型', 'RETRAIN': '重新訓練',
+    'TREND': 'TREND 趨勢突破',
+    'DAY ZONE Prev-Day VA Revert': 'DAY ZONE 前日VA回歸',
+    'DISTRIBUTION Rolling Fade': 'DISTRIBUTION 滾動分佈回歸',
+    'MIN PROB': '最低勝率', 'EV FLOOR': 'EV 下限',
+    'OFF (use win-rate gate)': 'OFF(用勝率門檻)', '≥0 (all positive EV)': '≥0(所有正期望值)',
+    'BAND (ticks)': '帶寬(ticks)', 'MIN DISTINCT TF': '最少獨立TF',
+    '(library · select = active)': '(版本庫 · 選擇即啟用)',
+    '(fixed 1–6 · 0.25 step)': '(固定 1–6 · 支援 0.25)',
+    'RISK MANAGEMENT': '風險管理', 'MAX RISK': '最大風險',
+    'TRAIL TP TRIGGER': '移動停利觸發', 'SL REF TF': 'SL 參考TF',
+    'LARGEST': '最大', 'SMALLEST': '最小',
+    'SESSION MAX TRADE LIMIT': '單一時段限單', 'MARKET LIMIT': '交易時段',
+    'ALL': '全部', 'ASIA + PRE': '亞盤+盤前',
+    'ASIA': '亞盤', 'EURO': '歐盤', 'PRE': '盤前', 'RTH': '早盤', 'AH': '盤後',
+    'MODEL SETTINGS': '模型設定', 'ENTRY TRIGGER': '進場觸發',
+    '(fixed by model)': '(底層模型決定,不可改)',
+    'TIMEFRAMES': '時間框架', '(pick 1 = single; pick 2+ = overlap)': '(選1=單一;選2+=重疊)',
+    'TRADE ZONE': '交易區間', 'Merged overlap': '合併重疊區', 'Smallest selected TF': '最小已選TF',
+    'AREA %': '區間 %', 'CONFIRM': '確認K數',
+    'DAY ZONE ENTRY MODE': 'DAY ZONE 進場模式',
+    'LIMIT resting at VAL (safest)': 'LIMIT 直接掛 VAL(最穩)',
+    'REJECTION sweep-back market': 'REJECTION 掃回後市價',
+    'OR15 open fake-break (2-way market)': 'OR15 開盤假突破(雙向·市價)',
+    'FACTOR FAMILY': '因子族', 'SIDE': '方向', 'BOTH': '雙向',
+    'LONG ONLY': '只做多', 'SHORT ONLY': '只做空',
+    'SIGNAL MODE': '訊號模式', 'NORMAL': '標準', 'EARLY': '提早',
+    'VA FILTER': 'VA 過濾', 'OUTSIDE VA80': 'VA80 之外',
+    'SL ANCHOR': 'SL 錨點', 'SL INPUT': 'SL 參數',
+    'TP ANCHOR': 'TP 錨點', 'FIXED RATIO': '固定比例', 'LADDER RATIO': '階梯比例',
+    'TP INPUT': 'TP 參數', 'LADDER INPUT': '階梯參數', '(engine fixed)': '(引擎固定)',
+    'TRAIL SL': '移動停損',
+    'DAILY MAX TRADE LIMIT': '每日最大交易數',
+    'FULL LOSS LOCK': '日虧鎖單',
+    '(bot only · N daily losses stop new orders, 0=OFF)': '(僅程序交易;當日虧 N 單停新單,0=OFF)',
+    'FULL WIN LOCK': '日贏落袋',
+    '(bank N daily wins then stop, 0=OFF)': '(當日贏 N 單落袋停手,0=OFF)',
+    'HIGH VOLATILITY LOCK': '高波動鎖',
+    '(prev-day high vol pauses today, 0=OFF)': '(前日高波動→今日停手,0=OFF)',
+    'last 10d': '近10日', 'last 15d': '近15日', 'last 20d': '近20日',
+    'EXECUTE BACKTEST': '執行回測', 'SWEEP': '掃描', 'SWEEP MODEL': '掃描模型',
+    'MNQx1 + risk locked': 'MNQx1 + 風控鎖定',
+    'ALL MODELS': '全部模型', 'FACTOR ONLY': '只掃 FACTOR', 'TREND ONLY': '只掃 TREND',
+    'DAY ZONE ONLY': '只掃 DAY ZONE', 'DISTRIBUTION ONLY': '只掃 DISTRIBUTION',
+    'PERFORMANCE': '績效', 'BACKTEST': '回測',
+    // live panel
+    'ACCOUNT MAIN': '主帳號', 'ACCOUNT MINOR': '副帳號',
+    'GO LIVE': '啟動實盤', 'STOP': '停止', 'FLAT': '平倉',
+    '-- SELECT ACCOUNT --': '── 選擇帳號 ──', '-- SELECT PRESET --': '── 選擇預設組 ──',
+    'STATUS:': '狀態:', 'PHASE:': '階段:', 'MODE:': '模式:', 'MARKET:': '時段:',
+    'BOT LOSS LOCK:': '程序虧損鎖:', 'VOLATILITY GATE:': '波動閘:', 'DAILY PNL:': '當日損益:',
+    'STRAT:': '策略:', 'POSITION:': '持倉:', 'CAPITAL:': '資金:',
+    'RISK GATES': '風控閘', 'STATUS': '狀態', 'ACTIVE ZONE': '活躍區間',
+    'ML DECISION BASIS': 'ML 決策依據',
+    // bottom panel
+    'PRESETS': '預設組', 'BACKTEST TRADES': '回測交易', 'EXECUTE TRADES': '實盤成交',
+    'PNL CURVE': '損益曲線', 'SYSTEM LOG': '系統日誌',
+    'SWEEP RESULTS · ALL MODELS · SORTED BY PF': '掃描結果 · 全模型 · 依 PF 排序',
+    'ACC ★ pass only': '只顯示 ACC ★ 通過',
+    'No results yet — run sidebar': '尚無結果 — 用側欄', '(~10–15 min).': '(約 10–15 分鐘)。',
+    'No ACC ★ pass variants — untick the filter to see all.': '沒有通過 ACC ★ 的變體 — 取消勾選以看全部。',
+    'pass ACC ★': '通過 ACC ★', '★ pass': '★通過', 'all': '全部', 'variants': '變體',
+    'sort': '排序', 'click column header to change': '點欄位標題換排序',
+    'SYMBOL': '商品', 'ENTRY TIME': '進場時間', 'EXIT TIME': '出場時間', 'DURATION': '持倉時長',
+    'ENTRY': '進場價', 'EXIT': '出場價', 'P&L': '損益', 'COMMISSION': '佣金', 'FEES': '費用',
+    'DIR': '方向', 'WHY': '原因',
+    'No trades yet — run BACKTEST or load LIVE trades': '尚無成交 — 先跑回測或載入實盤交易',
+    // research view
+    'Today': '今天', '⟳ Live': '⟳ 實盤',
+    'BACKTEST P/L': '回測損益', 'LIVE P/L': '實盤損益', 'DIFF vs BT': '實盤 vs 回測',
+    'Sun': '日', 'Mon': '一', 'Tue': '二', 'Wed': '三', 'Thu': '四', 'Fri': '五', 'Week': '週',
+    'WEEKLY INCOME': '週收益', 'Backtest vs Live Curve': '回測 vs 實盤曲線',
+    'Run a backtest to compare curves.': '先跑回測以比較曲線。',
+    'ORDER COMPARISON': '訂單比對', 'Selected Preset vs Live Execution': '選定預設組 vs 實盤執行',
+    'Historical live rows may not include preset names.': '歷史實盤列可能沒有預設組名稱。',
+    'RESEARCH': '研究',
+    'Robustness — Monte Carlo · Walk-Forward · Slippage': '穩健性 — 蒙地卡羅 · 走查 · 滑價',
+    'Refresh': '刷新',
+    'Run a backtest first — analysis uses the latest backtest trades.': '先跑回測 — 分析使用最近一次回測交易。',
+    'trades': '筆交易',
+    'Not enough trades (need ≥10).': '交易數不足(需 ≥10)。',
+    'Not enough trades (need ≥6).': '交易數不足(需 ≥6)。',
+    'MONTE CARLO': '蒙地卡羅', 'WALK-FORWARD': '走查驗證', 'segments': '段',
+    'SLIPPAGE INJECTION': '滑價注入',
+    'PASS': '通過', 'FAIL': '未過',
+    'PF OK AFTER SLIP': '滑價後 PF 合格', 'PF DEGRADES BELOW 1.5': '滑價後 PF < 1.5',
+    'Total PnL P5 / P50 / P95': '總損益 P5 / P50 / P95',
+    'P(total loss)': 'P(總體虧損)', 'maxDD P50 / P95': '最大回撤 P50 / P95',
+    'P(maxDD > $2k)': 'P(回撤 > $2k)', 'PF P5': 'PF P5',
+    'Segment': '分段', 'Win%': '勝率', 'original': '原始',
+    'Measured market-entry slip': '實測市價進場滑價',
+    'anchor — documented EMAPMO fill; market-like live sample': '錨點 — 有據 EMAPMO 成交;市價特徵樣本',
+    'median of live market-like fills': '實盤市價特徵成交中位數',
+    'RT slip': '往返滑價',
+    'Market entries pay the full slip each round turn (bracket follows the fill). Limit entries skip entry slip but miss fills instead. Small-SL variants lose PF fastest — check the 8t+ rows before moving a model to market entry.':
+        '市價進場每筆承擔全額往返滑價(bracket 跟隨成交價);限價進場無進場滑價但會漏單。小 SL 變體 PF 掉最快 — 改市價進場前先看 8t 以上列。',
+};
+
+function t(s) {
+    return (UI_LANG === 'zh' && I18N_ZH[s]) || s;
+}
+
+function _i18nTranslateTextNode(n) {
+    if (UI_LANG === 'zh') {
+        const raw = n.__i18nEn != null ? n.__i18nEn : n.nodeValue;
+        const key = String(raw).trim();
+        if (!key) return;
+        const zh = I18N_ZH[key];
+        if (zh) {
+            if (n.__i18nEn == null) n.__i18nEn = n.nodeValue;
+            n.nodeValue = String(raw).replace(key, zh);
+        }
+    } else if (n.__i18nEn != null) {
+        n.nodeValue = n.__i18nEn;
+        n.__i18nEn = null;
+    }
+}
+
+function _i18nTranslateTree(root) {
+    if (!root) return;
+    if (root.nodeType === 3) { _i18nTranslateTextNode(root); return; }
+    if (root.nodeType !== 1 && root.nodeType !== 9) return;
+    if (root.id === 'log-container' || (root.closest && root.closest('#log-container'))) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(n) {
+            const p = n.parentNode;
+            if (!p) return NodeFilter.FILTER_REJECT;
+            if (p.nodeName === 'SCRIPT' || p.nodeName === 'STYLE') return NodeFilter.FILTER_REJECT;
+            if (p.closest && p.closest('#log-container')) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+        }
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach(_i18nTranslateTextNode);
+}
+
+function applyLanguage() {
+    _i18nTranslateTree(document.body);
+    const btn = document.getElementById('lang-toggle');
+    if (btn) {
+        btn.textContent = UI_LANG === 'zh' ? 'EN' : '中';
+        btn.title = UI_LANG === 'zh' ? 'Switch to English' : '切換為繁體中文';
+    }
+    document.documentElement.lang = UI_LANG === 'zh' ? 'zh-TW' : 'en';
+}
+
+function toggleLanguage() {
+    UI_LANG = UI_LANG === 'zh' ? 'en' : 'zh';
+    try { localStorage.setItem(UI_LANG_KEY, UI_LANG); } catch (e) {}
+    applyLanguage();
+    // re-render views whose strings are built in JS with t()
+    try { renderSweepTable(); } catch (e) {}
+    try {
+        const cal = document.getElementById('calendar-view');
+        if (cal && !cal.classList.contains('hidden')) renderCalendar();
+    } catch (e) {}
+}
+
+// 動態渲染(表格/面板)在中文模式下持續翻譯;nodeValue 變更不觸發 childList,
+// 不會自迴圈。
+const _i18nObserver = new MutationObserver(muts => {
+    if (UI_LANG !== 'zh') return;
+    for (const m of muts) {
+        if (m.addedNodes) m.addedNodes.forEach(node => _i18nTranslateTree(node));
+    }
+});
+_i18nObserver.observe(document.body, { childList: true, subtree: true });
+applyLanguage();
+
+
+// ════════════════════════════════════════════════════════════════════════
+// 1.0.9: EMAPMO 進場門檻滑桿
+// PMO 由「百分比」ROC 疊三層 EMA 得到,門檻卻是寫死的絕對值(-0.100),
+// 所以它的鬆緊度跟商品的%波動綁死 —— 換商品或換波動環境就得重調。
+// 滑桿送出的是縮放係數:0.90 → 門檻 -0.090(較鬆,訊號較多)。
+// 只作用於 early(比 SIG 線);normal(比 PMO)另有參數,UI 暫不開放。
+// ════════════════════════════════════════════════════════════════════════
+
+// _factorFamily 是 buildParams 內的區域 helper,這裡直接讀 select 的值。
+function _emapmoFamily(mode) {
+    const el = document.getElementById('factor-family-' + mode);
+    return String((el && el.value) || 'emapmo').toLowerCase();
+}
+
+function _emapmoThresholdScale(mode) {
+    const el = document.getElementById('emapmo-th-' + mode);
+    if (!el || _emapmoFamily(mode) !== 'emapmo') return 1.0;
+    const v = parseFloat(el.value);
+    return Number.isFinite(v) && v > 0 ? Number(v.toFixed(2)) : 1.0;
+}
+
+function onEmapmoThresholdChange(mode) {
+    const el = document.getElementById('emapmo-th-' + mode);
+    const out = document.getElementById('emapmo-th-' + mode + '-val');
+    if (!el || !out) return;
+    const scale = parseFloat(el.value) || 1.0;
+    out.textContent = (-0.10 * scale).toFixed(3);
+    out.style.color = Math.abs(scale - 1.0) < 0.005 ? 'var(--amber)' : 'var(--cyan)';
+}
+
+function _setEmapmoThreshold(mode, scale) {
+    const el = document.getElementById('emapmo-th-' + mode);
+    if (!el) return;
+    const v = Number(scale);
+    // preset 沒帶這個欄位(或帶 0)時視為原始門檻
+    el.value = (Number.isFinite(v) && v > 0 ? v : 1.0).toFixed(2);
+    onEmapmoThresholdChange(mode);
+}
+
+function syncEmapmoThresholdRow(mode) {
+    // 注意:show() 是 buildParams 內的區域 helper,全域函式取不到,直接設 display。
+    const row = document.getElementById('emapmo-th-row-' + mode);
+    if (!row) return;
+    const isFactor = String(_mlSelectValue('strategy-' + mode, 'trend')) === 'factor';
+    row.style.display = (isFactor && _emapmoFamily(mode) === 'emapmo') ? '' : 'none';
+    onEmapmoThresholdChange(mode);
 }

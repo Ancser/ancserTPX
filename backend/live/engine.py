@@ -33,7 +33,6 @@ from backend.strategy.consolidation import SessionZoneDetector, build_zone_detec
 from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
 )
-from backend.strategy.trend_follow import SessionTrendFollow
 from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.pmo import EMAPMOStrategy
 from backend.strategy.factor import FactorSignalStrategy
@@ -94,7 +93,7 @@ class LiveTradingEngine:
         client: TopstepXClient,
         account_id: int,
         contract_id: str,
-        # Strategy params (simplified — SessionTrendFollow only)
+        # Strategy params — 策略插槽(fade / sigma / pmo / factor)
         value_area_pct: float = 0.80,
         contract_size: int = 1,
         # Configurable strategy params
@@ -143,9 +142,9 @@ class LiveTradingEngine:
         )
         # Strategy mode: trend/fade/sigma.  The trend-slot object is ALWAYS built
         # so legacy state/helpers keep working; fade/sigma replace that slot.
-        self.strategy_mode = (getattr(self.strategy_params, "strategy", "trend") or "trend").lower()
+        self.strategy_mode = (getattr(self.strategy_params, "strategy", "factor") or "factor").lower()
         if self.strategy_mode not in ("fade", "sigma", "pmo", "factor"):
-            self.strategy_mode = "trend"
+            self.strategy_mode = "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
             if str(getattr(self.strategy_params, "fade_entry_mode", "") or "").lower() == "or15":
@@ -158,8 +157,12 @@ class LiveTradingEngine:
             self.trend_follow = EMAPMOStrategy(params=self.strategy_params)
         elif self.strategy_mode == "factor":
             self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
+        # 1.0.9: TREND(SessionTrendFollow)已移除 —— 288 個變體 0 通過
+        # MC+WF+PF>2,每筆邊際最佳 +9.6t 低於實測 14t 往返滑價。
+        # 舊 preset 若仍帶 strategy="trend",一律落到 FACTOR。
+        # 詳見 docs/1.0.9_DELETE_LIST.md。
         else:
-            self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+            self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
         # 1.0.8: fade 前日 VP 計算器(僅 fade 模式使用)
         self._fade_vp = VolumeProfileCalculator(self.tick_size, value_area_pct)
         # Exit mode: "tp" fixed target, or "ladder" for TREND/FACTOR.
@@ -222,22 +225,9 @@ class LiveTradingEngine:
         # persist a durable, replayable "why" alongside its outcome.
         self._pending_conf_payload: Optional[Dict] = None
         self._active_conf_payload: Optional[Dict] = None
-        if self.strategy_mode == "confluence":
-            from backend.live.confluence_live import ConfluenceLiveEvaluator
-            self.confluence = ConfluenceLiveEvaluator(
-                contract_id=contract_id,
-                band_ticks=float(getattr(self.strategy_params, "conf_band_ticks", 4.0)),
-                min_distinct_tf=int(getattr(self.strategy_params, "conf_min_distinct_tf", 2)),
-                rr=float(getattr(self.strategy_params, "conf_rr", 1.0)),
-                base_minutes=int(getattr(self.strategy_params, "conf_base_minutes", 1)),
-                min_prob=float(getattr(self.strategy_params, "conf_min_prob", 0.65)),
-                ev_floor=_conf_ev_floor(getattr(self.strategy_params, "conf_ev_floor", None)),
-                rr_grid=None,
-                use_scorer=bool(getattr(self.strategy_params, "conf_use_scorer", True)),
-                enable_breakout=bool(getattr(self.strategy_params, "conf_enable_breakout", False)),
-                max_risk_ticks=getattr(self.strategy_params, "conf_max_risk_ticks", None),
-                sl_reference_tf=getattr(self.strategy_params, "conf_sl_reference_tf", "largest"),
-            )
+        # 1.0.9: confluence/ML live evaluator removed wholesale.
+        # See docs/1.0.9_DELETE_LIST.md.
+        self.confluence = None
         # 1.0.8: 移除 ML Consolidation V2 (mlc2) live evaluator 與相關狀態
         self.strategies = [self.strategy_mode]
 
@@ -2559,7 +2549,7 @@ class LiveTradingEngine:
         self._refresh_prev_rv_gate()  # 1.0.9
 
         # Legacy fallback: old strategies only warmed recent-candle buffers, so
-        # clear any accidental state. SessionTrendFollow.observe() intentionally
+        # clear any accidental state. 策略的 observe() intentionally
         # keeps the restored breakout count/armed state.
         if not can_observe_strategy and hasattr(self.trend_follow, 'reset_state_only'):
             self.trend_follow.reset_state_only()
@@ -3713,7 +3703,12 @@ class LiveTradingEngine:
         if self.strategy_mode == "confluence" or zone_source == "confluence" or strategy == "confluence":
             cap = getattr(self.strategy_params, "conf_max_risk_ticks", None)
         else:
-            cap = None
+            # 1.0.9: 在此之前非 confluence 的策略「完全沒有」風險寬度上限 ——
+            # FACTOR 的 atr_blend SL 會隨波動無上限放大(實測 MNQ 5m:中位
+            # 74.7 點,p95 168.4 點,最大 337 點),高波動時單筆風險是中位的
+            # 4 倍以上。max_risk_ticks 讓所有策略都能設上限;None/0 = 不限,
+            # 維持既有行為。
+            cap = getattr(self.strategy_params, "max_risk_ticks", None)
 
         try:
             cap_f = float(cap) if cap not in (None, "", 0, "0") else None

@@ -28,7 +28,6 @@ from backend.strategy.consolidation import SessionZoneDetector, build_zone_detec
 from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
 )
-from backend.strategy.trend_follow import SessionTrendFollow
 from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.pmo import EMAPMOStrategy
 from backend.strategy.factor import FactorSignalStrategy
@@ -57,7 +56,7 @@ def _topstep_trade_date(utc_dt: datetime) -> str:
 
 
 class BacktestEngine:
-    """回測引擎 v3 — Session Zone + SessionTrendFollow"""
+    """回測引擎 v3 — Session Zone + 策略插槽(fade / sigma / pmo / factor)"""
 
     # Default fallbacks. Real values set per-instance from contract_id below.
     POINT_VALUE = 20.0
@@ -108,7 +107,7 @@ class BacktestEngine:
         # 1.0.8: strategy_mode "trend"(現行)或 "fade"(前日 VA 回歸)。
         # 屬性名沿用 trend_follow,兩策略介面相容,其餘管線不變。
         _strat = str(getattr(self.strategy_params, "strategy", "") or "").lower()
-        self.strategy_mode = _strat if _strat in ("fade", "sigma", "pmo", "factor") else "trend"
+        self.strategy_mode = _strat if _strat in ("fade", "sigma", "pmo", "factor") else "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
             if str(getattr(self.strategy_params, "fade_entry_mode", "") or "").lower() == "or15":
@@ -121,8 +120,12 @@ class BacktestEngine:
             self.trend_follow = EMAPMOStrategy(params=self.strategy_params)
         elif self.strategy_mode == "factor":
             self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
+        # 1.0.9: TREND(SessionTrendFollow)已移除 —— 288 個變體 0 通過
+        # MC+WF+PF>2,每筆邊際最佳 +9.6t 低於實測 14t 往返滑價。
+        # 舊 preset 若仍帶 strategy="trend",一律落到 FACTOR。
+        # 詳見 docs/1.0.9_DELETE_LIST.md。
         else:
-            self.trend_follow = SessionTrendFollow(params=self.strategy_params)
+            self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
         # 1.0.8: fade 模式 — 前日 VP 水位計算狀態
         self._fade_vp = VolumeProfileCalculator(self.TICK_SIZE, float(self.config.value_area_pct))
         self._fade_day: Optional[str] = None

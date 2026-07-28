@@ -42,7 +42,7 @@ TRAIL_TICK_STEP = 5
 ML_TIMEFRAMES = ("15m", "30m", "1h", "4h")
 DEFAULT_PRESET_NAME = "TREND MNQx1 DEFAULT"
 DEFAULT_PRESET_PARAMS = {
-    "strategy": "trend",
+    "strategy": "factor",   # 1.0.9: TREND 已移除
     "tp_ticks": 200,
     "sl_ticks": 50,
     "trail_sl_ticks": 10,

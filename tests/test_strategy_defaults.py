@@ -6,13 +6,14 @@ from backend.terminal_live import _build_strategy_params
 
 
 class StrategyDefaultTests(unittest.TestCase):
-    def test_public_defaults_use_trend(self):
+    def test_public_defaults_use_factor(self):
+        """1.0.9: TREND 已移除,三處公開預設一律 factor。"""
         strategy = StrategyParams()
         backtest = BacktestRequest()
         live = LiveStartRequest(account_id=1)
-        self.assertEqual(strategy.strategy, "trend")
-        self.assertEqual(backtest.strategy, "trend")
-        self.assertEqual(live.strategy, "trend")
+        self.assertEqual(strategy.strategy, "factor")
+        self.assertEqual(backtest.strategy, "factor")
+        self.assertEqual(live.strategy, "factor")
         for params in (strategy, backtest, live):
             self.assertEqual(params.sigma_window_minutes, 15)
             self.assertEqual(params.sigma_method, "std")

@@ -155,13 +155,43 @@ def calculate_emapmo_series(
     return pmo, signal
 
 
-def calculate_emapmo_snapshot(closes: list[float]) -> dict[str, Any]:
+EMAPMO_LONG_THRESHOLD = -0.10
+EMAPMO_SHORT_THRESHOLD = 0.06
+
+
+def calculate_emapmo_snapshot(
+    closes: list[float],
+    threshold_scale: float = 1.0,
+    normal_scale: Optional[float] = None,
+    early_scale: Optional[float] = None,
+) -> dict[str, Any]:
     """Calculate the exact EMAPMO conditions shared by trading and charting.
 
     ``closes`` is deliberately not truncated here.  The caller owns the input
     window: :class:`FactorSignalStrategy` passes its bounded deque and the chart
     collector passes the matching last ``FACTOR_EMAPMO_HISTORY_BARS`` closes.
+
+    1.0.9 ``threshold_scale``: PMO is built from *percent* ROC, so its scale
+    tracks the instrument's percentage volatility — not its point volatility.
+    The ATR SL/TP rules only size the exit, they do not touch this entry gate,
+    so a lower-%-vol contract simply stops reaching ±0.10 and the strategy goes
+    quiet (measured: the gate fires on 6.6% of MNQ 5m bars but only 1.9% of MES
+    bars, and BEST produced 20 MNQ trades vs 7 MES trades over comparable
+    windows).  Scaling the thresholds restores equal signal rarity across
+    contracts.  Default 1.0 keeps MNQ behaviour bit-identical; the calibrated
+    MES value is ~0.55 (see scripts/emapmo_vol_calibration.py).
     """
+    # 1.0.9: normal 與 early 用的是不同的序列 —— normal 比較 PMO,early 比較
+    # SIG(PMO 的 EMA10)。兩者的門檻要能分開鬆綁,所以各自有 scale;未指定時
+    # 沿用共用的 threshold_scale(MES 波動校準走這條)。
+    scale = abs(float(threshold_scale)) if threshold_scale else 1.0
+    ns = abs(float(normal_scale)) if normal_scale else scale
+    es = abs(float(early_scale)) if early_scale else scale
+    n_long_th = EMAPMO_LONG_THRESHOLD * ns
+    n_short_th = EMAPMO_SHORT_THRESHOLD * ns
+    e_long_th = EMAPMO_LONG_THRESHOLD * es
+    e_short_th = EMAPMO_SHORT_THRESHOLD * es
+    long_th, short_th = n_long_th, n_short_th   # 說明頁沿用 normal 的門檻
     result: dict[str, Any] = {
         "pmo": None,
         "signal": None,
@@ -199,8 +229,8 @@ def calculate_emapmo_snapshot(closes: list[float]) -> dict[str, Any]:
         "signal": float(s1),
         "prev_pmo": float(p0),
         "prev_signal": float(s0),
-        "normal_short": bool(p1 > 0.06 and p1 < s1 and p0 >= s0),
-        "normal_long": bool(p1 < -0.10 and p1 > s1 and p0 <= s0),
+        "normal_short": bool(p1 > n_short_th and p1 < s1 and p0 >= s0),
+        "normal_long": bool(p1 < n_long_th and p1 > s1 and p0 <= s0),
     })
 
     p_gap = [None if a is None or b is None else float(a - b) for a, b in zip(pmo, sig)]
@@ -218,8 +248,8 @@ def calculate_emapmo_snapshot(closes: list[float]) -> dict[str, Any]:
             "q_gap_now": float(qn),
             "q_gap_prev": float(qp),
             "q_gap_prev2": float(qp2),
-            "early_short": bool(s1 > 0.06 and pn < pp and p1 > s1 and pp < pp2),
-            "early_long": bool(s1 < -0.10 and qn < qp and p1 < s1 and qp < qp2),
+            "early_short": bool(s1 > e_short_th and pn < pp and p1 > s1 and pp < pp2),
+            "early_long": bool(s1 < e_long_th and qn < qp and p1 < s1 and qp < qp2),
         })
     return result
 
@@ -274,6 +304,23 @@ class FactorSignalStrategy:
         self.side_mode = str(getattr(p, "factor_side_mode", "all") or "all").lower()
         if self.side_mode not in {"all", "long_only", "short_only"}:
             self.side_mode = "all"
+        # 1.0.9: PMO 進場門檻的波動縮放。1.0 = MNQ 原始行為;MES ≈ 0.55。
+        # 見 calculate_emapmo_snapshot 與 scripts/emapmo_vol_calibration.py。
+        self.pmo_threshold_scale = abs(float(
+            getattr(p, "factor_pmo_threshold_scale", 1.0) or 1.0))
+        # 1.0.9: normal(比 PMO)與 early(比 SIG)的門檻可分開鬆綁;
+        # 0/None = 沿用共用的 pmo_threshold_scale。
+        self.pmo_normal_scale = float(
+            getattr(p, "factor_pmo_normal_scale", 0) or 0) or None
+        self.pmo_early_scale = float(
+            getattr(p, "factor_pmo_early_scale", 0) or 0) or None
+        # 1.0.9: SL/TP 寬度上下限(ticks,單口)。見 _clamp_risk_reward。
+        self.max_risk_ticks = float(getattr(p, "max_risk_ticks", 0) or 0)
+        self.max_profit_ticks = float(getattr(p, "max_profit_ticks", 0) or 0)
+        self.risk_cap_mode = str(
+            getattr(p, "risk_cap_mode", "clamp") or "clamp").lower()
+        if self.risk_cap_mode not in {"clamp", "block"}:
+            self.risk_cap_mode = "clamp"
         self.sl_rule = str(getattr(p, "factor_sl_rule", "atr") or "atr").lower()
         self.tp_rule = str(getattr(p, "factor_tp_rule", "atr") or "atr").lower()
         self.sl_value = max(0.01, float(getattr(p, "factor_sl_value", 1.5) or 1.5))
@@ -593,7 +640,9 @@ class FactorSignalStrategy:
 
     def _emapmo_snapshot(self) -> dict[str, Any]:
         """One EMAPMO calculation shared by trading and the explainable status."""
-        return calculate_emapmo_snapshot([float(c.close) for c in self._bars])
+        return calculate_emapmo_snapshot(
+            [float(c.close) for c in self._bars], self.pmo_threshold_scale,
+            self.pmo_normal_scale, self.pmo_early_scale)
 
     def _emapmo_direction(self, snapshot: dict[str, Any]) -> Optional[Direction]:
         use_normal = self.pmo_signal_mode in {"normal", "both"}
@@ -610,13 +659,17 @@ class FactorSignalStrategy:
         prev_pmo = float(snapshot.get("prev_pmo") or 0.0)
         prev_signal = float(snapshot.get("prev_signal") or 0.0)
         side = "LONG" if direction == Direction.BUY else "SHORT"
+        # 1.0.9: 顯示實際生效的門檻(隨 pmo_threshold_scale 縮放),否則
+        # 非 MNQ 商品的說明頁會顯示與實際判定不符的數字。
+        long_th = EMAPMO_LONG_THRESHOLD * self.pmo_threshold_scale
+        short_th = EMAPMO_SHORT_THRESHOLD * self.pmo_threshold_scale
 
         if direction == Direction.BUY:
-            normal_threshold = pmo < -0.10
+            normal_threshold = pmo < long_th
             normal_cross = pmo > signal and prev_pmo <= prev_signal
             normal = "\n".join([
                 f"{side} NORMAL",
-                f"PMO < -0.10000: current={pmo:.5f} {self._condition_mark(normal_threshold)}",
+                f"PMO < {long_th:.5f}: current={pmo:.5f} {self._condition_mark(normal_threshold)}",
                 f"PMO crosses above SIG: previous {prev_pmo:.5f} <= {prev_signal:.5f}; "
                 f"current {pmo:.5f} > {signal:.5f} {self._condition_mark(normal_cross)}",
             ])
@@ -625,22 +678,22 @@ class FactorSignalStrategy:
                 snapshot.get("q_gap_prev"),
                 snapshot.get("q_gap_now"),
             )
-            threshold = signal < -0.10
+            threshold = signal < long_th
             relation = pmo < signal
             gap_ok = all(value is not None for value in gaps) and float(gaps[2]) < float(gaps[1]) < float(gaps[0])
             gap_s = " -> ".join(self._format_indicator(value, 5) for value in gaps)
             early = "\n".join([
                 f"{side} EARLY",
-                f"SIG < -0.10000: current={signal:.5f} {self._condition_mark(threshold)}",
+                f"SIG < {long_th:.5f}: current={signal:.5f} {self._condition_mark(threshold)}",
                 f"PMO < SIG: {pmo:.5f} < {signal:.5f} {self._condition_mark(relation)}",
                 f"SIG - PMO gap shrinking: {gap_s} {self._condition_mark(gap_ok)}",
             ])
         else:
-            normal_threshold = pmo > 0.06
+            normal_threshold = pmo > short_th
             normal_cross = pmo < signal and prev_pmo >= prev_signal
             normal = "\n".join([
                 f"{side} NORMAL",
-                f"PMO > 0.06000: current={pmo:.5f} {self._condition_mark(normal_threshold)}",
+                f"PMO > {short_th:.5f}: current={pmo:.5f} {self._condition_mark(normal_threshold)}",
                 f"PMO crosses below SIG: previous {prev_pmo:.5f} >= {prev_signal:.5f}; "
                 f"current {pmo:.5f} < {signal:.5f} {self._condition_mark(normal_cross)}",
             ])
@@ -649,13 +702,13 @@ class FactorSignalStrategy:
                 snapshot.get("p_gap_prev"),
                 snapshot.get("p_gap_now"),
             )
-            threshold = signal > 0.06
+            threshold = signal > short_th
             relation = pmo > signal
             gap_ok = all(value is not None for value in gaps) and float(gaps[2]) < float(gaps[1]) < float(gaps[0])
             gap_s = " -> ".join(self._format_indicator(value, 5) for value in gaps)
             early = "\n".join([
                 f"{side} EARLY",
-                f"SIG > 0.06000: current={signal:.5f} {self._condition_mark(threshold)}",
+                f"SIG > {short_th:.5f}: current={signal:.5f} {self._condition_mark(threshold)}",
                 f"SIG < PMO: {signal:.5f} < {pmo:.5f} {self._condition_mark(relation)}",
                 f"PMO - SIG gap shrinking: {gap_s} {self._condition_mark(gap_ok)}",
             ])
@@ -741,6 +794,50 @@ class FactorSignalStrategy:
             return False
         return True
 
+    def _clamp_risk_reward(
+        self, risk: float, reward: float,
+    ) -> tuple[Optional[float], float, str]:
+        """1.0.9: 把 ATR 推導出的 SL/TP 寬度夾進上下限,並維持 SL:TP 比例。
+
+        用途是 prop firm 的兩條線:單筆風險(maxDD)與單日獲利佔比
+        (consistency rule —— 單日賺太多會推高通關/出金門檻)。
+
+        兩個上限都以 **ticks(單口)** 計:
+            max_risk_ticks    SL 寬度上限
+            max_profit_ticks  TP 寬度上限
+        取較嚴的那個縮放因子,同時乘在 risk 與 reward 上,所以 RR 不變 ——
+        只是整組 SL/TP 等比縮小。
+
+        ⚠️ 夾窄 SL 不是免費的:停損離進場更近,高波動時被掃出場的機率上升。
+        改動前務必用 scripts/clamp_cap_study.py 回測比較。
+
+        risk_cap_mode:
+            "clamp"(預設,有設上限時)  縮放到上限,照樣進場
+            "block"                    超過上限就跳過這個訊號
+        兩個上限都沒設 → 原樣返回,行為與 1.0.8 完全相同。
+        """
+        max_risk = self.max_risk_ticks
+        max_profit = self.max_profit_ticks
+        if not max_risk and not max_profit:
+            return risk, reward, ""
+
+        tick = self.tick_size
+        risk_t = risk / tick
+        reward_t = reward / tick
+        scale = 1.0
+        why = []
+        if max_risk and risk_t > max_risk:
+            scale = min(scale, max_risk / risk_t)
+            why.append(f"risk {risk_t:.0f}t>{max_risk:g}t")
+        if max_profit and reward_t > max_profit:
+            scale = min(scale, max_profit / reward_t)
+            why.append(f"reward {reward_t:.0f}t>{max_profit:g}t")
+        if scale >= 1.0:
+            return risk, reward, ""
+        if self.risk_cap_mode == "block":
+            return None, reward, "blocked"
+        return risk * scale, reward * scale, " CLAMP(" + ", ".join(why) + ")"
+
     def _build_signal(
         self,
         candle: Candle,
@@ -756,6 +853,9 @@ class FactorSignalStrategy:
         risk = self._risk_width(self.sl_rule, self.sl_value)
         reward = self._risk_width(self.tp_rule, self.tp_value)
         if risk is None or reward is None:
+            return None
+        risk, reward, clamp_note = self._clamp_risk_reward(risk, reward)
+        if risk is None:
             return None
         entry = self._round_tick(float(candle.open if entry_price is None else entry_price))
         if direction == Direction.BUY:

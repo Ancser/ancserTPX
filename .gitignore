@@ -189,8 +189,10 @@ cython_debug/
 # ignored data below is NOT lost when you switch branches — it just isn't tracked
 # or uploaded. Keep private preset backups outside this repository.
 data/*
-/data/presets.json
 !data/store/
+# 1.0.9: preset 恢復追蹤 —— 它是策略定義(BEST/SECOND BEST 等),屬於原始碼
+# 的一部分,不是帳號資料。憑證仍只存在 .env。
+!data/presets.json
 
 # Ad-hoc research scripts / exports (may contain account data) — never upload.
 scratchpad/
