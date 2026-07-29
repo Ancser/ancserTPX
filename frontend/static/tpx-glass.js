@@ -63,9 +63,9 @@
            22px high, so a proportional 7px bezel keeps a clear centre. */
         switch:           { profile: "convex-squircle", bezel: 7, refraction: 0.90, thickness: 47, shrink: 0.40, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.50, stiffness: 820, damping: 48, stretch: 0.12 },
         dock:             { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.30, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.10, activeScale: 1.50, stiffness: 520, damping: 34, stretch: 0.16 },
-        dockContainer:    { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.30, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.00, stiffness: 520, damping: 34, stretch: 0.00 },
-        segment:          { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.30, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.50, stiffness: 760, damping: 42, stretch: 0.14 },
-        segmentContainer: { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.30, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.00, stiffness: 760, damping: 42, stretch: 0.00 },
+        dockContainer:    { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.00, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.00, stiffness: 520, damping: 34, stretch: 0.00 },
+        segment:          { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.30, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.10, activeScale: 1.50, stiffness: 760, damping: 42, stretch: 0.14 },
+        segmentContainer: { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.00, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.00, stiffness: 760, damping: 42, stretch: 0.00 },
         fab:              { profile: "convex-squircle", bezel: 14, refraction: 0.86, thickness: 64, shrink: 0.30, specular: 0.60, blur: 0.16, saturation: 1.22, idleScale: 0.88, activeScale: 1.00, stiffness: 540, damping: 32, stretch: 0.18 },
         /* TPX precision lens:
              shrink -0.20  magnifies 20% (see createShrinkMap)
@@ -1395,17 +1395,12 @@
         const pad = () => padOf(track);
         const cell = () => (track.clientWidth - pad() * 2) / buttons.length;
         const apply = () => {
-            const positionMoving = !x.settled(0.002);
-            const remaining = Math.abs(x.target - x.value);
-            if (
-                !dragging
-                && positionMoving
-                && !returningFlat
-                && remaining <= cell() * 0.24
-            ) {
-                returningFlat = true;
-            }
-            const glassShapeActive = (dragging || positionMoving) && !returningFlat;
+            // Match the top dock: scale/stretch motion remains optically
+            // active even after the horizontal spring reaches its cell.
+            const moving = [x, scale, stretch].some(
+                (spring) => !spring.settled(0.002)
+            );
+            const glassShapeActive = (dragging || moving) && !returningFlat;
             if (glassShapeActive) {
                 activity.target = 1;
                 maskActive = true;

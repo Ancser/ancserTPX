@@ -1798,6 +1798,21 @@ async def aggregate_data():
     }
 
 
+_BT_PROGRESS_FILE = Path("data") / "backtest_progress.json"
+_bt_progress_state = {
+    "status": "idle",
+    "stage": "idle",
+    "current": 0,
+    "total": 0,
+    "detail": "",
+    "updated_at": 0.0,
+}
+_bt_progress_file_cache = {
+    "read_at": 0.0,
+    "data": None,
+}
+
+
 def _update_bt_progress(stage: str, current: int = 0, total: int = 0,
                         detail: str = "", status: str = "running") -> None:
     global _bt_progress_state

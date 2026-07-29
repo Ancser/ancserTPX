@@ -1202,8 +1202,8 @@ function collectStrategyParams(mode) {
         // 1.0 = 原始 -0.100;非 EMAPMO 家族送 1.0(引擎端等同不套用)。
         factor_pmo_early_scale: _emapmoThresholdScale(mode),
         // 1.0.9: 單筆風險/獲利寬度上限(ticks/口);0 → null = 不限
-        max_risk_ticks: iv('max-risk-ticks-' + mode, 0) || null,
-        max_profit_ticks: iv('max-profit-ticks-' + mode, 0) || null,
+        max_risk_ticks: _int('max-risk-ticks-' + mode, 0) || null,
+        max_profit_ticks: _int('max-profit-ticks-' + mode, 0) || null,
         risk_cap_mode: _mlSelectValue('risk-cap-mode-' + mode, 'block'),
         factor_sl_rule: factorSlRule,
         factor_tp_rule: factorSlRule,
@@ -5487,30 +5487,34 @@ async function saveSweepPreset(i) {
 
 async function runBacktest() {
     const btn = document.getElementById('btn-backtest');
+    if (!btn) return;
     btn.disabled = true;
     let succeeded = false;
-
-    // Lazy-load full date range before running
-    const dataOk = await _ensureBacktestData(btn);
-    if (!dataOk) { btn.disabled = false; btn.textContent = 'EXECUTE BACKTEST'; return; }
-
-    btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
-    const btBody = buildBacktestBody();
-    const _sess = btBody.tr_allowed_sessions || btBody.conf_allowed_sessions || 'ALL';
-    const _sessLabel = Array.isArray(_sess) ? _sess.join('+') : String(_sess);
-    log('BT PARAMS → strategy=' + (btBody.strategy || '?')
-        + ' session=' + _sessLabel
-        + ' ' + (btBody.strategy === 'trend' ? trendTfUsageText(btBody) : ('TF=' + (btBody.area_timeframe || '?')))
-        + ' RR=1:' + (btBody.rr_ratio || '?')
-        + ' SL=' + (btBody.sl_ticks || '?') + 't'
-        + (btBody.conf_sl_reference_tf ? (' SLref=' + btBody.conf_sl_reference_tf) : '')
-        + ' trail=' + (btBody.trail_trigger_pct > 0 ? (btBody.trail_trigger_pct * 100).toFixed(0) + '%' : 'OFF')
-        + ' confirm=' + (btBody.breakout_confirm_bars || '?')
-        , 'info');
-    log('Running backtest...', 'info');
-    _startBacktestProgress();
+    let progressStarted = false;
 
     try {
+        // Keep every preflight step inside the same guard. A malformed
+        // parameter must never leave the button disabled at "thinking...".
+        const dataOk = await _ensureBacktestData(btn);
+        if (!dataOk) return;
+
+        btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
+        const btBody = buildBacktestBody();
+        const _sess = btBody.tr_allowed_sessions || btBody.conf_allowed_sessions || 'ALL';
+        const _sessLabel = Array.isArray(_sess) ? _sess.join('+') : String(_sess);
+        log('BT PARAMS → strategy=' + (btBody.strategy || '?')
+            + ' session=' + _sessLabel
+            + ' ' + (btBody.strategy === 'trend' ? trendTfUsageText(btBody) : ('TF=' + (btBody.area_timeframe || '?')))
+            + ' RR=1:' + (btBody.rr_ratio || '?')
+            + ' SL=' + (btBody.sl_ticks || '?') + 't'
+            + (btBody.conf_sl_reference_tf ? (' SLref=' + btBody.conf_sl_reference_tf) : '')
+            + ' trail=' + (btBody.trail_trigger_pct > 0 ? (btBody.trail_trigger_pct * 100).toFixed(0) + '%' : 'OFF')
+            + ' confirm=' + (btBody.breakout_confirm_bars || '?')
+            , 'info');
+        log('Running backtest...', 'info');
+        _startBacktestProgress();
+        progressStarted = true;
+
         const resp = await fetch(API + '/backtest/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -5542,7 +5546,7 @@ async function runBacktest() {
     } catch(e) {
         log('Backtest failed: ' + e.message, 'error');
     } finally {
-        _stopBacktestProgress(succeeded);
+        if (progressStarted) _stopBacktestProgress(succeeded);
         btn.disabled = false;
         btn.textContent = 'EXECUTE BACKTEST';
     }

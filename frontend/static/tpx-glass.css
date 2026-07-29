@@ -176,7 +176,7 @@
     flex-direction: column;
     justify-content: flex-start;
     box-sizing: border-box;
-    padding: 3.5rem clamp(10px, calc((100vw - 760px) / 2), 20%) 34px !important;
+    padding: 5.5rem clamp(10px, calc((100vw - 760px) / 2), 20%) 34px !important;
     background: var(--bg);
 }
 
@@ -273,8 +273,8 @@
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    gap: 0.5rem;                    /* 12px */
-    padding: 0.5rem 0.6667rem;      /* 12px 16px */
+    gap: 0.75rem;                   /* 18px */
+    padding: 0.75rem 1rem;          /* 18px 24px */
     background: none;               /* ideal #1: no independent bg */
     border: 0;
     pointer-events: none;           /* only children take pointers */
@@ -286,10 +286,10 @@
     justify-self: start;
     display: flex;
     align-items: baseline;
-    gap: 0.25rem;                   /* 6px */
+    gap: 0.375rem;                  /* 9px */
     font-family: 'Orbitron', sans-serif;
-    font-size: 0.5833rem;           /* 14px */
-    letter-spacing: 0.0833rem;      /* 2px */
+    font-size: 0.875rem;            /* 21px */
+    letter-spacing: 0.125rem;       /* 3px */
     color: var(--text);
     text-shadow: 0 1px 3px rgb(0 0 0 / 0.55);
 }
@@ -302,9 +302,9 @@
 
 .glass-topbar .topbar-brand .ver {
     font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.375rem;            /* 9px */
+    font-size: 0.5625rem;           /* 13.5px */
     color: var(--text3);
-    letter-spacing: 0.0833rem;
+    letter-spacing: 0.125rem;
 }
 
 /* Dock geometry.
@@ -320,8 +320,8 @@
     justify-self: center;
     display: grid;
     align-items: center;
-    height: 2.6667rem;              /* 64px  (demo 82px) */
-    padding: 0.25rem;               /* 6px   (demo 7px)  */
+    height: 4rem;                   /* 96px */
+    padding: 0.375rem;              /* 9px */
     border: 1px solid rgb(var(--cream-rgb) / 0.10);
     border-radius: 999px;
     background: rgb(0 0 0 / 0.30);
@@ -354,9 +354,9 @@
     position: relative;
     z-index: 6;
     height: 100%;
-    min-width: 4rem;                /* 96px — icon + word fit */
+    min-width: 6rem;                /* 144px — 150% top-nav scale */
     border: 0;
-    padding: 0 0.5rem;
+    padding: 0 0.75rem;
     background: transparent;
     cursor: pointer;
     font-weight: 800;
@@ -366,18 +366,18 @@
     display: grid;
     place-items: center;
     place-content: center;
-    gap: 0.0833rem;                 /* 2px */
+    gap: 0.125rem;                  /* 3px */
     color: rgb(var(--cream-rgb));
-    font-size: 0.7917rem;           /* 19px (demo 27.3px, scaled with the track) */
+    font-size: 1.1875rem;           /* 28.5px */
     line-height: 0.9;
 }
 
 .glass-dock small {
     color: rgb(var(--cream-rgb));
     font-family: 'Rajdhani', sans-serif;
-    font-size: 0.4167rem;           /* 10px (demo 11.7px) */
+    font-size: 0.625rem;            /* 15px */
     font-weight: 600;
-    letter-spacing: 0.0417rem;
+    letter-spacing: 0.0625rem;
     text-transform: uppercase;
 }
 
@@ -385,9 +385,9 @@
 :root[data-theme="light"] .glass-dock small { color: #10161f; }
 
 .glass-dock .dock-bubble {
-    left: 0.25rem;                  /* matches padding */
-    top: 0.25rem;
-    height: 2.1667rem;              /* 52px */
+    left: 0.375rem;                 /* matches padding */
+    top: 0.375rem;
+    height: 3.25rem;                /* 78px */
 }
 
 /* ── 3b. Bottom bar: segment control ──────────────────────────────
@@ -544,22 +544,22 @@
     justify-self: end;
     display: flex;
     align-items: center;
-    gap: 0.3333rem;
+    gap: 0.5rem;
 }
 
 .glass-account .account-orb {
     position: relative;
     display: grid;
     place-items: center;
-    width: 1.75rem;                 /* 42px */
-    height: 1.75rem;
+    width: 2.625rem;                /* 63px */
+    height: 2.625rem;
     border: 1px solid var(--glass-rim);
     border-radius: 999px;
     background: var(--glass-tint);
     box-shadow: var(--glass-relief);
     color: var(--text);
     font-family: 'Rajdhani', sans-serif;
-    font-size: 0.6667rem;           /* 16px */
+    font-size: 1rem;                /* 24px */
     font-weight: 700;
     text-transform: uppercase;
     cursor: pointer;
@@ -573,12 +573,12 @@
 .glass-account .account-orb::after {
     content: '';
     position: absolute;
-    right: -0.125rem;
-    bottom: -0.125rem;
+    right: -0.1875rem;
+    bottom: -0.1875rem;
     z-index: 5;
-    width: 0.4167rem;                /* 10px */
-    height: 0.4167rem;
-    border: 2px solid var(--bg);
+    width: 0.625rem;                 /* 15px */
+    height: 0.625rem;
+    border: 3px solid var(--bg);
     border-radius: 999px;
     background: var(--red);
     box-shadow: 0 0 0.3333rem currentColor;
@@ -597,16 +597,19 @@
     background: var(--red);
 }
 
-.glass-account > .topbar-account-badge {
+.glass-account > .account-badge {
     flex: none;
     margin: 0;
     white-space: nowrap;
+    font-size: 0.9375rem;            /* 22.5px */
+    letter-spacing: 0.0625rem;
+    padding: 0.125rem 0.375rem;      /* 3px 9px */
 }
 
 .glass-account .account-panel {
     position: absolute;
     z-index: 40;
-    top: 2.0833rem;                 /* 50px */
+    top: 3.125rem;                  /* 75px */
     right: 0;
     display: none;
     width: min(16.3333rem, calc(100vw - 1.3333rem)); /* 392px = +40% */
@@ -655,7 +658,7 @@
     top: 0;
     left: 0;
     right: 0;
-    height: 5.8333rem;              /* 140px */
+    height: 8.75rem;                /* 210px */
     pointer-events: none;
     background: linear-gradient(
         to bottom,
@@ -735,8 +738,8 @@
     z-index: 16;
     right: 3rem;                    /* 72px — clears the price axis */
     bottom: 1.4167rem;              /* 34px — clears the time axis */
-    width: 2.6667rem;               /* 64px */
-    height: 2.6667rem;
+    width: 4rem;                    /* 96px */
+    height: 4rem;
 }
 
 .fab-button,
@@ -763,17 +766,17 @@
 .fab-button {
     right: 0;
     bottom: 0;
-    width: 1.8333rem;               /* 44px (demo 76px) */
-    height: 1.8333rem;
-    font-size: 0.7917rem;           /* 19px (demo 28px) */
+    width: 2.75rem;                 /* 66px */
+    height: 2.75rem;
+    font-size: 1.1875rem;           /* 28.5px */
 }
 
 .fab-action {
-    right: 0.1667rem;               /* keeps the stack centred under the trigger */
+    right: 0.25rem;                 /* keeps the stack centred under the trigger */
     bottom: 0;
-    width: 1.5rem;                  /* 36px (demo 62px) */
-    height: 1.5rem;
-    font-size: 0.6667rem;
+    width: 2.25rem;                 /* 54px */
+    height: 2.25rem;
+    font-size: 1rem;
     opacity: 0;
     pointer-events: none;
 }
@@ -1045,7 +1048,7 @@
     left: auto;
     transform: none;
     width: auto;
-    height: 2.6667rem;                  /* 64px, same as the demo dock */
+    height: 4rem;                       /* 96px */
     gap: 0;
     order: 0;
 }
@@ -1067,10 +1070,10 @@
 
 /* The bar floats and takes no layout space, so the regions underneath
    reserve their own clearance. */
-:root[data-tpx-glass-skin="on"] .sidebar { padding-top: 3.5rem; }      /* 84px */
+:root[data-tpx-glass-skin="on"] .sidebar { padding-top: 5.5rem; }      /* 132px */
 :root[data-tpx-glass-skin="on"] #calendar-view {
     top: 0;
-    padding-top: 3.5rem;
+    padding-top: 5.5rem;
 }
 
 /* The pointer lens is parented to .main so it can cross the sidebar. */
@@ -1231,7 +1234,19 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 0.4167rem;                     /* 10px */
+    gap: 0.625rem;                      /* 15px */
+}
+
+.topbar-theme {
+    width: 4.25rem;                     /* 102px */
+    height: 1.75rem;                    /* 42px */
+}
+
+.topbar-theme .switch-thumb {
+    left: 0.125rem;                     /* 3px */
+    top: 0.125rem;
+    width: 2rem;                        /* 48px */
+    height: 1.375rem;                   /* 33px */
 }
 
 /* The chart needs to clear the floating bar, since the bar no longer
@@ -1242,7 +1257,7 @@
 /* The live status bar is the app's own node; it only needs to start
    below the floating dock and lose its opaque band. */
 :root[data-tpx-glass-skin="on"] .chart-status-shifted {
-    top: 3.25rem !important;            /* 78px — clears the 64px dock */
+    top: 5.5rem !important;             /* clears the enlarged 96px dock */
     background: none !important;
     border-bottom: 0 !important;
     backdrop-filter: none !important;
