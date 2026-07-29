@@ -1,11 +1,10 @@
 /* ============================================================
-   ancserTPX — liquid glass demo layer
+   ancserTPX — production liquid glass layer
    ============================================================
 
-   TPX-first optics layer for the REAL ancserTPX UI. The old parallel
-   component replica is gone; this preview uses production TPX markup.
-   page has been removed — everything here targets production markup,
-   applied at runtime by tpx-glass-skin.js.
+   TPX-first optics layer for the real ancserTPX UI. Everything here
+   targets production TPX markup and is applied at runtime by
+   tpx-glass-skin.js.
 
    THREE THINGS THIS FILE DOES, IN ORDER:
 
@@ -181,6 +180,24 @@
     background: var(--bg);
 }
 
+/* sanitizeClone intentionally strips duplicate ids. In the app-wide
+   precision clone that removes #chart-container's containing-block rules;
+   its absolute legend, Live status, and signal/zone canvases would then
+   anchor to the whole .main and appear over the sidebar. Restore only the
+   structural geometry through clone-safe data attributes. */
+.optical-stage-copy[data-stage="app"] [data-stage="chart"] {
+    flex: 1;
+    position: relative;
+    min-height: 400px;
+    border-bottom: 1px solid var(--border);
+}
+
+@media (max-width: 900px) {
+    .optical-stage-copy[data-stage="app"] [data-stage="chart"] {
+        min-height: 0;
+    }
+}
+
 .optical-stage-copy [data-optical] { visibility: hidden !important; }
 .optical-background-copy .control-source-content { visibility: hidden !important; }
 .optical-content-copy * { visibility: hidden !important; }
@@ -199,6 +216,12 @@
 
 .optical-content-copy .control-source-content,
 .optical-content-copy .control-source-content * { visibility: visible !important; }
+
+.optical-content-copy .control-source-content {
+    opacity: 1 !important;
+    clip-path: none !important;
+    -webkit-clip-path: none !important;
+}
 
 .optical-content-layer { z-index: 1; }
 .optical-world .optical-layer { display: none !important; }
@@ -238,8 +261,8 @@
 
 /* ── 3a. Top bar: drag dock over the chart ────────────────────────
    Ideal #1. The header loses its own background entirely and floats
-   on the chart; the dock is centred, the account button sits hard
-   right on the same row. No clock, no funded-practice chip. */
+   on the chart; the dock is centred, while the account type badge,
+   connection-dot avatar and theme switch sit hard right. */
 
 .glass-topbar {
     position: absolute;
@@ -382,6 +405,14 @@
     border-radius: 999px;
     background: rgb(0 0 0 / 0.30);
     touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.glass-segment * {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
 }
 
 :root[data-theme="light"] .glass-segment {
@@ -415,11 +446,10 @@
     height: 1.4167rem;              /* 34px */
 }
 
-/* ── Crisp labels ─────────────────────────────────────────────────
-   CRISP_LABELS in tpx-glass.js keeps the real text painted instead of
-   cutting a lens-shaped hole in it and re-rendering a refracted copy.
-   For that to read correctly the label has to sit ABOVE the moving
-   lens, so the pill slides behind the text rather than through it. */
+/* ── Independent dock content pass ────────────────────────────────
+   Both selectors sample their backdrop/frame with shrink enabled, then
+   sample icon/title glyphs from their local track through a second pass
+   whose shrink and specular are zero, matching the APX drag dock. */
 .glass-dock .control-source-content,
 .glass-segment .control-source-content {
     z-index: 8;
@@ -514,6 +544,7 @@
     justify-self: end;
     display: flex;
     align-items: center;
+    gap: 0.3333rem;
 }
 
 .glass-account .account-orb {
@@ -532,30 +563,45 @@
     font-weight: 700;
     text-transform: uppercase;
     cursor: pointer;
-    contain: paint;
-    clip-path: inset(0 round 999px);
-    -webkit-clip-path: inset(0 round 999px);
+    overflow: visible;
     transform-origin: center;
     will-change: transform;
 }
 
-/* Connection state rides the ring, not a separate chip. */
+/* Connection state overlaps the avatar corner instead of being clipped
+   inside it: green=connected, amber=credentials ready, red=error/missing. */
 .glass-account .account-orb::after {
     content: '';
     position: absolute;
-    right: 0.0833rem;
-    bottom: 0.0833rem;
-    z-index: 3;
-    width: 0.375rem;                /* 9px */
-    height: 0.375rem;
-    border: 1px solid var(--bg);
+    right: -0.125rem;
+    bottom: -0.125rem;
+    z-index: 5;
+    width: 0.4167rem;                /* 10px */
+    height: 0.4167rem;
+    border: 2px solid var(--bg);
     border-radius: 999px;
-    background: var(--text3);
+    background: var(--red);
+    box-shadow: 0 0 0.3333rem currentColor;
 }
 
-.glass-account .account-orb[data-conn="live"]::after   { background: var(--green); }
-.glass-account .account-orb[data-conn="loading"]::after { background: var(--amber); }
-.glass-account .account-orb[data-conn="off"]::after     { background: var(--red); }
+.glass-account .account-orb[data-conn="connected"]::after {
+    color: var(--green);
+    background: var(--green);
+}
+.glass-account .account-orb[data-conn="ready"]::after {
+    color: var(--amber);
+    background: var(--amber);
+}
+.glass-account .account-orb[data-conn="error"]::after {
+    color: var(--red);
+    background: var(--red);
+}
+
+.glass-account > .topbar-account-badge {
+    flex: none;
+    margin: 0;
+    white-space: nowrap;
+}
 
 .glass-account .account-panel {
     position: absolute;
@@ -563,7 +609,7 @@
     top: 2.0833rem;                 /* 50px */
     right: 0;
     display: none;
-    width: 11.6667rem;              /* 280px */
+    width: min(16.3333rem, calc(100vw - 1.3333rem)); /* 392px = +40% */
     padding: 0.5rem;
     border: 1px solid var(--glass-border);
     border-radius: var(--glass-radius);
@@ -597,11 +643,11 @@
 
 .glass-account .account-panel .row .v { color: var(--cyan); }
 
-/* ── 3d. Chart fog overlay ────────────────────────────────────────
+/* ── 3d. Workspace fog overlay ────────────────────────────────────
    Ideal #1. The header used to sit on its own --bg2 band. That band
-   is gone; instead the chart itself fades from opaque at the top to
+   is gone; instead the workspace fades from opaque at the top to
    fully clear further down, so the floating dock always has contrast
-   without a hard seam. */
+   without a hard seam across either the sidebar or chart. */
 
 .chart-fog {
     position: absolute;
@@ -1022,7 +1068,10 @@
 /* The bar floats and takes no layout space, so the regions underneath
    reserve their own clearance. */
 :root[data-tpx-glass-skin="on"] .sidebar { padding-top: 3.5rem; }      /* 84px */
-:root[data-tpx-glass-skin="on"] #calendar-view { padding-top: 3.5rem; }
+:root[data-tpx-glass-skin="on"] #calendar-view {
+    top: 0;
+    padding-top: 3.5rem;
+}
 
 /* The pointer lens is parented to .main so it can cross the sidebar. */
 :root[data-tpx-glass-skin="on"] .main { position: relative; }
@@ -1216,11 +1265,16 @@
 }
 
 :root[data-tpx-glass-skin="on"] .account-conn-row {
-    display: flex;
+    display: none !important;
     align-items: center;
     gap: 0.25rem;
     margin-bottom: 0.3333rem;
     cursor: default;
+}
+
+:root[data-tpx-glass-skin="on"] .account-panel input[aria-invalid="true"] {
+    border-color: var(--red) !important;
+    box-shadow: 0 0 0 1px rgb(255 64 96 / 0.28);
 }
 
 :root[data-tpx-glass-skin="on"] .account-conn-row .conn-arrow { display: none; }

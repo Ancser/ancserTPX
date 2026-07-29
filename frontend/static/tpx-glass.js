@@ -1,8 +1,8 @@
 /* ============================================================
-   ancserTPX — liquid glass engine (demo)
+   ancserTPX — production liquid glass engine
 
    TPX-first optics engine wired to the real ancserTPX stages and
-   controls. The generated preview has no parallel mock interface.
+   controls. There is no parallel mock interface.
 
    ── HOW IT RENDERS (read this before debugging anything) ─────────
 
@@ -56,34 +56,29 @@
         },
     };
 
-    /* ── component tuning (verbatim from the gallery demo) ───────── */
+    /* ── component tuning ─────────────────────────────────────────── */
     const defaults = {
-        slider:           { profile: "convex-squircle", bezel: 16, refraction: 0.85, thickness: 80, shrink: 0.00, specular: 0.14, blur: 0.10, saturation: 1.25, idleScale: 1.00, activeScale: 1.08, stiffness: 900, damping: 54, stretch: 0.17 },
-        switch:           { profile: "convex-squircle", bezel: 19, refraction: 0.90, thickness: 47, shrink: 0.30, specular: 0.14, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.50, stiffness: 820, damping: 48, stretch: 0.12 },
-        dock:             { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.30, specular: 0.15, blur: 0.20, saturation: 1.22, idleScale: 1.10, activeScale: 1.50, stiffness: 520, damping: 34, stretch: 0.16 },
-        dockContainer:    { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.30, specular: 0.15, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.00, stiffness: 520, damping: 34, stretch: 0.00 },
-        segment:          { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.30, specular: 0.15, blur: 0.18, saturation: 1.25, idleScale: 0.94, activeScale: 1.50, stiffness: 760, damping: 42, stretch: 0.14 },
-        segmentContainer: { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.30, specular: 0.15, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.00, stiffness: 760, damping: 42, stretch: 0.00 },
-        fab:              { profile: "convex-squircle", bezel: 14, refraction: 0.86, thickness: 64, shrink: 0.30, specular: 0.16, blur: 0.16, saturation: 1.22, idleScale: 0.88, activeScale: 1.00, stiffness: 540, damping: 32, stretch: 0.18 },
+        slider:           { profile: "convex-squircle", bezel: 16, refraction: 0.85, thickness: 80, shrink: 0.00, specular: 0.60, blur: 0.10, saturation: 1.25, idleScale: 1.00, activeScale: 1.08, stiffness: 900, damping: 54, stretch: 0.17 },
+        /* APX's 19px bezel belongs to a 62px-high thumb. TPX's thumb is
+           22px high, so a proportional 7px bezel keeps a clear centre. */
+        switch:           { profile: "convex-squircle", bezel: 7, refraction: 0.90, thickness: 47, shrink: 0.40, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.50, stiffness: 820, damping: 48, stretch: 0.12 },
+        dock:             { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.30, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.10, activeScale: 1.50, stiffness: 520, damping: 34, stretch: 0.16 },
+        dockContainer:    { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.30, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.00, stiffness: 520, damping: 34, stretch: 0.00 },
+        segment:          { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.30, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.50, stiffness: 760, damping: 42, stretch: 0.14 },
+        segmentContainer: { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.30, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.00, stiffness: 760, damping: 42, stretch: 0.00 },
+        fab:              { profile: "convex-squircle", bezel: 14, refraction: 0.86, thickness: 64, shrink: 0.30, specular: 0.60, blur: 0.16, saturation: 1.22, idleScale: 0.88, activeScale: 1.00, stiffness: 540, damping: 32, stretch: 0.18 },
         /* TPX precision lens:
              shrink -0.20  magnifies 20% (see createShrinkMap)
              blur     0.00  preserves sharp chart/text sampling. */
-        precision:        { profile: "convex-squircle", bezel: 30, refraction: 1.50, thickness: 150, shrink: -0.20, specular: 0.16, blur: 0.00, saturation: 1.30, idleScale: 0.86, activeScale: 1.00, stiffness: 400, damping: 25, stretch: 0.15 },
+        precision:        { profile: "convex-squircle", bezel: 30, refraction: 1.50, thickness: 150, shrink: -0.20, specular: 0.60, blur: 0.00, saturation: 1.30, idleScale: 0.86, activeScale: 1.00, stiffness: 400, damping: 25, stretch: 0.15 },
     };
 
-    /* Labels stay as a sharp layer ABOVE the lens instead of being cut
-       out and re-rendered through it.
-
-       A content-bypass pass can punch a lens-shaped hole in the real label
-       (cutOriginalContentUnderLens) and paints a refracted copy in its
-       place, via a second filter pass. On oversized showcase controls
-       that can read as a nice optical touch; at ancserTPX's ~11px tab
-       labels the displaced copy is just
-       mushy, which is what the smeared bottom-nav text was.
-
-       Turning this off also drops one whole filter chain per dock and
-       segment, so the crisp version is the cheaper one too. */
-    const CRISP_LABELS = true;
+    /* APX selectors use two independent optical channels:
+         - the main pass shrinks/refracts the sampled backdrop and frame;
+         - the content pass refracts text/icons with shrink and specular off.
+       TPX gives that content pass its own local track source because the
+       top dock's main backdrop source (#chart-container) has no nav text. */
+    const REFRACT_CONTROL_LABELS = new Set(["dock", "segment"]);
 
     const settings = Object.fromEntries(
         Object.entries(defaults).map(([key, value]) => [key, { ...value }])
@@ -423,7 +418,7 @@
                 <feColorMatrix data-node="parent-saturation" in="parentRefracted" type="saturate" values="1" result="parentSaturated"></feColorMatrix>
                 <feImage data-node="parent-specular-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentSpecularMap"></feImage>
                 <feComponentTransfer in="parentSpecularMap" result="parentSpecularFaded">
-                    <feFuncA data-node="parent-specular-alpha" type="linear" slope="0"></feFuncA>
+                    <feFuncA data-node="parent-specular-alpha" type="linear" slope="0.60"></feFuncA>
                 </feComponentTransfer>
                 <feBlend in="parentSpecularFaded" in2="parentSaturated" mode="screen" result="parentGlass"></feBlend>
                 <feImage data-node="parent-mask-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentMaskMap"></feImage>
@@ -456,7 +451,7 @@
             <feColorMatrix data-node="saturation" in="refracted" type="saturate" values="1.3" result="refractedSaturated"></feColorMatrix>
             <feImage data-node="specular-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="specularMap"></feImage>
             <feComponentTransfer in="specularMap" result="specularFaded">
-                <feFuncA data-node="specular-alpha" type="linear" slope="0.15"></feFuncA>
+                <feFuncA data-node="specular-alpha" type="linear" slope="0.60"></feFuncA>
             </feComponentTransfer>
             <feBlend in="specularFaded" in2="refractedSaturated" mode="screen"></feBlend>
         `;
@@ -503,6 +498,40 @@
         root.querySelectorAll("button, input, select, [tabindex]").forEach((node) => {
             node.setAttribute("tabindex", "-1");
         });
+    }
+
+    /* Clone a live sampling source without ever cloning an optical layer.
+
+       Removing .optical-layer after cloneNode(true) is too late: once a
+       dock already owns a chart-sized optical clone, deep-cloning the dock
+       first duplicates that entire tree just to throw it away. Prune while
+       walking instead, so content copies remain small and never recurse. */
+    function cloneSourceTree(source) {
+        if (
+            source.nodeType === Node.ELEMENT_NODE
+            && source.classList.contains("optical-layer")
+        ) {
+            return null;
+        }
+        const copy = source.cloneNode(false);
+        source.childNodes.forEach((child) => {
+            const childCopy = cloneSourceTree(child);
+            if (childCopy) copy.appendChild(childCopy);
+        });
+        return copy;
+    }
+
+    function cloneOpticalSource(source, roleClasses = []) {
+        const copy = cloneSourceTree(source);
+        sanitizeClone(copy);
+        copy.classList.add("optical-stage-copy", ...roleClasses);
+        /* A rebuild can land during the short inverse-mask animation.
+           The sampled content copy must never inherit that live cutout. */
+        copy.querySelectorAll(".control-source-content").forEach((content) => {
+            content.style.clipPath = "";
+            content.style.webkitClipPath = "";
+        });
+        return copy;
     }
 
     function markScrollSources(stage) {
@@ -552,6 +581,11 @@
         });
     }
 
+    function sampleInCopy(copy, selector) {
+        if (!copy) return null;
+        return copy.matches(selector) ? copy : copy.querySelector(selector);
+    }
+
     /* ── surface wiring ──────────────────────────────────────────── */
 
     const stageTemplates = new Map();
@@ -563,10 +597,7 @@
         const stages = Array.from(document.querySelectorAll("[data-stage]"));
         stages.forEach((stage) => {
             markScrollSources(stage);
-            const copy = stage.cloneNode(true);
-            sanitizeClone(copy);
-            copy.classList.add("optical-stage-copy");
-            stageTemplates.set(stage, copy);
+            stageTemplates.set(stage, cloneOpticalSource(stage));
         });
 
         Array.from(document.querySelectorAll("[data-optical]")).forEach((element) => {
@@ -576,25 +607,34 @@
                top bar needs it: it has to live outside .main so the
                Research tab's `mainEl.style.display='none'` cannot take
                the nav down with it, but it still refracts the chart. */
+            const localStage = element.closest("[data-stage]");
             const stageRef = element.closest("[data-optical-stage]");
-            const stage = stageRef
-                ? document.querySelector(stageRef.dataset.opticalStage)
-                : element.closest("[data-stage]");
+            const stage = localStage || (
+                stageRef
+                    ? document.querySelector(stageRef.dataset.opticalStage)
+                    : null
+            );
             if (!stage || !stageTemplates.has(stage)) return;
             const index = filterSeq++;
             const layer = document.createElement("span");
             const world = document.createElement("span");
             const isContainerGlass = element.hasAttribute("data-container-glass");
-            const needsContentBypass =
-                !CRISP_LABELS
-                && !isContainerGlass
+            const needsParentPass =
+                !isContainerGlass
                 && (component === "dock" || component === "segment");
+            const needsContentBypass =
+                needsParentPass && REFRACT_CONTROL_LABELS.has(component);
+            /* The selector's backdrop and its glyphs are deliberately
+               sampled from different sources. The top backdrop comes
+               from the chart, while its icon/title only exist in this
+               local track. */
+            const contentStage = needsContentBypass ? element.parentElement : null;
             const filterNodes = createOpticalFilter(
-                `tpx-optical-filter-${index}`, needsContentBypass
+                `tpx-optical-filter-${index}`, needsParentPass
             );
             const stageCopy = stageTemplates.get(stage).cloneNode(true);
-            const parentComponent = needsContentBypass ? `${component}Container` : null;
-            const parentContainerSource = needsContentBypass
+            const parentComponent = needsParentPass ? `${component}Container` : null;
+            const parentContainerSource = needsParentPass
                 ? element.parentElement.querySelector(`[data-optical="${parentComponent}"]`)
                 : null;
             let contentLayer = null;
@@ -606,17 +646,20 @@
             layer.style.filter = `url(#tpx-optical-filter-${index})`;
             world.className = "optical-world";
             if (isContainerGlass) stageCopy.classList.add("container-shell-copy");
-            if (needsContentBypass) {
+            if (needsParentPass) {
                 stageCopy.classList.add("optical-background-copy", "container-shell-copy");
+            }
+            if (needsContentBypass) {
                 contentLayer = document.createElement("span");
                 contentWorld = document.createElement("span");
-                contentStageCopy = stageTemplates.get(stage).cloneNode(true);
+                contentStageCopy = cloneOpticalSource(
+                    contentStage, ["optical-content-copy"]
+                );
                 contentFilterNodes = createOpticalFilter(`tpx-optical-content-filter-${index}`);
                 contentLayer.className = "optical-layer optical-content-layer";
                 contentLayer.setAttribute("aria-hidden", "true");
                 contentLayer.style.filter = `url(#tpx-optical-content-filter-${index})`;
                 contentWorld.className = "optical-world";
-                contentStageCopy.classList.add("optical-content-copy");
                 contentWorld.appendChild(contentStageCopy);
                 contentLayer.appendChild(contentWorld);
             }
@@ -627,6 +670,7 @@
             surfaces.push({
                 component, element, stage, layer, world, stageCopy, filterNodes,
                 contentLayer, contentWorld, contentStageCopy, contentFilterNodes,
+                contentStage,
                 parentComponent, parentContainerSource,
                 /* Per-instance hook: mirrors live state (fill widths,
                    toggle classes) into the clone. The demo hardcoded
@@ -666,6 +710,71 @@
         };
     }
 
+    function alignOpticalCopy(
+        surface, sourceStage, world, stageCopy,
+        elementRect, scaleX, scaleY, scaleInsetX, scaleInsetY
+    ) {
+        if (!sourceStage || !world || !stageCopy) return null;
+        const sourceRect = sourceStage.getBoundingClientRect();
+        const logical = logicalOffsetWithin(surface.element, sourceStage);
+        const x = (logical.x + scaleInsetX) / scaleX;
+        const y = (logical.y + scaleInsetY) / scaleY;
+        /* Use each source's full scroll box. This keeps sidebar controls
+           aligned after scrolling and gives a dock's local content source
+           its own compact coordinate system. */
+        const localContent = sourceStage === surface.contentStage;
+        /* A transformed selector can inflate its track's scrollHeight even
+           though the track is not a scroller. Using that overflow as the
+           content-stage height stretched the copied glyphs during drag. */
+        const sourceW = localContent
+            ? sourceRect.width
+            : Math.max(sourceRect.width, sourceStage.scrollWidth);
+        const sourceH = localContent
+            ? sourceRect.height
+            : Math.max(sourceRect.height, sourceStage.scrollHeight);
+        world.style.width = `${sourceW}px`;
+        world.style.height = `${sourceH}px`;
+        stageCopy.style.width = `${sourceW}px`;
+        stageCopy.style.height = `${sourceH}px`;
+        world.style.transformOrigin = "0 0";
+        world.style.transform =
+            `translate3d(${-x}px, ${-y}px, 0) scale(${1 / scaleX}, ${1 / scaleY})`;
+        if (localContent) {
+            /* The copied local track has its margin removed and lives
+               inside a bordered selector. Resolve those CSS box-model
+               pixels from the rendered rect so glyphs land exactly on
+               their live counterparts even while the selector scales. */
+            const copyRect = stageCopy.getBoundingClientRect();
+            const correctedX = x + (copyRect.left - sourceRect.left) / scaleX;
+            const correctedY = y + (copyRect.top - sourceRect.top) / scaleY;
+            world.style.transform =
+                `translate3d(${-correctedX}px, ${-correctedY}px, 0) `
+                + `scale(${1 / scaleX}, ${1 / scaleY})`;
+        }
+        return { logical, scaleInsetX, scaleInsetY };
+    }
+
+    function localTransformScale(element) {
+        const transform = getComputedStyle(element).transform;
+        if (!transform || transform === "none") return { x: 1, y: 1 };
+        const values = transform.slice(
+            transform.indexOf("(") + 1, transform.lastIndexOf(")")
+        ).split(",").map(Number);
+        if (transform.startsWith("matrix3d") && values.length === 16) {
+            return {
+                x: Math.max(0.01, Math.hypot(values[0], values[1], values[2])),
+                y: Math.max(0.01, Math.hypot(values[4], values[5], values[6])),
+            };
+        }
+        if (transform.startsWith("matrix") && values.length === 6) {
+            return {
+                x: Math.max(0.01, Math.hypot(values[0], values[1])),
+                y: Math.max(0.01, Math.hypot(values[2], values[3])),
+            };
+        }
+        return { x: 1, y: 1 };
+    }
+
     function syncOpticalSurfaces(component = null) {
         pendingSyncFrame = 0;
         surfaces.forEach((surface) => {
@@ -674,69 +783,71 @@
                 surface.syncSample(surface.stageCopy);
                 if (surface.contentStageCopy) surface.syncSample(surface.contentStageCopy);
             }
-            // A surface rooted at .main can cross nested scrollers such
-            // as the sidebar. Keep those clone scroll positions current.
+            /* The main backdrop and isolated glyph pass can have different
+               live sources, so scroll state, visibility, dimensions and
+               offsets must be handled independently. */
             mirrorNestedScrollState(surface.stage, surface.stageCopy);
-            mirrorNestedScrollState(surface.stage, surface.contentStageCopy);
-            /* A surface can outlive the visibility of its stage: the top
-               bar stays up while the Research tab does
-               mainEl.style.display='none', and the clone it refracts
-               collapses to zero size. Drop the lens rather than render a
-               collapsed one — the CSS backdrop-filter underneath is the
-               graceful fallback. */
-            const stageVisible = surface.stage.offsetWidth > 0
-                && surface.stage.offsetHeight > 0;
-            if (surface.layer) surface.layer.style.display = stageVisible ? "" : "none";
-            if (surface.contentLayer) {
-                surface.contentLayer.style.display = stageVisible ? "" : "none";
-            }
-            if (!stageVisible) return;
-            mirrorCanvases(surface);
-            const elementRect = surface.element.getBoundingClientRect();
-            const stageRect = surface.stage.getBoundingClientRect();
-            const logical = logicalOffsetWithin(surface.element, surface.stage);
-            const scaleX = Math.max(
-                0.01, elementRect.width / Math.max(1, surface.element.offsetWidth)
-            );
-            const scaleY = Math.max(
-                0.01, elementRect.height / Math.max(1, surface.element.offsetHeight)
-            );
-            const scaleInsetX = (surface.element.offsetWidth - elementRect.width) / 2;
-            const scaleInsetY = (surface.element.offsetHeight - elementRect.height) / 2;
-            const x = (logical.x + scaleInsetX) / scaleX;
-            const y = (logical.y + scaleInsetY) / scaleY;
-            /* Size the clone to the stage's SCROLL box, not its visible
-               box.
+            const contentStage = surface.contentStage || surface.stage;
+            mirrorNestedScrollState(contentStage, surface.contentStageCopy);
 
-               The offsets below are content-space (offsetLeft/offsetTop,
-               which ignore scrolling), so the clone has to lay its
-               content out at full length for them to line up. Sized to
-               the visible box instead, a scrollable stage like .sidebar
-               clips its clone at scrollTop 0 — so a control scrolled
-               halfway down the panel refracted whatever happened to be
-               at the top of the panel. That was the slider sampling the
-               wrong place. */
-            const stageW = Math.max(stageRect.width, surface.stage.scrollWidth);
-            const stageH = Math.max(stageRect.height, surface.stage.scrollHeight);
-            [
-                [surface.world, surface.stageCopy],
-                [surface.contentWorld, surface.contentStageCopy],
-            ].forEach(([world, stageCopy]) => {
-                if (!world || !stageCopy) return;
-                world.style.width = `${stageW}px`;
-                world.style.height = `${stageH}px`;
-                stageCopy.style.width = `${stageW}px`;
-                stageCopy.style.height = `${stageH}px`;
-                world.style.transformOrigin = "0 0";
-                world.style.transform =
-                    `translate3d(${-x}px, ${-y}px, 0) scale(${1 / scaleX}, ${1 / scaleY})`;
-            });
-            if (surface.filterNodes.parent && surface.parentContainerSource) {
+            const mainVisible = surface.stage.offsetWidth > 0
+                && surface.stage.offsetHeight > 0;
+            const contentVisible = Boolean(
+                surface.contentLayer
+                && contentStage.offsetWidth > 0
+                && contentStage.offsetHeight > 0
+            );
+            if (surface.layer) surface.layer.style.display = mainVisible ? "" : "none";
+            if (surface.contentLayer) {
+                surface.contentLayer.style.display = contentVisible ? "" : "none";
+            }
+            if (!mainVisible && !contentVisible) return;
+
+            const elementRect = surface.element.getBoundingClientRect();
+            /* offsetWidth rounds fractional grid cells. Treating that
+               rounding error as a transform made each bottom label drift
+               a little farther from its live counterpart. Read the actual
+               local transform matrix, then recover the pre-transform box. */
+            const transformScale = localTransformScale(surface.element);
+            const scaleX = transformScale.x;
+            const scaleY = transformScale.y;
+            const layoutWidth = elementRect.width / scaleX;
+            const layoutHeight = elementRect.height / scaleY;
+            const scaleInsetX = (layoutWidth - elementRect.width) / 2;
+            const scaleInsetY = (layoutHeight - elementRect.height) / 2;
+            let mainAlignment = null;
+            if (mainVisible) {
+                mirrorCanvases(surface);
+                mainAlignment = alignOpticalCopy(
+                    surface, surface.stage, surface.world, surface.stageCopy,
+                    elementRect, scaleX, scaleY, scaleInsetX, scaleInsetY
+                );
+            }
+            if (contentVisible) {
+                alignOpticalCopy(
+                    surface, contentStage,
+                    surface.contentWorld, surface.contentStageCopy,
+                    elementRect, scaleX, scaleY, scaleInsetX, scaleInsetY
+                );
+            }
+            if (
+                mainAlignment
+                && surface.filterNodes.parent
+                && surface.parentContainerSource
+            ) {
                 const parentLogical = logicalOffsetWithin(
                     surface.parentContainerSource, surface.stage
                 );
-                const parentX = (parentLogical.x - logical.x - scaleInsetX) / scaleX;
-                const parentY = (parentLogical.y - logical.y - scaleInsetY) / scaleY;
+                const parentX = (
+                    parentLogical.x
+                    - mainAlignment.logical.x
+                    - mainAlignment.scaleInsetX
+                ) / scaleX;
+                const parentY = (
+                    parentLogical.y
+                    - mainAlignment.logical.y
+                    - mainAlignment.scaleInsetY
+                ) / scaleY;
                 const parentWidth = surface.parentContainerSource.offsetWidth / scaleX;
                 const parentHeight = surface.parentContainerSource.offsetHeight / scaleY;
                 [
@@ -770,9 +881,10 @@
        Fix: after each sync, drawImage() the live canvas into its
        counterpart in the clone. Cost is one full-surface blit per
        cloned canvas per frame, which is exactly the expense the CSS
-       backdrop path avoids — so it is opt-out via setCanvasMirror(),
-       and downscaled by mirrorScale (the copy is about to be blurred
-       and displaced, so it does not need 1:1 pixels).
+       backdrop path avoids — so it is opt-out via setCanvasMirror().
+       Small control surfaces use a reduced mirror scale, while the
+       Precision Lens keeps the chart at native canvas resolution so
+       its 20% magnification does not enlarge a half-size bitmap.
 
        Pairing is positional: querySelectorAll('canvas') returns tree
        order, and the clone is a structural copy, so index i maps to
@@ -781,8 +893,9 @@
     const mirror = {
         enabled: true,
         scale: 0.5,
+        precisionScale: 1,
         /* Independent heartbeat, because the chart repaints on ticks /
-           pan / zoom with no spring running. 15fps: fast enough that a
+           pan / zoom with no spring running. ~30fps: fast enough that a
            glass panel over a live chart never looks frozen, slow enough
            that the blit cost stays off the interaction path. */
         intervalMs: 33,
@@ -801,12 +914,12 @@
         const sources = liveCanvases(surface.stage);
         surface.mirrorPairs = [];
         if (!sources.length) return;
-        [surface.stageCopy, surface.contentStageCopy].forEach((copy) => {
-            if (!copy) return;
-            const targets = [...copy.querySelectorAll("canvas")];
-            sources.forEach((src, i) => {
-                if (targets[i]) surface.mirrorPairs.push([src, targets[i]]);
-            });
+        /* Canvas pixels belong to the main stage only. A dock's content
+           copy has an unrelated local source and must never receive chart
+           canvases merely because one is added to that track later. */
+        const targets = [...surface.stageCopy.querySelectorAll("canvas")];
+        sources.forEach((src, i) => {
+            if (targets[i]) surface.mirrorPairs.push([src, targets[i]]);
         });
         surface.mirrorSourceCount = sources.length;
     }
@@ -848,26 +961,31 @@
     function rebuildStageClones() {
         stageTemplates.forEach((_, stage) => {
             markScrollSources(stage);
-            const fresh = stage.cloneNode(true);
-            sanitizeClone(fresh);
-            fresh.classList.add("optical-stage-copy");
-            fresh.querySelectorAll(".optical-layer").forEach((n) => n.remove());
-            stageTemplates.set(stage, fresh);
+            stageTemplates.set(stage, cloneOpticalSource(stage));
         });
         surfaces.forEach((surface) => {
             const template = stageTemplates.get(surface.stage);
             if (!template) return;
-            [["stageCopy", "world"], ["contentStageCopy", "contentWorld"]]
-                .forEach(([copyKey, worldKey]) => {
-                    const old = surface[copyKey];
-                    const world = surface[worldKey];
-                    if (!old || !world) return;
-                    const next = template.cloneNode(true);
-                    next.className = old.className;
-                    next.style.cssText = old.style.cssText;
-                    world.replaceChild(next, old);
-                    surface[copyKey] = next;
+            if (surface.stageCopy && surface.world) {
+                const old = surface.stageCopy;
+                const next = template.cloneNode(true);
+                ["optical-background-copy", "container-shell-copy"].forEach((className) => {
+                    if (old.classList.contains(className)) next.classList.add(className);
                 });
+                surface.world.replaceChild(next, old);
+                surface.stageCopy = next;
+            }
+            if (
+                surface.contentStage
+                && surface.contentStageCopy
+                && surface.contentWorld
+            ) {
+                const next = cloneOpticalSource(
+                    surface.contentStage, ["optical-content-copy"]
+                );
+                surface.contentWorld.replaceChild(next, surface.contentStageCopy);
+                surface.contentStageCopy = next;
+            }
             bindMirrors(surface);
         });
         scheduleOpticalSync();
@@ -876,15 +994,27 @@
     function mirrorCanvases(surface) {
         if (!mirror.enabled || !surface.mirrorPairs) return;
         if (!surface.mirrorPairs.length) return;
+        /* A full-resolution chart blit is only worthwhile while the
+           pointer lens is visible. Hidden Precision Lens surfaces stay
+           idle; the first visible heartbeat refreshes them immediately. */
+        if (
+            surface.component === "precision"
+            && parseFloat(surface.element.style.opacity || "0") <= 0
+        ) {
+            return;
+        }
         if (liveCanvases(surface.stage).length !== surface.mirrorSourceCount) {
             scheduleStageCloneRebuild();
             return;
         }
         const started = performance.now();
+        const sampleScale = surface.component === "precision"
+            ? mirror.precisionScale
+            : mirror.scale;
         surface.mirrorPairs.forEach(([src, dst]) => {
             if (!src.width || !src.height) return;
-            const w = Math.max(1, Math.round(src.width * mirror.scale));
-            const h = Math.max(1, Math.round(src.height * mirror.scale));
+            const w = Math.max(1, Math.round(src.width * sampleScale));
+            const h = Math.max(1, Math.round(src.height * sampleScale));
             if (dst.width !== w || dst.height !== h) {
                 dst.width = w;
                 dst.height = h;
@@ -1127,7 +1257,9 @@
             bubble.style.width = `${cell()}px`;
             bubble.style.transform =
                 `scale(${scale.value * stretch.value}, ${scale.value / stretch.value})`;
-            if (!CRISP_LABELS) cutOriginalContentUnderLens(contentLayers, bubble, maskActive);
+            if (REFRACT_CONTROL_LABELS.has("dock")) {
+                cutOriginalContentUnderLens(contentLayers, bubble, maskActive);
+            }
         };
         const start = () => runSpringLoop(
             "dock", [x, scale, stretch, activity], apply,
@@ -1251,17 +1383,29 @@
         const activity = new Spring(0);
         let selected = buttons.findIndex((b) => b.classList.contains("active"));
         if (selected < 0) selected = 0;
+        let pointerActive = false;
+        let dragging = false;
+        let pointerId = null;
+        let startClientX = 0;
+        let ignoreClickUntil = 0;
         let maskActive = false;
+        let releaseTimer = 0;
         let returningFlat = true;
+        const dragDistancePx = 6;
         const pad = () => padOf(track);
         const cell = () => (track.clientWidth - pad() * 2) / buttons.length;
         const apply = () => {
             const positionMoving = !x.settled(0.002);
             const remaining = Math.abs(x.target - x.value);
-            if (positionMoving && !returningFlat && remaining <= cell() * 0.24) {
+            if (
+                !dragging
+                && positionMoving
+                && !returningFlat
+                && remaining <= cell() * 0.24
+            ) {
                 returningFlat = true;
             }
-            const glassShapeActive = positionMoving && !returningFlat;
+            const glassShapeActive = (dragging || positionMoving) && !returningFlat;
             if (glassShapeActive) {
                 activity.target = 1;
                 maskActive = true;
@@ -1280,27 +1424,121 @@
             indicator.style.width = `${cell()}px`;
             indicator.style.transform =
                 `scale(${scale.value * stretch.value}, ${scale.value / stretch.value})`;
-            if (!CRISP_LABELS) cutOriginalContentUnderLens(contentLayers, indicator, maskActive);
+            if (REFRACT_CONTROL_LABELS.has("segment")) {
+                cutOriginalContentUnderLens(contentLayers, indicator, maskActive);
+            }
         };
         const start = () => runSpringLoop(
             "segment", [x, scale, stretch, activity], apply,
-            () => [x, scale, stretch, activity].some((s) => !s.settled())
+            () => dragging || [x, scale, stretch, activity].some((s) => !s.settled()),
+            track
         );
-        const select = (index) => {
-            selected = clamp(index, 0, buttons.length - 1);
+        const beginIdleReturn = () => {
+            returningFlat = true;
+            fastReturn(activity, 0, 0.14);
+            fastReturn(scale, settings.segment.idleScale);
+            fastReturn(stretch, 1);
+            start();
+        };
+        const pulse = () => {
+            clearTimeout(releaseTimer);
             returningFlat = false;
+            maskActive = true;
             activity.value = Math.max(activity.value, 0.18);
             activity.target = 1;
-            maskActive = true;
             scale.target = settings.segment.activeScale;
-            fastReturn(scale, settings.segment.idleScale);
+            start();
+            releaseTimer = setTimeout(beginIdleReturn, 110);
+        };
+        const select = (index, animate = true) => {
+            selected = clamp(index, 0, buttons.length - 1);
             x.target = selected * cell();
             buttons.forEach((button, i) => button.classList.toggle("active", i === selected));
             if (onSelect) onSelect(buttons[selected], selected);
+            if (animate) pulse();
             start();
         };
         buttons.forEach((button, index) => {
-            button.addEventListener("click", () => select(index));
+            button.addEventListener("click", () => {
+                if (performance.now() < ignoreClickUntil) return;
+                select(index);
+            });
+        });
+        track.addEventListener("pointerdown", (event) => {
+            if (event.pointerType === "mouse" && event.button !== 0) return;
+            pointerActive = true;
+            dragging = false;
+            pointerId = event.pointerId;
+            startClientX = event.clientX;
+        });
+        track.addEventListener("pointermove", (event) => {
+            if (!pointerActive || event.pointerId !== pointerId) return;
+            const dx = event.clientX - startClientX;
+            if (!dragging) {
+                if (Math.abs(dx) < dragDistancePx) return;
+                dragging = true;
+                capturePointer(track, event.pointerId);
+                clearTimeout(releaseTimer);
+                returningFlat = false;
+                scale.target = settings.segment.activeScale;
+                start();
+            }
+            const rect = track.getBoundingClientRect();
+            const raw = clamp(
+                event.clientX - rect.left - pad() - cell() / 2,
+                0, cell() * (buttons.length - 1)
+            );
+            const velocity = raw - x.target;
+            x.target = raw;
+            stretch.target = 1 + Math.min(
+                settings.segment.stretch, Math.abs(velocity) / 80
+            );
+            selected = Math.round(raw / cell());
+        });
+        const release = (event) => {
+            if (!pointerActive || event.pointerId !== pointerId) return;
+            const wasDragging = dragging;
+            pointerActive = false;
+            dragging = false;
+            pointerId = null;
+            releasePointer(track, event.pointerId);
+            if (!wasDragging) return;
+            ignoreClickUntil = performance.now() + 220;
+            beginIdleReturn();
+            select(selected, false);
+            /* The production onclick owns panel visibility/rendering.
+               Trigger it after snapping exactly like the top drag dock. */
+            buttons[selected]?.click();
+        };
+        const cancel = (event) => {
+            if (!pointerActive || event.pointerId !== pointerId) return;
+            pointerActive = false;
+            dragging = false;
+            pointerId = null;
+            releasePointer(track, event.pointerId);
+            selected = Math.max(0, buttons.findIndex(
+                (button) => button.classList.contains("active")
+            ));
+            x.target = selected * cell();
+            beginIdleReturn();
+        };
+        track.addEventListener("pointerup", release);
+        track.addEventListener("pointercancel", cancel);
+
+        /* Programmatic switches such as _showBottomTab('presets') do
+           not click a tab. Follow the live active class so the bubble
+           and the Precision Lens clone stay on the same panel. */
+        new MutationObserver(() => {
+            const activeIndex = buttons.findIndex(
+                (button) => button.classList.contains("active")
+            );
+            if (activeIndex < 0 || activeIndex === selected) return;
+            selected = activeIndex;
+            x.target = selected * cell();
+            beginIdleReturn();
+            scheduleStageCloneRebuild();
+        }).observe(track, {
+            attributes: true, attributeFilter: ["class"], subtree: true,
         });
         new ResizeObserver(() => {
             x.value = x.target = selected * cell();
@@ -1559,10 +1797,11 @@
         const surface = surfaceFor(thumb);
         if (surface) {
             surface.syncSample = (copy) => {
-                const sample = copy.querySelector(
-                    `[data-slider-key="${root.dataset.sliderKey}"] .slider-fill`
+                const sampleRoot = sampleInCopy(
+                    copy, `[data-slider-key="${root.dataset.sliderKey}"]`
                 );
-                if (sample) sample.style.width = fill.style.width;
+                const sampleFill = sampleRoot?.querySelector(".slider-fill");
+                if (sampleFill) sampleFill.style.width = fill.style.width;
             };
         }
 
@@ -1712,11 +1951,20 @@
         const surface = surfaceFor(thumb);
         if (surface) {
             surface.syncSample = (copy) => {
-                const sample = copy.querySelector(
-                    `[data-switch-key="${track.dataset.switchKey}"]`
+                const sample = sampleInCopy(
+                    copy, `[data-switch-key="${track.dataset.switchKey}"]`
                 );
                 if (!sample) return;
                 sample.classList.toggle("on", track.classList.contains("on"));
+                [
+                    "--switch-progress",
+                    "--switch-track-color",
+                    "--switch-thumb-color",
+                ].forEach((property) => {
+                    sample.style.setProperty(
+                        property, track.style.getPropertyValue(property)
+                    );
+                });
             };
         }
 
@@ -1918,6 +2166,11 @@
 
         liveAll(".glass-segment").forEach((segment) => {
             initSegmentControl(segment, (button) => {
+                /* Production bottom tabs switch panels by toggling
+                   .active/.hidden classes. Refresh every stage clone
+                   after that handler runs so the Precision Lens samples
+                   the newly visible table/log/canvas, not the old tab. */
+                scheduleStageCloneRebuild();
                 const view = button.dataset.segmentView;
                 if (!view) return;
                 document.querySelectorAll("[data-segment-panel]").forEach((panel) => {
@@ -2002,6 +2255,7 @@
                     mirror: {
                         enabled: mirror.enabled,
                         scale: mirror.scale,
+                        precisionScale: mirror.precisionScale,
                         pairs: surfaces.reduce(
                             (n, s) => n + (s.mirrorPairs ? s.mirrorPairs.length : 0), 0
                         ),
@@ -2013,9 +2267,21 @@
         };
     }
 
+    function boot() {
+        try {
+            init();
+        } catch (error) {
+            window.TpxGlassInitError = {
+                message: String(error?.message || error),
+                stack: String(error?.stack || ""),
+            };
+            console.error("[TPX Glass] initialization failed", error);
+        }
+    }
+
     if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", init, { once: true });
+        document.addEventListener("DOMContentLoaded", boot, { once: true });
     } else {
-        init();
+        boot();
     }
 })();

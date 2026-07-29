@@ -2298,9 +2298,17 @@ document.addEventListener('DOMContentLoaded', () => {
     initPresetDirtyTracking();
     decorateParamHelpDots();
     checkHealth();
-    loadEnvConfig();
+    const envConfigReady = loadEnvConfig();
     updateClock();
     setInterval(updateClock, 1000);
+
+    ['username', 'apikey'].forEach(id => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener('input', () => {
+            _refreshConnectionState({ credentialsChanged: true });
+        });
+    });
 
     // Full-range mode: no manual dates. END = today, START = far past so the
     // paginated fetch walks back to the contract's earliest available bar.
@@ -2314,9 +2322,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Auto-connect after env config loads
-    setTimeout(() => {
+    setTimeout(async () => {
+        try { await envConfigReady; } catch (e) {}
         const username = document.getElementById('username').value.trim();
-        if (username) {
+        const connectionReady = _refreshConnectionState() !== 'error';
+        if (username && connectionReady) {
             connectAPI();
         } else {
             // No .env config — open dropdown for manual entry
@@ -2386,6 +2396,12 @@ async function loadEnvConfig() {
     try {
         const resp = await fetch(API + '/config');
         const cfg = await resp.json();
+        const apiKeyInput = document.getElementById('apikey');
+        if (apiKeyInput) {
+            apiKeyInput.dataset.configured = (
+                cfg.has_api_key || (cfg.env_loaded && cfg.api_key_preview)
+            ) ? '1' : '0';
+        }
 
         if (cfg.env_loaded) {
             document.getElementById('username').value = cfg.username;
@@ -2399,8 +2415,10 @@ async function loadEnvConfig() {
         } else {
             log('.env not configured -- enter credentials manually', 'warn');
         }
+        _refreshConnectionState({ credentialsChanged: true });
     } catch(e) {
         log('Could not load .env config: ' + e.message, 'warn');
+        setStatus('err', 'CONFIG ERROR');
     }
 }
 
@@ -6875,11 +6893,45 @@ function renderZones(zones) {
 
 // -- Utilities -------------------------------------
 
+let _connectionStatusKind = 'idle';
+let _connectionStatusText = 'DISCONNECTED';
+
+function _refreshConnectionState(options) {
+    const opts = options || {};
+    const username = document.getElementById('username');
+    const apikey = document.getElementById('apikey');
+    const email = (username && username.value || '').trim();
+    const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    const typedKey = (apikey && apikey.value || '').trim();
+    const storedKey = !!(apikey && apikey.dataset.configured === '1');
+    const keyValid = !!typedKey || storedKey;
+
+    if (username) username.setAttribute('aria-invalid', emailValid ? 'false' : 'true');
+    if (apikey) apikey.setAttribute('aria-invalid', keyValid ? 'false' : 'true');
+
+    const connected = _connectionStatusKind === 'ok'
+        && /^CONNECTED$/i.test(_connectionStatusText);
+    const hardError = _connectionStatusKind === 'err'
+        && /OFFLINE|FAILED|ERROR/i.test(_connectionStatusText);
+    let state = 'ready';
+    if (!emailValid || !keyValid) state = 'error';
+    else if (connected && !opts.credentialsChanged) state = 'connected';
+    else if (hardError && !opts.credentialsChanged) state = 'error';
+
+    document.documentElement.dataset.connectionState = state;
+    const trigger = document.getElementById('conn-trigger');
+    if (trigger) trigger.classList.toggle('connected', state === 'connected');
+    return state;
+}
+
 function setStatus(type, text) {
     const dot = document.getElementById('api-status');
     const label = document.getElementById('api-status-text');
     dot.className = 'status-dot ' + type;
     label.textContent = text;
+    _connectionStatusKind = type;
+    _connectionStatusText = text;
+    _refreshConnectionState();
 }
 
 function scrollSystemLogToBottom() {

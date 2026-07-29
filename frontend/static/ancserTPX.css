@@ -1540,17 +1540,19 @@
         .tf-row { display: flex; gap: 10px; flex-wrap: wrap; padding: 4px 0; }
         .input-ro-cyan { background: var(--bg3); color: var(--cyan); cursor: default; font-size: 0.6875rem; }
         /* LIVE 頂欄 cell / 風控閘 chip */
+        #live-top-bar { pointer-events: none; }
         .lv-cell { display: flex; align-items: center; justify-content: center; border-right: 1px solid var(--border); padding: 0 12px; }
         .rg-chip { padding: 1px 6px; border-radius: 3px; border: 1px solid var(--border); color: var(--text3); white-space: nowrap; }
         .live-status-row {
             display: flex;
-            align-items: flex-start;
+            align-items: center;
             min-height: 22px;
-            height: auto;
+            height: 22px;
             border-top: 1px solid var(--border);
-            padding: 3px 12px;
+            padding: 0 12px;
             font-size: 0.625rem;
             letter-spacing: 0.3px;
+            overflow: hidden;
         }
         .live-status-label {
             color: var(--cyan);
@@ -1563,20 +1565,13 @@
             flex: 1;
             min-width: 0;
             color: var(--text1);
-            /* 1.0.9: 取消軟換行 —— 狀態文字自帶 
-(factor.py 的
-               "Waiting for:
-{conditions}"),那些換行要保留,但單一長行
-               (如 gap shrinking 的三個數值)不該被折斷。white-space:pre
-               保留 
- 但不軟換行;超寬時由本容器自己橫向捲動,不影響版面。 */
-            white-space: pre;
-            overflow-x: auto;
-            overflow-y: hidden;
+            /* Chart overlay stays one line; the sidebar's
+               .slot-phase-text retains the full multiline detail. */
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
             line-height: 1.6;
         }
-        .live-phase-text::-webkit-scrollbar { height: 3px; }
-        .live-phase-text::-webkit-scrollbar-thumb { background: var(--border-h); }
         /* LIVE 帳號槽(MAIN/MINOR 兩份相同結構) */
         .slot-input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 7px; font-family: 'IBM Plex Mono', monospace; font-size: 0.6875rem; }
         .slot-btnrow { display: flex; gap: 6px; margin-top: 8px; }

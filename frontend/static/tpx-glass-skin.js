@@ -1,8 +1,8 @@
 /* ============================================================
-   ancserTPX — liquid glass skin (demo)
+   ancserTPX — production liquid glass skin
 
-   Transforms the REAL ancserTPX UI in place, so the demo shows the
-   actual app under glass instead of a hand-built mock.
+   Transforms the real ancserTPX UI in place while preserving the
+   production controls, handlers, data flow, and chart instances.
 
    ── THE RULE THAT SHAPES THIS WHOLE FILE ────────────────────────
 
@@ -76,6 +76,7 @@
         const header = document.querySelector(".header");
         const tabs = document.querySelector(".header-tabs");
         const chart = byId("chart-container");
+        const main = document.querySelector(".main");
         if (!header || !tabs || !chart) return;
 
         // IDs are stripped from optical clones. Stable classes keep the
@@ -106,8 +107,8 @@
         tabs.prepend(opticalSpan("control-container-glass", "dockContainer", true));
         topbar.appendChild(tabs);
 
-        // Account orb. The real connect form is re-parented into its
-        // panel so CONNECT / FETCH FULL DATA keep working.
+        // Account orb. The real credential form is re-parented into its
+        // panel; automatic data controls remain live but visually hidden.
         const account = el("div", "glass-account");
         const orb = el("button", "account-orb", {
             type: "button", "aria-haspopup": "true", "aria-expanded": "false",
@@ -116,6 +117,15 @@
         const connWrap = document.querySelector(".conn-dropdown-wrap");
         const badge = byId("account-badge");
         const trigger = byId("conn-trigger");
+        const username = byId("username");
+        const apikey = byId("apikey");
+
+        const hideRuntime = (node) => node?.classList.add("glass-runtime-anchor");
+        hideRuntime(byId("contract-preset")?.closest(".form-group"));
+        hideRuntime(byId("contract-id")?.closest(".form-group"));
+        hideRuntime(byId("data-count")?.closest(".form-row"));
+        hideRuntime(byId("data-range-info"));
+        hideRuntime(byId("btn-fetch-full"));
 
         // The trigger's own dropdown behaviour is redundant once the orb
         // owns the disclosure; keep the node (ancserTPX.js writes its
@@ -125,30 +135,39 @@
             trigger.classList.add("account-conn-row");
         }
         if (connWrap) panel.appendChild(connWrap);
-        if (badge) panel.prepend(badge);
 
         const who = el("div", "who");
-        who.textContent = document.title.includes("@")
-            ? document.title
-            : "ancser24@gmail.com";
         panel.prepend(who);
-        orb.textContent = (who.textContent.trim()[0] || "A").toUpperCase();
-        orb.title = who.textContent.trim();
 
-        // Connection state rides the orb ring; mirror the app's dot.
-        const dot = byId("api-status");
-        if (dot) {
-            const sync = () => {
-                orb.dataset.conn = dot.classList.contains("connected")
-                    ? "live"
-                    : dot.classList.contains("loading") ? "loading" : "off";
+        const syncAccount = () => {
+            const email = username?.value.trim() || "";
+            const state = document.documentElement.dataset.connectionState || "error";
+            who.textContent = email || "EMAIL REQUIRED";
+            orb.textContent = email ? email[0].toUpperCase() : "?";
+            orb.dataset.conn = state;
+            orb.title = `${email || "Email required"} · ${state.toUpperCase()}`;
+            orb.setAttribute("aria-label", orb.title);
+        };
+        syncAccount();
+        new MutationObserver(syncAccount).observe(document.documentElement, {
+            attributes: true, attributeFilter: ["data-connection-state"],
+        });
+        username?.addEventListener("input", syncAccount);
+        apikey?.addEventListener("input", syncAccount);
+
+        if (badge) {
+            badge.classList.add("topbar-account-badge");
+            const syncBadge = () => {
+                const value = badge.textContent.trim();
+                badge.hidden = !value || value === "--";
             };
-            sync();
-            new MutationObserver(sync).observe(dot, {
+            syncBadge();
+            new MutationObserver(syncBadge).observe(badge, {
                 attributes: true, attributeFilter: ["class"],
+                childList: true, characterData: true, subtree: true,
             });
+            account.appendChild(badge);
         }
-
         account.appendChild(orb);
         account.appendChild(panel);
 
@@ -158,6 +177,7 @@
             type: "button", role: "switch", title: "Light / dark",
         });
         themeTrack.id = "theme-switch";
+        themeTrack.dataset.stage = "switch";
         themeTrack.appendChild(opticalSpan("switch-thumb", "switch"));
         right.appendChild(themeTrack);
         right.appendChild(account);
@@ -173,7 +193,10 @@
         document.querySelector("#lang-toggle")?.remove();
         header.remove();
 
-        chart.prepend(el("div", "chart-fog"));
+        // One stationary workspace fog spans both the scrolling sidebar and
+        // the chart. It remains pointer-transparent and follows .main's
+        // visibility, so Research keeps its independent surface.
+        (main || chart).prepend(el("div", "chart-fog"));
         const watermark = el("div", "chart-watermark");
         watermark.innerHTML = "<b>ancser</b>TPX <small>1.0.9</small>";
         chart.prepend(watermark);
@@ -204,7 +227,6 @@
            as the chart — and its stage is .main for the same reason:
            the surface refracts whichever of the two it happens to be
            over. */
-        const main = document.querySelector(".main");
         const lensHost = main || chart;
         if (main) main.dataset.stage = "app";
         const appendLens = (stage) => {
@@ -220,6 +242,11 @@
         const research = byId("calendar-view");
         if (research) {
             research.dataset.stage = "research";
+            if (!research.querySelector(":scope > .research-fog")) {
+                research.prepend(el("div", "chart-fog research-fog", {
+                    "aria-hidden": "true",
+                }));
+            }
             appendLens(research);
         }
 
@@ -254,6 +281,7 @@
             const track = el("button", "glass-switch", {
                 type: "button", role: "switch",
             });
+            track.dataset.stage = "switch";
             track.dataset.switchProxy = original.id;
             if (original.classList.contains("on")) track.classList.add("on");
             track.appendChild(opticalSpan("switch-thumb", "switch"));
@@ -317,6 +345,7 @@
             const span = (max - min) || 1;
 
             const root = el("div", "glass-slider");
+            root.dataset.stage = "slider";
             root.dataset.sliderProxy = input.id;
             root.dataset.min = String(min);
             root.dataset.max = String(max);
