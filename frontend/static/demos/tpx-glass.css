@@ -1,0 +1,1267 @@
+/* ============================================================
+   ancserTPX — liquid glass demo layer
+   ============================================================
+
+   TPX-first optics layer for the REAL ancserTPX UI. The old parallel
+   component replica is gone; this preview uses production TPX markup.
+   page has been removed — everything here targets production markup,
+   applied at runtime by tpx-glass-skin.js.
+
+   THREE THINGS THIS FILE DOES, IN ORDER:
+
+   1. Adds a light-mode palette designed for TPX. Production
+      ancserTPX.css is dark-only; this file layers light on top of it
+      without touching the original.
+
+   2. Restates the gallery demo's component CSS in rem.
+      ---------------------------------------------------------------
+      SIZING CONTRACT — read before editing any number in this file.
+
+      Production ancserTPX.css sets `html { font-size: 24px }`, so
+      here 1rem === 24px. The gallery demo was authored in raw px
+      against a 16px base. Every geometric px value copied out of the
+      demo has therefore been divided by 24, which reproduces the
+      demo's exact pixel geometry today while making it scale with the
+      TPX root font-size instead of ignoring it. That was the whole
+      point of the exercise: one scaling axis, not two.
+
+      Rules for future edits:
+        - lengths that should scale with the UI  -> rem (px / 24)
+        - hairline borders                       -> stay 1px
+        - engine-side geometry (bezel, thickness,
+          displacement scale, canvas map sizes)  -> stay px, in JS.
+          These are device-pixel quantities consumed by
+          feDisplacementMap; they are NOT typography-relative.
+
+      Each converted block keeps its demo px value in a trailing
+      comment so a future upstream diff stays mechanical.
+
+   3. Restyles TPX chrome for the six target changes (dock, segment
+      control, switch rows, chart FAB, fluid sliders, chart fog).
+   ============================================================ */
+
+/* ── 1. Theme tokens ──────────────────────────────────────────────
+   Dark values mirror production ancserTPX.css :root. Only the glass
+   tokens are new. */
+:root {
+    --cream-rgb:       244 236 220;
+    --white:           rgb(var(--cream-rgb));
+    --chart-bg:        #08090d;
+    --glass-bg:        rgba(12, 15, 22, 0.42);
+    --glass-bg-strong: rgba(18, 22, 31, 0.62);
+    --glass-border:    rgb(var(--cream-rgb) / 0.26);
+    --glass-edge:      rgb(var(--cream-rgb) / 0.40);
+    --glass-shadow:    rgba(0, 0, 0, 0.34);
+    --glass-radius:    0.9167rem;   /* 22px */
+    --glass-radius-sm: 0.6667rem;   /* 16px */
+
+    /* Surface treatment copied from the demo's .optical-surface.
+       Kept as tokens so the dock / FAB / slider thumb / switch thumb
+       cannot drift apart. */
+    --glass-rim:    rgb(var(--cream-rgb) / 0.42);
+    --glass-tint:   rgb(var(--cream-rgb) / 0.008);
+    --glass-relief:
+        inset 0 1px 1px rgb(var(--cream-rgb) / 0.18),
+        inset 0 -1px 1px rgb(0 0 0 / 0.34),
+        0 0.4167rem 1.0833rem rgb(0 0 0 / 0.22);   /* 10px 26px */
+}
+
+:root[data-theme="light"] {
+    color-scheme: light;
+    --cream-rgb: 247 239 224;
+    --chart-bg: #f7efe0;
+    --bg:     #f7efe0;
+    --bg2:    #eee3d0;
+    --bg3:    #e5d8c1;
+    --bg4:    #d9c9ad;
+    --border: rgba(20, 50, 70, 0.14);
+    --border-h: rgba(20, 50, 70, 0.30);
+    --text:   #1a2030;
+    --text2:  #5b6474;
+    --text3:  #8a92a2;
+    --cyan:   #0a7ca8;
+    --cyan2:  rgba(10, 124, 168, 0.16);
+    --cyan3:  rgba(10, 124, 168, 0.06);
+    --green:  #00845a;
+    --green2: rgba(0, 132, 90, 0.14);
+    --red:    #cc1f3c;
+    --red2:   rgba(204, 31, 60, 0.12);
+    --amber:  #a8680a;
+    --amber2: rgba(168, 104, 10, 0.14);
+    --white:  #0d1119;
+
+    --glass-bg:        rgb(var(--cream-rgb) / 0.58);
+    --glass-bg-strong: rgb(var(--cream-rgb) / 0.78);
+    --glass-border:    rgba(18, 28, 44, 0.14);
+    --glass-edge:      rgba(18, 28, 44, 0.24);
+    --glass-shadow:    rgba(30, 45, 70, 0.14);
+
+    /* The demo's rim/relief assume a dark backdrop; on light they read
+       as grime. Flip to a dark-edged rim so the lens still has a
+       silhouette. */
+    --glass-rim:  rgb(18 28 44 / 0.22);
+    --glass-tint: rgb(var(--cream-rgb) / 0.18);
+    --glass-relief:
+        inset 0 1px 1px rgb(var(--cream-rgb) / 0.65),
+        inset 0 -1px 1px rgb(18 28 44 / 0.12),
+        0 0.4167rem 1.0833rem rgb(30 45 70 / 0.16);
+}
+
+:root[data-theme="light"] body {
+    background:
+        radial-gradient(circle at 16% 22%, rgba(222, 166, 82, 0.18), transparent 26%),
+        radial-gradient(circle at 72% 18%, rgba(129, 190, 204, 0.14), transparent 28%),
+        radial-gradient(circle at 76% 76%, rgba(89, 177, 143, 0.12), transparent 26%),
+        linear-gradient(135deg, #fbf4e7 0%, #f1e7d6 48%, #f8efdf 100%);
+}
+
+/* ── 2. Engine primitives ─────────────────────────────────────────
+   Verbatim from the gallery demo. These carry no app styling; they
+   are the scaffold the SVG displacement filter renders into.
+   Do not restyle — tpx-glass.js depends on this exact structure. */
+
+.optical-surface {
+    position: absolute;
+    z-index: 5;
+    overflow: hidden;
+    border: 1px solid var(--glass-rim);
+    border-radius: 999px;
+    background: var(--glass-tint);
+    box-shadow: var(--glass-relief);
+    contain: paint;
+    clip-path: inset(0 round 999px);
+    -webkit-clip-path: inset(0 round 999px);
+    transform-origin: center;
+    will-change: transform;
+}
+
+.optical-layer {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    display: block;
+    overflow: visible;
+    border-radius: inherit;
+    pointer-events: none;
+    will-change: filter;
+}
+
+.optical-world {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: block;
+    pointer-events: none;
+    will-change: transform;
+}
+
+.optical-stage-copy {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    /* The clone carries the stage's own classes, so a scrollable stage
+       (.sidebar is overflow-y:auto) clones its clipping too — and the
+       clone's scrollTop is always 0. That silently truncated the
+       refracted copy to the top of the panel. The engine now sizes the
+       clone to the full scroll box; this lets it actually draw. */
+    overflow: visible !important;
+}
+
+/* The live Research stage is styled entirely through #calendar-view,
+   but clone ids are intentionally stripped. Recreate its root layout
+   so the Research lens samples the same padded flex column. */
+.optical-stage-copy[data-stage="research"] {
+    display: flex !important;
+    flex-direction: column;
+    justify-content: flex-start;
+    box-sizing: border-box;
+    padding: 3.5rem clamp(10px, calc((100vw - 760px) / 2), 20%) 34px !important;
+    background: var(--bg);
+}
+
+.optical-stage-copy [data-optical] { visibility: hidden !important; }
+.optical-background-copy .control-source-content { visibility: hidden !important; }
+.optical-content-copy * { visibility: hidden !important; }
+
+.optical-content-copy {
+    background: transparent !important;
+    border-color: transparent !important;
+    box-shadow: none !important;
+}
+
+.optical-content-copy::before,
+.optical-content-copy::after {
+    content: none !important;
+    display: none !important;
+}
+
+.optical-content-copy .control-source-content,
+.optical-content-copy .control-source-content * { visibility: visible !important; }
+
+.optical-content-layer { z-index: 1; }
+.optical-world .optical-layer { display: none !important; }
+
+.surface-content {
+    position: relative;
+    z-index: 2;
+}
+
+.control-source-content {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    will-change: clip-path;
+}
+
+.control-container-glass {
+    z-index: 0;
+    inset: 0;
+    width: auto;
+    height: auto;
+    border-radius: inherit;
+    pointer-events: none;
+}
+
+.container-shell-copy .glass-dock,
+.container-shell-copy .glass-segment {
+    border-color: transparent !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.container-shell-copy .control-source-content { visibility: hidden !important; }
+
+/* ── 3a. Top bar: drag dock over the chart ────────────────────────
+   Ideal #1. The header loses its own background entirely and floats
+   on the chart; the dock is centred, the account button sits hard
+   right on the same row. No clock, no funded-practice chip. */
+
+.glass-topbar {
+    position: absolute;
+    z-index: 30;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 0.5rem;                    /* 12px */
+    padding: 0.5rem 0.6667rem;      /* 12px 16px */
+    background: none;               /* ideal #1: no independent bg */
+    border: 0;
+    pointer-events: none;           /* only children take pointers */
+}
+
+.glass-topbar > * { pointer-events: auto; }
+
+.glass-topbar .topbar-brand {
+    justify-self: start;
+    display: flex;
+    align-items: baseline;
+    gap: 0.25rem;                   /* 6px */
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.5833rem;           /* 14px */
+    letter-spacing: 0.0833rem;      /* 2px */
+    color: var(--text);
+    text-shadow: 0 1px 3px rgb(0 0 0 / 0.55);
+}
+
+:root[data-theme="light"] .glass-topbar .topbar-brand {
+    text-shadow: 0 1px 3px rgb(var(--cream-rgb) / 0.75);
+}
+
+.glass-topbar .topbar-brand b { color: var(--amber); font-weight: 700; }
+
+.glass-topbar .topbar-brand .ver {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.375rem;            /* 9px */
+    color: var(--text3);
+    letter-spacing: 0.0833rem;
+}
+
+/* Dock geometry.
+   The demo's dock is 82px tall with a 66px bubble — showcase scale.
+   A chart-overlay nav wants to be shorter, but the bezel (18) is a
+   fixed device-pixel quantity, so shrinking too far makes the bezel
+   swallow the whole corner radius and the lens reads as a blur.
+   64px track / 52px bubble is the floor that still resolves as glass
+   while leaving room for the stacked icon + label. */
+.glass-dock {
+    position: relative;
+    z-index: 2;
+    justify-self: center;
+    display: grid;
+    align-items: center;
+    height: 2.6667rem;              /* 64px  (demo 82px) */
+    padding: 0.25rem;               /* 6px   (demo 7px)  */
+    border: 1px solid rgb(var(--cream-rgb) / 0.10);
+    border-radius: 999px;
+    background: rgb(0 0 0 / 0.30);
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.glass-dock * {
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
+}
+
+:root[data-theme="light"] .glass-dock {
+    border-color: rgb(18 28 44 / 0.10);
+    background: rgb(var(--cream-rgb) / 0.48);
+}
+
+/* Equal columns for any tab count — the demo hardcoded repeat(5)
+   / repeat(3); TPX's tab sets change, and cell() in tpx-glass.js
+   divides the track evenly, so the grid has to agree. */
+.glass-dock,
+.glass-segment {
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+}
+
+.glass-dock > [data-dock-index] {
+    position: relative;
+    z-index: 6;
+    height: 100%;
+    min-width: 4rem;                /* 96px — icon + word fit */
+    border: 0;
+    padding: 0 0.5rem;
+    background: transparent;
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.glass-dock .control-source-content {
+    display: grid;
+    place-items: center;
+    place-content: center;
+    gap: 0.0833rem;                 /* 2px */
+    color: rgb(var(--cream-rgb));
+    font-size: 0.7917rem;           /* 19px (demo 27.3px, scaled with the track) */
+    line-height: 0.9;
+}
+
+.glass-dock small {
+    color: rgb(var(--cream-rgb));
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.4167rem;           /* 10px (demo 11.7px) */
+    font-weight: 600;
+    letter-spacing: 0.0417rem;
+    text-transform: uppercase;
+}
+
+:root[data-theme="light"] .glass-dock .control-source-content,
+:root[data-theme="light"] .glass-dock small { color: #10161f; }
+
+.glass-dock .dock-bubble {
+    left: 0.25rem;                  /* matches padding */
+    top: 0.25rem;
+    height: 2.1667rem;              /* 52px */
+}
+
+/* ── 3b. Bottom bar: segment control ──────────────────────────────
+   Ideal #2. Replaces the flat .bottom-tabs underline row. */
+
+.glass-segment {
+    position: relative;
+    z-index: 2;
+    display: grid;
+    align-items: center;
+    height: 1.75rem;                /* 42px (demo 66px) */
+    margin: 0.25rem 0.5rem;
+    padding: 0.1667rem;             /* 4px — demo value */
+    border: 1px solid rgb(var(--cream-rgb) / 0.10);
+    border-radius: 999px;
+    background: rgb(0 0 0 / 0.30);
+    touch-action: none;
+}
+
+:root[data-theme="light"] .glass-segment {
+    border-color: rgb(18 28 44 / 0.10);
+    background: rgb(var(--cream-rgb) / 0.52);
+}
+
+.glass-segment > [data-segment-index] {
+    position: relative;
+    z-index: 6;
+    height: 100%;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    font-weight: 800;
+}
+
+.glass-segment .control-source-content {
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.4583rem;           /* 11px */
+    font-weight: 600;
+    letter-spacing: 0.0417rem;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.glass-segment .segment-indicator {
+    left: 0.1667rem;
+    top: 0.1667rem;
+    height: 1.4167rem;              /* 34px */
+}
+
+/* ── Crisp labels ─────────────────────────────────────────────────
+   CRISP_LABELS in tpx-glass.js keeps the real text painted instead of
+   cutting a lens-shaped hole in it and re-rendering a refracted copy.
+   For that to read correctly the label has to sit ABOVE the moving
+   lens, so the pill slides behind the text rather than through it. */
+.glass-dock .control-source-content,
+.glass-segment .control-source-content {
+    z-index: 8;
+    text-shadow: 0 1px 2px rgb(0 0 0 / 0.45);
+}
+
+:root[data-theme="light"] .glass-dock .control-source-content,
+:root[data-theme="light"] .glass-segment .control-source-content {
+    text-shadow: 0 1px 2px rgb(var(--cream-rgb) / 0.6);
+}
+
+.glass-dock .dock-bubble,
+.glass-segment .segment-indicator { z-index: 4; }
+
+/* Inactive labels dim; the active one is full strength. The lens marks
+   position, the weight marks state. */
+.glass-segment .bottom-tab .control-source-content,
+.glass-dock .tab .control-source-content { opacity: 0.62; }
+
+.glass-segment .bottom-tab.active .control-source-content,
+.glass-dock .tab.active .control-source-content { opacity: 1; }
+
+/* ── Chart pointer lens (ideal #6) ────────────────────────────────
+   Geometry is the demo's Precision Lens EXACTLY: 200x140 with the
+   inherited capsule radius.
+
+   This is not cosmetic. `bezel` is an absolute pixel quantity, and the
+   displacement map is built from the ratio bezel : cornerRadius. The
+   demo's 200x140 capsule gives radius = min(w,h)/2 = 70, so
+   bezel 30 covers 43% of it. Shrinking the lens to 120x80 with a 30px
+   radius pushed that ratio to 93%, the refraction sampled far outside
+   the source, and the lens rendered as a black hole instead of a
+   magnifier.
+
+   So: resize this only by scaling BOTH axes and keeping the capsule
+   radius, or retune `precision.bezel` in tpx-glass.js to match.
+
+   transform is reserved for the springs; the controller positions with
+   left/top (see the note in initChartLens). */
+.chart-lens {
+    z-index: 15;
+    width: 8.3333rem;                   /* 200px — demo value */
+    height: 5.8333rem;                  /* 140px — demo value */
+    opacity: 0;
+    pointer-events: none;               /* never eat the chart crosshair */
+    will-change: transform, left, top;
+}
+
+/* Shared lens behaviour for the dock bubble and segment indicator.
+   Idle uses backdrop-filter (cheap, and the only thing that works
+   over a live <canvas> — see the header note in tpx-glass.js);
+   the SVG lens fades in on interaction, exactly as the demo does. */
+.dock-bubble,
+.segment-indicator {
+    pointer-events: none;
+    border-color: transparent;
+    background: rgb(var(--cream-rgb) / 0.075);
+    box-shadow: none;
+    backdrop-filter: blur(11px) saturate(1.12);
+    -webkit-backdrop-filter: blur(11px) saturate(1.12);
+    transition:
+        background 90ms linear,
+        border-color 90ms linear,
+        box-shadow 90ms linear;
+}
+
+:root[data-theme="light"] .dock-bubble,
+:root[data-theme="light"] .segment-indicator {
+    background: rgb(var(--cream-rgb) / 0.68);
+}
+
+.dock-bubble > .optical-layer,
+.segment-indicator > .optical-layer { opacity: var(--control-glass, 0); }
+
+.glass-dock.interacting .dock-bubble,
+.glass-segment.interacting .segment-indicator {
+    border-color: var(--glass-rim);
+    background: var(--glass-tint);
+    box-shadow: var(--glass-relief);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+/* ── 3c. Account button — single circular dropdown ────────────────
+   Ideal #1, right end of the topbar row. Replaces the old
+   connected-chip + badge + clock cluster with one initial-letter
+   circle that opens a panel. Built on .fab-button so it inherits the
+   same lens the chart FAB uses. */
+
+.glass-account {
+    position: relative;
+    justify-self: end;
+    display: flex;
+    align-items: center;
+}
+
+.glass-account .account-orb {
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 1.75rem;                 /* 42px */
+    height: 1.75rem;
+    border: 1px solid var(--glass-rim);
+    border-radius: 999px;
+    background: var(--glass-tint);
+    box-shadow: var(--glass-relief);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.6667rem;           /* 16px */
+    font-weight: 700;
+    text-transform: uppercase;
+    cursor: pointer;
+    contain: paint;
+    clip-path: inset(0 round 999px);
+    -webkit-clip-path: inset(0 round 999px);
+    transform-origin: center;
+    will-change: transform;
+}
+
+/* Connection state rides the ring, not a separate chip. */
+.glass-account .account-orb::after {
+    content: '';
+    position: absolute;
+    right: 0.0833rem;
+    bottom: 0.0833rem;
+    z-index: 3;
+    width: 0.375rem;                /* 9px */
+    height: 0.375rem;
+    border: 1px solid var(--bg);
+    border-radius: 999px;
+    background: var(--text3);
+}
+
+.glass-account .account-orb[data-conn="live"]::after   { background: var(--green); }
+.glass-account .account-orb[data-conn="loading"]::after { background: var(--amber); }
+.glass-account .account-orb[data-conn="off"]::after     { background: var(--red); }
+
+.glass-account .account-panel {
+    position: absolute;
+    z-index: 40;
+    top: 2.0833rem;                 /* 50px */
+    right: 0;
+    display: none;
+    width: 11.6667rem;              /* 280px */
+    padding: 0.5rem;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--glass-radius);
+    background: var(--glass-bg-strong);
+    box-shadow: 0 0.75rem 1.9167rem var(--glass-shadow);
+    backdrop-filter: blur(18px) saturate(1.3);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+}
+
+.glass-account.open .account-panel { display: block; }
+
+.glass-account .account-panel .who {
+    margin-bottom: 0.3333rem;
+    padding-bottom: 0.3333rem;
+    border-bottom: 1px solid var(--border);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.4167rem;           /* 10px */
+    color: var(--text2);
+    overflow-wrap: anywhere;
+}
+
+.glass-account .account-panel .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.3333rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.4167rem;
+    line-height: 1.9;
+    color: var(--text2);
+}
+
+.glass-account .account-panel .row .v { color: var(--cyan); }
+
+/* ── 3d. Chart fog overlay ────────────────────────────────────────
+   Ideal #1. The header used to sit on its own --bg2 band. That band
+   is gone; instead the chart itself fades from opaque at the top to
+   fully clear further down, so the floating dock always has contrast
+   without a hard seam. */
+
+.chart-fog {
+    position: absolute;
+    z-index: 12;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 5.8333rem;              /* 140px */
+    pointer-events: none;
+    background: linear-gradient(
+        to bottom,
+        rgb(8 9 13 / 0.92) 0%,
+        rgb(8 9 13 / 0.72) 34%,
+        rgb(8 9 13 / 0.34) 66%,
+        rgb(8 9 13 / 0) 100%
+    );
+}
+
+.chart-watermark {
+    position: absolute;
+    z-index: 2;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+    white-space: nowrap;
+    color: var(--text);
+    opacity: 0.065;
+    font-family: 'Orbitron', sans-serif;
+    font-size: clamp(1.35rem, 3.2vw, 3rem);
+    font-weight: 600;
+    letter-spacing: 0.16em;
+}
+
+.chart-watermark b { color: inherit; }
+
+.chart-watermark small {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.42em;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+}
+
+:root[data-theme="light"] .chart-fog {
+    background: linear-gradient(
+        to bottom,
+        rgb(var(--cream-rgb) / 0.94) 0%,
+        rgb(var(--cream-rgb) / 0.74) 34%,
+        rgb(var(--cream-rgb) / 0.36) 66%,
+        rgb(var(--cream-rgb) / 0) 100%
+    );
+}
+
+/* Status line pushed below the dock (ideal #1). */
+.chart-status {
+    position: absolute;
+    z-index: 14;
+    top: 3.5rem;                    /* 84px — clears the 64px dock + padding */
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.6667rem;
+    padding: 0 0.6667rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.4167rem;           /* 10px */
+    letter-spacing: 0.0208rem;
+    color: var(--text2);
+    pointer-events: none;
+}
+
+.chart-status .cell b { color: var(--text); font-weight: 500; }
+.chart-status .cell .g { color: var(--green); }
+.chart-status .cell .c { color: var(--cyan); }
+.chart-status .cell .a { color: var(--amber); }
+
+/* ── 3e. Chart corner: layered FAB ────────────────────────────────
+   Ideal #4. Replaces the two square .chart-sq-btn buttons with the
+   demo's layered FAB — one trigger that pushes its actions out. */
+
+.glass-fab {
+    position: absolute;
+    z-index: 16;
+    right: 3rem;                    /* 72px — clears the price axis */
+    bottom: 1.4167rem;              /* 34px — clears the time axis */
+    width: 2.6667rem;               /* 64px */
+    height: 2.6667rem;
+}
+
+.fab-button,
+.fab-action {
+    position: absolute;
+    display: grid;
+    place-items: center;
+    border: 1px solid var(--glass-rim);
+    border-radius: 999px;
+    background: var(--glass-tint);
+    box-shadow: var(--glass-relief);
+    padding: 0;
+    color: var(--text);
+    cursor: pointer;
+    contain: paint;
+    clip-path: inset(0 round 999px);
+    -webkit-clip-path: inset(0 round 999px);
+    transform-origin: center;
+    will-change: transform;
+    backdrop-filter: blur(11px) saturate(1.12);
+    -webkit-backdrop-filter: blur(11px) saturate(1.12);
+}
+
+.fab-button {
+    right: 0;
+    bottom: 0;
+    width: 1.8333rem;               /* 44px (demo 76px) */
+    height: 1.8333rem;
+    font-size: 0.7917rem;           /* 19px (demo 28px) */
+}
+
+.fab-action {
+    right: 0.1667rem;               /* keeps the stack centred under the trigger */
+    bottom: 0;
+    width: 1.5rem;                  /* 36px (demo 62px) */
+    height: 1.5rem;
+    font-size: 0.6667rem;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.fab-action.open { pointer-events: auto; }
+
+.fab-button .surface-content {
+    display: block;
+    transition: transform 80ms linear;
+}
+
+/* Active state for the pinning actions, so ⌖ / ≫ can latch. */
+.fab-action.latched {
+    border-color: var(--green);
+    color: var(--green);
+}
+
+/* ── 3f. Fluid slider ─────────────────────────────────────────────
+   Ideal #5. Every range input becomes this. Track/thumb proportions
+   follow the demo (16px track, thumb ~1.87× track height) at TPX
+   scale. */
+
+.glass-slider {
+    position: relative;
+    z-index: 2;
+    width: 100%;
+    height: 1.3333rem;              /* 32px (demo 86px) */
+    cursor: ew-resize;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
+}
+
+.slider-track {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 50%;
+    height: 0.3333rem;              /* 8px (demo 16px) */
+    border-radius: 999px;
+    background: rgb(0 0 0 / 0.40);
+    box-shadow: inset 0 1px 0.1667rem rgb(0 0 0 / 0.42);
+    transform: translateY(-50%);
+    overflow: hidden;
+}
+
+:root[data-theme="light"] .slider-track { background: rgb(18 28 44 / 0.14); }
+
+.slider-fill {
+    width: 42%;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--green), var(--cyan));
+    will-change: width;
+}
+
+.glass-slider.endpoint-transition .slider-fill {
+    transition: width 130ms cubic-bezier(.2, .82, .22, 1);
+}
+
+.slider-thumb {
+    left: 0;
+    top: 0.1667rem;                 /* 4px */
+    width: 1.8333rem;               /* 44px (demo 112px) */
+    height: 1rem;                   /* 24px (demo 60px) */
+    border-color: transparent;
+    background: rgb(var(--cream-rgb));
+    box-shadow: none;
+}
+
+:root[data-theme="light"] .slider-thumb { background: rgb(28 38 54); }
+
+.slider-thumb .optical-layer { opacity: var(--slider-glass, 0); }
+
+.glass-slider.interacting .slider-thumb {
+    border-color: var(--glass-rim);
+    background: var(--glass-tint);
+    box-shadow: var(--glass-relief);
+}
+
+/* Value readout rides above the track, right-aligned with the label. */
+.slider-value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.4167rem;
+    color: var(--amber);
+}
+
+/* ── 3g. Tactile switch + horizontal param rows ───────────────────
+   Ideal #3. The old markup stacked <label> over a full-width
+   .toggle-field button, which burns two lines per boolean. These
+   rows put the label left and the control hard right on one line —
+   applied to switches AND selects, which is where most of the
+   vertical space was going. */
+
+.param-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    min-height: 1.4167rem;          /* 34px */
+    padding: 0.1667rem 0;
+}
+
+.param-row + .param-row { border-top: 1px solid var(--border); }
+
+.param-row > .param-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.1667rem;
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.4583rem;           /* 11px */
+    font-weight: 600;
+    letter-spacing: 0.0417rem;
+    text-transform: uppercase;
+    color: var(--text2);
+}
+
+.param-row > .param-label .lbl-hint {
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text3);
+}
+
+.param-row > .param-control {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+/* Selects shrink to content instead of spanning the panel. */
+.param-row > .param-control select {
+    width: auto;
+    min-width: 4.5rem;              /* 108px */
+    max-width: 8rem;
+    padding: 0.1667rem 0.3333rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.4167rem;
+}
+
+.param-row > .param-control input[type="number"],
+.param-row > .param-control input[type="text"] {
+    width: 4.5rem;
+    padding: 0.1667rem 0.3333rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.4167rem;
+    text-align: right;
+}
+
+/* A slider row goes full width under its label instead of squeezing
+   into the right column. */
+.param-row.is-slider {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.1667rem 0.5rem;
+}
+
+.param-row.is-slider > .param-control {
+    grid-column: 1 / -1;
+    display: block;
+}
+
+/* The switch itself — demo geometry (172×72 track, 92×62 thumb,
+   5px inset) reduced to a form control while keeping the ratios. */
+/* Proportions are the demo's, not a circle in a pill.
+   Demo: 172x72 track (aspect 2.39) with a 92x62 thumb (aspect 1.48),
+   inset 5px. Scaled to a 28px-tall form control that gives a 68x28
+   track and a 32x22 thumb — an oval, which is what makes the squash
+   springs legible. A square thumb just spins a dot. */
+.glass-switch {
+    --switch-track-color: var(--bg4);
+    --switch-thumb-color: rgb(var(--cream-rgb));
+    position: relative;
+    z-index: 2;
+    flex: 0 0 auto;
+    width: 2.8333rem;               /* 68px */
+    height: 1.1667rem;              /* 28px */
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0;
+    overflow: visible;
+    background: var(--switch-track-color);
+    box-shadow: inset 0 0 0 1px rgb(var(--cream-rgb) / 0.08);
+    cursor: pointer;
+    touch-action: none;
+    transition: background 140ms linear, border-color 140ms linear;
+}
+
+.glass-switch.on {
+    --switch-track-color: var(--green);
+    border-color: transparent;
+}
+
+.switch-thumb {
+    left: 0.0833rem;                /* 2px — matches (clientHeight - thumbH)/2,
+                                       which is what inset() derives in JS */
+    top: 0.0833rem;
+    width: 1.3333rem;               /* 32px — oval, per the demo's 1.48 aspect */
+    height: 0.9167rem;              /* 22px */
+    border-color: transparent;
+    background: var(--switch-thumb-color);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+    transition:
+        background 70ms linear,
+        border-color 70ms linear,
+        box-shadow 70ms linear;
+}
+
+.switch-thumb .optical-layer { opacity: var(--switch-glass, 0); }
+
+.glass-switch.interacting .switch-thumb {
+    border-color: var(--glass-rim);
+    background: rgb(var(--cream-rgb) / 0.28);
+    box-shadow: var(--glass-relief);
+}
+
+.glass-switch.interacting .switch-thumb .optical-layer { opacity: 1; }
+
+/* ── 3h. Skin mode ────────────────────────────────────────────────
+   Applies when tpx-glass-skin.js has transformed the real ancserTPX
+   DOM in the generated full-UI preview. */
+
+/* Originals stay in the DOM so ancserTPX.js keeps reading/writing them
+   and their inline handlers stay on the event path — they just stop
+   taking space. display:none would break offsetWidth reads in the
+   app's own layout code, so collapse instead of remove. */
+.glass-proxy-hidden {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    margin: -1px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    overflow: hidden !important;
+}
+
+:root[data-tpx-glass-skin="on"] #chart-container { position: relative; }
+
+/* Production reserves 48px for the header (`height: calc(100vh - 48px)`).
+   The skin removes the header, so that reservation became a dead black
+   band under the bottom panel. */
+:root[data-tpx-glass-skin="on"] .main { height: 100vh; }
+
+/* Production centres .header-tabs with `position:absolute; left:50%;
+   transform:translateX(-50%); height:100%`. Once it becomes the dock
+   inside the top bar's grid that collapses its width to nothing and
+   fights the dock height — which is what squashed the bar. The grid
+   already centres it. */
+:root[data-tpx-glass-skin="on"] .glass-dock {
+    /* relative, NOT static: the bubble and the container glass are
+       absolutely positioned against the dock. Dropping it to static
+       hands them the top bar as containing block and the lens flies
+       off to the left edge of the screen. */
+    position: relative;
+    left: auto;
+    transform: none;
+    width: auto;
+    height: 2.6667rem;                  /* 64px, same as the demo dock */
+    gap: 0;
+    order: 0;
+}
+
+/* The top bar is fixed to the viewport (see the placement note in
+   tpx-glass-skin.js) and starts where the sidebar ends, so it never
+   covers the parameter panels. */
+/* Full viewport width, so the dock's centre is the SCREEN's centre in
+   every workspace. Anchoring the bar to the sidebar's right edge
+   centred it on the chart, which is why Research (no sidebar) looked
+   correct and the other tabs looked pushed right. */
+:root[data-tpx-glass-skin="on"] .glass-topbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 60;
+}
+
+/* The bar floats and takes no layout space, so the regions underneath
+   reserve their own clearance. */
+:root[data-tpx-glass-skin="on"] .sidebar { padding-top: 3.5rem; }      /* 84px */
+:root[data-tpx-glass-skin="on"] #calendar-view { padding-top: 3.5rem; }
+
+/* The pointer lens is parented to .main so it can cross the sidebar. */
+:root[data-tpx-glass-skin="on"] .main { position: relative; }
+:root[data-tpx-glass-skin="on"] .chart-lens { z-index: 55; }
+
+.glass-runtime-anchor { display: none !important; }
+
+/* ── #3: one control per line ─────────────────────────────────────
+   .form-row packs two .form-groups side by side. Halved-width selects
+   truncate their option text, and the pair reads as a grid the eye has
+   to parse. Single column throughout. */
+:root[data-tpx-glass-skin="on"] .sidebar .form-row {
+    display: block;
+}
+
+:root[data-tpx-glass-skin="on"] .sidebar .form-row > .form-group { width: 100%; }
+
+:root[data-tpx-glass-skin="on"] .sidebar .tf-row {
+    display: grid;
+    grid-template-columns: 1fr;
+}
+
+:root[data-tpx-glass-skin="on"] .sidebar .action-row,
+:root[data-tpx-glass-skin="on"] .sidebar .glass-single-stack {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch !important;
+}
+
+:root[data-tpx-glass-skin="on"] .sidebar .action-row > *,
+:root[data-tpx-glass-skin="on"] .sidebar .glass-single-stack > * {
+    width: 100% !important;
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #signal-legend,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #lv-levels-panel,
+:root[data-theme="light"][data-tpx-glass-skin="on"] .glass-signal-legend,
+:root[data-theme="light"][data-tpx-glass-skin="on"] .glass-levels-panel {
+    color: var(--text2) !important;
+    border-color: var(--border-h) !important;
+    background: rgb(var(--cream-rgb) / 0.88) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* ── #4: match the production TP INPUT block ──────────────────────
+   Reference is `.form-group label` (0.6875rem) with a `.toggle-field`
+   sized control (0.75rem / 8px 10px). A smaller prototype scale read
+   as tiny next to the real chrome. */
+:root[data-tpx-glass-skin="on"] .param-row > .param-label {
+    font-size: 0.6875rem;
+    letter-spacing: 0.0417rem;
+}
+
+:root[data-tpx-glass-skin="on"] .param-row > .param-control select,
+:root[data-tpx-glass-skin="on"] .param-row > .param-control input[type="number"],
+:root[data-tpx-glass-skin="on"] .param-row > .param-control input[type="text"] {
+    min-width: 7rem;
+    max-width: 11rem;
+    padding: 0.3333rem 0.4167rem;       /* 8px 10px, as .toggle-field */
+    font-size: 0.75rem;
+}
+
+:root[data-tpx-glass-skin="on"] .param-row { min-height: 1.8333rem; }
+
+/* ── #11: light mode for the full-page overlays ───────────────────
+   Research / calendar and the account page were authored dark-only
+   with hardcoded whites, so the palette swap left white-on-cream text
+   and white rules. Re-point them at the theme tokens. */
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view {
+    color: var(--text);
+    background: var(--bg);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-weekhead span,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-daynum,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-week-label {
+    color: var(--text);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-bt-sub,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-live-sub,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .c-t3,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .lbl-hint {
+    color: var(--text3);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-cell {
+    border-color: var(--border);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-cell.cal-empty {
+    background: transparent;
+    border-color: transparent;
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-cell.cal-today {
+    border-color: var(--cyan);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-weekhead-sum {
+    color: var(--amber) !important;
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-pos,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-pos {
+    color: var(--green) !important;
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-neg,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-neg {
+    color: var(--red) !important;
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-zero {
+    color: var(--text3);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-analysis-panel,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-panel {
+    color: var(--text);
+    border-color: var(--border);
+    background: var(--bg2);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-income-curve,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .order-compare-card,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-card {
+    border-color: var(--border);
+    background: var(--bg);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-table th,
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-table td {
+    border-color: var(--border);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-bar {
+    background: rgb(20 50 70 / 0.10);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .rob-hist {
+    background: rgb(20 50 70 / 0.06);
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"]
+    #calendar-view .cal-income-curve line[stroke*="255,255,255"] {
+    stroke: var(--border-h) !important;
+}
+
+:root[data-theme="light"][data-tpx-glass-skin="on"]
+    #calendar-view .cal-income-curve text[fill*="255,255,255"] {
+    fill: var(--text3) !important;
+}
+
+.topbar-right {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.4167rem;                     /* 10px */
+}
+
+/* The chart needs to clear the floating bar, since the bar no longer
+   occupies layout space of its own. */
+:root[data-tpx-glass-skin="on"] #chart-container > canvas,
+:root[data-tpx-glass-skin="on"] .tv-lightweight-charts { z-index: 1; }
+
+/* The live status bar is the app's own node; it only needs to start
+   below the floating dock and lose its opaque band. */
+:root[data-tpx-glass-skin="on"] .chart-status-shifted {
+    top: 3.25rem !important;            /* 78px — clears the 64px dock */
+    background: none !important;
+    border-bottom: 0 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+/* The connect form moves inside the account panel; the old trigger row
+   is kept (ancserTPX.js writes its status text) but stops behaving
+   like a dropdown. */
+:root[data-tpx-glass-skin="on"] .account-panel .conn-dropdown-wrap { position: static; }
+
+:root[data-tpx-glass-skin="on"] .account-panel .conn-panel {
+    position: static;
+    display: block;
+    width: auto;
+    margin: 0;
+    border: 0;
+    background: none;
+    box-shadow: none;
+}
+
+:root[data-tpx-glass-skin="on"] .account-conn-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-bottom: 0.3333rem;
+    cursor: default;
+}
+
+:root[data-tpx-glass-skin="on"] .account-conn-row .conn-arrow { display: none; }
+
+:root[data-tpx-glass-skin="on"] .account-panel #account-badge {
+    display: inline-block;
+    margin-bottom: 0.25rem;
+}
+
+/* The app sizes the sidebar in rem already; the injected theme row
+   just needs to sit above the first panel. */
+/* The skinned dock carries the app's .tab class, which production CSS
+   styles as a flat underlined pill. Neutralise that so only the lens
+   marks the selection. */
+:root[data-tpx-glass-skin="on"] .glass-dock .tab,
+:root[data-tpx-glass-skin="on"] .glass-dock .tab.active,
+:root[data-tpx-glass-skin="on"] .glass-segment .bottom-tab,
+:root[data-tpx-glass-skin="on"] .glass-segment .bottom-tab.active {
+    border: 0;
+    background: none;
+    box-shadow: none;
+    color: inherit;
+}
+
+:root[data-tpx-glass-skin="on"] .glass-segment .bottom-tab::after,
+:root[data-tpx-glass-skin="on"] .glass-dock .tab::after { content: none; }
+
+/* ── 4. Shared bits ───────────────────────────────────────────── */
+
+/* Engine filter host — zero-size, never painted directly. */
+.filter-root {
+    position: fixed;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .fab-button .surface-content,
+    .dock-bubble,
+    .segment-indicator,
+    .switch-thumb { transition-duration: 1ms; }
+}

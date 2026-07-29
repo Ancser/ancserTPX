@@ -3599,6 +3599,7 @@ function initChart() {
             redrawTradeDecisionOverlays();
             drawSessionDividers();
             drawIndicatorSignalOverlay();
+            window.TpxGlass?.sync?.();
         });
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(_redrawOverlays);
@@ -3814,11 +3815,11 @@ function drawSessionDividers() {
     // Sweep-only uses session high/low levels, so keep session dividers but do
     // not shade NY-open windows by default.
 
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+    ctx.strokeStyle = 'rgba(247, 239, 224, 0.25)';
     ctx.lineWidth = 1;
     ctx.setLineDash([4, 4]);
     ctx.font = '9px "IBM Plex Mono", monospace';
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.fillStyle = 'rgba(247, 239, 224, 0.5)';
     ctx.textAlign = 'left';
 
     for (let d = startDay.getTime(); d <= endMs; d += dayMs) {
@@ -4079,7 +4080,7 @@ function _drawSessionDevelopingVa(ctx, W, H, priceToY, tX, vFrom, vTo) {
 
     ctx.save();
     ctx.lineWidth = 1.25;
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.90)';
+    ctx.strokeStyle = 'rgba(247, 239, 224, 0.90)';
     ctx.setLineDash([]);
     sessions.forEach(z => {
         const vah = makePts(z, 'vah');
@@ -4164,7 +4165,7 @@ function renderTfZones() {
     // "backtest" line at 80% opacity, and the most-recent completed zone per TF
     // (the one the live engine is currently trading against) is redrawn on top
     // at 100% opacity in orange.
-    const BT_COLOR = '255, 255, 255';   // backtest reference zones (dim)
+    const BT_COLOR = '247, 239, 224';   // backtest reference zones (milk-white)
     const LIVE_COLOR = '255, 165, 0';   // current/live zone (bright)
     const rightX = W - 60;
 
@@ -4278,7 +4279,7 @@ function drawFadeDailyLevels(zones) {
     };
 
     ctx.save();
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.86)';
+    ctx.strokeStyle = 'rgba(247, 239, 224, 0.86)';
     ctx.lineWidth = 1;
     ctx.setLineDash([]);
 
@@ -4402,6 +4403,10 @@ function _acScheduleKick() {
         // 重套 autoScale 觸發重算(provider 會再被呼叫一次)
         try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
         try { chart.timeScale().applyOptions({}); } catch (_) {}
+        requestAnimationFrame(() => {
+            drawIndicatorSignalOverlay();
+            window.TpxGlass?.sync?.();
+        });
     });
 }
 
@@ -4567,8 +4572,8 @@ function drawPositionTools(trades) {
         x1 = Math.min(chartW - 60, x1);
         if (x1 <= x0 + 4) return false;
 
-        drawHLine(x0, x1, yVAH, 'rgba(255, 255, 255, 0.78)');
-        drawHLine(x0, x1, yVAL, 'rgba(255, 255, 255, 0.78)');
+        drawHLine(x0, x1, yVAH, 'rgba(247, 239, 224, 0.78)');
+        drawHLine(x0, x1, yVAL, 'rgba(247, 239, 224, 0.78)');
         return true;
     };
 
@@ -5946,6 +5951,8 @@ function startOverlaySync() {
             drawFadeDailyLevels(data.zones);
             redrawTradeDecisionOverlays();
             drawSessionDividers();
+            drawIndicatorSignalOverlay();
+            window.TpxGlass?.sync?.();
         }
     }
 
@@ -7212,7 +7219,7 @@ function renderWeeklyIncomeCurve(btMap, liveMap) {
         const dt = new Date(_calMonth.getFullYear(), _calMonth.getMonth(), d);
         if (dt.getDay() === 0 && d !== 1) {
             const xx = x(d);
-            weekLines.push(`<line x1="${xx.toFixed(1)}" y1="${t}" x2="${xx.toFixed(1)}" y2="${h - b}" stroke="rgba(255,255,255,0.08)"/>`);
+            weekLines.push(`<line x1="${xx.toFixed(1)}" y1="${t}" x2="${xx.toFixed(1)}" y2="${h - b}" stroke="rgba(247,239,224,0.08)"/>`);
         }
     }
     const btPath = _svgPath(btSeries, x, y);
@@ -7222,12 +7229,12 @@ function renderWeeklyIncomeCurve(btMap, liveMap) {
     wrap.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
         <rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>
         ${weekLines.join('')}
-        <line x1="${l}" y1="${zeroY.toFixed(1)}" x2="${w - r}" y2="${zeroY.toFixed(1)}" stroke="rgba(255,255,255,0.18)"/>
+        <line x1="${l}" y1="${zeroY.toFixed(1)}" x2="${w - r}" y2="${zeroY.toFixed(1)}" stroke="rgba(247,239,224,0.18)"/>
         <path d="${btPath}" fill="none" stroke="rgba(0,229,160,0.95)" stroke-width="2.4"/>
         <path d="${livePath}" fill="none" stroke="rgba(255,176,32,0.95)" stroke-width="2.4"/>
         <text x="${l}" y="11" fill="rgba(0,229,160,0.95)" font-size="10" font-family="IBM Plex Mono">BT ${_calFmtMoney(btLast)}</text>
         <text x="${w - 190}" y="11" fill="rgba(255,176,32,0.95)" font-size="10" font-family="IBM Plex Mono">LIVE ${_calFmtMoney(liveLast)}</text>
-        <text x="${l}" y="${h - 6}" fill="rgba(255,255,255,0.35)" font-size="9" font-family="IBM Plex Mono">daily cumulative, week separators shown</text>
+        <text x="${l}" y="${h - 6}" fill="rgba(247,239,224,0.35)" font-size="9" font-family="IBM Plex Mono">daily cumulative, week separators shown</text>
     </svg>`;
     if (status) {
         status.textContent = 'BT ' + _calFmtMoney(btLast) + ' | LIVE ' + _calFmtMoney(liveLast) + ' | visible month';
