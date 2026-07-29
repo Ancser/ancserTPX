@@ -217,7 +217,13 @@ def main() -> None:
     ap.add_argument("--pmo-scale", type=float, default=None,
                     help="EMAPMO 門檻縮放;預設 MNQ=1.0 / MES=0.56")
     ap.add_argument("--workers", type=int, default=0)
+    ap.add_argument("--va-off", action="store_true",
+                    help="只掃 va=off(第一次跑全 1890 格時,va=outside 那半邊要逐根建 "
+                         "session volume profile,慢一個數量級且 BEST 本來就是 off)")
     args = ap.parse_args()
+    if args.va_off:
+        global VA_FILTERS
+        VA_FILTERS = ("off",)
 
     scale = args.pmo_scale
     if scale is None:

@@ -432,7 +432,10 @@ class StrategyParams:
     max_profit_ticks: Optional[int] = None
     # 超過上限時的處理:clamp = 等比縮放 SL/TP(維持 RR)照樣進場;
     # block = 直接跳過該訊號。
-    risk_cap_mode: str = "clamp"
+    # 1.0.9: 實測 BLOCK 優於 CLAMP —— 夾窄 SL 會讓停損更常被掃到
+    # (risk<=$1000 clamp 使最差日 -685 惡化到 -1002、maxDD 1638→1832;
+    #  同條件 block 則兩者都不變)。預設與 UI 一致。
+    risk_cap_mode: str = "block"
     conf_sl_reference_tf: str = "largest"  # "largest" original behavior, "smallest" tightens SL/TP basis
     conf_allowed_sessions: Optional[List[str]] = field(default_factory=lambda: ["ASIA", "PRE"])
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---

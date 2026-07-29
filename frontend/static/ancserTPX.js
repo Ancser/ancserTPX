@@ -1201,6 +1201,10 @@ function collectStrategyParams(mode) {
         // 1.0.9: EMAPMO 進場門檻滑桿 → early(SIG)門檻的縮放係數。
         // 1.0 = 原始 -0.100;非 EMAPMO 家族送 1.0(引擎端等同不套用)。
         factor_pmo_early_scale: _emapmoThresholdScale(mode),
+        // 1.0.9: 單筆風險/獲利寬度上限(ticks/口);0 → null = 不限
+        max_risk_ticks: iv('max-risk-ticks-' + mode, 0) || null,
+        max_profit_ticks: iv('max-profit-ticks-' + mode, 0) || null,
+        risk_cap_mode: _mlSelectValue('risk-cap-mode-' + mode, 'block'),
         factor_sl_rule: factorSlRule,
         factor_tp_rule: factorSlRule,
         factor_sl_value: factorSlValue,
@@ -1334,6 +1338,10 @@ function applyStrategyParams(mode, params) {
     _setChoice('factor-pmo-mode-' + mode, _factorPmoValue(p.factor_pmo_signal_mode));
     _setChoice('factor-va-filter-' + mode, String(p.factor_session_va_filter || 'off') === 'outside' ? 'outside' : 'off');
     _setEmapmoThreshold(mode, p.factor_pmo_early_scale);
+    _set('max-risk-ticks-' + mode, String(p.max_risk_ticks != null ? p.max_risk_ticks : 0));
+    _set('max-profit-ticks-' + mode, String(p.max_profit_ticks != null ? p.max_profit_ticks : 0));
+    _set('risk-cap-mode-' + mode, String(p.risk_cap_mode || 'block'));
+    updateRiskCapHint(mode);
     _setChoice('factor-sl-rule-' + mode, _factorRuleValue(p.factor_sl_rule, 'atr_blend'));
     _setChoice('factor-sl-value-' + mode, String(p.factor_sl_value != null ? p.factor_sl_value : 2.5));
     _setChoice('factor-hold-' + mode, '0');   // 1.0.9: HOLD 5m system removed → always OFF (SL/TP-only)
@@ -8254,4 +8262,33 @@ function syncEmapmoThresholdRow(mode) {
     const isFactor = String(_mlSelectValue('strategy-' + mode, 'trend')) === 'factor';
     row.style.display = (isFactor && _emapmoFamily(mode) === 'emapmo') ? '' : 'none';
     onEmapmoThresholdChange(mode);
+}
+
+
+// 1.0.9: 風險/獲利上限的即時 $ 換算。上限是「每口 ticks」,但使用者關心的是
+// 金額,而 MNQ(1t=$0.50)與 MES(1t=$1.25)差 2.5 倍 —— 不換算很容易設錯。
+// 注意:_paramVal / iv / _set 都是別的函式內的區域 helper,全域函式取不到,
+// 所以這裡一律直接讀 DOM。
+function updateRiskCapHint(mode) {
+    const hint = document.getElementById('risk-cap-hint-' + mode);
+    if (!hint) return;
+    const num = (id) => {
+        const el = document.getElementById(id + '-' + mode);
+        return el ? (parseInt(el.value, 10) || 0) : 0;
+    };
+    const risk = num('max-risk-ticks');
+    const prof = num('max-profit-ticks');
+    if (!risk && !prof) { hint.textContent = '(兩者皆 OFF — 無上限)'; return; }
+    const cEl = document.getElementById('contract-' + mode);
+    const cid = String((cEl && cEl.value) || '');
+    // CON.F.US.<SYM>.<expiry> — ENQ = 迷你 NQ($20/pt),MNQ 微型($2),MES 微型 ES($5)
+    const sym = (cid.split('.')[3] || 'MNQ').toUpperCase();
+    const pv = { MNQ: 2, ENQ: 20, NQ: 20, MES: 5, ES: 50 }[sym] || 2;
+    const sEl = document.getElementById('size-' + mode);
+    const size = (sEl ? parseInt(sEl.value, 10) : 1) || 1;
+    const tv = 0.25 * pv * size;
+    const parts = [];
+    if (risk) parts.push('風險 ≤ $' + Math.round(risk * tv));
+    if (prof) parts.push('獲利 ≤ $' + Math.round(prof * tv));
+    hint.textContent = '(' + parts.join(' · ') + ' @ ' + size + ' 口)';
 }

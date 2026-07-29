@@ -378,7 +378,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         conf_max_risk_ticks=getattr(req, "conf_max_risk_ticks", None),
         max_risk_ticks=getattr(req, "max_risk_ticks", None),
         max_profit_ticks=getattr(req, "max_profit_ticks", None),
-        risk_cap_mode=str(getattr(req, "risk_cap_mode", "clamp") or "clamp"),
+        risk_cap_mode=str(getattr(req, "risk_cap_mode", "block") or "block"),
         conf_sl_reference_tf=_normalize_conf_sl_reference_tf(
             getattr(req, "conf_sl_reference_tf", "largest")
         ),
@@ -959,7 +959,7 @@ class BacktestRequest(BaseModel):
     conf_max_risk_ticks: Optional[int] = None  # drop signals with SL > N ticks (None=no cap)
     max_risk_ticks: Optional[int] = None       # 1.0.9: same cap for non-confluence strategies
     max_profit_ticks: Optional[int] = None     # 1.0.9: TP width cap (prop-firm consistency rule)
-    risk_cap_mode: str = "clamp"               # clamp = scale SL/TP keeping RR; block = skip signal
+    risk_cap_mode: str = "block"               # clamp = scale SL/TP keeping RR; block = skip signal
     conf_sl_reference_tf: str = "largest" # "largest"=original, "smallest"=lowest contributing TF anchors SL/TP
     conf_allowed_sessions: Optional[List[str]] = Field(
         default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
@@ -2966,7 +2966,7 @@ class LiveStartRequest(BaseModel):
     conf_max_risk_ticks: Optional[int] = None
     max_risk_ticks: Optional[int] = None
     max_profit_ticks: Optional[int] = None
-    risk_cap_mode: str = "clamp"
+    risk_cap_mode: str = "block"
     conf_sl_reference_tf: str = "largest"
     conf_allowed_sessions: Optional[List[str]] = Field(
         default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)

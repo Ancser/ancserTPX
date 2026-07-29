@@ -22,6 +22,9 @@ from backend.db.models import (
     _extract_symbol, get_commission_rt, get_fees_rt,
 )
 from backend.strategy.consolidation import build_zone_detector
+from backend.db.models import (
+    current_quarterly_contract_id, get_point_value, get_tick_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +161,10 @@ _PRESET_SNAPSHOT_KEYS = (
     "factor_pmo_signal_mode", "factor_sl_rule", "factor_tp_rule",
     "factor_sl_value", "factor_tp_value", "factor_max_hold_bars",
     "factor_max_trades_per_day", "factor_warmup_bars", "factor_session_va_filter",
+    # 1.0.9: 新增參數也要進快照,否則 sweep 結果存成 preset 時會遺失,
+    # 而且 G5 跨商品重跑會用到錯的門檻/風險上限。
+    "factor_pmo_threshold_scale", "factor_pmo_normal_scale", "factor_pmo_early_scale",
+    "max_risk_ticks", "max_profit_ticks", "risk_cap_mode",
 )
 
 
@@ -564,6 +571,94 @@ def run_factor_sweep(
     return results
 
 
+
+# ── 1.0.9 G5:跨商品交叉驗證 ────────────────────────────────
+# G0–G4(訊號數 / 獲利 / 滑價 / 走查 / 蒙地卡羅)全部是「同一份資料的內部
+# 檢定」,擋不住曲線擬合 —— 研究實測:8 個公開策略族的冠軍全都通過 G0–G4,
+# 但把同一組參數搬到另一個商品後全數變負(RSI2 MNQ冠軍→MES PF 0.745;
+# MES冠軍→MNQ PF 0.853,完美對角線)。
+#
+# 時間上沒有樣本外可用(資料只有 2.5 個月),但 MNQ 與 MES 追蹤不同指數,
+# 相關約 0.9 卻不完全同步 —— 這是目前唯一近似樣本外的檢定。
+#
+# 判定:同一組參數在另一個商品上,每筆平均淨損益仍要 > 實測往返滑價。
+# 只驗已 accept 的變體(通常個位數),成本很低。
+# 詳見 docs/1.0.9_RESEARCH_FINDINGS.md。
+
+G5_SLIP_TICKS = 14.0          # 實測 EMAPMO 市價成交往返滑價(3.5 pts)
+G5_CROSS = {"MNQ": "MES", "MES": "MNQ"}
+G5_MAX_VARIANTS = 40          # 上限,避免 accept 過多時拖垮 sweep
+
+
+def _edge_ticks(pnl: float, trades: int, contract_id: str) -> Optional[float]:
+    if not trades:
+        return None
+    tv = get_tick_size(contract_id) * get_point_value(contract_id)
+    return (float(pnl) / trades / tv) if tv else None
+
+
+def cross_symbol_validate(results: List[dict], base_params: StrategyParams,
+                          progress_cb: Optional[Callable] = None) -> None:
+    """把已 accept 的變體搬到另一個商品重跑,不過 G5 就撤銷 accept。"""
+    from backend.data import candle_store
+
+    sym = _extract_symbol(getattr(base_params, "contract_id", "") or "")
+    other = G5_CROSS.get(sym)
+    accepted = [r for r in results if r.get("accept")]
+    if not other or not accepted:
+        for r in results:
+            r.setdefault("g5_pass", None)
+        return
+
+    other_bars = sorted(candle_store.load(other, 1), key=lambda c: c.timestamp)
+    if len(other_bars) < 5000:
+        logger.info("[G5] %s store 太小(%d 根),跳過跨商品驗證", other, len(other_bars))
+        for r in results:
+            r.setdefault("g5_pass", None)
+            r.setdefault("g5_reason", f"{other} 資料不足")
+        return
+
+    other_cid = current_quarterly_contract_id(other)
+    todo = sorted(accepted, key=lambda r: -float(r.get("pf") or 0))[:G5_MAX_VARIANTS]
+    logger.info("[G5] %s → %s:驗證 %d/%d 個已接受變體",
+                sym, other, len(todo), len(accepted))
+
+    for i, r in enumerate(todo, 1):
+        snap = r.get("preset_params") or {}
+        p = copy.deepcopy(base_params)
+        for k, v in snap.items():
+            if hasattr(p, k) and k != "contract_id":
+                setattr(p, k, list(v) if isinstance(v, (list, tuple)) else v)
+        p.contract_id = other_cid
+        try:
+            cross = _run_one(p, other_bars, None)
+        except Exception as exc:      # 單一變體失敗不該中斷整個 sweep
+            r["g5_pass"] = False
+            r["g5_reason"] = f"{type(exc).__name__}: {exc}"
+            continue
+        cross.pop("_ordered_pnls", None)
+        home_edge = _edge_ticks(r.get("pnl", 0.0), r.get("trades", 0),
+                                getattr(base_params, "contract_id", ""))
+        cross_edge = _edge_ticks(cross.get("pnl", 0.0), cross.get("trades", 0), other_cid)
+        r["g5_symbol"] = other
+        r["g5_trades"] = cross.get("trades")
+        r["g5_pf"] = cross.get("pf")
+        r["g5_edge_ticks"] = None if cross_edge is None else round(cross_edge, 1)
+        r["g5_home_edge_ticks"] = None if home_edge is None else round(home_edge, 1)
+        r["g5_pass"] = bool(cross_edge is not None and cross_edge > G5_SLIP_TICKS
+                            and home_edge is not None and home_edge > G5_SLIP_TICKS)
+        if not r["g5_pass"]:
+            r["accept"] = False
+            r["g5_reason"] = (f"{other} 每筆邊際 "
+                              f"{'n/a' if cross_edge is None else round(cross_edge, 1)}t "
+                              f"≤ {G5_SLIP_TICKS:g}t")
+        if progress_cb:
+            progress_cb(i, len(todo), f"G5 {other}: {r.get('label', '')}")
+
+    for r in results:
+        r.setdefault("g5_pass", None)   # 未驗證(本來就沒 accept)
+
+
 def run_model_sweep(
     candles: List[Candle],
     base_params: StrategyParams,
@@ -603,6 +698,12 @@ def run_model_sweep(
     if _on("FACTOR"):
         out.extend(run_factor_sweep(candles, base_params, _wrap("FACTOR", done_offset)))
     _annotate_plateau_and_acceptance(out)
+    gc.collect()
+    # 1.0.9 G5:最後一道關卡 —— 已 accept 的變體必須在另一個商品上也站得住
+    try:
+        cross_symbol_validate(out, base_params, progress_cb)
+    except Exception as exc:
+        logger.warning("[G5] 跨商品驗證跳過: %s: %s", type(exc).__name__, exc)
     gc.collect()
     return out
 

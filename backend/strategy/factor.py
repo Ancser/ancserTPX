@@ -318,7 +318,7 @@ class FactorSignalStrategy:
         self.max_risk_ticks = float(getattr(p, "max_risk_ticks", 0) or 0)
         self.max_profit_ticks = float(getattr(p, "max_profit_ticks", 0) or 0)
         self.risk_cap_mode = str(
-            getattr(p, "risk_cap_mode", "clamp") or "clamp").lower()
+            getattr(p, "risk_cap_mode", "block") or "block").lower()
         if self.risk_cap_mode not in {"clamp", "block"}:
             self.risk_cap_mode = "clamp"
         self.sl_rule = str(getattr(p, "factor_sl_rule", "atr") or "atr").lower()
