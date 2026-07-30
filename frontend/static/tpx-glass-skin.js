@@ -110,9 +110,20 @@
         // Account orb. The real credential form is re-parented into its
         // panel; automatic data controls remain live but visually hidden.
         const account = el("div", "glass-account");
-        const orb = el("button", "account-orb", {
+        /* Real glass, same material as the chart menu button: mounting it as
+           an optical surface under the `fab` tuning gives it an actual lens
+           instead of only borrowing the glass border/relief tokens. Its stage
+           resolves through the top bar's data-optical-stage, so it refracts
+           the chart exactly like the FAB does. */
+        const orb = el("button", "account-orb optical-surface", {
             type: "button", "aria-haspopup": "true", "aria-expanded": "false",
         });
+        orb.dataset.optical = "fab";
+        /* The engine prepends the lens layer, so the letter needs its own
+           stacking context above it — and syncAccount must write here rather
+           than to orb.textContent, which would wipe the layer out. */
+        const orbLabel = el("span", "surface-content");
+        orb.appendChild(orbLabel);
         const panel = el("div", "account-panel");
         const connWrap = document.querySelector(".conn-dropdown-wrap");
         const badge = byId("account-badge");
@@ -143,7 +154,7 @@
             const email = username?.value.trim() || "";
             const state = document.documentElement.dataset.connectionState || "error";
             who.textContent = email || "EMAIL REQUIRED";
-            orb.textContent = email ? email[0].toUpperCase() : "?";
+            orbLabel.textContent = email ? email[0].toUpperCase() : "?";
             orb.dataset.conn = state;
             orb.title = `${email || "Email required"} · ${state.toUpperCase()}`;
             orb.setAttribute("aria-label", orb.title);
@@ -196,7 +207,22 @@
         // One stationary workspace fog spans both the scrolling sidebar and
         // the chart. It remains pointer-transparent and follows .main's
         // visibility, so Research keeps its independent surface.
-        (main || chart).prepend(el("div", "chart-fog"));
+        /* Inside #chart-container, not .main. The dock's stage IS the chart,
+           so a fog parented to .main is simply absent from the clone the dock
+           refracts — the bar sampled the raw chart and ignored the fade. Over
+           the sidebar the fog only ever covered flat padding, so nothing is
+           lost by scoping it to the chart. */
+        chart.prepend(el("div", "chart-fog"));
+        /* The chart fog used to span .main, so it also faded the sidebar's
+           content as it scrolled under the floating bar. Scoping it to the
+           chart (above) took that away, so the sidebar gets its own — kept
+           separate rather than one wide element because a fog covering both
+           would have to live outside #chart-container, and then the dock
+           could not sample it. */
+        const sidebar = document.querySelector(".sidebar");
+        if (sidebar && !sidebar.querySelector(":scope > .sidebar-fog")) {
+            sidebar.prepend(el("div", "chart-fog sidebar-fog", { "aria-hidden": "true" }));
+        }
         const watermark = el("div", "chart-watermark");
         watermark.innerHTML = "<b>ancser</b>TPX <small>1.0.9</small>";
         chart.prepend(watermark);
@@ -207,7 +233,12 @@
            mainEl.style.display='none', which would take the nav down
            with them and leave no way back. It still refracts the chart
            via data-optical-stage. */
-        topbar.dataset.opticalStage = "#chart-container";
+        /* Candidate list, first visible wins (resolveStageSelector).
+           Research hides .main, which zeroes #chart-container and would
+           otherwise kill the lens on both the dock's container and its
+           pill; the Research view is the fallback so every workspace has
+           something real to refract. */
+        topbar.dataset.opticalStage = '#chart-container, [data-stage="research"]';
         document.body.appendChild(topbar);
 
         // The sweep pair is an inline-styled exception to TPX's normal
@@ -243,8 +274,12 @@
         if (research) {
             research.dataset.stage = "research";
             if (!research.querySelector(":scope > .research-fog")) {
+                /* data-optical-pin marks this as viewport-anchored: it is
+                   position:fixed here, which a clone cannot reproduce, so
+                   the engine re-pins it into clone space on every sync. */
                 research.prepend(el("div", "chart-fog research-fog", {
                     "aria-hidden": "true",
+                    "data-optical-pin": "viewport",
                 }));
             }
             appendLens(research);

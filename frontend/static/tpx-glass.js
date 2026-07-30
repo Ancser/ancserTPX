@@ -446,7 +446,36 @@
         };
     }
 
-    /* ── filter construction (verbatim) ──────────────────────────── */
+    /* ── filter construction ─────────────────────────────────────── */
+
+    /* Neutral fill for the displacement maps.
+
+       THE BUG THIS FIXES — the unprocessed container bleeding through.
+
+       Both feImage maps are placed at the element's own box (x=0 y=0
+       w=W h=H), but the filter REGION is 300% x 300%. Everywhere outside
+       that box the map samples as transparent black, and
+       feDisplacementMap decodes a 0 channel as
+
+           scale * (0 / 255 - 0.5)  =  -scale / 2
+
+       ...on BOTH axes. So every pixel outside the element box gets yanked
+       diagonally up-left by half the scale — measured at -16px on the
+       switch and -31px on the dock pill. The refraction pass then samples
+       that corrupted ring and drags a shifted, UNSHRUNK duplicate of the
+       track/container back inside the pill, which is what overlaps the
+       shrunk copy.
+
+       feFlood covers the whole filter region with the neutral value and
+       feMerge lays the real map on top, so inside the box the map wins
+       and outside it the displacement is ~0 instead of -scale/2. That is
+       the "clip the container out" half of the fix; the shrink itself
+       then covers the pill cleanly.
+
+       128 rather than 127.5 because channels are integers; the residual
+       bias is scale * 0.00196, well under a pixel. */
+    const NEUTRAL_PAD =
+        '<feFlood flood-color="rgb(128,128,128)" flood-opacity="1" result="neutralPad"></feFlood>';
 
     function createOpticalFilter(id, parentPass = false) {
         const ns = "http://www.w3.org/2000/svg";
@@ -460,9 +489,17 @@
         const parentPipeline = parentPass
             ? `
                 <feGaussianBlur data-node="parent-blur" in="SourceGraphic" stdDeviation="0" result="parentBlurred"></feGaussianBlur>
-                <feImage data-node="parent-shrink-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentShrinkMap"></feImage>
+                <feImage data-node="parent-shrink-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentShrinkMapRaw"></feImage>
+                <feMerge result="parentShrinkMap">
+                    <feMergeNode in="neutralPad"></feMergeNode>
+                    <feMergeNode in="parentShrinkMapRaw"></feMergeNode>
+                </feMerge>
                 <feDisplacementMap data-node="parent-shrink-displacement" in="parentBlurred" in2="parentShrinkMap" scale="0" xChannelSelector="R" yChannelSelector="G" result="parentShrunk"></feDisplacementMap>
-                <feImage data-node="parent-displacement-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentDisplacementMap"></feImage>
+                <feImage data-node="parent-displacement-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentDisplacementMapRaw"></feImage>
+                <feMerge result="parentDisplacementMap">
+                    <feMergeNode in="neutralPad"></feMergeNode>
+                    <feMergeNode in="parentDisplacementMapRaw"></feMergeNode>
+                </feMerge>
                 <feDisplacementMap data-node="parent-displacement" in="parentShrunk" in2="parentDisplacementMap" scale="0" xChannelSelector="R" yChannelSelector="G" result="parentRefracted"></feDisplacementMap>
                 <feColorMatrix data-node="parent-saturation" in="parentRefracted" type="saturate" values="1" result="parentSaturated"></feColorMatrix>
                 <feImage data-node="parent-specular-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentSpecularMap"></feImage>
@@ -490,12 +527,21 @@
             : "";
         const displacementInput = parentPass ? "nestedShrinkResolved" : "shrunk";
         filter.innerHTML = `
+            ${NEUTRAL_PAD}
             ${parentPipeline}
             <feGaussianBlur data-node="blur" in="${sourceInput}" stdDeviation="0.2" result="blurred"></feGaussianBlur>
-            <feImage data-node="shrink-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="shrinkMap"></feImage>
+            <feImage data-node="shrink-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="shrinkMapRaw"></feImage>
+            <feMerge result="shrinkMap">
+                <feMergeNode in="neutralPad"></feMergeNode>
+                <feMergeNode in="shrinkMapRaw"></feMergeNode>
+            </feMerge>
             <feDisplacementMap data-node="shrink-displacement" in="blurred" in2="shrinkMap" scale="0" xChannelSelector="R" yChannelSelector="G" result="shrunk"></feDisplacementMap>
             ${nestedShrinkResolver}
-            <feImage data-node="displacement-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="displacementMap"></feImage>
+            <feImage data-node="displacement-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="displacementMapRaw"></feImage>
+            <feMerge result="displacementMap">
+                <feMergeNode in="neutralPad"></feMergeNode>
+                <feMergeNode in="displacementMapRaw"></feMergeNode>
+            </feMerge>
             <feDisplacementMap data-node="displacement" in="${displacementInput}" in2="displacementMap" scale="50" xChannelSelector="R" yChannelSelector="G" result="refracted"></feDisplacementMap>
             <feColorMatrix data-node="saturation" in="refracted" type="saturate" values="1.3" result="refractedSaturated"></feColorMatrix>
             <feImage data-node="specular-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="specularMap"></feImage>
@@ -658,11 +704,18 @@
                the nav down with it, but it still refracts the chart. */
             const localStage = element.closest("[data-stage]");
             const stageRef = element.closest("[data-optical-stage]");
-            const stage = localStage || (
-                stageRef
-                    ? document.querySelector(stageRef.dataset.opticalStage)
-                    : null
-            );
+            /* Record the selector ONLY when it is what actually resolved
+               the stage. A local data-stage always wins, and surfaces that
+               have one are simply nested inside a container that happens
+               to carry data-optical-stage — the theme switch sits inside
+               .glass-topbar, for instance. Storing the selector for those
+               too let retargetStages() later overwrite their stage with
+               the top bar's chart, so the switch thumb refracted the chart
+               instead of its own track and lost the green/grey entirely. */
+            const stageSelector = localStage
+                ? null
+                : (stageRef ? stageRef.dataset.opticalStage : null);
+            const stage = localStage || resolveStageSelector(stageSelector);
             if (!stage || !stageTemplates.has(stage)) return;
             const index = filterSeq++;
             const layer = document.createElement("span");
@@ -721,6 +774,9 @@
                 contentLayer, contentWorld, contentStageCopy, contentFilterNodes,
                 contentStage,
                 parentComponent, parentContainerSource,
+                /* Kept so retargetStages() can re-resolve when the
+                   workspace changes which candidate is on screen. */
+                stageSelector,
                 /* Per-instance hook: mirrors live state (fill widths,
                    toggle classes) into the clone. The demo hardcoded
                    this by element id; TPX has many instances. */
@@ -741,33 +797,45 @@
         rebuildFilters();
     }
 
-    function logicalOffsetWithin(element, ancestor) {
-        let x = 0;
-        let y = 0;
-        let node = element;
-        while (node && node !== ancestor) {
-            x += node.offsetLeft;
-            y += node.offsetTop;
-            node = node.offsetParent;
-        }
-        if (node === ancestor) return { x, y };
-        const elementRect = element.getBoundingClientRect();
-        const ancestorRect = ancestor.getBoundingClientRect();
-        return {
-            x: elementRect.left - ancestorRect.left + ancestor.scrollLeft,
-            y: elementRect.top - ancestorRect.top + ancestor.scrollTop,
-        };
-    }
-
     function alignOpticalCopy(
-        surface, sourceStage, world, stageCopy,
-        elementRect, scaleX, scaleY, scaleInsetX, scaleInsetY
+        surface, sourceStage, world, stageCopy, elementRect, scaleX, scaleY
     ) {
         if (!sourceStage || !world || !stageCopy) return null;
         const sourceRect = sourceStage.getBoundingClientRect();
-        const logical = logicalOffsetWithin(surface.element, sourceStage);
-        const x = (logical.x + scaleInsetX) / scaleX;
-        const y = (logical.y + scaleInsetY) / scaleY;
+        /* Solve the offset from the rendered boxes instead of summing
+           layout quantities.
+
+           The offsetLeft/scaleInset form quietly disagreed with reality
+           in three ways at once: offsetLeft is measured from the stage's
+           PADDING box while the copy aligns to its BORDER box;
+           .optical-layer is inset:0 against the SURFACE's padding box so
+           the world already starts inside that border too; and offsetLeft
+           returns a rounded integer while the springs animate fractional
+           positions. Measured on .glass-switch that stacked up to
+           +2.5, +2.0 px — enough to read as "the shrunk copy sits a bit
+           low" on a 22px thumb.
+
+           The world sits inside the layer and is transformed
+           `translate3d(-x) scale(1/scaleX)`, so a clone point at local x
+           lands on screen at layerLeft + (x_point - x) * scaleX... setting
+           the clone's stage origin onto the live stage's border box gives
+           x directly from the two rects. No border or padding terms, and
+           fractional.
+
+           `+ scrollLeft/Top` is part of the same formula, not an extra
+           feature: rects are viewport-space, so they already contain
+           -scrollTop, while the clone is laid out from the top of the
+           stage's SCROLL box. Without adding the scroll back, a scrolled
+           stage (.sidebar, Research) would sample the top of the panel no
+           matter where it was scrolled to. */
+        const layer = world.parentElement;
+        const layerRect = layer ? layer.getBoundingClientRect() : elementRect;
+        const x = (
+            layerRect.left - sourceRect.left + sourceStage.scrollLeft
+        ) / scaleX;
+        const y = (
+            layerRect.top - sourceRect.top + sourceStage.scrollTop
+        ) / scaleY;
         /* Use each source's full scroll box. This keeps sidebar controls
            aligned after scrolling and gives a dock's local content source
            its own compact coordinate system. */
@@ -800,7 +868,37 @@
                 `translate3d(${-correctedX}px, ${-correctedY}px, 0) `
                 + `scale(${1 / scaleX}, ${1 / scaleY})`;
         }
-        return { logical, scaleInsetX, scaleInsetY };
+        /* Viewport-pinned overlays need re-pinning inside the clone.
+           The Research fog is position:fixed in the live page so it does
+           not scroll away with the panel (#calendar-view is itself the
+           scroller). Fixed anchors to the viewport, which the clone is not
+           part of: the world above is translated by +scrollTop, and a
+           fixed child ignores that translation entirely. So the fog stayed
+           over the clone's scroll-box top while the surface sampled
+           content scrolled far below it — the dock refracted un-fogged
+           Research content as soon as the page moved.
+
+           Solving it the same way the world offset is solved: the viewport
+           point Y maps to world Y of (Y - sourceRect.top + scrollTop)/scale,
+           so Y = 0 gives where the viewport's top edge falls in clone
+           space. Absolute positioning there rides the world translation
+           and tracks scrolling exactly. */
+        const pins = stageCopy.querySelectorAll('[data-optical-pin="viewport"]');
+        if (pins.length) {
+            const pinX = (sourceStage.scrollLeft - sourceRect.left) / scaleX;
+            const pinY = (sourceStage.scrollTop - sourceRect.top) / scaleY;
+            pins.forEach((pin) => {
+                pin.style.position = "absolute";
+                pin.style.left = `${pinX}px`;
+                pin.style.top = `${pinY}px`;
+                pin.style.right = "auto";
+                pin.style.width = `${window.innerWidth / scaleX}px`;
+            });
+        }
+
+        // Callers only need to know the main pass ran; the parent feImage
+        // placement is solved from rects now, not from these offsets.
+        return { aligned: true };
     }
 
     function localTransformScale(element) {
@@ -860,23 +958,19 @@
             const transformScale = localTransformScale(surface.element);
             const scaleX = transformScale.x;
             const scaleY = transformScale.y;
-            const layoutWidth = elementRect.width / scaleX;
-            const layoutHeight = elementRect.height / scaleY;
-            const scaleInsetX = (layoutWidth - elementRect.width) / 2;
-            const scaleInsetY = (layoutHeight - elementRect.height) / 2;
             let mainAlignment = null;
             if (mainVisible) {
                 mirrorCanvases(surface);
                 mainAlignment = alignOpticalCopy(
                     surface, surface.stage, surface.world, surface.stageCopy,
-                    elementRect, scaleX, scaleY, scaleInsetX, scaleInsetY
+                    elementRect, scaleX, scaleY
                 );
             }
             if (contentVisible) {
                 alignOpticalCopy(
                     surface, contentStage,
                     surface.contentWorld, surface.contentStageCopy,
-                    elementRect, scaleX, scaleY, scaleInsetX, scaleInsetY
+                    elementRect, scaleX, scaleY
                 );
             }
             if (
@@ -884,19 +978,22 @@
                 && surface.filterNodes.parent
                 && surface.parentContainerSource
             ) {
-                const parentLogical = logicalOffsetWithin(
-                    surface.parentContainerSource, surface.stage
-                );
-                const parentX = (
-                    parentLogical.x
-                    - mainAlignment.logical.x
-                    - mainAlignment.scaleInsetX
-                ) / scaleX;
-                const parentY = (
-                    parentLogical.y
-                    - mainAlignment.logical.y
-                    - mainAlignment.scaleInsetY
-                ) / scaleY;
+                /* Where the container sits relative to this surface, in
+                   the surface's own unscaled coordinates — that is what
+                   filter user space expects.
+
+                   Derived from rendered rects for the same reason as the
+                   world offset above: the previous form differenced two
+                   offsetLeft sums and a scale inset, carrying the
+                   padding-vs-border-box mismatch and integer rounding
+                   into the container's feImage placement. That is what
+                   made the dock pill's sample of its own container sit
+                   low. Dividing the on-screen delta by the surface's
+                   scale converts straight to local units. */
+                const containerRect =
+                    surface.parentContainerSource.getBoundingClientRect();
+                const parentX = (containerRect.left - elementRect.left) / scaleX;
+                const parentY = (containerRect.top - elementRect.top) / scaleY;
                 const parentWidth = surface.parentContainerSource.offsetWidth / scaleX;
                 const parentHeight = surface.parentContainerSource.offsetHeight / scaleY;
                 [
@@ -950,6 +1047,10 @@
         intervalMs: 33,
         raf: 0,
         blits: 0,
+        pixels: 0,
+        passes: 0,
+        skippedIdle: 0,
+        skippedPairs: 0,
         lastCost: 0,
         rebuildTimer: 0,
     };
@@ -1007,7 +1108,52 @@
        session-divider overlays are created on first use), so a clone
        taken at boot goes stale. Re-take the templates and swap the
        copies in place rather than rebuilding every filter. */
+    /* data-optical-stage takes a candidate LIST; the first one that is
+       actually on screen wins.
+
+       The top bar lives outside .main so the Research tab cannot hide the
+       nav, and it names #chart-container as what it refracts. But Research
+       sets `mainEl.style.display='none'`, which drops #chart-container to
+       zero size — and the visibility guard in syncOpticalSurfaces then
+       switches the whole lens off. That is why the dock lost the glass on
+       BOTH its container and its pill there, while the crisp label text
+       (which is not part of the lens) stayed.
+
+       Listing the Research view as a second candidate gives the bar
+       something real to sample in every workspace. */
+    function resolveStageSelector(selectorList) {
+        if (!selectorList) return null;
+        const parts = String(selectorList)
+            .split(",").map((part) => part.trim()).filter(Boolean);
+        const found = parts.map((sel) => document.querySelector(sel));
+        return found.find((el) => el && el.offsetWidth > 0 && el.offsetHeight > 0)
+            /* Nothing on screen yet (first paint): mount against the first
+               that exists so the surface is still built, then retarget. */
+            || found.find(Boolean)
+            || null;
+    }
+
+    /* Re-point surfaces whose candidate list now resolves elsewhere.
+       Only flips `surface.stage`; the caller re-clones, which is the
+       expensive half. */
+    function retargetStages() {
+        let moved = false;
+        surfaces.forEach((surface) => {
+            if (!surface.stageSelector) return;
+            const next = resolveStageSelector(surface.stageSelector);
+            if (!next || next === surface.stage || !stageTemplates.has(next)) return;
+            surface.stage = next;
+            moved = true;
+        });
+        return moved;
+    }
+
     function rebuildStageClones() {
+        /* Before re-cloning, not after: the dock's tab handler schedules
+           this on every workspace switch, and by the time the debounce
+           fires the layout has settled, so this is exactly when the
+           winning candidate is knowable. */
+        retargetStages();
         stageTemplates.forEach((_, stage) => {
             markScrollSources(stage);
             stageTemplates.set(stage, cloneOpticalSource(stage));
@@ -1037,7 +1183,20 @@
             }
             bindMirrors(surface);
         });
-        scheduleOpticalSync();
+        /* Synchronous, not scheduled.
+
+           The visibility guard inside syncOpticalSurfaces is what latches
+           a layer to display:none when its stage has no layout, and only
+           that guard can clear it again. Deferring to the next animation
+           frame meant a retargeted surface stayed blank until one
+           arrived — and requestAnimationFrame does not fire at all while
+           the tab is in the background, so a workspace switched off-screen
+           came back with the dock's glass still dead.
+
+           This path is already the debounced, expensive one; running the
+           pass inline costs nothing extra and makes the retarget take
+           effect in the same task. */
+        syncOpticalSurfaces();
     }
 
     function mirrorCanvases(surface) {
@@ -1052,14 +1211,48 @@
         ) {
             return;
         }
+        /* An invisible lens refracts nothing, so mirroring into it is
+           pure cost. The dock and segment pills spend almost all their
+           time at --control-glass: 0 (frost until you touch them), which
+           is most of the surfaces on screen. Same one-heartbeat catch-up
+           as the Precision Lens above: by the time the fade is visible
+           the next tick has already refreshed the sample. */
+        if (surface.layer && parseFloat(getComputedStyle(surface.layer).opacity) <= 0.01) {
+            mirror.skippedIdle += 1;
+            return;
+        }
         if (liveCanvases(surface.stage).length !== surface.mirrorSourceCount) {
             scheduleStageCloneRebuild();
             return;
         }
         const started = performance.now();
+        mirror.passes += 1;
         const sampleScale = surface.component === "precision"
             ? mirror.precisionScale
             : mirror.scale;
+        /* Only the band the filter can actually reach needs copying. A
+           dock is 450x94 over a 1320x547 chart, so blitting the whole
+           chart into its clone moved ~20x more pixels than were ever
+           sampled — per surface, per heartbeat. */
+        const surfRect = surface.element.getBoundingClientRect();
+        /* Pad by how far this surface travelled since the last heartbeat.
+           The sample is up to intervalMs stale, so a moving surface — the
+           Precision Lens tracking the pointer — reads its filter around a
+           position the crop was not centred on yet. Without this a fast
+           drag exposes a transparent band on the lens's leading edge.
+           Capped so a page-sized jump cannot undo the crop entirely. */
+        const previous = surface.mirrorRect;
+        surface.mirrorRect = { left: surfRect.left, top: surfRect.top };
+        const motion = previous
+            ? Math.min(240, Math.hypot(
+                surfRect.left - previous.left, surfRect.top - previous.top
+            ))
+            : 0;
+        const margin = (surface.sampleMargin || 64) + motion;
+        const wantLeft = surfRect.left - margin;
+        const wantTop = surfRect.top - margin;
+        const wantRight = surfRect.right + margin;
+        const wantBottom = surfRect.bottom + margin;
         surface.mirrorPairs.forEach(([src, dst]) => {
             if (!src.width || !src.height) return;
             const w = Math.max(1, Math.round(src.width * sampleScale));
@@ -1068,12 +1261,38 @@
                 dst.width = w;
                 dst.height = h;
             }
+            const srcRect = src.getBoundingClientRect();
+            if (!srcRect.width || !srcRect.height) return;
+            // Clip the wanted band against this canvas; skip it entirely
+            // when the surface sits nowhere near it.
+            const left = Math.max(wantLeft, srcRect.left);
+            const top = Math.max(wantTop, srcRect.top);
+            const right = Math.min(wantRight, srcRect.right);
+            const bottom = Math.min(wantBottom, srcRect.bottom);
+            if (right <= left || bottom <= top) { mirror.skippedPairs += 1; return; }
+            // CSS px -> this canvas's backing store, which dst mirrors at
+            // sampleScale, so the same rect scales to both.
+            const kx = src.width / srcRect.width;
+            const ky = src.height / srcRect.height;
+            const sx = Math.max(0, Math.floor((left - srcRect.left) * kx));
+            const sy = Math.max(0, Math.floor((top - srcRect.top) * ky));
+            const sw = Math.min(src.width - sx, Math.ceil((right - left) * kx));
+            const sh = Math.min(src.height - sy, Math.ceil((bottom - top) * ky));
+            if (sw <= 0 || sh <= 0) return;
             const context = dst.getContext("2d");
             if (!context) return;
-            context.clearRect(0, 0, w, h);
+            const dx = sx * sampleScale;
+            const dy = sy * sampleScale;
+            const dw = sw * sampleScale;
+            const dh = sh * sampleScale;
+            /* Clear only what is repainted. Pixels outside this band are
+               stale, but the filter never reads them; clearing the whole
+               surface would put back the cost the crop just removed. */
+            context.clearRect(dx, dy, dw, dh);
             try {
-                context.drawImage(src, 0, 0, w, h);
+                context.drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh);
                 mirror.blits += 1;
+                mirror.pixels += dw * dh;
             } catch (error) {
                 /* Tainted canvas (cross-origin image drawn into the
                    chart) throws on read-back. Disable rather than
@@ -1119,6 +1338,18 @@
             nodes.saturation.setAttribute("values", passConfig.saturation.toFixed(3));
             nodes.specularAlpha.setAttribute("slope", specularStrength.toFixed(3));
         };
+        /* How far outside its own box this surface can pull a pixel:
+           feDisplacementMap maps a channel of 0..255 onto -scale/2..
+           +scale/2, so each pass shifts by at most half its scale, and
+           the two chained passes add. Plus the bezel, where the profile
+           peaks, and 8px of slack for the blur's spread. mirrorCanvases()
+           crops to this; beyond it the filter never reads. */
+        surface.sampleMargin = Math.ceil(
+            (Math.abs(displacement.maximum * config.refraction)
+                + Math.abs(shrink.scale)) / 2
+            + config.bezel
+            + 8
+        );
         configureNodes(
             surface.filterNodes, config, shrink, displacement, specular,
             width, height, shrink.scale, config.specular
@@ -2359,6 +2590,10 @@
                             (n, s) => n + (s.mirrorPairs ? s.mirrorPairs.length : 0), 0
                         ),
                         blits: mirror.blits,
+                        megapixels: Number((mirror.pixels / 1e6).toFixed(3)),
+                        passes: mirror.passes,
+                        skippedIdle: mirror.skippedIdle,
+                        skippedPairs: mirror.skippedPairs,
                         lastCostMs: Number(mirror.lastCost.toFixed(3)),
                     },
                 };

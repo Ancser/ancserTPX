@@ -516,9 +516,14 @@
         box-shadow 90ms linear;
 }
 
+/* Light mode idle: cream-on-cream made the resting pill all but
+   invisible against the page, so the frost is a light grey instead —
+   dark enough to read as a distinct surface, light enough to stay a
+   frost rather than a slab. The blur above supplies the frosted look;
+   this only sets what colour it frosts to. */
 :root[data-theme="light"] .dock-bubble,
 :root[data-theme="light"] .segment-indicator {
-    background: rgb(var(--cream-rgb) / 0.68);
+    background: rgb(198 196 191 / 0.60);
 }
 
 .dock-bubble > .optical-layer,
@@ -1144,89 +1149,89 @@
    Research / calendar and the account page were authored dark-only
    with hardcoded whites, so the palette swap left white-on-cream text
    and white rules. Re-point them at the theme tokens. */
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] {
     color: var(--text);
     background: var(--bg);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-weekhead span,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-daynum,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-week-label {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-weekhead span,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-daynum,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-week-label {
     color: var(--text);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-bt-sub,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-live-sub,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .c-t3,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .lbl-hint {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-bt-sub,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-live-sub,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .c-t3,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .lbl-hint {
     color: var(--text3);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-cell {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-cell {
     border-color: var(--border);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-cell.cal-empty {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-cell.cal-empty {
     background: transparent;
     border-color: transparent;
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-cell.cal-today {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-cell.cal-today {
     border-color: var(--cyan);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-weekhead-sum {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-weekhead-sum {
     color: var(--amber) !important;
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-pos,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-pos {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-pos,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .institution-pos {
     color: var(--green) !important;
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-neg,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-neg {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-neg,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .institution-neg {
     color: var(--red) !important;
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-zero {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-zero {
     color: var(--text3);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-analysis-panel,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-panel {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-analysis-panel,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .institution-panel {
     color: var(--text);
     border-color: var(--border);
     background: var(--bg2);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .cal-income-curve,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .order-compare-card,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-card {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-income-curve,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .order-compare-card,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .institution-card {
     border-color: var(--border);
     background: var(--bg);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-table th,
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-table td {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .institution-table th,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .institution-table td {
     border-color: var(--border);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .institution-bar {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .institution-bar {
     background: rgb(20 50 70 / 0.10);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] #calendar-view .rob-hist {
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .rob-hist {
     background: rgb(20 50 70 / 0.06);
 }
 
 :root[data-theme="light"][data-tpx-glass-skin="on"]
-    #calendar-view .cal-income-curve line[stroke*="255,255,255"] {
+    [data-stage="research"] .cal-income-curve line[stroke*="255,255,255"] {
     stroke: var(--border-h) !important;
 }
 
 :root[data-theme="light"][data-tpx-glass-skin="on"]
-    #calendar-view .cal-income-curve text[fill*="255,255,255"] {
+    [data-stage="research"] .cal-income-curve text[fill*="255,255,255"] {
     fill: var(--text3) !important;
 }
 
@@ -1551,3 +1556,52 @@
 }
 
 .glass-tuner .tuner-status.is-dirty { color: var(--amber); }
+
+/* ── Avatar orb: real glass, same material as the chart menu ───────
+   tpx-glass-skin.js now mounts the orb as an optical surface under the
+   `fab` tuning, so it carries an actual lens rather than only the glass
+   border and relief. These override the parts of .optical-surface that
+   assume an absolutely-positioned chip — the orb has to stay in the top
+   bar's flex row — while keeping the clipping the lens needs. */
+.glass-account .account-orb.optical-surface {
+    position: relative;             /* .optical-surface defaults to absolute */
+    z-index: auto;
+    overflow: hidden;               /* was visible; the lens must be clipped */
+    contain: paint;
+    clip-path: inset(0 round 999px);
+    -webkit-clip-path: inset(0 round 999px);
+    /* Idle material, matching .fab-button. The lens rides on top of it. */
+    backdrop-filter: blur(11px) saturate(1.12);
+    -webkit-backdrop-filter: blur(11px) saturate(1.12);
+}
+
+/* The connection dot is a pseudo-element on the orb, so the clip above
+   would swallow it at the very edge — pull it inside the radius. */
+.glass-account .account-orb.optical-surface::after {
+    right: 0.1667rem;
+    bottom: 0.1667rem;
+}
+
+/* ── Sidebar fog ───────────────────────────────────────────────────
+   Companion to .chart-fog, which now lives inside #chart-container so
+   the dock can sample it (see tpx-glass-skin.js). That left the sidebar
+   unfaded, and .sidebar is itself the scroller — an absolutely
+   positioned fog would be part of the scroll content and slide away, the
+   same trap .research-fog hit. Fixed pins it to the viewport instead.
+
+   width:inherit takes .sidebar's own computed width, so the 1200px
+   breakpoint that narrows the sidebar to 21.875rem is followed for free
+   and no magic number is repeated here. */
+.sidebar-fog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: auto;
+    width: inherit;
+}
+
+/* Under 900px the layout stacks and the sidebar drops below the chart,
+   so a fog pinned to the top of the viewport would cover the wrong pane. */
+@media (max-width: 900px) {
+    .sidebar-fog { display: none; }
+}
