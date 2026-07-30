@@ -1334,3 +1334,220 @@
     .segment-indicator,
     .switch-thumb { transition-duration: 1ms; }
 }
+
+/* ── Research fog ─────────────────────────────────────────────────
+   tpx-glass-skin.js already prepends .chart-fog.research-fog into
+   #calendar-view; this is the rule that makes it behave.
+
+   #calendar-view is itself the scroller (overflow-y:auto, ~1559px of
+   content in a 720px box), so an absolutely positioned fog is part of
+   that scroll content and slides away with it — measured y: 0 -> -250
+   after a 250px scroll. Research content then ran up under the floating
+   dock with no fade, while the chart pages looked right only because the
+   chart never scrolls.
+
+   Pinned to the viewport so Research content scrolls UNDERNEATH the
+   fade. z-index stays at .chart-fog's 12: below the top bar and lens. */
+:root[data-tpx-glass-skin="on"] .research-fog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+}
+
+/* ── Glass tuner (development tool) ───────────────────────────────
+   Dropdown under the avatar for adjusting each component's optics
+   against the real UI. Control set is ported from the APX gallery
+   demo's tuner sidebar; see tpx-glass-tuner.js.
+
+   Remove that script tag and this block is inert. */
+
+.glass-tuner {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.glass-tuner .tuner-trigger {
+    display: grid;
+    place-items: center;
+    width: 1.75rem;                     /* 42px, matches .account-orb */
+    height: 1.75rem;
+    border: 1px solid var(--glass-rim);
+    border-radius: 999px;
+    background: var(--glass-tint);
+    box-shadow: var(--glass-relief);
+    color: var(--text2);
+    font-size: 0.6667rem;
+    line-height: 1;
+    cursor: pointer;
+    backdrop-filter: blur(11px) saturate(1.12);
+    -webkit-backdrop-filter: blur(11px) saturate(1.12);
+}
+
+.glass-tuner .tuner-trigger:hover { color: var(--cyan); }
+.glass-tuner.open .tuner-trigger { color: var(--cyan); border-color: var(--cyan); }
+
+/* Anchored to the VIEWPORT, not to .glass-tuner: the right cluster can
+   be pushed past the window edge on a narrow viewport and an absolutely
+   positioned panel inherits that, rendering half off-screen. A tuning
+   panel you cannot reach is useless. */
+.glass-tuner .tuner-panel {
+    position: fixed;
+    z-index: 61;
+    top: 3.125rem;                      /* 75px — level with .account-panel */
+    right: 0.6667rem;
+    display: none;
+    width: min(15rem, calc(100vw - 1.3333rem));   /* 360px */
+    max-height: min(34rem, calc(100vh - 5rem));
+    overflow-y: auto;
+    padding: 0.5rem;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--glass-radius);
+    background: var(--glass-bg-strong);
+    box-shadow: 0 0.75rem 1.9167rem var(--glass-shadow);
+    backdrop-filter: blur(18px) saturate(1.3);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+}
+
+.glass-tuner.open .tuner-panel { display: block; }
+
+.glass-tuner .tuner-head {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-bottom: 0.4167rem;
+    padding-bottom: 0.4167rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.glass-tuner .tuner-picker {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0.1667rem 0.25rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.5rem;                  /* 12px */
+    font-weight: 600;
+}
+
+.glass-tuner .tuner-actions { display: flex; gap: 0.1667rem; flex: 0 0 auto; }
+
+.glass-tuner .tuner-btn {
+    padding: 0.1667rem 0.3333rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text2);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.375rem;                /* 9px */
+    letter-spacing: 0.0417rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.glass-tuner .tuner-btn:hover { color: var(--cyan); border-color: var(--cyan); }
+
+.glass-tuner .tuner-group {
+    margin: 0.3333rem 0 0.1667rem;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.375rem;
+    font-weight: 600;
+    letter-spacing: 0.0833rem;
+    text-transform: uppercase;
+    color: var(--cyan);
+}
+
+.glass-tuner .tuner-row {
+    display: block;
+    margin-bottom: 0.25rem;
+    padding: 0.1667rem 0.25rem;
+    border-radius: var(--glass-radius-sm);
+}
+
+/* A modified field has to be findable at a glance — that is the whole
+   point of a tuning pass. */
+.glass-tuner .tuner-row.is-modified { background: var(--cyan3); }
+.glass-tuner .tuner-row.is-modified .tuner-label { color: var(--cyan); }
+
+.glass-tuner .tuner-label {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.25rem;
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.4583rem;               /* 11px */
+    font-weight: 600;
+    letter-spacing: 0.0417rem;
+    text-transform: uppercase;
+    color: var(--text2);
+}
+
+.glass-tuner .tuner-out {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.4167rem;               /* 10px */
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--amber);
+}
+
+/* Native range on purpose: the tuner adjusts the fluid slider, so it
+   must not depend on the thing being adjusted. */
+.glass-tuner .tuner-range {
+    width: 100%;
+    margin: 0.0833rem 0 0;
+    accent-color: var(--cyan);
+}
+
+.glass-tuner .tuner-input {
+    width: 100%;
+    margin-top: 0.0833rem;
+    padding: 0.1667rem 0.25rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.4167rem;
+}
+
+.glass-tuner .tuner-kernel {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.4167rem;
+    padding-top: 0.4167rem;
+    border-top: 1px solid var(--border);
+}
+
+.glass-tuner .tuner-kernel.is-empty { display: none; }
+
+.glass-tuner .tuner-map {
+    width: 2.5rem;                      /* 60px */
+    height: 1.6667rem;                  /* 40px */
+    border: 1px solid var(--border);
+    border-radius: 0.1667rem;
+    object-fit: cover;
+    background: var(--bg);
+    image-rendering: pixelated;         /* these are small kernels */
+}
+
+.glass-tuner .tuner-kernel-note {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.3333rem;               /* 8px */
+    line-height: 1.4;
+    color: var(--text3);
+}
+
+.glass-tuner .tuner-status {
+    margin-top: 0.25rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.375rem;                /* 9px */
+    color: var(--text3);
+}
+
+.glass-tuner .tuner-status.is-dirty { color: var(--amber); }

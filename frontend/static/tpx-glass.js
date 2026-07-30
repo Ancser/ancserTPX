@@ -84,6 +84,55 @@
         Object.entries(defaults).map(([key, value]) => [key, { ...value }])
     );
 
+    /* ── live tuning ─────────────────────────────────────────────────
+       tpx-glass-tuner.js writes straight into `settings`, so persisting
+       is just a snapshot of it. Restored BEFORE any surface is built:
+       the displacement / shrink / specular maps are baked from these
+       numbers at mount time, so applying them later would mean
+       rebuilding every filter chain anyway. */
+    const TUNING_KEY = "ancserTPXGlassTuning";
+
+    function loadTuning() {
+        let saved = null;
+        try { saved = JSON.parse(localStorage.getItem(TUNING_KEY) || "null"); }
+        catch (error) { return; }
+        if (!saved || typeof saved !== "object") return;
+        Object.entries(saved).forEach(([component, values]) => {
+            if (!settings[component] || !values || typeof values !== "object") return;
+            Object.entries(values).forEach(([key, value]) => {
+                /* Only keys the shipped defaults already declare. Stale or
+                   hand-edited localStorage must not be able to introduce
+                   fields the filter builder never validates. */
+                if (key in settings[component]) settings[component][key] = value;
+            });
+        });
+    }
+
+    /* Persist ONLY the fields that differ from the shipped defaults.
+
+       Storing the whole snapshot would pin every value forever: edit a
+       default in this file and the stale localStorage copy would quietly
+       override it, so the source would say one thing and the UI another.
+       A diff means untouched fields keep tracking the code. */
+    function saveTuning() {
+        const diff = {};
+        Object.entries(settings).forEach(([component, values]) => {
+            const base = defaults[component] || {};
+            const changed = {};
+            Object.entries(values).forEach(([key, value]) => {
+                if (base[key] !== value) changed[key] = value;
+            });
+            if (Object.keys(changed).length) diff[component] = changed;
+        });
+        try {
+            if (Object.keys(diff).length) {
+                localStorage.setItem(TUNING_KEY, JSON.stringify(diff));
+            } else {
+                localStorage.removeItem(TUNING_KEY);
+            }
+        } catch (error) { /* quota / private mode — tuning won't persist */ }
+    }
+
     const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
     const byId = (id) => document.getElementById(id);
     const surfaces = [];
@@ -2141,6 +2190,7 @@
            the resolved border colour into a texture — so both would
            be wrong if the palette were applied afterwards. */
         initTheme();
+        loadTuning();
         buildOpticalSurfaces();
         observeLiveStageContent();
 
@@ -2238,6 +2288,60 @@
             setMirrorScale(scale) {
                 mirror.scale = clamp(Number(scale) || 0.5, 0.1, 1);
                 scheduleOpticalSync();
+            },
+
+            /* ── tuner surface (tpx-glass-tuner.js) ───────────────────
+               `settings` is already live above; these just give the
+               panel a way to commit a change and read the result back. */
+
+            // Pristine shipped values, for reset and "is this modified?".
+            defaults,
+
+            /* Call after mutating settings[component]. Optics live in the
+               baked canvas maps, so they need a filter rebuild; stiffness
+               and damping are read per-frame by the springs and apply on
+               their own. */
+            retune(component) {
+                saveTuning();
+                scheduleFilterRebuild(component || null);
+            },
+
+            resetTuning(component) {
+                if (component) {
+                    settings[component] = { ...defaults[component] };
+                } else {
+                    Object.keys(defaults).forEach((key) => {
+                        settings[key] = { ...defaults[key] };
+                    });
+                }
+                saveTuning();
+                scheduleFilterRebuild(component || null);
+            },
+
+            // Baked maps for the preview thumbnails.
+            kernel(component) {
+                const node = surfaces.find(
+                    (item) => item.component === component && item.lastMap
+                );
+                return node
+                    ? { displacement: node.lastMap, specular: node.lastSpecular }
+                    : null;
+            },
+
+            /* Only the fields that differ from defaults, ready to paste
+               back into the `defaults` table in this file. Tuning lives
+               in localStorage until someone does that. */
+            exportTuning({ changedOnly = true } = {}) {
+                const out = {};
+                Object.entries(settings).forEach(([component, values]) => {
+                    const base = defaults[component] || {};
+                    const diff = {};
+                    Object.entries(values).forEach(([key, value]) => {
+                        if (!changedOnly || base[key] !== value) diff[key] = value;
+                    });
+                    if (Object.keys(diff).length) out[component] = diff;
+                });
+                return JSON.stringify(out, null, 4);
             },
             get diagnostics() {
                 return {
