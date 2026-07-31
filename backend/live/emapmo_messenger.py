@@ -417,8 +417,313 @@ class _DiscordTransport:
         self._client = None
 
 
+# TPX chart theme, mirrored from createChart() in
+# frontend/static/ancserTPX.js so a Discord alert and the app read as the
+# same product.  Keep these in sync if the frontend palette moves.
+_MONO = ["IBM Plex Mono", "DejaVu Sans Mono", "monospace"]
+_CHART_BG = "#08090d"
+_CHART_TEXT = "#556178"
+_CHART_LINE = "#64dcff"
+_GRID_ALPHA = 0.10
+_SEPARATOR_ALPHA = 0.24
+_BORDER_ALPHA = 0.30
+_BOX_EDGE = "#22303c"
+_CANDLE_UP = "#888888"
+_CANDLE_DOWN = "#555555"
+# EMAPMO long/short, from the #signal-legend swatches in ancserTPX.html.
+_SIGNAL_LONG = "#38bdf8"
+_SIGNAL_SHORT = "#a855f7"
+_LINE_ENTRY = "#ffa726"
+_LINE_TP = "#00e5a0"
+_LINE_SL = "#ff4060"
+
+
+# ── liquid glass, ported from frontend/static/tpx-glass.js ─────────────
+# capsuleCoordinate / createDisplacementMap / createShrinkMap /
+# createSpecularMap and the feFilter chain, reproduced on the rendered
+# raster.  The frontend hands these maps to feDisplacementMap; numpy does
+# the same resample here, so the alert carries the app's actual optics
+# rather than a lookalike.
+#
+# Element geometry is .chart-lens (200x140) and .optical-surface's
+# border-radius: 999px, which clamps to a full capsule.  Coefficients are
+# the `precision` row of that file's `defaults` table -- the pointer lens,
+# the one tuned for looking through.
+_LENS_W = 200
+_LENS_H = 140
+_LENS_BEZEL = 30.0
+_LENS_THICKNESS = 150.0
+_LENS_REFRACTION = 1.5
+_LENS_SHRINK = -0.20
+_LENS_SPECULAR = 0.60
+_LENS_BLUR = 0.0
+_LENS_SATURATION = 1.30
+
+
+def _capsule_coordinate(value, size, radius):
+    """Vectorised capsuleCoordinate(): distance from the capsule's spine,
+    zero along the straight body."""
+    import numpy as np
+
+    body = size - radius * 2
+    return np.where(
+        value < radius, value - radius,
+        np.where(value >= size - radius, value - radius - body, 0.0),
+    )
+
+
+def _refraction_profile(bezel, thickness, samples=256):
+    """physicalProfile(): Snell through the convex-squircle bezel at
+    eta = 1/1.5, giving the refraction offset across the bezel width."""
+    import numpy as np
+
+    x = np.linspace(0.0, 1.0, samples, endpoint=False)
+    surface = lambda t: (1.0 - (1.0 - t) ** 4) ** 0.25  # noqa: E731
+    y = surface(x)
+    step = 1e-4
+    derivative = (surface(np.clip(x + step, 0.0, 1.0)) - y) / step
+    magnitude = np.hypot(derivative, 1.0)
+    normal_x = -derivative / magnitude
+    normal_y = -1.0 / magnitude
+
+    eta = 1.0 / 1.5
+    dot = normal_y
+    k = 1.0 - eta * eta * (1.0 - dot * dot)
+    root = np.sqrt(np.clip(k, 0.0, None))
+    refracted_x = -(eta * dot + root) * normal_x
+    refracted_y = eta - (eta * dot + root) * normal_y
+
+    safe_y = np.where(np.abs(refracted_y) < 1e-6, 1.0, refracted_y)
+    profile = refracted_x * ((y * bezel + thickness) / safe_y)
+    profile[np.abs(refracted_y) < 1e-6] = 0.0
+    profile[k < 0] = 0.0
+    return profile
+
+
+def _displacement_map(width, height, radius, bezel, thickness):
+    """createDisplacementMap(): R/G channels carrying the bezel's
+    refraction.  The interior stays neutral -- only the bezel band bends
+    light; the centre is moved by the shrink pass alone."""
+    import numpy as np
+
+    profile = _refraction_profile(bezel, thickness)
+    maximum = max(1e-6, float(np.max(np.abs(profile))))
+    ys, xs = np.mgrid[0:height, 0:width]
+    cx = _capsule_coordinate(xs, width, radius)
+    cy = _capsule_coordinate(ys, height, radius)
+    squared = cx * cx + cy * cy
+
+    outer_squared = (radius + 1.0) ** 2
+    radius_squared = radius ** 2
+    inner_squared = max(0.0, radius - bezel) ** 2
+    band = (squared <= outer_squared) & (squared >= inner_squared)
+
+    distance = np.sqrt(np.maximum(squared, 1e-12))
+    alpha = np.where(
+        squared < radius_squared, 1.0,
+        1.0 - (distance - radius) / (np.sqrt(outer_squared) - radius),
+    )
+    index = np.clip((radius - distance) / bezel, 0.0, 1.0)
+    index = np.clip((index * profile.size).astype(np.int32), 0, profile.size - 1)
+    displacement = profile[index]
+    normal_x = np.where(distance > 0, -cx / distance, 0.0)
+    normal_y = np.where(distance > 0, -cy / distance, 0.0)
+
+    scaled = (displacement / maximum) * 127.0 * alpha
+    red = np.where(band, np.clip(128.0 + normal_x * scaled, 0, 255), 128.0)
+    green = np.where(band, np.clip(128.0 + normal_y * scaled, 0, 255), 128.0)
+    return red, green, maximum
+
+
+def _shrink_map(width, height, shrink):
+    """createShrinkMap(): uniform push from the centre.  Negative shrink
+    displaces inward, which magnifies -- `precision` uses -0.20."""
+    import numpy as np
+
+    shrink = float(min(max(shrink, -0.8), 0.8))
+    zoom_out = (1.0 / (1.0 - shrink) - 1.0) if shrink else 0.0
+    maximum = max(
+        1e-6, abs(width * 0.5 * zoom_out), abs(height * 0.5 * zoom_out)
+    )
+    ys, xs = np.mgrid[0:height, 0:width]
+    dx = (xs - width / 2.0) * zoom_out
+    dy = (ys - height / 2.0) * zoom_out
+    red = np.clip(128.0 + dx / maximum * 127.0, 0, 255)
+    green = np.clip(128.0 + dy / maximum * 127.0, 0, 255)
+    return red, green, (maximum * 2.0 if shrink else 0.0)
+
+
+def _specular_map(width, height, radius):
+    """createSpecularMap(): lit rim, 1.8px wide, from a fixed key light."""
+    import numpy as np
+    import math
+
+    ys, xs = np.mgrid[0:height, 0:width]
+    cx = _capsule_coordinate(xs, width, radius)
+    cy = _capsule_coordinate(ys, height, radius)
+    squared = cx * cx + cy * cy
+    outer_squared = (radius + 1.0) ** 2
+    inner_squared = max(0.0, radius - 1.8) ** 2
+    band = (squared <= outer_squared) & (squared >= inner_squared)
+
+    light_x = math.cos(-math.pi * 0.72)
+    light_y = math.sin(-math.pi * 0.72)
+    distance = np.sqrt(np.maximum(squared, 1e-12))
+    normal_x = np.where(distance > 0, cx / distance, 0.0)
+    normal_y = np.where(distance > 0, -cy / distance, 0.0)
+    dot = np.abs(normal_x * light_x + normal_y * light_y)
+    edge = np.clip((radius - distance) / 1.8, 0.0, 1.0)
+    curve = dot * np.sqrt(np.clip(1.0 - (1.0 - edge) ** 2, 0.0, None))
+    channel = np.where(band, np.clip(255.0 * curve, 0, 255), 0.0)
+    alpha = np.where(band, np.clip(channel * curve, 0, 255), 0.0)
+    return channel, alpha
+
+
+def _displace(source, origin_x, origin_y, red, green, scale, box):
+    """One feDisplacementMap pass over `box` = (x0, y0, x1, y1).
+
+    Channels are the element-space maps placed at (origin_x, origin_y);
+    everything outside them decodes to the neutral 128, i.e. no shift --
+    the same job the filter's feFlood/feMerge pad does.
+    """
+    import numpy as np
+
+    x0, y0, x1, y1 = box
+    ys, xs = np.mgrid[y0:y1, x0:x1]
+    map_h, map_w = red.shape
+    local_x = xs - int(origin_x)
+    local_y = ys - int(origin_y)
+    inside = (
+        (local_x >= 0) & (local_x < map_w) & (local_y >= 0) & (local_y < map_h)
+    )
+    safe_x = np.clip(local_x, 0, map_w - 1)
+    safe_y = np.clip(local_y, 0, map_h - 1)
+    red_channel = np.where(inside, red[safe_y, safe_x], 128.0)
+    green_channel = np.where(inside, green[safe_y, safe_x], 128.0)
+
+    shift_x = scale * (red_channel / 255.0 - 0.5)
+    shift_y = scale * (green_channel / 255.0 - 0.5)
+    return _sample_bilinear(source, xs + shift_x, ys + shift_y)
+
+
+def _sample_bilinear(source, sx, sy):
+    import numpy as np
+
+    height, width = source.shape[:2]
+    sx = np.clip(sx, 0.0, width - 1.001)
+    sy = np.clip(sy, 0.0, height - 1.001)
+    x0 = np.floor(sx).astype(np.int32)
+    y0 = np.floor(sy).astype(np.int32)
+    fx = (sx - x0)[..., None]
+    fy = (sy - y0)[..., None]
+    top = source[y0, x0] * (1 - fx) + source[y0, x0 + 1] * fx
+    bottom = source[y0 + 1, x0] * (1 - fx) + source[y0 + 1, x0 + 1] * fx
+    return top * (1 - fy) + bottom * fy
+
+
+def _apply_glass_lens(buffer, centre_x, centre_y):
+    """Run the app's filter chain over a .chart-lens-sized box.
+
+    Order matches the SVG exactly: blur -> shrink displacement -> bezel
+    displacement -> saturate -> screen-blend the specular.
+    """
+    import numpy as np
+
+    height, width = buffer.shape[:2]
+    lens_w, lens_h = _LENS_W, _LENS_H
+    radius = min(lens_w, lens_h) / 2.0 - 1.0  # border-radius: 999px
+
+    # Keep the capsule on-canvas; the caller only picks where to look.
+    origin_x = int(round(min(max(centre_x - lens_w / 2.0, 0), width - lens_w)))
+    origin_y = int(round(min(max(centre_y - lens_h / 2.0, 0), height - lens_h)))
+
+    disp_r, disp_g, maximum = _displacement_map(
+        lens_w, lens_h, radius, _LENS_BEZEL, _LENS_THICKNESS
+    )
+    disp_scale = maximum * _LENS_REFRACTION
+    shrink_r, shrink_g, shrink_scale = _shrink_map(lens_w, lens_h, _LENS_SHRINK)
+    spec_channel, spec_alpha = _specular_map(lens_w, lens_h, radius)
+
+    # The second pass reads what the first produced at displaced
+    # coordinates, so the first has to cover that reach.
+    pad = int(np.ceil(max(abs(disp_scale), abs(shrink_scale)) / 2.0)) + 2
+    box = (
+        max(0, origin_x - pad), max(0, origin_y - pad),
+        min(width, origin_x + lens_w + pad), min(height, origin_y + lens_h + pad),
+    )
+    inner = (origin_x, origin_y, origin_x + lens_w, origin_y + lens_h)
+
+    source = buffer
+    if _LENS_BLUR > 0:
+        source = _box_blur(buffer, _LENS_BLUR)
+
+    shrunk = _displace(source, origin_x, origin_y, shrink_r, shrink_g,
+                       shrink_scale, box)
+    # Re-frame the intermediate so the next pass can index it directly.
+    padded = buffer.copy()
+    padded[box[1]:box[3], box[0]:box[2]] = shrunk
+    refracted = _displace(padded, origin_x, origin_y, disp_r, disp_g,
+                          disp_scale, inner)
+
+    rgb = refracted[..., :3]
+    grey = rgb.mean(axis=-1, keepdims=True)
+    rgb = np.clip(grey + (rgb - grey) * _LENS_SATURATION, 0.0, 255.0)
+
+    # feComponentTransfer slope on alpha, then feBlend mode="screen".
+    spec_rgb = (spec_channel / 255.0)[..., None]
+    spec_a = ((spec_alpha / 255.0) * _LENS_SPECULAR)[..., None]
+    premultiplied = spec_rgb * spec_a
+    base = rgb / 255.0
+    rgb = np.clip(base + premultiplied - base * premultiplied, 0.0, 1.0) * 255.0
+
+    # Clip to the capsule, feathered over the last pixel.
+    ys, xs = np.mgrid[0:lens_h, 0:lens_w]
+    cx = _capsule_coordinate(xs, lens_w, radius)
+    cy = _capsule_coordinate(ys, lens_h, radius)
+    distance = np.sqrt(cx * cx + cy * cy)
+    coverage = np.clip(radius + 0.5 - distance, 0.0, 1.0)[..., None]
+
+    out = buffer.copy()
+    patch = out[inner[1]:inner[3], inner[0]:inner[2]]
+    patch[..., :3] = patch[..., :3] * (1 - coverage) + rgb * coverage
+    out[inner[1]:inner[3], inner[0]:inner[2]] = patch
+    return out
+
+
+def _candle_artists(ax, xs, bars, min_body, linewidth=0.85, zorder=3):
+    """Add one candle per bar, returning the artists."""
+    from matplotlib.patches import Rectangle
+
+    point = lambda x, y: (x, y)  # noqa: E731
+    made = []
+    for x, bar in zip(xs, bars):
+        rising = bar.close >= bar.open
+        color = _CANDLE_UP if rising else _CANDLE_DOWN
+        wx, wy_high = point(x, bar.high)
+        _, wy_low = point(x, bar.low)
+        made.append(ax.vlines(wx, wy_low, wy_high, color=color,
+                              linewidth=linewidth, zorder=zorder))
+        lower = min(bar.open, bar.close)
+        height = max(abs(bar.close - bar.open), min_body)
+        bx, by = point(x - 0.31, lower)
+        tx, ty = point(x + 0.31, lower + height)
+        made.append(ax.add_patch(Rectangle(
+            (bx, by), max(tx - bx, 1e-9), max(ty - by, 1e-9),
+            facecolor=color, edgecolor=color,
+            linewidth=linewidth * 0.7, zorder=zorder,
+        )))
+    return made
+
+
 def _render_signal_chart_png(snapshot: _SignalSnapshot) -> bytes:
-    """Render an exact 1280x720 in-memory PNG.  Raises for text-only fallback."""
+    """Render an exact 1280x720 in-memory PNG.  Raises for text-only fallback.
+
+    Drawn to match the in-app chart: same near-black background, grey
+    candles, right-hand price scale, faint cyan grid and dashed day
+    separators.  The entry sits under a liquid-glass lens -- the same
+    optical idea the frontend uses -- which magnifies the signal bars and
+    doubles as the "look here" pointer.
+    """
     if not snapshot.bars:
         raise ValueError("no_chart_bars")
 
@@ -426,83 +731,183 @@ def _render_signal_chart_png(snapshot: _SignalSnapshot) -> bytes:
         import matplotlib
 
         matplotlib.use("Agg", force=True)
+        matplotlib.rcParams["font.monospace"] = (
+            _MONO + list(matplotlib.rcParams["font.monospace"])
+        )
         import matplotlib.pyplot as plt
-        from matplotlib.patches import Rectangle
 
-        fig = plt.figure(figsize=(12.8, 7.2), dpi=100, facecolor="#081018")
+        fig = plt.figure(figsize=(12.8, 7.2), dpi=100, facecolor=_CHART_BG)
         try:
-            price_ax = fig.add_subplot(111)
-            price_ax.set_facecolor("#081018")
-            price_ax.grid(True, color="#263746", alpha=0.42, linewidth=0.6)
-            price_ax.tick_params(colors="#9fb3c8", labelsize=8)
-            for spine in price_ax.spines.values():
-                spine.set_color("#31475b")
+            # Full-bleed like the app: the price scale sits on the right and
+            # the time scale along the bottom, with no outer margin.
+            ax = fig.add_axes([0.006, 0.072, 0.93, 0.918])
+            ax.set_facecolor(_CHART_BG)
+            ax.grid(True, axis="y", color=_CHART_LINE, alpha=_GRID_ALPHA,
+                    linewidth=0.6)
+            ax.grid(True, axis="x", color=_CHART_LINE, alpha=_GRID_ALPHA,
+                    linewidth=0.7, linestyle=(0, (4, 4)))
+            ax.set_axisbelow(True)
+            ax.yaxis.tick_right()
+            ax.yaxis.set_label_position("right")
+            ax.tick_params(colors=_CHART_TEXT, labelsize=9, length=0, pad=6)
+            for label in ax.get_xticklabels() + ax.get_yticklabels():
+                label.set_fontfamily("monospace")
+            for side, spine in ax.spines.items():
+                if side in ("right", "bottom"):
+                    spine.set_color(_CHART_LINE)
+                    spine.set_alpha(_BORDER_ALPHA)
+                else:
+                    spine.set_color("none")
 
             bars = snapshot.bars
-            x_values = list(range(len(bars)))
-            price_span = max(b.high for b in bars) - min(b.low for b in bars)
+            xs = list(range(len(bars)))
+            low = min(b.low for b in bars)
+            high = max(b.high for b in bars)
+            price_span = max(high - low, 1e-6)
             min_body = max(price_span * 0.0008, 0.01)
-            for x, bar in zip(x_values, bars):
-                rising = bar.close >= bar.open
-                color = "#19d3ae" if rising else "#ff5577"
-                price_ax.vlines(x, bar.low, bar.high, color=color, linewidth=0.85, alpha=0.95)
-                lower = min(bar.open, bar.close)
-                height = max(abs(bar.close - bar.open), min_body)
-                price_ax.add_patch(Rectangle(
-                    (x - 0.31, lower), 0.62, height,
-                    facecolor=color, edgecolor=color, linewidth=0.6,
-                ))
 
-            last_x = x_values[-1]
+            _candle_artists(ax, xs, bars, min_body, linewidth=0.85, zorder=3)
+
+            display_tz = _display_timezone(snapshot.timezone_name)
+            stamps = [_utc(b.timestamp).astimezone(display_tz) for b in bars]
+
+            # Dashed day separators, as on the app's time scale.
+            for i in range(1, len(stamps)):
+                if stamps[i].date() != stamps[i - 1].date():
+                    ax.axvline(i - 0.5, color=_CHART_LINE,
+                               alpha=_SEPARATOR_ALPHA, linestyle=(0, (5, 5)),
+                               linewidth=0.9, zorder=1)
+
+            is_long = snapshot.direction == "long"
+            signal_color = _SIGNAL_LONG if is_long else _SIGNAL_SHORT
+            last_x = xs[-1]
             last_bar = bars[-1]
-            marker = "^" if snapshot.direction == "long" else "v"
-            marker_color = "#19d3ae" if snapshot.direction == "long" else "#ff5577"
-            marker_offset = max(price_span * 0.035, abs(last_bar.close) * 0.00025, 0.25)
-            marker_y = (
-                last_bar.low - marker_offset
-                if snapshot.direction == "long"
-                else last_bar.high + marker_offset
-            )
-            price_ax.scatter([last_x], [marker_y], marker=marker, s=150, color=marker_color,
-                             edgecolors="#f2f7fb", linewidths=0.8, zorder=8)
-            annotation_offset = marker_offset * (0.75 if snapshot.direction == "long" else -0.75)
-            price_ax.annotate(
-                snapshot.direction.upper(),
-                xy=(last_x, marker_y),
-                xytext=(last_x, marker_y - annotation_offset),
-                ha="right",
-                va="top" if snapshot.direction == "long" else "bottom",
-                color=marker_color,
-                fontsize=10,
-                fontweight="bold",
+            offset = max(price_span * 0.035, 0.25)
+            marker_y = last_bar.low - offset if is_long else last_bar.high + offset
+
+            # Entry / SL / TP, only where they stay near the visible band --
+            # a far-away bracket would otherwise flatten the candles.
+            band_lo, band_hi = low - price_span * 0.6, high + price_span * 0.6
+            for value, color, tag in (
+                (snapshot.entry, _LINE_ENTRY, "ENTRY"),
+                (snapshot.tp, _LINE_TP, "TP"),
+                (snapshot.sl, _LINE_SL, "SL"),
+            ):
+                level = _finite(value)
+                if level is None or not (band_lo <= level <= band_hi):
+                    continue
+                ax.axhline(level, color=color, linewidth=0.9, alpha=0.55,
+                           linestyle=(0, (6, 4)), zorder=4)
+                ax.text(0.012, level, "{} {:,.2f}".format(tag, level),
+                        transform=ax.get_yaxis_transform(), ha="left",
+                        va="bottom", color=color, fontsize=8.5,
+                        fontfamily="monospace", alpha=0.9, zorder=5)
+
+            # Last price: dotted rule plus the boxed tag the app pins to the
+            # right scale.
+            ax.axhline(last_bar.close, color="#8fa3bd", linewidth=0.7,
+                       alpha=0.5, linestyle=(0, (1, 3)), zorder=4)
+            ax.text(
+                1.0, last_bar.close, " {:,.2f} ".format(last_bar.close),
+                transform=ax.get_yaxis_transform(), ha="left", va="center",
+                color="#0b0d12", fontsize=9, fontfamily="monospace", zorder=9,
+                bbox=dict(boxstyle="square,pad=0.30", facecolor="#c9d4e4",
+                          edgecolor="none"),
             )
 
-            title = (
-                f"ICE PI {snapshot.direction.upper()}  |  "
-                f"{snapshot.symbol} {snapshot.timeframe}"
-            )
-            price_ax.set_title(title, color="#e5eef7", fontsize=12, loc="left", pad=9)
-            price_ax.set_ylabel("Price", color="#9fb3c8")
+            marker = "^" if is_long else "v"
+            ax.scatter([last_x], [marker_y], marker=marker, s=190,
+                       color=signal_color, edgecolors="#eaf6ff",
+                       linewidths=0.9, zorder=8)
 
-            tick_count = min(8, len(bars))
+            right_pad = len(bars) * 0.22
+
+            ax.text(
+                0.006, 0.985,
+                "ICE entry  |  {} {}".format(snapshot.symbol, snapshot.timeframe),
+                transform=ax.transAxes, ha="left", va="top",
+                color="#c9d4e4", fontsize=12, fontfamily="monospace", zorder=16,
+            )
+
+            tick_count = min(9, len(bars))
             tick_step = max(1, len(bars) // tick_count)
             ticks = list(range(0, len(bars), tick_step))
             if ticks[-1] != len(bars) - 1:
                 ticks.append(len(bars) - 1)
-            display_tz = _display_timezone(snapshot.timezone_name)
-            labels = [_utc(bars[i].timestamp).astimezone(display_tz).strftime("%m-%d\n%H:%M") for i in ticks]
-            price_ax.set_xticks(ticks, labels)
-            price_ax.set_xlim(-1.0, len(bars))
-            low = min(b.low for b in bars)
-            high = max(b.high for b in bars)
-            price_ax.set_ylim(
-                min(low, marker_y) - marker_offset * 1.6,
-                max(high, marker_y) + marker_offset * 1.6,
+            # Date on the first tick of a day, clock time otherwise -- the
+            # app's tickMarkFormatter behaviour.
+            labels = []
+            for i in ticks:
+                stamp = stamps[i]
+                new_day = i == 0 or stamp.date() != stamps[i - 1].date()
+                labels.append(stamp.strftime("%m.%d" if new_day else "%H:%M"))
+            ax.set_xticks(ticks, labels)
+            ax.set_xlim(-1.0, len(bars) + right_pad)
+
+            pad = price_span * 0.06
+            # Reserve room past the marker for the capsule's lower half and
+            # the caption beneath it.  Both are fixed pixel sizes, so this
+            # is a comfortable over-estimate rather than an exact figure --
+            # _apply_glass_lens clamps the capsule on-canvas regardless.
+            # Headroom on both sides for the capsule's half-height, plus a
+            # little more on the marker's side for the caption.  A rally puts
+            # the newest bars hard against the top, and without this the
+            # capsule clamped against the canvas edge instead of centring on
+            # the signal.
+            headroom = price_span * 0.16
+            reserve = price_span * 0.12
+            ax.set_ylim(
+                min(low, marker_y) - pad - headroom - (reserve if is_long else 0.0),
+                max(high, marker_y) + pad + headroom + (0.0 if is_long else reserve),
             )
-            fig.subplots_adjust(left=0.065, right=0.985, top=0.94, bottom=0.105)
+
+            # The signal's own timestamp, boxed on the time scale.
+            ax.text(
+                last_x, 0.0,
+                " {} ".format(stamps[-1].strftime("%Y.%m.%d %H:%M")),
+                transform=ax.get_xaxis_transform(), ha="center", va="top",
+                color="#c9d4e4", fontsize=9, fontfamily="monospace", zorder=9,
+                bbox=dict(boxstyle="square,pad=0.30", facecolor="#1b212c",
+                          edgecolor=_BOX_EDGE),
+            )
+
+            # .chart-lens is a fixed 200x140 element, so where it sits and
+            # where its caption goes are device-space questions.  Limits are
+            # final by now, so transData is trustworthy.
+            figure_h = fig.get_size_inches()[1] * fig.dpi
+            marker_px, marker_py = ax.transData.transform((last_x, marker_y))
+            lens_x = marker_px
+            # Nudge off the marker toward the bars it came from, so the
+            # capsule frames the signal instead of empty space below it.
+            lens_y = (figure_h - marker_py) + (
+                -_LENS_H * 0.16 if is_long else _LENS_H * 0.16
+            )
+            caption_y = lens_y + (_LENS_H / 2.0 + 15.0) * (1 if is_long else -1)
+            caption_point = ax.transData.inverted().transform(
+                (lens_x, figure_h - caption_y)
+            )
+            # Knocked out of the background: where the caption lands relative
+            # to the SL/TP rules depends on the trade, and a dashed line
+            # struck straight through the words.
+            ax.text(caption_point[0], caption_point[1], "ICE entry",
+                    ha="center", va="top" if is_long else "bottom",
+                    color=signal_color, fontsize=14, fontweight="bold",
+                    fontfamily="monospace", zorder=16,
+                    bbox=dict(boxstyle="square,pad=0.34", facecolor=_CHART_BG,
+                              edgecolor="none"))
+
+            import numpy as np
+            import matplotlib.image as mpimg
+
+            fig.canvas.draw()
+            raster = np.asarray(fig.canvas.buffer_rgba()).astype(np.float32)
+
+            # Data space -> buffer pixels.  transData has a bottom-left
+            # origin; the raster is top-left, hence the flip.
+            raster = _apply_glass_lens(raster, lens_x, lens_y)
 
             with io.BytesIO() as out:
-                fig.savefig(out, format="png", dpi=100, facecolor=fig.get_facecolor())
+                mpimg.imsave(out, raster.astype(np.uint8), format="png")
                 return out.getvalue()
         finally:
             plt.close(fig)
