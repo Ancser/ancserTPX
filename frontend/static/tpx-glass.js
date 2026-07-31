@@ -58,26 +58,30 @@
 
     /* ── component tuning ─────────────────────────────────────────── */
     const defaults = {
-        slider:           { profile: "convex-squircle", bezel: 16, refraction: 0.85, thickness: 80, shrink: 0.00, specular: 0.60, blur: 0.10, saturation: 1.25, idleScale: 1.00, activeScale: 1.08, stiffness: 900, damping: 54, stretch: 0.17 },
+        slider:           { profile: "convex-squircle", bezel: 16, refraction: 0.85, thickness: 21, shrink: 0.00, specular: 0.60, blur: 0.10, saturation: 1.25, idleScale: 1.00, activeScale: 1.08, stiffness: 900, damping: 54, stretch: 0.17 },
         /* APX's 19px bezel belongs to a 62px-high thumb. TPX's thumb is
            22px high, so a proportional 7px bezel keeps a clear centre. */
-        switch:           { profile: "convex-squircle", bezel: 7, refraction: 0.90, thickness: 47, shrink: 0.40, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.50, stiffness: 820, damping: 48, stretch: 0.12 },
-        /* Pill and container shrink by the SAME amount. They are separate
-           surfaces with separate configs, so a container pinned at 0 stayed
-           full-size no matter how far the pill's shrink was pushed -- at 60%
-           the selector read as a shrunk pill sitting on an unshrunk shell.
+        switch:           { profile: "convex-squircle", bezel: 10, refraction: 1.00, thickness: 54, shrink: 0.40, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.50, stiffness: 820, damping: 48, stretch: 0.12 },
+        /* Pill and container are separate surfaces with separate configs,
+           so their shrink is set independently -- these numbers were tuned
+           by eye in the app and exported from the tuner, not derived. A
+           container pinned at 0 stays full-size no matter how far the
+           pill's shrink is pushed, which is what made the selector read as
+           a shrunk pill on an unshrunk shell before the container got a
+           value of its own.
+
            Labels and icons are unaffected either way: the content pass is
-           configured with shrink 0 (see configureNodes below), which is what
-           keeps text crisp while the backdrop scales. */
-        dock:             { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.20, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.10, activeScale: 1.50, stiffness: 520, damping: 34, stretch: 0.16 },
+           configured with shrink 0 (see configureNodes below), which is
+           what keeps text crisp while the backdrop scales. */
+        dock:             { profile: "convex-squircle", bezel: 18, refraction: 0.23, thickness: 70, shrink: 0.10, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.50, stiffness: 520, damping: 34, stretch: 0.16 },
         dockContainer:    { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.20, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.00, stiffness: 520, damping: 34, stretch: 0.00 },
-        segment:          { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.20, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.10, activeScale: 1.50, stiffness: 760, damping: 42, stretch: 0.14 },
-        segmentContainer: { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.20, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.00, stiffness: 760, damping: 42, stretch: 0.00 },
+        segment:          { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 10, shrink: 0.12, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.62, stiffness: 760, damping: 42, stretch: 0.14 },
+        segmentContainer: { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.02, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.00, stiffness: 760, damping: 42, stretch: 0.00 },
         fab:              { profile: "convex-squircle", bezel: 14, refraction: 0.86, thickness: 64, shrink: 0.30, specular: 0.60, blur: 0.16, saturation: 1.22, idleScale: 0.88, activeScale: 1.00, stiffness: 540, damping: 32, stretch: 0.18 },
         /* TPX precision lens:
              shrink -0.20  magnifies 20% (see createShrinkMap)
              blur     0.00  preserves sharp chart/text sampling. */
-        precision:        { profile: "convex-squircle", bezel: 30, refraction: 1.50, thickness: 150, shrink: -0.20, specular: 0.60, blur: 0.00, saturation: 1.30, idleScale: 0.86, activeScale: 1.00, stiffness: 400, damping: 25, stretch: 0.15 },
+        precision:        { profile: "convex-squircle", bezel: 30, refraction: 1.50, thickness: 150, shrink: -0.20, specular: 0.60, blur: 0.00, saturation: 1.30, idleScale: 1.20, activeScale: 1.94, stiffness: 400, damping: 25, stretch: 0.15 },
     };
 
     /* APX selectors use two independent optical channels:
@@ -1101,7 +1105,28 @@
         surface.mirrorSourceCount = sources.length;
     }
 
-    function scheduleStageCloneRebuild() {
+    /* Which stages actually need re-cloning. A workspace switch used to
+       re-clone EVERY stage: .main alone is ~20k nodes and the bottom panel
+       ~13k, so one tab change cost 100ms+ of synchronous DOM work even
+       when only the table under it had changed. */
+    const dirtyStages = new Set();
+    let rebuildAllStages = false;
+
+    function markStageDirty(stage) {
+        if (!stage) { rebuildAllStages = true; return; }
+        /* Stages nest -- .main contains both the chart and the bottom
+           panel -- so a change inside one also invalidates every stage
+           that encloses it, or the big clone silently serves stale
+           content to the pointer lens. */
+        stageTemplates.forEach((_, candidate) => {
+            if (candidate === stage || candidate.contains(stage)) {
+                dirtyStages.add(candidate);
+            }
+        });
+    }
+
+    function scheduleStageCloneRebuild(stage = null) {
+        markStageDirty(stage);
         if (mirror.rebuildTimer) return;
         mirror.rebuildTimer = window.setTimeout(() => {
             mirror.rebuildTimer = 0;
@@ -1110,19 +1135,21 @@
     }
 
     function observeLiveStageContent() {
-        const observer = new MutationObserver((mutations) => {
-            const changed = mutations.some((mutation) => {
-                const target = mutation.target.nodeType === 1
-                    ? mutation.target
-                    : mutation.target.parentElement;
-                return target && !target.closest(".optical-layer");
-            });
-            if (changed) scheduleStageCloneRebuild();
-        });
+        /* One observer per stage rather than one shared: the callback has
+           to know WHICH stage changed to rebuild just that one. */
         stageTemplates.forEach((_, stage) => {
             if (!["chart", "bottom", "research"].includes(stage.dataset.stage)) {
                 return;
             }
+            const observer = new MutationObserver((mutations) => {
+                const changed = mutations.some((mutation) => {
+                    const target = mutation.target.nodeType === 1
+                        ? mutation.target
+                        : mutation.target.parentElement;
+                    return target && !target.closest(".optical-layer");
+                });
+                if (changed) scheduleStageCloneRebuild(stage);
+            });
             observer.observe(stage, {
                 childList: true,
                 characterData: true,
@@ -1181,13 +1208,25 @@
            fires the layout has settled, so this is exactly when the
            winning candidate is knowable. */
         retargetStages();
+        const targets = rebuildAllStages ? null : new Set(dirtyStages);
+        dirtyStages.clear();
+        rebuildAllStages = false;
         stageTemplates.forEach((_, stage) => {
+            if (targets && !targets.has(stage)) return;
             markScrollSources(stage);
             stageTemplates.set(stage, cloneOpticalSource(stage));
         });
         surfaces.forEach((surface) => {
             const template = stageTemplates.get(surface.stage);
             if (!template) return;
+            /* Re-copy when this surface's stage was re-cloned, or when
+               retargetStages() just moved it to a different stage and its
+               copy still belongs to the old one. */
+            const staleCopy = !targets
+                || targets.has(surface.stage)
+                || surface.copyStage !== surface.stage;
+            if (!staleCopy) return;
+            surface.copyStage = surface.stage;
             if (surface.stageCopy && surface.world) {
                 const old = surface.stageCopy;
                 const next = template.cloneNode(true);
@@ -1249,7 +1288,7 @@
             return;
         }
         if (liveCanvases(surface.stage).length !== surface.mirrorSourceCount) {
-            scheduleStageCloneRebuild();
+            scheduleStageCloneRebuild(surface.stage);
             return;
         }
         const started = performance.now();
