@@ -717,6 +717,18 @@
                the nav down with it, but it still refracts the chart. */
             const localStage = element.closest("[data-stage]");
             const stageRef = element.closest("[data-optical-stage]");
+            /* Whichever marker sits NEARER the surface wins. A
+               data-optical-stage placed inside a data-stage is a
+               deliberate "sample that instead of the panel I happen to
+               live in" -- the bottom selector uses it to reach past its
+               own panel. One further out (the top bar wrapping the theme
+               switch) is just an enclosing container, and the switch's own
+               data-stage still wins there. */
+            const explicitStage = Boolean(
+                stageRef
+                && (!localStage
+                    || (localStage !== stageRef && localStage.contains(stageRef)))
+            );
             /* Record the selector ONLY when it is what actually resolved
                the stage. A local data-stage always wins, and surfaces that
                have one are simply nested inside a container that happens
@@ -725,10 +737,12 @@
                too let retargetStages() later overwrite their stage with
                the top bar's chart, so the switch thumb refracted the chart
                instead of its own track and lost the green/grey entirely. */
-            const stageSelector = localStage
-                ? null
-                : (stageRef ? stageRef.dataset.opticalStage : null);
-            const stage = localStage || resolveStageSelector(stageSelector);
+            const stageSelector = explicitStage
+                ? stageRef.dataset.opticalStage
+                : null;
+            const stage = explicitStage
+                ? resolveStageSelector(stageSelector)
+                : localStage;
             if (!stage || !stageTemplates.has(stage)) return;
             const index = filterSeq++;
             const layer = document.createElement("span");

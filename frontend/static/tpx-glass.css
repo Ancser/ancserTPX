@@ -177,17 +177,7 @@
        simply turns "no sample" into background. The surface clips it
        (overflow:hidden + contain:paint), so the spread stays inside the
        control. */
-    box-shadow: 0 0 0 9999px var(--stage-fill, var(--bg));
 }
-
-/* ...but it has to be the STAGE's colour, not the page's. The bottom
-   panel is --bg2 while the page is --bg, and in light mode --bg is the
-   lighter of the two, so a page-coloured surround read as a pale halo
-   inside the pill exactly where sampling ran out. Matching the stage
-   makes the surround continue it instead, which is what an edge-clamp
-   would have looked like. Tokens, so it follows the theme. */
-.optical-stage-copy.bottom-panel,
-.optical-stage-copy.sidebar { --stage-fill: var(--bg2); }
 
 /* The live Research stage is styled entirely through #calendar-view,
    but clone ids are intentionally stripped. Recreate its root layout
@@ -407,7 +397,12 @@
 
 .glass-dock .dock-bubble {
     left: 0.375rem;                 /* matches padding */
-    top: 0.375rem;
+    /* Not top:padding -- the pill is 78px inside a 76px content box, so
+       flush-to-padding sat 2px low. inset+auto margins centre it against
+       the padding box instead, and survive a height change. */
+    top: 0;
+    bottom: 0;
+    margin-block: auto;
     height: 3.25rem;                /* 78px */
 }
 
@@ -463,7 +458,10 @@
 
 .glass-segment .segment-indicator {
     left: 0.1667rem;
-    top: 0.1667rem;
+    /* Same 1px-low problem as the dock bubble; centred the same way. */
+    top: 0;
+    bottom: 0;
+    margin-block: auto;
     height: 1.4167rem;              /* 34px */
 }
 
@@ -557,10 +555,19 @@
 .dock-bubble > .optical-content-layer,
 .segment-indicator > .optical-content-layer { opacity: var(--control-content, 0); }
 
+/* Where shrink samples past the edge of the stage there is nothing to
+   read, and those pixels came back transparent -- a hard cut inside the
+   pill. The fill for them belongs UNDER the lens, not around the clone:
+   the transparent pixels land in the pill's own little box, while a
+   surround on the clone had to wrap all 2560px of it and inflated every
+   filter's source raster 2.58x. Opaque stage colour underneath, the tuned
+   tint layered over it, so the look is unchanged and the cost is a normal
+   background on a 385px element. */
 .glass-dock.interacting .dock-bubble,
 .glass-segment.interacting .segment-indicator {
     border-color: var(--glass-rim);
-    background: var(--glass-tint);
+    background-color: var(--stage-fill, var(--bg));
+    background-image: linear-gradient(var(--glass-tint), var(--glass-tint));
     box-shadow: var(--glass-relief);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;

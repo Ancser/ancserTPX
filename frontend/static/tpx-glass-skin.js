@@ -297,11 +297,23 @@
         if (!tabs || !panel) return;
         tabs.classList.add("glass-segment");
         tabs.setAttribute("aria-label", "Bottom panel");
+
         [...tabs.querySelectorAll(".bottom-tab")].forEach((tab, index) => {
             tab.dataset.segmentIndex = index;
             wrapContent(tab);
         });
-        tabs.prepend(opticalSpan("segment-indicator", "segment"));
+        const indicator = opticalSpan("segment-indicator", "segment");
+        /* The pill samples the whole workspace rather than the panel it
+           sits in, so its rim carries the sidebar to the left, the chart
+           above and the table below instead of running out of stage.
+           Deliberately on the pill and NOT on the track: the container is
+           1934px wide and its own reach is ~241px, so staging it here too
+           would clone the workspace a second time for the widest surface
+           on screen. Its edges are covered by the stage-matched surround
+           fill instead. Sits inside the panel's data-stage, so the
+           closest-marker rule in tpx-glass.js makes this win. */
+        indicator.dataset.opticalStage = ".main";
+        tabs.prepend(indicator);
         tabs.prepend(opticalSpan("control-container-glass", "segmentContainer", true));
         panel.dataset.stage = "bottom";
     }
