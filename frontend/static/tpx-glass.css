@@ -166,7 +166,28 @@
        refracted copy to the top of the panel. The engine now sizes the
        clone to the full scroll box; this lets it actually draw. */
     overflow: visible !important;
+    /* Beyond the clone there is nothing to sample, and shrink routinely
+       reaches past it: the bottom segment container is 1934px wide, so at
+       shrink 0.20 it samples 241px outside its own box while sitting 13px
+       from the edge of its stage. Those pixels came back transparent and
+       showed as a hard cut inside the pill.
+
+       A flat colour is invariant under displacement -- shifting it samples
+       the same colour -- so filling the surround costs no distortion and
+       simply turns "no sample" into background. The surface clips it
+       (overflow:hidden + contain:paint), so the spread stays inside the
+       control. */
+    box-shadow: 0 0 0 9999px var(--stage-fill, var(--bg));
 }
+
+/* ...but it has to be the STAGE's colour, not the page's. The bottom
+   panel is --bg2 while the page is --bg, and in light mode --bg is the
+   lighter of the two, so a page-coloured surround read as a pale halo
+   inside the pill exactly where sampling ran out. Matching the stage
+   makes the surround continue it instead, which is what an edge-clamp
+   would have looked like. Tokens, so it follows the theme. */
+.optical-stage-copy.bottom-panel,
+.optical-stage-copy.sidebar { --stage-fill: var(--bg2); }
 
 /* The live Research stage is styled entirely through #calendar-view,
    but clone ids are intentionally stripped. Recreate its root layout
@@ -528,6 +549,13 @@
 
 .dock-bubble > .optical-layer,
 .segment-indicator > .optical-layer { opacity: var(--control-glass, 0); }
+
+/* The glyph pass is not the backdrop pass. It is the only copy of the
+   label while the original is clipped out beneath the pill, so it follows
+   the mask rather than the backdrop's fade -- see --control-content in
+   tpx-glass.js. Same specificity as the rule above, so order decides. */
+.dock-bubble > .optical-content-layer,
+.segment-indicator > .optical-content-layer { opacity: var(--control-content, 0); }
 
 .glass-dock.interacting .dock-bubble,
 .glass-segment.interacting .segment-indicator {
@@ -1004,9 +1032,19 @@
 
 .switch-thumb .optical-layer { opacity: var(--switch-glass, 0); }
 
+/* The thumb keeps its cream face at rest, but once the lens is up that
+   face becomes a backdrop, not a surface. shrink: 0.40 compresses the
+   sampled track hard toward the centre, and whatever it vacates falls
+   through to whatever the thumb is painted with -- cream, so the gap read
+   as a pale halo around the shrunk green/grey instead of disappearing.
+   Any fill placed INSIDE the lens is no help: it is filter input, so it
+   shrinks along with everything else. The vacated ring can only be
+   coloured from underneath, which is exactly this declaration. --bg is
+   the page's own colour and follows the theme, so the gap now reads as
+   background rather than as part of the control. */
 .glass-switch.interacting .switch-thumb {
     border-color: var(--glass-rim);
-    background: rgb(var(--cream-rgb) / 0.28);
+    background: var(--bg);
     box-shadow: var(--glass-relief);
 }
 

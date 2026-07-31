@@ -522,17 +522,23 @@
             `
             : "";
         const sourceInput = parentPass ? "parentComposite" : "SourceGraphic";
-        const nestedShrinkResolver = parentPass
-            ? `
-                <feComposite in="parentComposite" in2="parentMaskMap" operator="in" result="parentStableInside"></feComposite>
-                <feComposite in="shrunk" in2="parentMaskMap" operator="out" result="childShrunkOutsideParent"></feComposite>
-                <feMerge result="nestedShrinkResolved">
-                    <feMergeNode in="childShrunkOutsideParent"></feMergeNode>
-                    <feMergeNode in="parentStableInside"></feMergeNode>
-                </feMerge>
-            `
-            : "";
-        const displacementInput = parentPass ? "nestedShrinkResolved" : "shrunk";
+        /* The shrink used to stop at the container's edge.
+
+           A `nestedShrinkResolved` step took `shrunk` only OUTSIDE the
+           container's mask and swapped `parentComposite` back in inside it
+           -- a branch that never passed through this surface's shrink. The
+           pill lives entirely inside its container, so its whole area took
+           that branch: the container's edges were refracted by the later
+           displacement pass but never moved, while the backdrop behind
+           them shrank. Two different scales in one pill.
+
+           `shrunk` already derives from parentComposite, so it carries a
+           correctly shrunk container; the resolver was discarding it.
+           Feeding `shrunk` straight through shrinks backdrop and container
+           by the same factor, which is what the surfaces' matching shrink
+           values are supposed to mean. */
+        const nestedShrinkResolver = "";
+        const displacementInput = "shrunk";
         filter.innerHTML = `
             ${NEUTRAL_PAD}
             ${parentPipeline}
@@ -1540,6 +1546,15 @@
             const glassOpacity = clamp(activity.value, 0, 1);
             dock.classList.toggle("interacting", glassShapeActive);
             dock.style.setProperty("--control-glass", glassOpacity.toFixed(4));
+            /* The refracted label must live and die with the hole cut in
+               the real one, not with the backdrop fade. Both layers are
+               children of the pill and both carry .optical-layer, so the
+               --control-glass fade dimmed the copy while
+               cutOriginalContentUnderLens still had the original clipped
+               out -- mid-fade neither was drawn, and the icon/text blacked
+               out before snapping back. Keyed to maskActive they hand off
+               in the same frame. */
+            dock.style.setProperty("--control-content", maskActive ? "1" : "0");
             bubble.style.left = `${pad() + x.value}px`;
             bubble.style.width = `${cell()}px`;
             bubble.style.transform =
@@ -1702,6 +1717,15 @@
             const glassOpacity = clamp(activity.value, 0, 1);
             track.classList.toggle("interacting", glassShapeActive);
             track.style.setProperty("--control-glass", glassOpacity.toFixed(4));
+            /* The refracted label must live and die with the hole cut in
+               the real one, not with the backdrop fade. Both layers are
+               children of the pill and both carry .optical-layer, so the
+               --control-glass fade dimmed the copy while
+               cutOriginalContentUnderLens still had the original clipped
+               out -- mid-fade neither was drawn, and the icon/text blacked
+               out before snapping back. Keyed to maskActive they hand off
+               in the same frame. */
+            track.style.setProperty("--control-content", maskActive ? "1" : "0");
             indicator.style.left = `${pad() + x.value}px`;
             indicator.style.width = `${cell()}px`;
             indicator.style.transform =
