@@ -155,6 +155,51 @@
     let sliderSeq = 0;
     let switchSeq = 0;
 
+    /* Generated PNG kernels are pure functions of component geometry.
+       Rebuilding the same 450x94 dock map on every theme/page resize was
+       several nested per-pixel loops plus PNG encoding in an animation
+       frame. Keep the small set of actually-used geometries instead. */
+    const opticalKernelCache = new Map();
+    const containerMaterialCache = new Map();
+    const MAX_KERNEL_CACHE = 64;
+    const MAX_MATERIAL_CACHE = 16;
+
+    function boundedCacheSet(cache, key, value, limit) {
+        if (cache.size >= limit && !cache.has(key)) {
+            cache.delete(cache.keys().next().value);
+        }
+        cache.set(key, value);
+        return value;
+    }
+
+    function opticalKernel(config, width, height, radius) {
+        const key = JSON.stringify([
+            width, height, Number(radius.toFixed(3)),
+            config.profile, config.bezel, config.thickness, config.shrink,
+        ]);
+        const cached = opticalKernelCache.get(key);
+        if (cached) return cached;
+        return boundedCacheSet(opticalKernelCache, key, {
+            shrink: createShrinkMap(config, width, height),
+            displacement: createDisplacementMap(config, width, height, radius),
+            specular: createSpecularMap(config, width, height, radius),
+        }, MAX_KERNEL_CACHE);
+    }
+
+    function containerMaterial(element, width, height, radius) {
+        const border = getComputedStyle(element).borderTopColor;
+        const key = JSON.stringify([
+            width, height, Number(radius.toFixed(3)), border,
+        ]);
+        const cached = containerMaterialCache.get(key);
+        if (cached) return cached;
+        return boundedCacheSet(
+            containerMaterialCache, key,
+            createContainerMaterialMap(element, width, height, radius),
+            MAX_MATERIAL_CACHE
+        );
+    }
+
     /* Layout constants live in CSS (rem). Read them back so the
        engine tracks the root font-size instead of assuming 16px.
        The demo hardcoded 7 / 5 / 4 px here. */
@@ -626,6 +671,16 @@
             return null;
         }
         const copy = source.cloneNode(false);
+        /* cloneNode(false) preserves a canvas's width/height attributes.
+           Even though its pixels are blank, Chromium immediately reserves
+           that full backing store. Templates and idle surfaces therefore
+           retained hundreds of MB before they sampled a single pixel.
+           CSS dimensions are inline/style-driven and remain intact; the
+           mirror expands only a surface that is actually visible. */
+        if (source instanceof HTMLCanvasElement) {
+            copy.width = 1;
+            copy.height = 1;
+        }
         source.childNodes.forEach((child) => {
             const childCopy = cloneSourceTree(child);
             if (childCopy) copy.appendChild(childCopy);
@@ -646,35 +701,56 @@
         return copy;
     }
 
-    function markScrollSources(stage) {
-        [stage, ...stage.querySelectorAll("*")].forEach((node) => {
-            if (node.closest(".optical-layer")) return;
-            const style = getComputedStyle(node);
-            const overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
-            const scrollable = /(auto|scroll|overlay)/.test(overflow)
-                && (node.scrollHeight > node.clientHeight
-                    || node.scrollWidth > node.clientWidth);
-            if (scrollable && !node.dataset.opticalScrollKey) {
-                node.dataset.opticalScrollKey = `scroll-${scrollSeq++}`;
-            }
-        });
+    function markScrollNode(node) {
+        if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+        if (node.closest(".optical-layer")) return;
+        const style = getComputedStyle(node);
+        const overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+        const scrollable = /(auto|scroll|overlay)/.test(overflow)
+            && (node.scrollHeight > node.clientHeight
+                || node.scrollWidth > node.clientWidth);
+        if (scrollable && !node.dataset.opticalScrollKey) {
+            node.dataset.opticalScrollKey = `scroll-${scrollSeq++}`;
+        }
     }
 
-    function mirrorNestedScrollState(sourceRoot, copyRoot) {
-        if (!copyRoot) return;
-        [sourceRoot, ...sourceRoot.querySelectorAll("[data-optical-scroll-key]")]
-            .forEach((source) => {
-            // Stage clones live inside the source stage's optical layers.
-            // Never let their zero/default scroll state overwrite the real
-            // scroller that was copied just before them.
-            if (source !== sourceRoot && source.closest(".optical-layer")) return;
-            const key = source.dataset.opticalScrollKey;
-            if (!key) return;
-            const copy = source === sourceRoot
-                && copyRoot.dataset.opticalScrollKey === key
-                ? copyRoot
-                : copyRoot.querySelector(`[data-optical-scroll-key="${key}"]`);
-            if (!copy) return;
+    function markScrollSources(stage) {
+        [stage, ...stage.querySelectorAll("*")].forEach(markScrollNode);
+    }
+
+    function scrollMirrorPairs(sourceRoot, copyRoot) {
+        if (!sourceRoot || !copyRoot) return [];
+        return [sourceRoot, ...sourceRoot.querySelectorAll("[data-optical-scroll-key]")]
+            .filter((source) => (
+                (source === sourceRoot || !source.closest(".optical-layer"))
+                && source.dataset.opticalScrollKey
+            ))
+            .map((source) => {
+                const key = source.dataset.opticalScrollKey;
+                const copy = source === sourceRoot
+                    && copyRoot.dataset.opticalScrollKey === key
+                    ? copyRoot
+                    : copyRoot.querySelector(`[data-optical-scroll-key="${key}"]`);
+                return copy ? [source, copy] : null;
+            })
+            .filter(Boolean);
+    }
+
+    function bindCloneState(surface) {
+        surface.mainScrollPairs = scrollMirrorPairs(surface.stage, surface.stageCopy);
+        surface.contentScrollPairs = scrollMirrorPairs(
+            surface.contentStage, surface.contentStageCopy
+        );
+        surface.mainPins = surface.stageCopy
+            ? [...surface.stageCopy.querySelectorAll('[data-optical-pin="viewport"]')]
+            : [];
+        surface.contentPins = surface.contentStageCopy
+            ? [...surface.contentStageCopy.querySelectorAll('[data-optical-pin="viewport"]')]
+            : [];
+    }
+
+    function mirrorNestedScrollState(pairs) {
+        (pairs || []).forEach(([source, copy]) => {
             copy.scrollLeft = source.scrollLeft;
             copy.scrollTop = source.scrollTop;
         });
@@ -808,6 +884,7 @@
                 /* Kept so retargetStages() can re-resolve when the
                    workspace changes which candidate is on screen. */
                 stageSelector,
+                copyStage: stage,
                 /* Per-instance hook: mirrors live state (fill widths,
                    toggle classes) into the clone. The demo hardcoded
                    this by element id; TPX has many instances. */
@@ -817,19 +894,31 @@
             });
         });
 
-        surfaces.forEach(bindMirrors);
-
-        const observer = new ResizeObserver(() => {
-            scheduleOpticalSync();
-            scheduleFilterRebuild();
+        surfaces.forEach((surface) => {
+            bindMirrors(surface);
+            bindCloneState(surface);
         });
+
+        /* Stage size only changes clone alignment. Filter kernels depend on
+           the glass surface's own box, and the controls/window observers
+           already rebuild those when their geometry changes. Rebuilding all
+           kernels for a page hide/show put a large task in the dock spring. */
+        const observer = new ResizeObserver(() => scheduleOpticalSync(false));
         stages.forEach((stage) => observer.observe(stage));
+        const surfaceObserver = new ResizeObserver((entries) => {
+            entries.forEach((entry) => {
+                const surface = surfaces.find((item) => item.element === entry.target);
+                if (surface) scheduleSurfaceFilterRebuild(surface);
+            });
+        });
+        surfaces.forEach((surface) => surfaceObserver.observe(surface.element));
         syncOpticalSurfaces();
         rebuildFilters();
     }
 
     function alignOpticalCopy(
-        surface, sourceStage, world, stageCopy, elementRect, scaleX, scaleY
+        surface, sourceStage, world, stageCopy, elementRect, scaleX, scaleY,
+        pinnedCopies = []
     ) {
         if (!sourceStage || !world || !stageCopy) return null;
         const sourceRect = sourceStage.getBoundingClientRect();
@@ -914,7 +1003,7 @@
            so Y = 0 gives where the viewport's top edge falls in clone
            space. Absolute positioning there rides the world translation
            and tracks scrolling exactly. */
-        const pins = stageCopy.querySelectorAll('[data-optical-pin="viewport"]');
+        const pins = pinnedCopies;
         if (pins.length) {
             const pinX = (sourceStage.scrollLeft - sourceRect.left) / scaleX;
             const pinY = (sourceStage.scrollTop - sourceRect.top) / scaleY;
@@ -953,9 +1042,12 @@
         return { x: 1, y: 1 };
     }
 
-    function syncOpticalSurfaces(component = null) {
+    function syncOpticalSurfaces(
+        component = null, copyCanvases = true, targetSurface = null
+    ) {
         pendingSyncFrame = 0;
         surfaces.forEach((surface) => {
+            if (targetSurface && surface !== targetSurface) return;
             if (component && surface.component !== component) return;
             if (surface.syncSample) {
                 surface.syncSample(surface.stageCopy);
@@ -964,9 +1056,9 @@
             /* The main backdrop and isolated glyph pass can have different
                live sources, so scroll state, visibility, dimensions and
                offsets must be handled independently. */
-            mirrorNestedScrollState(surface.stage, surface.stageCopy);
+            mirrorNestedScrollState(surface.mainScrollPairs);
             const contentStage = surface.contentStage || surface.stage;
-            mirrorNestedScrollState(contentStage, surface.contentStageCopy);
+            mirrorNestedScrollState(surface.contentScrollPairs);
 
             const mainVisible = surface.stage.offsetWidth > 0
                 && surface.stage.offsetHeight > 0;
@@ -991,17 +1083,17 @@
             const scaleY = transformScale.y;
             let mainAlignment = null;
             if (mainVisible) {
-                mirrorCanvases(surface);
+                if (copyCanvases) mirrorCanvases(surface);
                 mainAlignment = alignOpticalCopy(
                     surface, surface.stage, surface.world, surface.stageCopy,
-                    elementRect, scaleX, scaleY
+                    elementRect, scaleX, scaleY, surface.mainPins
                 );
             }
             if (contentVisible) {
                 alignOpticalCopy(
                     surface, contentStage,
                     surface.contentWorld, surface.contentStageCopy,
-                    elementRect, scaleX, scaleY
+                    elementRect, scaleX, scaleY, surface.contentPins
                 );
             }
             if (
@@ -1043,9 +1135,16 @@
         });
     }
 
-    function scheduleOpticalSync() {
+    let pendingSyncCopies = false;
+
+    function scheduleOpticalSync(copyCanvases = true) {
+        pendingSyncCopies = pendingSyncCopies || copyCanvases;
         if (pendingSyncFrame) cancelAnimationFrame(pendingSyncFrame);
-        pendingSyncFrame = requestAnimationFrame(() => syncOpticalSurfaces());
+        pendingSyncFrame = requestAnimationFrame(() => {
+            const copy = pendingSyncCopies;
+            pendingSyncCopies = false;
+            syncOpticalSurfaces(null, copy);
+        });
     }
 
     /* ── canvas mirroring ────────────────────────────────────────────
@@ -1071,11 +1170,13 @@
         enabled: true,
         scale: 0.5,
         precisionScale: 1,
-        /* Independent heartbeat, because the chart repaints on ticks /
-           pan / zoom with no spring running. ~30fps: fast enough that a
-           glass panel over a live chart never looks frozen, slow enough
-           that the blit cost stays off the interaction path. */
-        intervalMs: 33,
+        /* The chart is mostly static between its one-second updates. Mirror
+           at 10fps while idle, then raise to ~30fps during a glass spring or
+           pointer move. This keeps live sampling current without burning a
+           CPU/GPU core merely because the mouse rests over the chart. */
+        intervalMs: 250,
+        activeIntervalMs: 33,
+        precisionIdleMs: 500,
         raf: 0,
         blits: 0,
         pixels: 0,
@@ -1084,6 +1185,7 @@
         skippedPairs: 0,
         lastCost: 0,
         rebuildTimer: 0,
+        rebuildIdle: 0,
     };
 
     const liveCanvases = (root) =>
@@ -1112,6 +1214,93 @@
     const dirtyStages = new Set();
     let rebuildAllStages = false;
 
+    const survivesOpticalClone = (node) => !(
+        node.nodeType === Node.ELEMENT_NODE
+        && node.classList.contains("optical-layer")
+    );
+
+    function correspondingCloneNode(sourceRoot, copyRoot, sourceNode) {
+        if (!sourceRoot || !copyRoot || !sourceRoot.contains(sourceNode)) return null;
+        if (sourceNode === sourceRoot) return copyRoot;
+        const path = [];
+        let node = sourceNode;
+        while (node && node !== sourceRoot) {
+            const parent = node.parentNode;
+            if (!parent) return null;
+            const siblings = [...parent.childNodes].filter(survivesOpticalClone);
+            const index = siblings.indexOf(node);
+            if (index < 0) return null;
+            path.push(index);
+            node = parent;
+        }
+        if (node !== sourceRoot) return null;
+        let copy = copyRoot;
+        for (let i = path.length - 1; i >= 0; i -= 1) {
+            copy = [...copy.childNodes].filter(survivesOpticalClone)[path[i]];
+            if (!copy) return null;
+        }
+        return copy;
+    }
+
+    function forEachMatchingClone(sourceNode, callback) {
+        const pairs = [];
+        stageTemplates.forEach((copy, source) => pairs.push([source, copy]));
+        surfaces.forEach((surface) => {
+            if (surface.copyStage && surface.stageCopy) {
+                pairs.push([surface.copyStage, surface.stageCopy]);
+            }
+            if (surface.contentStage && surface.contentStageCopy) {
+                pairs.push([surface.contentStage, surface.contentStageCopy]);
+            }
+        });
+        pairs.forEach(([sourceRoot, copyRoot]) => {
+            if (!sourceRoot.contains(sourceNode) || sourceNode === sourceRoot) return;
+            const copy = correspondingCloneNode(sourceRoot, copyRoot, sourceNode);
+            if (copy) callback(copy);
+        });
+    }
+
+    function mirrorTextMutation(target) {
+        if (target.nodeType === Node.TEXT_NODE) {
+            forEachMatchingClone(target, (copy) => { copy.data = target.data; });
+            return true;
+        }
+        if (target.nodeType === Node.ELEMENT_NODE && !target.children.length) {
+            forEachMatchingClone(target, (copy) => {
+                copy.textContent = target.textContent;
+            });
+            return true;
+        }
+        return false;
+    }
+
+    const mirroredVisibility = new WeakMap();
+
+    function mirrorAttributeMutation(target, name) {
+        if (!name || !["class", "hidden", "style"].includes(name)) return;
+        /* Animated glass controls write transform/position inline every frame.
+           Their clones are engine-owned; only application UI visibility needs
+           propagating from style mutations. */
+        if (name === "style" && target.closest("[data-optical]")) return;
+        if (name === "style") {
+            const visibility = `${target.style.display}\u0000${target.style.visibility}`;
+            if (mirroredVisibility.get(target) === visibility) return;
+            mirroredVisibility.set(target, visibility);
+        }
+        forEachMatchingClone(target, (copy) => {
+            if (name === "style") {
+                copy.style.display = target.style.display;
+                copy.style.visibility = target.style.visibility;
+                return;
+            }
+            if (target.hasAttribute(name)) {
+                copy.setAttribute(name, target.getAttribute(name));
+            } else {
+                copy.removeAttribute(name);
+            }
+        });
+    }
+
     function markStageDirty(stage) {
         if (!stage) { rebuildAllStages = true; return; }
         /* Stages nest -- .main contains both the chart and the bottom
@@ -1125,35 +1314,98 @@
         });
     }
 
-    function scheduleStageCloneRebuild(stage = null) {
-        markStageDirty(stage);
-        if (mirror.rebuildTimer) return;
+    function armStageCloneRebuild(delay = 320) {
+        if (mirror.rebuildTimer) window.clearTimeout(mirror.rebuildTimer);
         mirror.rebuildTimer = window.setTimeout(() => {
             mirror.rebuildTimer = 0;
-            rebuildStageClones();
-        }, 120);
+            /* Never begin clone allocation in the tail of a spring. The old
+               120ms timer landed 10ms after the 110ms idle return began. */
+            if (activeSpringLoops.size) {
+                armStageCloneRebuild(180);
+                return;
+            }
+            const run = () => {
+                mirror.rebuildIdle = 0;
+                if (activeSpringLoops.size) {
+                    armStageCloneRebuild(180);
+                    return;
+                }
+                const hasMore = rebuildStageClones(1);
+                if (hasMore) {
+                    const appPending = [...dirtyStages].some(
+                        (stage) => stage.dataset.stage === "app"
+                    );
+                    armStageCloneRebuild(appPending ? 800 : 80);
+                }
+            };
+            if ("requestIdleCallback" in window) {
+                if (!mirror.rebuildIdle) {
+                    mirror.rebuildIdle = window.requestIdleCallback(run, {
+                        timeout: 900,
+                    });
+                }
+            } else {
+                run();
+            }
+        }, delay);
+    }
+
+    function scheduleStageCloneRebuild(stage = null) {
+        markStageDirty(stage);
+        if (mirror.rebuildIdle) return;
+        armStageCloneRebuild();
     }
 
     function observeLiveStageContent() {
         /* One observer per stage rather than one shared: the callback has
            to know WHICH stage changed to rebuild just that one. */
         stageTemplates.forEach((_, stage) => {
-            if (!["chart", "bottom", "research"].includes(stage.dataset.stage)) {
+            if (!["chart", "bottom", "research", "side"].includes(stage.dataset.stage)) {
                 return;
             }
             const observer = new MutationObserver((mutations) => {
-                const changed = mutations.some((mutation) => {
+                let changed = false;
+                mutations.forEach((mutation) => {
                     const target = mutation.target.nodeType === 1
                         ? mutation.target
                         : mutation.target.parentElement;
-                    return target && !target.closest(".optical-layer");
+                    if (!target || target.closest(".optical-layer")) return;
+                    if (mutation.type === "attributes") {
+                        if (target !== stage) {
+                            mirrorAttributeMutation(target, mutation.attributeName);
+                        }
+                        return;
+                    }
+                    if (mutation.type === "characterData") {
+                        mirrorTextMutation(mutation.target);
+                        return;
+                    }
+                    /* textContent replaces Text nodes through childList.
+                       Treat that like characterData: it does not change the
+                       clone/canvas topology and must not recreate .main. */
+                    const elementNodes = [
+                        ...mutation.addedNodes, ...mutation.removedNodes,
+                    ].filter((node) => node.nodeType === Node.ELEMENT_NODE);
+                    [...mutation.addedNodes]
+                        .filter((node) => node.nodeType === Node.ELEMENT_NODE)
+                        .forEach((node) => markScrollSources(node));
+                    let ancestor = target;
+                    while (ancestor && stage.contains(ancestor)) {
+                        markScrollNode(ancestor);
+                        if (ancestor === stage) break;
+                        ancestor = ancestor.parentElement;
+                    }
+                    if (elementNodes.length) changed = true;
+                    else if (!mirrorTextMutation(target)) changed = true;
                 });
                 if (changed) scheduleStageCloneRebuild(stage);
             });
             observer.observe(stage, {
                 childList: true,
-                characterData: true,
                 subtree: true,
+                characterData: true,
+                attributes: true,
+                attributeFilter: ["class", "hidden", "style"],
             });
         });
     }
@@ -1202,18 +1454,77 @@
         return moved;
     }
 
-    function rebuildStageClones() {
+    function replaceSurfaceStageCopy(surface, template) {
+        if (!template || !surface.stageCopy || !surface.world) return;
+        /* Drop the old GPU-backed bitmaps before attaching their successors.
+           Otherwise clone replacement briefly holds both generations. */
+        releaseMirrorBuffers(surface);
+        const old = surface.stageCopy;
+        const next = template.cloneNode(true);
+        ["optical-background-copy", "container-shell-copy"].forEach((className) => {
+            if (old.classList.contains(className)) next.classList.add(className);
+        });
+        surface.world.replaceChild(next, old);
+        surface.stageCopy = next;
+        surface.copyStage = surface.stage;
+        bindMirrors(surface);
+        bindCloneState(surface);
+    }
+
+    let pendingRetargetTimer = 0;
+    let retargetGeneration = 0;
+
+    function scheduleStageRetarget() {
+        if (pendingRetargetTimer) return;
+        /* A zero-delay task runs after both the production click handler and
+           a synthetic drag-release click, so visibility has its final value. */
+        pendingRetargetTimer = window.setTimeout(() => {
+            pendingRetargetTimer = 0;
+            const generation = ++retargetGeneration;
+            const previousStages = new Map(
+                surfaces.filter((surface) => surface.stageSelector)
+                    .map((surface) => [surface, surface.stage])
+            );
+            retargetStages();
+            const moved = [...previousStages].filter(
+                ([surface, previous]) => surface.stage !== previous
+            ).map(([surface]) => surface);
+            moved.forEach((surface) => {
+                if (surface.layer) surface.layer.style.visibility = "hidden";
+            });
+            /* A workspace switch can move four top-bar surfaces at once.
+               Stagger their deep clones so one release task never allocates
+               every chart/research copy before the browser can paint. */
+            const replaceNext = () => {
+                if (generation !== retargetGeneration) return;
+                const surface = moved.shift();
+                if (!surface) return;
+                replaceSurfaceStageCopy(surface, stageTemplates.get(surface.stage));
+                if (surface.layer) surface.layer.style.visibility = "";
+                syncOpticalSurfaces(surface.component, false, surface);
+                if (moved.length) requestAnimationFrame(replaceNext);
+            };
+            replaceNext();
+        }, 0);
+    }
+
+    function rebuildStageClones(maxStages = Infinity) {
         /* Before re-cloning, not after: the dock's tab handler schedules
            this on every workspace switch, and by the time the debounce
            fires the layout has settled, so this is exactly when the
            winning candidate is knowable. */
         retargetStages();
-        const targets = rebuildAllStages ? null : new Set(dirtyStages);
-        dirtyStages.clear();
-        rebuildAllStages = false;
+        if (rebuildAllStages) {
+            stageTemplates.forEach((_, stage) => dirtyStages.add(stage));
+            rebuildAllStages = false;
+        }
+        const ordered = [...dirtyStages].sort((a, b) => (
+            Number(a.dataset.stage === "app") - Number(b.dataset.stage === "app")
+        ));
+        const targets = new Set(ordered.slice(0, maxStages));
+        targets.forEach((stage) => dirtyStages.delete(stage));
         stageTemplates.forEach((_, stage) => {
-            if (targets && !targets.has(stage)) return;
-            markScrollSources(stage);
+            if (!targets.has(stage)) return;
             stageTemplates.set(stage, cloneOpticalSource(stage));
         });
         surfaces.forEach((surface) => {
@@ -1222,22 +1533,18 @@
             /* Re-copy when this surface's stage was re-cloned, or when
                retargetStages() just moved it to a different stage and its
                copy still belongs to the old one. */
-            const staleCopy = !targets
-                || targets.has(surface.stage)
+            const staleCopy = targets.has(surface.stage)
                 || surface.copyStage !== surface.stage;
-            if (!staleCopy) return;
-            surface.copyStage = surface.stage;
-            if (surface.stageCopy && surface.world) {
-                const old = surface.stageCopy;
-                const next = template.cloneNode(true);
-                ["optical-background-copy", "container-shell-copy"].forEach((className) => {
-                    if (old.classList.contains(className)) next.classList.add(className);
-                });
-                surface.world.replaceChild(next, old);
-                surface.stageCopy = next;
+            const staleContent = Boolean(
+                surface.contentStage && targets.has(surface.contentStage)
+            );
+            if (!staleCopy && !staleContent) return;
+            if (staleCopy && surface.stageCopy && surface.world) {
+                replaceSurfaceStageCopy(surface, template);
             }
             if (
-                surface.contentStage
+                staleContent
+                && surface.contentStage
                 && surface.contentStageCopy
                 && surface.contentWorld
             ) {
@@ -1246,8 +1553,8 @@
                 );
                 surface.contentWorld.replaceChild(next, surface.contentStageCopy);
                 surface.contentStageCopy = next;
+                bindCloneState(surface);
             }
-            bindMirrors(surface);
         });
         /* Synchronous, not scheduled.
 
@@ -1262,35 +1569,47 @@
            This path is already the debounced, expensive one; running the
            pass inline costs nothing extra and makes the retarget take
            effect in the same task. */
-        syncOpticalSurfaces();
+        syncOpticalSurfaces(null, false);
+        return dirtyStages.size > 0;
     }
 
-    function mirrorCanvases(surface) {
+    function releaseMirrorBuffers(surface) {
+        (surface.mirrorPairs || []).forEach(([, dst]) => {
+            if (dst.width !== 1) dst.width = 1;
+            if (dst.height !== 1) dst.height = 1;
+        });
+    }
+
+    function mirrorCanvases(surface, force = false) {
         if (!mirror.enabled || !surface.mirrorPairs) return;
         if (!surface.mirrorPairs.length) return;
-        /* A full-resolution chart blit is only worthwhile while the
-           pointer lens is visible. Hidden Precision Lens surfaces stay
-           idle; the first visible heartbeat refreshes them immediately. */
-        if (
-            surface.component === "precision"
-            && parseFloat(surface.element.style.opacity || "0") <= 0
-        ) {
-            return;
-        }
-        /* An invisible lens refracts nothing, so mirroring into it is
-           pure cost. The dock and segment pills spend almost all their
-           time at --control-glass: 0 (frost until you touch them), which
-           is most of the surfaces on screen. Same one-heartbeat catch-up
-           as the Precision Lens above: by the time the fade is visible
-           the next tick has already refreshed the sample. */
-        if (surface.layer && parseFloat(getComputedStyle(surface.layer).opacity) <= 0.01) {
+        const surfRect = surface.element.getBoundingClientRect();
+        const elementStyle = getComputedStyle(surface.element);
+        const layoutVisible = surfRect.width > 0
+            && surfRect.height > 0
+            && surface.stage.offsetWidth > 0
+            && surface.stage.offsetHeight > 0
+            && elementStyle.display !== "none"
+            && elementStyle.visibility !== "hidden";
+        const elementPainted = parseFloat(elementStyle.opacity || "1") > 0.01;
+        const layerStyle = surface.layer ? getComputedStyle(surface.layer) : null;
+        const layerPainted = !layerStyle
+            || (layerStyle.display !== "none"
+                && layerStyle.visibility !== "hidden"
+                && parseFloat(layerStyle.opacity || "1") > 0.01);
+        /* Check the surface itself as well as its child layer. Closed FAB
+           actions are opacity:0 while their optical layer remains opacity:1. */
+        if (!layoutVisible || (!force && (!elementPainted || !layerPainted))) {
             mirror.skippedIdle += 1;
+            const now = performance.now();
+            if (!surface.mirrorIdleSince) surface.mirrorIdleSince = now;
+            if (now - surface.mirrorIdleSince > 1200) releaseMirrorBuffers(surface);
             return;
         }
-        if (liveCanvases(surface.stage).length !== surface.mirrorSourceCount) {
-            scheduleStageCloneRebuild(surface.stage);
-            return;
-        }
+        surface.mirrorIdleSince = 0;
+        /* Structural stage observers rebind when canvases are inserted or
+           removed. Re-querying every canvas through .main for every surface
+           at 30fps was itself one of the largest steady-state CPU costs. */
         const started = performance.now();
         mirror.passes += 1;
         const sampleScale = surface.component === "precision"
@@ -1300,7 +1619,6 @@
            dock is 450x94 over a 1320x547 chart, so blitting the whole
            chart into its clone moved ~20x more pixels than were ever
            sampled — per surface, per heartbeat. */
-        const surfRect = surface.element.getBoundingClientRect();
         /* Pad by how far this surface travelled since the last heartbeat.
            The sample is up to intervalMs stale, so a moving surface — the
            Precision Lens tracking the pointer — reads its filter around a
@@ -1320,13 +1638,7 @@
         const wantRight = surfRect.right + margin;
         const wantBottom = surfRect.bottom + margin;
         surface.mirrorPairs.forEach(([src, dst]) => {
-            if (!src.width || !src.height) return;
-            const w = Math.max(1, Math.round(src.width * sampleScale));
-            const h = Math.max(1, Math.round(src.height * sampleScale));
-            if (dst.width !== w || dst.height !== h) {
-                dst.width = w;
-                dst.height = h;
-            }
+            if (!src.isConnected || !src.width || !src.height) return;
             const srcRect = src.getBoundingClientRect();
             if (!srcRect.width || !srcRect.height) return;
             // Clip the wanted band against this canvas; skip it entirely
@@ -1335,7 +1647,18 @@
             const top = Math.max(wantTop, srcRect.top);
             const right = Math.min(wantRight, srcRect.right);
             const bottom = Math.min(wantBottom, srcRect.bottom);
-            if (right <= left || bottom <= top) { mirror.skippedPairs += 1; return; }
+            if (right <= left || bottom <= top) {
+                mirror.skippedPairs += 1;
+                if (dst.width !== 1) dst.width = 1;
+                if (dst.height !== 1) dst.height = 1;
+                return;
+            }
+            const w = Math.max(1, Math.round(src.width * sampleScale));
+            const h = Math.max(1, Math.round(src.height * sampleScale));
+            if (dst.width !== w || dst.height !== h) {
+                dst.width = w;
+                dst.height = h;
+            }
             // CSS px -> this canvas's backing store, which dst mirrors at
             // sampleScale, so the same rect scales to both.
             const kx = src.width / srcRect.width;
@@ -1369,6 +1692,34 @@
         mirror.lastCost = performance.now() - started;
     }
 
+    function surfaceSpringActive(surface) {
+        if (activeSpringLoops.has(surface.component)) return true;
+        return [...activeSpringLoops].some((key) => (
+            key instanceof Element
+            && (key === surface.element
+                || key.contains(surface.element)
+                || surface.element.contains(key))
+        ));
+    }
+
+    function mirrorAllCanvases(now = performance.now()) {
+        surfaces.forEach((surface) => {
+            const ownSpringActive = surfaceSpringActive(surface);
+            let interval = ownSpringActive
+                ? mirror.activeIntervalMs
+                : mirror.intervalMs;
+            if (surface.component === "precision") {
+                const recentlyMoved = now - (surface.lastPointerAt || 0) < 180;
+                interval = recentlyMoved || ownSpringActive
+                    ? mirror.activeIntervalMs
+                    : mirror.precisionIdleMs;
+            }
+            if (now - (surface.lastMirrorAt || 0) < interval) return;
+            surface.lastMirrorAt = now;
+            mirrorCanvases(surface);
+        });
+    }
+
     function rebuildSurface(surface) {
         const config = settings[surface.component];
         if (!config) return;
@@ -1379,9 +1730,8 @@
             parseFloat(computed.borderTopLeftRadius) || height / 2,
             2, Math.min(width, height) / 2
         );
-        const shrink = createShrinkMap(config, width, height);
-        const displacement = createDisplacementMap(config, width, height, radius);
-        const specular = createSpecularMap(config, width, height, radius);
+        const kernel = opticalKernel(config, width, height, radius);
+        const { shrink, displacement, specular } = kernel;
         const configureNodes = (
             nodes, passConfig, passShrink, passDisplacement, passSpecular,
             passWidth, passHeight, shrinkScale, specularStrength
@@ -1441,20 +1791,17 @@
                 parseFloat(parentComputed.borderTopLeftRadius) || parentHeight / 2,
                 2, Math.min(parentWidth, parentHeight) / 2
             );
-            const parentShrink = createShrinkMap(parentConfig, parentWidth, parentHeight);
-            const parentDisplacement = createDisplacementMap(
+            const parentKernel = opticalKernel(
                 parentConfig, parentWidth, parentHeight, parentRadius
             );
-            const parentSpecular = createSpecularMap(
-                parentConfig, parentWidth, parentHeight, parentRadius
-            );
-            const parentMaterial = createContainerMaterialMap(
+            const parentMaterial = containerMaterial(
                 surface.parentContainerSource, parentWidth, parentHeight, parentRadius
             );
             configureNodes(
-                surface.filterNodes.parent, parentConfig, parentShrink,
-                parentDisplacement, parentSpecular, parentWidth, parentHeight,
-                parentShrink.scale, parentConfig.specular
+                surface.filterNodes.parent, parentConfig, parentKernel.shrink,
+                parentKernel.displacement, parentKernel.specular,
+                parentWidth, parentHeight,
+                parentKernel.shrink.scale, parentConfig.specular
             );
             setHref(surface.filterNodes.parent.materialImage, parentMaterial.material);
             setHref(surface.filterNodes.parent.maskImage, parentMaterial.mask);
@@ -1482,8 +1829,49 @@
         pendingFilterFrame = requestAnimationFrame(() => rebuildFilters(component));
     }
 
+    const pendingSurfaceFilters = new Set();
+    let pendingSurfaceFilterFrame = 0;
+
+    function scheduleSurfaceFilterRebuild(surface) {
+        pendingSurfaceFilters.add(surface);
+        if (pendingSurfaceFilterFrame) return;
+        pendingSurfaceFilterFrame = requestAnimationFrame(() => {
+            pendingSurfaceFilterFrame = 0;
+            const targets = [...pendingSurfaceFilters];
+            pendingSurfaceFilters.clear();
+            targets.forEach(rebuildSurface);
+            scheduleOpticalSync(false);
+        });
+    }
+
+    let pendingMaterialFrame = 0;
+
+    function refreshContainerMaterials() {
+        pendingMaterialFrame = 0;
+        surfaces.forEach((surface) => {
+            if (!surface.filterNodes.parent || !surface.parentContainerSource) return;
+            const source = surface.parentContainerSource;
+            const width = Math.max(2, Math.round(source.offsetWidth));
+            const height = Math.max(2, Math.round(source.offsetHeight));
+            const computed = getComputedStyle(source);
+            const radius = clamp(
+                parseFloat(computed.borderTopLeftRadius) || height / 2,
+                2, Math.min(width, height) / 2
+            );
+            const material = containerMaterial(source, width, height, radius);
+            setHref(surface.filterNodes.parent.materialImage, material.material);
+            setHref(surface.filterNodes.parent.maskImage, material.mask);
+        });
+    }
+
+    function scheduleContainerMaterialRefresh() {
+        if (pendingMaterialFrame) cancelAnimationFrame(pendingMaterialFrame);
+        pendingMaterialFrame = requestAnimationFrame(refreshContainerMaterials);
+    }
+
     function runSpringLoop(
-        component, springs, apply, shouldContinue = null, loopKey = component
+        component, springs, apply, shouldContinue = null, loopKey = component,
+        syncTarget = null
     ) {
         if (activeSpringLoops.has(loopKey)) return;
         activeSpringLoops.add(loopKey);
@@ -1494,7 +1882,10 @@
             const config = settings[component];
             springs.forEach((spring) => spring.update(dt, config));
             apply();
-            syncOpticalSurfaces(component);
+            /* Geometry follows the spring at display refresh rate; canvas
+               pixels stay on the independent 30fps heartbeat. Copying here
+               duplicated every active blit during an interaction. */
+            syncOpticalSurfaces(component, false, syncTarget);
             const moving = shouldContinue
                 ? shouldContinue()
                 : springs.some((spring) => !spring.settled());
@@ -1564,6 +1955,19 @@
         const contentLayers = buttons.map(
             (button) => button.querySelector(".control-source-content")
         );
+        const dockSurface = surfaceFor(bubble);
+        if (dockSurface) {
+            dockSurface.syncSample = (copy) => {
+                buttons.forEach((button, index) => {
+                    const sample = sampleInCopy(
+                        copy, `[data-dock-index="${index}"]`
+                    );
+                    sample?.classList.toggle(
+                        "active", button.classList.contains("active")
+                    );
+                });
+            };
+        }
         const x = new Spring(0);
         const scale = new Spring(settings.dock.idleScale);
         const stretch = new Spring(1);
@@ -1618,7 +2022,8 @@
         };
         const start = () => runSpringLoop(
             "dock", [x, scale, stretch, activity], apply,
-            () => dragging || [x, scale, stretch, activity].some((s) => !s.settled())
+            () => dragging || [x, scale, stretch, activity].some((s) => !s.settled()),
+            "dock", dockSurface
         );
         const beginIdleReturn = () => {
             returningFlat = true;
@@ -1716,7 +2121,7 @@
         new ResizeObserver(() => {
             x.value = x.target = targetFor(selected);
             apply();
-            syncOpticalSurfaces("dock");
+            syncOpticalSurfaces("dock", false, dockSurface);
         }).observe(dock);
         x.value = x.target = targetFor(selected);
         apply();
@@ -1732,6 +2137,19 @@
         const contentLayers = buttons.map(
             (button) => button.querySelector(".control-source-content")
         );
+        const segmentSurface = surfaceFor(indicator);
+        if (segmentSurface) {
+            segmentSurface.syncSample = (copy) => {
+                buttons.forEach((button, index) => {
+                    const sample = sampleInCopy(
+                        copy, `[data-segment-index="${index}"]`
+                    );
+                    sample?.classList.toggle(
+                        "active", button.classList.contains("active")
+                    );
+                });
+            };
+        }
         const x = new Spring(0);
         const scale = new Spring(settings.segment.idleScale);
         const stretch = new Spring(1);
@@ -1790,7 +2208,7 @@
         const start = () => runSpringLoop(
             "segment", [x, scale, stretch, activity], apply,
             () => dragging || [x, scale, stretch, activity].some((s) => !s.settled()),
-            track
+            track, segmentSurface
         );
         const beginIdleReturn = () => {
             returningFlat = true;
@@ -1895,14 +2313,13 @@
             selected = activeIndex;
             x.target = selected * cell();
             beginIdleReturn();
-            scheduleStageCloneRebuild();
         }).observe(track, {
             attributes: true, attributeFilter: ["class"], subtree: true,
         });
         new ResizeObserver(() => {
             x.value = x.target = selected * cell();
             apply();
-            syncOpticalSurfaces("segment");
+            syncOpticalSurfaces("segment", false, segmentSurface);
         }).observe(track);
         x.value = x.target = selected * cell();
         apply();
@@ -1978,6 +2395,7 @@
        transform stays reserved for the scale/squash springs. */
     function initChartLens(lens) {
         const stage = lens.closest("[data-stage]") || lens.parentElement;
+        const lensSurface = surfaceFor(lens);
         const interactiveSelector = [
             "a", "button", "input", "select", "textarea", "summary",
             "[onclick]", "[contenteditable='true']",
@@ -2023,8 +2441,8 @@
         };
         const start = () => runSpringLoop(
             "precision", [scale, stretchX, stretchY], apply,
-            () => active || [scale, stretchX, stretchY].some((s) => !s.settled()),
-            lens
+            () => [scale, stretchX, stretchY].some((s) => !s.settled()),
+            lens, lensSurface
         );
 
         const hide = (immediate = false) => {
@@ -2051,6 +2469,7 @@
             pointerInside = true;
             const rect = stage.getBoundingClientRect();
             const now = performance.now();
+            if (lensSurface) lensSurface.lastPointerAt = now;
             const dt = Math.max(1, now - lastTime) / 1000;
             const vx = lastTime ? (event.clientX - lastX) / dt : 0;
             const vy = lastTime ? (event.clientY - lastY) / dt : 0;
@@ -2075,7 +2494,7 @@
                 scale.target = settings.precision.idleScale;
             }
             apply();
-            syncOpticalSurfaces("precision");
+            syncOpticalSurfaces("precision", false, lensSurface);
             start();
         });
 
@@ -2102,7 +2521,7 @@
                 start();
             }
             apply();
-            syncOpticalSurfaces("precision");
+            syncOpticalSurfaces("precision", false, lensSurface);
         };
         stage.addEventListener("scroll", followScroll, { passive: true });
         window.addEventListener("scroll", followScroll, { passive: true });
@@ -2198,7 +2617,8 @@
         const start = () => runSpringLoop(
             "slider", [scale, stretchX, stretchY, activity], apply,
             () => dragging || [scale, stretchX, stretchY, activity]
-                .some((spring) => !spring.settled())
+                .some((spring) => !spring.settled()),
+            root, surface
         );
         const update = (clientX) => {
             const rect = root.getBoundingClientRect();
@@ -2225,7 +2645,7 @@
                 proxy.dispatchEvent(new Event("input", { bubbles: true }));
             }
             apply();
-            syncOpticalSurfaces("slider");
+            syncOpticalSurfaces("slider", false, surface);
         };
         root.addEventListener("pointerdown", (event) => {
             if (event.pointerType === "mouse" && event.button !== 0) return;
@@ -2268,10 +2688,7 @@
         new ResizeObserver(() => {
             thumbX = value * travel();
             apply();
-            syncOpticalSurfaces("slider");
-            // Controls in the hidden Live panel boot at 0×0. Rebuild their
-            // displacement maps when the tab makes them measurable.
-            scheduleFilterRebuild();
+            syncOpticalSurfaces("slider", false, surface);
         }).observe(root);
         thumbX = value * travel();
         emit();
@@ -2353,7 +2770,8 @@
         const start = () => runSpringLoop(
             "switch", [x, scale, squash, activity], apply,
             () => pointerActive || [x, scale, squash, activity]
-                .some((spring) => !spring.settled())
+                .some((spring) => !spring.settled()),
+            track, surface
         );
         const commit = (next, silent = false) => {
             const changed = committed !== (next >= 0.5 ? 1 : 0);
@@ -2401,7 +2819,7 @@
                 Math.abs(x.velocity) / Math.max(1, travel() * 24)
             );
             apply();
-            syncOpticalSurfaces("switch");
+            syncOpticalSurfaces("switch", false, surface);
         });
         const release = (event) => {
             if (!pointerActive || event.pointerId !== pointerId) return;
@@ -2434,9 +2852,7 @@
             if (!pointerActive) {
                 x.value = x.target = committed * travel();
                 apply();
-                syncOpticalSurfaces("switch");
-                // Hidden-tab switches also start with 2×2 fallback maps.
-                scheduleFilterRebuild();
+                syncOpticalSurfaces("switch", false, surface);
             }
         }).observe(track);
         /* Seed aria from the markup's `on` class; commit() is the only
@@ -2449,21 +2865,19 @@
     function startMirrorHeartbeat() {
         if (mirror.raf || !mirror.enabled) return;
         if (!surfaces.some((s) => s.mirrorPairs && s.mirrorPairs.length)) return;
-        let last = 0;
         const tick = (now) => {
-            if (now - last >= mirror.intervalMs) {
-                last = now;
-                syncOpticalSurfaces();
-            }
+            /* Each surface owns its cadence: a stationary native-resolution
+               precision lens is much more expensive than a small dock. */
+            mirrorAllCanvases(now);
             mirror.raf = requestAnimationFrame(tick);
         };
         mirror.raf = requestAnimationFrame(tick);
     }
 
     function stopMirrorHeartbeat() {
-        if (!mirror.raf) return;
-        cancelAnimationFrame(mirror.raf);
+        if (mirror.raf) cancelAnimationFrame(mirror.raf);
         mirror.raf = 0;
+        surfaces.forEach(releaseMirrorBuffers);
     }
 
     /* ── TPX theme ──────────────────────────────────────────────── */
@@ -2484,10 +2898,9 @@
         if (!opts.silent) {
             try { localStorage.setItem(THEME_KEY, light ? "light" : "dark"); } catch (e) {}
         }
-        /* Palette tokens changed, so every cached displacement/material
-           map is stale — the container material map bakes the border
-           colour in. Rebuild rather than let light mode wear dark rims. */
-        scheduleFilterRebuild();
+        /* Geometry and refraction maps do not depend on the palette. The
+           parent material alone bakes the resolved border colour. */
+        if (surfaces.length) scheduleContainerMaterialRefresh();
     }
 
     function initTheme() {
@@ -2512,12 +2925,11 @@
         liveAll(".glass-dock").forEach((dock) => {
             initDragDock(dock, (button) => {
                 const view = button.dataset.dockView || button.dataset.tab;
-                // Always rebuild: production TPX tabs use data-tab rather
-                // than the prototype's data-dock-view/data-dock-panel API.
-                scheduleStageCloneRebuild();
+                /* Resolve the chart/research source only after the app's own
+                   click handler has committed visibility. Dynamic content is
+                   mirrored incrementally or invalidated by the stage observer. */
+                scheduleStageRetarget();
                 if (!view) return;
-                /* Unscoped on purpose: the clones must switch panels
-                   too, or the refracted image shows the old tab. */
                 document.querySelectorAll("[data-dock-panel]").forEach((panel) => {
                     panel.hidden = panel.dataset.dockPanel !== view;
                 });
@@ -2526,11 +2938,6 @@
 
         liveAll(".glass-segment").forEach((segment) => {
             initSegmentControl(segment, (button) => {
-                /* Production bottom tabs switch panels by toggling
-                   .active/.hidden classes. Refresh every stage clone
-                   after that handler runs so the Precision Lens samples
-                   the newly visible table/log/canvas, not the old tab. */
-                scheduleStageCloneRebuild();
                 const view = button.dataset.segmentView;
                 if (!view) return;
                 document.querySelectorAll("[data-segment-panel]").forEach((panel) => {
@@ -2575,10 +2982,9 @@
         }
 
         window.addEventListener("resize", () => {
-            scheduleOpticalSync();
-            scheduleFilterRebuild();
+            scheduleOpticalSync(false);
         });
-        document.addEventListener("scroll", scheduleOpticalSync, true);
+        document.addEventListener("scroll", () => scheduleOpticalSync(false), true);
 
         startMirrorHeartbeat();
         document.addEventListener("visibilitychange", () => {

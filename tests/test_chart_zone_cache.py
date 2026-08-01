@@ -7,6 +7,7 @@ from unittest.mock import patch
 from backend.api import routes
 from backend.api.routes import DetectZonesRequest
 from backend.db.models import Candle
+from backend.strategy.consolidation import build_zone_detector
 
 
 class _Detector:
@@ -71,6 +72,51 @@ class ChartZoneCacheTests(unittest.TestCase):
 
         self.assertEqual(len(created), 2)
         self.assertEqual(len(created[1].updates), 3)
+
+    def test_batch_detector_skips_active_profile_recalculation(self):
+        calls = []
+
+        def build(**kwargs):
+            calls.append(kwargs)
+            return _Detector()
+
+        with patch("backend.strategy.consolidation.build_zone_detector", side_effect=build):
+            routes._detect_zones_sync(self._candles(2), ("5m",), 0.8)
+
+        self.assertEqual(len(calls), 1)
+        self.assertIs(calls[0]["recalc_active_each_bar"], False)
+
+    def test_factory_keeps_live_default_and_supports_batch_mode(self):
+        live = build_zone_detector(area_timeframe="5m")
+        batch = build_zone_detector(
+            area_timeframe="5m",
+            recalc_active_each_bar=False,
+        )
+
+        self.assertIs(live.recalc_active_each_bar, True)
+        self.assertIs(batch.recalc_active_each_bar, False)
+
+    def test_batch_mode_one_shot_refresh_matches_live_profile(self):
+        candles = self._candles(7)
+        live = build_zone_detector(area_timeframe="5m")
+        batch = build_zone_detector(
+            area_timeframe="5m",
+            recalc_active_each_bar=False,
+        )
+        for candle in candles:
+            live.update(candle)
+            batch.update(candle)
+
+        batch.refresh_forming_zone()
+        live_zone = live.get_forming_zone()
+        batch_zone = batch.get_forming_zone()
+
+        self.assertIsNotNone(live_zone)
+        self.assertIsNotNone(batch_zone)
+        self.assertEqual(batch_zone.poc, live_zone.poc)
+        self.assertEqual(batch_zone.vah_80, live_zone.vah_80)
+        self.assertEqual(batch_zone.val_80, live_zone.val_80)
+        self.assertEqual(batch_zone.profile, live_zone.profile)
 
 
 class ChartZoneRouteTests(unittest.IsolatedAsyncioTestCase):

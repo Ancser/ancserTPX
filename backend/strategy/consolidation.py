@@ -470,6 +470,15 @@ class ClockBucketZoneDetector:
         """The in-progress bucket zone (not yet a reference)."""
         return self._active_zone
 
+    def refresh_forming_zone(self) -> None:
+        """Refresh the forming bucket once after a batch of candle updates.
+
+        Batch consumers can disable per-bar profile recalculation and call this
+        before exposing the in-progress bucket, preserving the same final
+        profile without the quadratic intermediate work.
+        """
+        self._recalculate_vp(self._active_zone)
+
     @property
     def completed_zone_count(self) -> int:
         return len(self._completed_zones)
@@ -726,6 +735,7 @@ def build_zone_detector(
     max_recent: int = 10,
     tf_combo: Optional[List[str]] = None,
     overlap_trade_tf: str = "merged",
+    recalc_active_each_bar: bool = True,
 ):
     """Factory: returns a zone detector keyed by the selected method.
 
@@ -758,4 +768,5 @@ def build_zone_detector(
         value_area_pct=value_area_pct,
         tick_size=tick_size,
         max_recent=max_recent,
+        recalc_active_each_bar=recalc_active_each_bar,
     )

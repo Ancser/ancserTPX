@@ -1437,11 +1437,23 @@ def _detect_zones_sync(candles, timeframes, value_area_pct: float) -> List[dict]
                 detector = build_zone_detector(
                     area_timeframe=tf,
                     value_area_pct=value_area_pct,
+                    # Chart-zone detection consumes completed buckets only.
+                    # Rebuilding the active volume profile after every bar is
+                    # quadratic within each clock bucket and can pin a worker
+                    # for minutes on a full candle history.
+                    recalc_active_each_bar=False,
                 )
                 start = 0
 
             for candle in candles[start:]:
                 detector.update(candle)
+
+            # recalc_active_each_bar=False deliberately skips intermediate
+            # forming-bucket profiles. Refresh it once here so the chart still
+            # receives the same current-bucket values as the live detector.
+            refresh_forming = getattr(detector, "refresh_forming_zone", None)
+            if refresh_forming is not None:
+                refresh_forming()
 
             serialized = [_zone_to_dict(z, tf) for z in detector.get_all_zones()]
             _chart_zone_cache[key] = {
