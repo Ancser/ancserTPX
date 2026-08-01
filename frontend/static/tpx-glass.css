@@ -555,22 +555,38 @@
 .dock-bubble > .optical-content-layer,
 .segment-indicator > .optical-content-layer { opacity: var(--control-content, 0); }
 
-/* Where shrink samples past the edge of the stage there is nothing to
-   read, and those pixels came back transparent -- a hard cut inside the
-   pill. The fill for them belongs UNDER the lens, not around the clone:
-   the transparent pixels land in the pill's own little box, while a
-   surround on the clone had to wrap all 2560px of it and inflated every
-   filter's source raster 2.58x. Opaque stage colour underneath, the tuned
-   tint layered over it, so the look is unchanged and the cost is a normal
-   background on a 385px element. */
 .glass-dock.interacting .dock-bubble,
 .glass-segment.interacting .segment-indicator {
     border-color: var(--glass-rim);
-    background-color: var(--stage-fill, var(--bg));
-    background-image: linear-gradient(var(--glass-tint), var(--glass-tint));
+    background: var(--glass-tint);
     box-shadow: var(--glass-relief);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+}
+
+/* Backing for pixels the lens sampled past the edge of its stage, which
+   come back transparent and would otherwise cut a hole in the pill.
+
+   It has to fade with the LENS, not with .interacting. Keyed to the class
+   it stayed fully opaque while --control-glass faded out, so on release
+   there was a window with the lens gone and the backing bare -- a flash of
+   --bg, near-white in light and near-black in dark, before the idle frost
+   returned. Sharing --control-glass means backing and lens appear and
+   vanish together and the seam is never visible.
+
+   ::before rather than a background on the pill so it can carry its own
+   opacity; it paints ahead of .optical-layer at the same z-index, so it
+   sits under the lens and over the idle frost. */
+.dock-bubble::before,
+.segment-indicator::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    background: var(--stage-fill, var(--bg));
+    opacity: var(--control-glass, 0);
+    pointer-events: none;
 }
 
 /* ── 3c. Account button — single circular dropdown ────────────────
