@@ -203,10 +203,18 @@ def _trail_grid_for(sl_ticks: int, tp_ticks: int, trigger_pct: float) -> List[Tu
     return sorted((ticks, pct) for ticks, pct in ticks_to_pct.items())
 
 
+# 1.0.9: 需要「共識 zone timeline」的策略白名單。TREND 移除後目前為空 ——
+# 建 timeline 是數十秒~數分鐘的 detector 全掃,不需要就別建。
+_ZONE_TIMELINE_STRATEGIES: frozenset = frozenset()
+
+
 def _normalize_strategy_name(value: str) -> str:
     # 1.0.8: +fade(前日 VA 回歸);confluence 由呼叫端先行判斷
     v = str(value or "").strip().lower()
-    return v if v in ("fade", "sigma", "pmo", "factor") else "trend"
+    # 1.0.9: 改名相容 —— 舊 preset 存的是 intramom / sessfib
+    v = {"intramom": "momentum", "claudefib": "momentum", "sessfib": "betafib"}.get(v, v)
+    # 1.0.9: TREND 已移除 —— 未知值一律落到 factor
+    return v if v in ("fade", "sigma", "pmo", "factor", "momentum", "betafib") else "factor"
 
 
 
@@ -224,7 +232,6 @@ def _normalize_factor_family(value) -> str:
         "pmo": "emapmo",
         "ema_pmo": "emapmo",
         "mrev": "momentum_reversion",
-        "momentum": "momentum_reversion",
         "kdjma": "icefishball",
         "ifb": "icefishball",
     }
@@ -421,6 +428,9 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         ),
         tr_daily_loss_stop=max(0, min(9, int(getattr(req, "tr_daily_loss_stop", 0) or 0))),
         tr_daily_win_stop=max(0, min(9, int(getattr(req, "tr_daily_win_stop", 0) or 0))),  # 1.0.9
+        # 1.0.9: PDPT 夾在 0–20000;超過 $20k 的單日目標對任何 Topstep 帳戶都無意義
+        tr_daily_profit_stop=max(0.0, min(20000.0, float(
+            getattr(req, "tr_daily_profit_stop", 0) or 0))),
         # 1.0.9: prevRV regime gate + fade 專用
         tr_prev_rv_gate=max(0, min(60, int(getattr(req, "tr_prev_rv_gate", 0) or 0))),
         fade_tp_frac=float(getattr(req, "fade_tp_frac", 0.75) or 0.75),
@@ -478,6 +488,22 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             getattr(req, "factor_pmo_normal_scale", 0) or 0)),
         factor_pmo_early_scale=abs(float(
             getattr(req, "factor_pmo_early_scale", 0) or 0)),
+        momentum_first_minutes=max(5, int(
+            getattr(req, "momentum_first_minutes", 30) or 30)),
+        momentum_entry_hour=int(
+            getattr(req, "momentum_entry_hour", 18) or 18),
+        # 1.0.9 SESSFIB。entry_fib 夾在 0.1–0.95:低於 0.1 等於等崩盤,
+        # 高於 0.95 幾乎每晚觸價(0.786 實測就已經是 94%),兩端都無意義。
+        betafib_entry_fib=min(0.95, max(0.10, float(
+            getattr(req, "betafib_entry_fib", 0.618) or 0.618))),
+        betafib_anchor=("oc" if str(
+            getattr(req, "betafib_anchor", "hl") or "hl").lower() == "oc" else "hl"),
+        betafib_risk_basis=(str(
+            getattr(req, "betafib_risk_basis", "atr_blend") or "atr_blend").lower()
+            if str(getattr(req, "betafib_risk_basis", "atr_blend") or "").lower()
+            in ("atr_blend", "daily", "fib") else "atr_blend"),
+        betafib_min_move_pct=max(0.0, float(
+            getattr(req, "betafib_min_move_pct", 0.0) or 0.0)),
         area_timeframe=_normalize_area_timeframe(getattr(req, "area_timeframe", "15m")),
         value_area_pct=_normalize_value_area_pct(getattr(req, "value_area_pct", 0.80)),
         rr_ratio=_normalize_rr_ratio(getattr(req, "rr_ratio", 2)),
@@ -736,6 +762,122 @@ def _collect_pmo_markers(bars: List[Candle], cutoff: Optional[datetime]) -> List
     return markers
 
 
+
+def _collect_betafib_levels(bars: List[Candle], cutoff: Optional[datetime],
+                            entry_fib: float = 0.618,
+                            anchor: str = "hl",
+                            min_move_pct: float = 0.0) -> List[Dict[str, Any]]:
+    """SESSFIB 疊圖 —— 每個 session day 的 fib 掛單位,畫成夜盤區間的水平線。
+
+    與 research_lab.BetaFibRetrace 相同的推動腿定義:
+      session day 以 RTH 開盤(13:30 UTC)為界 —— 夜盤等單會跨過 UTC 午夜,
+      用日曆日切會把掛單價在半夜清掉(那是 1.0.9 修掉的 bug)。
+      上漲日推動腿 = 「最高點之前」的最低點 → 最高點;下跌日鏡像。
+
+    回傳每晚一筆,含 anchor0 / anchor1 / 掛單價與夜盤時間範圍,
+    讓前端在 20:00 UTC → 隔日 13:30 UTC 這段畫水平線。
+    """
+    RTH_OPEN, RTH_CLOSE = (13, 30), (20, 0)
+
+    def _sday(ts: datetime):
+        d = ts.date()
+        return d - timedelta(days=1) if (ts.hour, ts.minute) < RTH_OPEN else d
+
+    days: Dict[Any, Dict[str, Any]] = {}
+    for bar in bars:
+        ts = _candle_time(bar)
+        hm = (ts.hour, ts.minute)
+        d = _sday(ts)
+        slot = days.setdefault(d, {"rth": [], "night": []})
+        slot["rth" if RTH_OPEN <= hm < RTH_CLOSE else "night"].append(bar)
+
+    out: List[Dict[str, Any]] = []
+    for d in sorted(days):
+        rth, night = days[d]["rth"], days[d]["night"]
+        if len(rth) < 40 or not night:      # 5m bar:RTH 完整約 78 根
+            continue
+        up = float(rth[-1].close) > float(rth[0].open)
+        if anchor == "hl":
+            if up:
+                hi_i = max(range(len(rth)), key=lambda i: float(rth[i].high))
+                a1 = float(rth[hi_i].high)
+                a0 = min(float(k.low) for k in rth[:hi_i + 1])
+            else:
+                lo_i = min(range(len(rth)), key=lambda i: float(rth[i].low))
+                a1 = float(rth[lo_i].low)
+                a0 = max(float(k.high) for k in rth[:lo_i + 1])
+        else:
+            a0, a1 = float(rth[0].open), float(rth[-1].close)
+        move = a1 - a0
+        if move == 0 or a0 <= 0:
+            continue
+        if min_move_pct > 0 and abs(move) / a0 * 100.0 < min_move_pct:
+            continue
+        t_to = _candle_time(night[-1])
+        if cutoff and t_to < cutoff:
+            continue
+        out.append({
+            "day": str(d),
+            "t_from": _candle_time(night[0]).isoformat(),
+            "t_to": t_to.isoformat(),
+            "anchor0": round(a0, 2),
+            "anchor1": round(a1, 2),
+            "entry_fib": round(float(entry_fib), 3),
+            "level": round(a0 + float(entry_fib) * move, 2),
+            "direction": "long" if move > 0 else "short",
+            "move_pct": round(abs(move) / a0 * 100.0, 2),
+        })
+    return out
+
+
+def _collect_momentum_markers(bars: List[Candle], cutoff: Optional[datetime],
+                              first_minutes: int = 30,
+                              entry_hour: int = 18) -> List[Dict[str, Any]]:
+    """INTRAMOM 疊圖 —— 與 research_lab.MomentumContinuation 相同的判定。
+
+    交易日(Topstep 邊界 22:00 UTC)開始後 first_minutes 分鐘的報酬方向 →
+    同向進場。實測進場時刻絕大多數是 22:30 UTC(= 3:30pm PT)。
+    注意這裡跑在 5m bar 上,而策略跑在 1m —— 進場點落在 5m 邊界,
+    22:30 剛好是 5m 邊界所以對得上。
+    """
+    from backend.strategy.factor import _topstep_trade_date
+
+    markers: List[Dict[str, Any]] = []
+    day = None
+    open_px = open_ts = first_ret = None
+    fired = False
+    for i, bar in enumerate(bars[:-1]):
+        ts = _candle_time(bar)
+        d = _topstep_trade_date(ts)
+        if d != day:
+            day, open_px, open_ts, first_ret, fired = d, float(bar.open), ts, None, False
+        if open_px is None or open_ts is None:
+            continue
+        elapsed = (ts - open_ts).total_seconds() / 60.0
+        if first_ret is None and elapsed >= first_minutes:
+            first_ret = (float(bar.close) - open_px) / open_px
+        if fired or first_ret is None or ts.hour < entry_hour:
+            continue
+        fired = True
+        if abs(first_ret) < 1e-5:
+            continue
+        entry_bar = bars[i + 1]
+        entry_time = _candle_time(entry_bar)
+        if cutoff and entry_time < cutoff:
+            continue
+        markers.append(_signal_marker(
+            marker_time=entry_time,
+            signal_type="momentum",
+            subtype=f"{first_minutes}m",
+            direction="long" if first_ret > 0 else "short",
+            price=float(entry_bar.open),
+            source_time=ts,
+            detail={"first_ret_pct": round(float(first_ret) * 100, 3),
+                    "first_minutes": first_minutes},
+        ))
+    return markers
+
+
 def _collect_icefishball_markers(bars: List[Candle], cutoff: Optional[datetime]) -> List[Dict[str, Any]]:
     closes = [float(c.close) for c in bars]
     highs = [float(c.high) for c in bars]
@@ -894,6 +1036,8 @@ class BacktestRequest(BaseModel):
     tr_exit_mode: str = "tp"              # 1.0.8: "tp" 固定 TP | "ladder" 階梯滾動
     tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF;UI=FULL LOSS LOCK)
     tr_daily_win_stop: int = 0            # 1.0.9: FULL WIN LOCK — 日贏 N 單停新單(0=OFF)
+    # 1.0.9: PDPT — 當日獲利達此金額($)後停開新單(0=OFF)。Topstep XFA 一致性用。
+    tr_daily_profit_stop: float = 0.0
     sweep_models: Optional[List[str]] = None  # 1.0.9: sweep run/lock — 要跑的 model 清單(None=全部)
     tr_prev_rv_gate: int = 0              # 1.0.9: prevRV regime gate 回看天數(0=OFF)
     fade_tp_frac: float = 0.75            # 1.0.9: DAY ZONE TP=VAL→POC 比例
@@ -931,6 +1075,13 @@ class BacktestRequest(BaseModel):
     factor_pmo_threshold_scale: float = 1.0
     factor_pmo_normal_scale: float = 0.0
     factor_pmo_early_scale: float = 0.0
+    momentum_first_minutes: int = 30
+    momentum_entry_hour: int = 18
+    # 1.0.9 SESSFIB —— fib 級別可調。0.618 是掃描中唯一通過 G0–G4 的進場位。
+    betafib_entry_fib: float = 0.618
+    betafib_anchor: str = "hl"
+    betafib_risk_basis: str = "atr_blend"
+    betafib_min_move_pct: float = 0.0
     contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     contract_size: int = 3
     full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
@@ -1220,7 +1371,15 @@ async def get_mnq_signal_markers(limit: int = 60000):
     signals.extend(_collect_pmo_markers(bars_5m, cutoff))
     signals.extend(_collect_momentum_reversion_markers(bars_5m, cutoff))
     signals.extend(_collect_icefishball_markers(bars_5m, cutoff))
+    signals.extend(_collect_momentum_markers(bars_5m, cutoff))
     signals.sort(key=lambda row: row["time"])
+    # 1.0.9: SESSFIB 是水平掛單線,不是點狀 marker —— 走獨立欄位,
+    # 不混進 signals(那條路徑只認得箭頭/三角/圓點)。
+    try:
+        betafib_levels = _collect_betafib_levels(bars_5m, cutoff)
+    except Exception:
+        logger.exception("SESSFIB 疊圖計算失敗")
+        betafib_levels = []
 
     max_markers = 5000
     shown = signals[-max_markers:] if len(signals) > max_markers else signals
@@ -1237,6 +1396,7 @@ async def get_mnq_signal_markers(limit: int = 60000):
         "source_interval": "5m",
         "display_interval": "1m",
         "counts": counts,
+        "betafib_levels": betafib_levels,
     }
 
 
@@ -1920,10 +2080,16 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     )
 
     strategy_params = _build_strategy_params_from_request(req, contract_size)
-    is_sigma = getattr(strategy_params, "strategy", "") == "sigma"
-    is_fade = getattr(strategy_params, "strategy", "") == "fade"
-    is_pmo = getattr(strategy_params, "strategy", "") == "pmo"
-    is_factor = getattr(strategy_params, "strategy", "") == "factor"
+    # 1.0.9: zone timeline 是最慢的 detector 全掃(數十秒~數分鐘),只有「用
+    # 共識 zone 進場」的策略才需要。原本用「不是 sigma / fade / pmo / factor」
+    # 的黑名單寫法 —— 每加一個新策略就會忘記加進去,結果新策略卡在建 zone
+    # (INTRAMOM 上線時就踩到)。改成白名單:只有明確需要的才建。
+    #
+    # 目前沒有任何策略需要 —— 唯一的消費者 TREND 已在 1.0.9 移除;
+    # fade 自己算前日 VP、factor/pmo/sigma/intramom 完全不看 zone。
+    # 未來若有新策略需要,把它的 strategy 值加進 _ZONE_TIMELINE_STRATEGIES。
+    _strategy_name = str(getattr(strategy_params, "strategy", "") or "").lower()
+    needs_zone_timeline = _strategy_name in _ZONE_TIMELINE_STRATEGIES
 
     method = str(getattr(req, "method", "single") or "single").lower()
     tf_combo = tuple(t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES)
@@ -1933,7 +2099,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     )
 
     zone_timeline = None
-    if overlap_mode and not is_sigma and not is_fade and not is_pmo and not is_factor:
+    if overlap_mode and needs_zone_timeline:
         ordered = [tf for tf in ML_TIMEFRAMES if tf in tf_combo]
         ov_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
         _update_bt_progress(
@@ -1947,10 +2113,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
             )
 
         zone_timeline = await asyncio.to_thread(_build_overlap_timeline)
-    elif (not is_sigma
-          and not is_fade
-          and not is_pmo
-          and not is_factor
+    elif (needs_zone_timeline
           and str(getattr(strategy_params, "area_timeframe", "15m") or "15m").lower() != "session"):
         sg_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
         _update_bt_progress(
@@ -2913,6 +3076,8 @@ class LiveStartRequest(BaseModel):
     tr_exit_mode: str = "tp"              # 1.0.8: "tp" 固定 TP | "ladder" 階梯滾動
     tr_daily_loss_stop: int = 0           # 1.0.8: 日虧 N 單斷路器(0=OFF;UI=FULL LOSS LOCK)
     tr_daily_win_stop: int = 0            # 1.0.9: FULL WIN LOCK — 日贏 N 單停新單(0=OFF)
+    # 1.0.9: PDPT — 當日獲利達此金額($)後停開新單(0=OFF)。Topstep XFA 一致性用。
+    tr_daily_profit_stop: float = 0.0
     tr_prev_rv_gate: int = 0              # 1.0.9: prevRV regime gate 回看天數(0=OFF)
     fade_tp_frac: float = 0.75            # 1.0.9: DAY ZONE TP=VAL→POC 比例
     fade_entry_mode: str = "limit"        # 1.0.9: DAY ZONE 進場 limit|rejection|or15
@@ -2972,6 +3137,13 @@ class LiveStartRequest(BaseModel):
     factor_pmo_threshold_scale: float = 1.0
     factor_pmo_normal_scale: float = 0.0
     factor_pmo_early_scale: float = 0.0
+    momentum_first_minutes: int = 30
+    momentum_entry_hour: int = 18
+    # 1.0.9 SESSFIB —— fib 級別可調。0.618 是掃描中唯一通過 G0–G4 的進場位。
+    betafib_entry_fib: float = 0.618
+    betafib_anchor: str = "hl"
+    betafib_risk_basis: str = "atr_blend"
+    betafib_min_move_pct: float = 0.0
     full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
     one_trade_per_session_direction: bool = True
     tr_one_trade_per_session: bool = True
@@ -3904,7 +4076,7 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         strategy = str(params.get("strategy") or "").lower()
         # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend;+fade 放行
         # 1.0.9: TREND 已移除,未知/舊值一律落到 factor
-        normalized_strategy = strategy if strategy in ("fade", "sigma", "pmo", "factor") else "factor"
+        normalized_strategy = strategy if strategy in ("fade", "sigma", "pmo", "factor", "momentum", "betafib") else "factor"
         # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         _cid_new = normalize_contract_id_to_front(params.get("contract_id") or "")
         if _cid_new != params.get("contract_id"):
@@ -3924,7 +4096,7 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             if params.get(_hold_key) not in (0, None):
                 params[_hold_key] = 0
                 changed = True
-        if normalized_strategy in ("sigma", "pmo", "factor") and "tr_allowed_sessions" not in params:
+        if normalized_strategy in ("sigma", "pmo", "factor", "momentum", "betafib") and "tr_allowed_sessions" not in params:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
             changed = True
             changed = True

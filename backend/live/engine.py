@@ -28,6 +28,7 @@ from backend.db.models import (
     ConsolidationZone, Direction, StrategyType, ZoneStatus, BarUnit,
     StrategyParams, get_point_value, get_tick_size,
     get_commission_rt, get_fees_rt,
+    FACTOR_PIPELINE_STRATEGIES,
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.session_filter import (
@@ -143,7 +144,7 @@ class LiveTradingEngine:
         # Strategy mode: trend/fade/sigma.  The trend-slot object is ALWAYS built
         # so legacy state/helpers keep working; fade/sigma replace that slot.
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "factor") or "factor").lower()
-        if self.strategy_mode not in ("fade", "sigma", "pmo", "factor"):
+        if self.strategy_mode not in ("fade", "sigma", "pmo", "factor", "momentum", "betafib"):
             self.strategy_mode = "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
@@ -157,6 +158,17 @@ class LiveTradingEngine:
             self.trend_follow = EMAPMOStrategy(params=self.strategy_params)
         elif self.strategy_mode == "factor":
             self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
+        # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
+        # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
+        # 介面與 fade/factor 相同,直接插進同一個策略插槽。
+        elif self.strategy_mode == "momentum":
+            from backend.strategy.research_lab import MomentumContinuation
+            self.trend_follow = MomentumContinuation(params=self.strategy_params)
+        # 1.0.9: SESSFIB —— RTH 推動腿的 fib 回撤位掛單,夜盤觸價後市價進場。
+        # ⚠ 尚未通過 G5(MNQ 過 G0–G4、MES 死在走查)—— 觀察用,勿直接實盤。
+        elif self.strategy_mode == "betafib":
+            from backend.strategy.research_lab import BetaFibRetrace
+            self.trend_follow = BetaFibRetrace(params=self.strategy_params)
         # 1.0.9: TREND(SessionTrendFollow)已移除 —— 288 個變體 0 通過
         # MC+WF+PF>2,每筆邊際最佳 +9.6t 低於實測 14t 往返滑價。
         # 舊 preset 若仍帶 strategy="trend",一律落到 FACTOR。
@@ -182,6 +194,10 @@ class LiveTradingEngine:
         # 1.0.9: FULL WIN LOCK — 當日贏 N 單停新單(0=OFF)
         self._tr_daily_win_stop = max(0, int(getattr(self.strategy_params, "tr_daily_win_stop", 0) or 0))
         self._daily_win_count: int = 0
+        # 1.0.9: PDPT —— 當日已實現獲利上限(美元),達標後停開新單
+        self._tr_daily_profit_stop = max(0.0, float(
+            getattr(self.strategy_params, "tr_daily_profit_stop", 0) or 0))
+        self._daily_profit_td: float = 0.0
         # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單(0=OFF)
         self._prev_rv_gate = max(0, int(getattr(self.strategy_params, "tr_prev_rv_gate", 0) or 0))
         self._gate_block_today: bool = False
@@ -1433,6 +1449,7 @@ class LiveTradingEngine:
         if not valid:
             self._daily_loss_count = 0
             self._daily_win_count = 0
+            self._daily_profit_td = 0.0
             self._persist_daily_bot_risk_state()
             return False
 
@@ -1466,6 +1483,11 @@ class LiveTradingEngine:
             )
             return False
 
+        self._daily_profit_td += value    # 1.0.9: PDPT 累計(含虧損)
+        if self._tr_daily_profit_stop and self._daily_profit_td >= self._tr_daily_profit_stop:
+            self._log_event(
+                f"[PDPT] 當日獲利 ${self._daily_profit_td:+.2f} >= "
+                f"${self._tr_daily_profit_stop:.0f} -> 停開新單", "warn")
         if value > 0:
             self._daily_win_count += 1
             if (
@@ -2175,6 +2197,15 @@ class LiveTradingEngine:
                         and self._daily_win_count >= self._tr_daily_win_stop
                     ),
                 },
+                # 1.0.9: PDPT —— 當日獲利上限
+                "daily_profit": {
+                    "limit": self._tr_daily_profit_stop,
+                    "pnl": round(float(self._daily_profit_td), 2),
+                    "resting": bool(
+                        self._tr_daily_profit_stop
+                        and self._daily_profit_td >= self._tr_daily_profit_stop
+                    ),
+                },
                 # PREV-RV 波動閘:前一日高波動 → 今日封鎖新單
                 "prev_rv": {
                     "lookback": self._prev_rv_gate,
@@ -2483,6 +2514,7 @@ class LiveTradingEngine:
         self._reset_full_tp_counts()
         self._daily_loss_count = 0
         self._daily_win_count = 0
+        self._daily_profit_td = 0.0
         # Do not let STOP/GO LIVE or a process restart erase bot risk locks.
         # Manual/account PnL is intentionally not reconstructed into these
         # counters; only bot-owned outcomes written by this engine are loaded.
@@ -3249,6 +3281,7 @@ class LiveTradingEngine:
             self._reset_full_tp_counts()
             self._daily_loss_count = 0
             self._daily_win_count = 0
+            self._daily_profit_td = 0.0
             self._persist_daily_bot_risk_state()
             self._log_event(
                 "New trading day; PnL reset (CT 17:00)"
@@ -3327,7 +3360,7 @@ class LiveTradingEngine:
                 self.trend_follow.observe(candle, [], True)
             elif not self._open_position and not self._pending_order_id:
                 self._reset_breakout_confirmation()
-        elif self.strategy_mode in ("pmo", "factor") and (self._open_position or self._pending_order_id):
+        elif self.strategy_mode in FACTOR_PIPELINE_STRATEGIES and (self._open_position or self._pending_order_id):
             self.trend_follow.observe(candle, [], True)
 
         # ── Periodic status log every minute ──
@@ -3349,7 +3382,7 @@ class LiveTradingEngine:
         session_start = _time(22, 0)
         if utc_time >= self.FLATTEN_TIME_UTC and utc_time < session_start:
             if (
-                self.strategy_mode == "factor"
+                self.strategy_mode in FACTOR_PIPELINE_STRATEGIES
                 and not self._open_position
                 and not self._pending_order_id
             ):
@@ -3409,7 +3442,7 @@ class LiveTradingEngine:
         if self._open_position:
             self._position_age += 1   # track for display only
             if (
-                self.strategy_mode in ("pmo", "factor")
+                self.strategy_mode in FACTOR_PIPELINE_STRATEGIES
                 and self._pmo_max_hold_minutes > 0
                 and self._entry_time is not None
             ):
@@ -3525,6 +3558,12 @@ class LiveTradingEngine:
             # 1.0.9: FULL WIN LOCK — 當日贏單數達上限,落袋停手
             if (self._tr_daily_win_stop
                     and self._daily_win_count >= self._tr_daily_win_stop):
+                self._unlock_signal_breakout(signal)
+                strat.notify_order_cancelled()
+                return
+            # 1.0.9: PDPT —— 當日獲利達標,停開新單(既有部位不強平)
+            if (self._tr_daily_profit_stop
+                    and self._daily_profit_td >= self._tr_daily_profit_stop):
                 self._unlock_signal_breakout(signal)
                 strat.notify_order_cancelled()
                 return

@@ -22,6 +22,7 @@ from backend.db.models import (
     Candle, Trade, TradeSignal, BacktestConfig, BacktestResult,
     Metrics, ConsolidationZone, BreakoutAnalysis, StrategyParams,
     Direction, ExitReason, StrategyType, ZoneStatus,
+    FACTOR_PIPELINE_STRATEGIES, ZONELESS_STRATEGIES, ZONELESS_ZONE_RENDER,
     get_point_value, get_tick_size,
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
@@ -107,7 +108,7 @@ class BacktestEngine:
         # 1.0.8: strategy_mode "trend"(現行)或 "fade"(前日 VA 回歸)。
         # 屬性名沿用 trend_follow,兩策略介面相容,其餘管線不變。
         _strat = str(getattr(self.strategy_params, "strategy", "") or "").lower()
-        self.strategy_mode = _strat if _strat in ("fade", "sigma", "pmo", "factor") else "factor"
+        self.strategy_mode = _strat if _strat in ("fade", "sigma", "pmo", "factor", "momentum", "betafib") else "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
             if str(getattr(self.strategy_params, "fade_entry_mode", "") or "").lower() == "or15":
@@ -120,6 +121,17 @@ class BacktestEngine:
             self.trend_follow = EMAPMOStrategy(params=self.strategy_params)
         elif self.strategy_mode == "factor":
             self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
+        # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
+        # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
+        # 介面與 fade/factor 相同,直接插進同一個策略插槽。
+        elif self.strategy_mode == "momentum":
+            from backend.strategy.research_lab import MomentumContinuation
+            self.trend_follow = MomentumContinuation(params=self.strategy_params)
+        # 1.0.9: SESSFIB —— RTH 推動腿的 fib 回撤位掛單,夜盤觸價後市價進場。
+        # ⚠ 尚未通過 G5(MNQ 過 G0–G4、MES 死在走查)—— 觀察用,勿直接實盤。
+        elif self.strategy_mode == "betafib":
+            from backend.strategy.research_lab import BetaFibRetrace
+            self.trend_follow = BetaFibRetrace(params=self.strategy_params)
         # 1.0.9: TREND(SessionTrendFollow)已移除 —— 288 個變體 0 通過
         # MC+WF+PF>2,每筆邊際最佳 +9.6t 低於實測 14t 往返滑價。
         # 舊 preset 若仍帶 strategy="trend",一律落到 FACTOR。
@@ -148,6 +160,10 @@ class BacktestEngine:
         # 1.0.9: FULL WIN LOCK — 當日贏 N 單停新單(0=OFF)
         self._tr_daily_win_stop = max(0, int(getattr(self.strategy_params, "tr_daily_win_stop", 0) or 0))
         self._daily_win_count: int = 0
+        # 1.0.9: PDPT —— 當日已實現獲利上限(美元),達標後停開新單
+        self._tr_daily_profit_stop = max(0.0, float(
+            getattr(self.strategy_params, "tr_daily_profit_stop", 0) or 0))
+        self._daily_profit_td: float = 0.0
         self._loss_count_date: Optional[str] = None
         # 1.0.9: prevRV regime gate — 前一日 RV 落在近 N 日最高三分位 → 今日不進場
         self._prev_rv_gate = max(0, int(getattr(self.strategy_params, "tr_prev_rv_gate", 0) or 0))
@@ -341,7 +357,7 @@ class BacktestEngine:
             self._force_exit(candles[-1], ExitReason.FLATTEN)
 
         # Close any remaining active zone at end of backtest (skip timeline/sigma).
-        if candles and self._zone_timeline is None and self.strategy_mode not in ("sigma", "fade", "pmo", "factor"):
+        if candles and self._zone_timeline is None and self.strategy_mode not in ZONELESS_STRATEGIES:
             self.detector.close_final_zone(candles[-1])
         if candles and self.strategy_mode == "fade":
             self._close_fade_level_zone(candles[-1].timestamp)
@@ -357,7 +373,7 @@ class BacktestEngine:
         # previous-day VAH/VAL levels as day-wide chart reference lines.
         if self.strategy_mode == "fade":
             all_zones = self._fade_level_zones
-        elif self._zone_timeline is not None or self.strategy_mode in ("sigma", "pmo", "factor"):
+        elif self._zone_timeline is not None or self.strategy_mode in ZONELESS_ZONE_RENDER:
             all_zones = []
         else:
             all_zones = self.detector.get_all_zones()
@@ -447,6 +463,7 @@ class BacktestEngine:
             self._loss_count_date = _ts_date
             self._daily_loss_count = 0
             self._daily_win_count = 0   # 1.0.9: FULL WIN LOCK 換日重置
+            self._daily_profit_td = 0.0  # 1.0.9: PDPT 換日重置
         # 1.0.9: prevRV regime gate — 日 rollover 時結算前一日 RV,決定今日是否封鎖
         if self._prev_rv_gate and _ts_date != self._rv_cur_day:
             if self._rv_day_closes and len(self._rv_day_closes) > 2:
@@ -501,7 +518,7 @@ class BacktestEngine:
             _active_zone = _zt.get('active')
             _is_mature   = _zt.get('mature', False)
             _recent_zones = _zt.get('recent') or ([_active_zone] if _active_zone else [])
-        elif self.strategy_mode not in ("sigma", "fade", "pmo", "factor"):
+        elif self.strategy_mode not in ZONELESS_STRATEGIES:
             # Normal path: run detector live
             self.detector.update(candle)
 
@@ -510,7 +527,7 @@ class BacktestEngine:
                 self.trend_follow.observe(candle, [], True)
             elif not self._open_position and not self._pending_order:
                 self._reset_trend_session_state()
-        elif self.strategy_mode in ("pmo", "factor") and (self._open_position or self._pending_order):
+        elif self.strategy_mode in FACTOR_PIPELINE_STRATEGIES and (self._open_position or self._pending_order):
             self.trend_follow.observe(candle, [], True)
 
         # Daily loss limit
@@ -536,7 +553,7 @@ class BacktestEngine:
         )
         if (
             in_flatten_window
-            and self.strategy_mode == "factor"
+            and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES
             and not self._open_position
             and not self._pending_order
         ):
@@ -561,7 +578,7 @@ class BacktestEngine:
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
-                if self._pmo_max_hold_minutes > 0 and self.strategy_mode in ("pmo", "factor"):
+                if self._pmo_max_hold_minutes > 0 and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES:
                     held = (candle.timestamp - self._open_position.entry_time).total_seconds() / 60.0
                     if held >= self._pmo_max_hold_minutes:
                         self._force_exit(candle, ExitReason.FLATTEN)
@@ -638,6 +655,11 @@ class BacktestEngine:
                 # 1.0.9: FULL WIN LOCK — 當日贏單數達上限,落袋停手
                 if (self._tr_daily_win_stop
                         and self._daily_win_count >= self._tr_daily_win_stop):
+                    self.trend_follow.notify_order_cancelled()
+                    return
+                # 1.0.9: PDPT —— 當日獲利達標,停開新單(既有部位照常由 SL/TP 結束)
+                if (self._tr_daily_profit_stop
+                        and self._daily_profit_td >= self._tr_daily_profit_stop):
                     self.trend_follow.notify_order_cancelled()
                     return
                 # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單
@@ -1111,6 +1133,7 @@ class BacktestEngine:
             self._daily_loss_count += 1
         elif pnl > 0:
             self._daily_win_count += 1   # 1.0.9: FULL WIN LOCK 計數
+        self._daily_profit_td += pnl     # 1.0.9: PDPT 累計(含虧損,才是真實日損益)
         self._ladder_risk = 0.0
         self._ladder_max_r = 0.0
 

@@ -309,6 +309,24 @@ class BreakoutAnalysis:
         return self.vol_ratio >= 2.0
 
 
+# ── 策略管線分類 ────────────────────────────────────────
+# 1.0.9 BUG FIX:研究出身的策略(MOMENTUM / BETA FIB)介面與 FACTOR 相同,
+# 但先前沒被列進引擎的白名單,結果落到 else 的「trend」路徑。兩個後果:
+#
+#   1. 正確性 —— `engine.py` 只對 FACTOR_PIPELINE_STRATEGIES 在**持倉期間**
+#      呼叫 observe()。不在名單裡的策略,持倉那幾小時完全看不到 K 棒,
+#      內部 5m 聚合出現斷層 → _atr_blend() 算錯 → SL/TP 寬度不同。
+#      實測同一組參數 PnL 差 33%(見 docs/1.0.9_RESEARCH_FINDINGS.md)。
+#   2. 效能 —— 不在 ZONELESS_STRATEGIES 裡就會每根 K 棒跑 volume-profile
+#      zone detector。這兩個策略根本不看 zone,那是純浪費。
+#
+# backtest 與 live 兩個引擎共用這兩個常數,確保 live == backtest。
+FACTOR_PIPELINE_STRATEGIES = ("pmo", "factor", "momentum", "betafib")
+ZONELESS_STRATEGIES = ("sigma", "fade", "pmo", "factor", "momentum", "betafib")
+# 不渲染 detector zone 的策略(fade 另有自己的前日 VA 水位,單獨處理)
+ZONELESS_ZONE_RENDER = ("sigma", "pmo", "factor", "momentum", "betafib")
+
+
 # ── 策略參數 ──────────────────────────────────────────
 
 @dataclass
@@ -364,6 +382,12 @@ class StrategyParams:
     tr_daily_loss_stop: int = 0            # 1.0.9 UI 更名 FULL LOSS LOCK
     # 1.0.9: FULL WIN LOCK — 當日贏單數達 N 後停止新進場(0=OFF;落袋鎖利,同斷路器反向)
     tr_daily_win_stop: int = 0
+    # 1.0.9: PDPT(Personal Daily Profit Target)—— 當日已實現獲利達到此金額後
+    # 停開新單(0=OFF)。Topstep XFA 的一致性門檻看「最大單日 ÷ 總淨利」,
+    # 一旦某天創新高,請款門檻就被推高且**永久鎖定**到請款為止。
+    # 這是唯一能硬性保證單日獲利不超過天花板的控制。
+    # 用 Topstep 交易日(17:00 CT 換日)計算,不是日曆日。
+    tr_daily_profit_stop: float = 0.0
     # 1.0.9: prevRV regime gate — 前一交易日已實現波動落在近 N 日最高三分位 → 今日不進場
     # (回測 DD -42%;波動率自相關 +0.73 故前一日可預測)。0=OFF,>0=回看視窗天數
     tr_prev_rv_gate: int = 0
@@ -409,6 +433,20 @@ class StrategyParams:
     # 1.0.9: 分開鬆綁 normal(比 PMO)/ early(比 SIG)門檻;0 = 沿用上面那個
     factor_pmo_normal_scale: float = 0.0
     factor_pmo_early_scale: float = 0.0
+    # 1.0.9: INTRAMOM(Market Intraday Momentum)—— 開盤 N 分鐘的報酬方向
+    # 預測當日稍晚的同向延續。960 格密網格 × 雙商品交集 22 組,鄰域 6/7
+    # 在門檻之上(高原);是唯一在 MNQ 與 MES 上 MC+走查全通過的策略。
+    # 見 docs/1.0.9_RESEARCH_FINDINGS.md。SL/側/RR 沿用 factor_* 與 rr_ratio。
+    momentum_first_minutes: int = 30      # 交集內 22/22 一致
+    momentum_entry_hour: int = 18         # UTC;實測 17~20 通過率幾乎相同
+    # 1.0.9: SESSFIB(Session Fib Retrace)—— RTH 推動腿的 fib 回撤位掛單,
+    # 夜盤觸價後市價順勢進場。576 變體 × 雙商品掃描:MNQ 10 組通過 G0–G4,
+    # 全部集中在進場 fib 0.618;0.786 太淺(94% 夜盤都會觸及,不篩選)。
+    # ⚠ 尚未通過 G5(MES 死在走查)—— 觀察用,見 docs/1.0.9_RESEARCH_FINDINGS.md。
+    betafib_entry_fib: float = 0.618      # 進場 fib(1.0 = 推動腿終點)
+    betafib_anchor: str = "hl"            # "hl" 擺動低→高 / "oc" RTH open→close
+    betafib_risk_basis: str = "atr_blend"  # SL/TP 基準,與 BEST 同口徑
+    betafib_min_move_pct: float = 0.0     # 推動腿幅度門檻 %;0 = 不篩選
     # --- v1.0.6: explainable multi-timeframe confluence (ML scorer) ---
     # Activated when strategy == "confluence". The live engine then runs the
     # SAME ConfluenceBacktester logic (per-TF detectors + trained scorer) so

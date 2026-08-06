@@ -75,7 +75,15 @@ class _ResearchBase:
         self._state = "idle"
 
     def observe(self, candle: Candle, zones=None, is_mature: bool = True) -> None:
+        # 引擎對「不可交易」的 K 棒只呼叫 observe(),對可交易的才呼叫 evaluate()。
+        # 需要跨時段狀態的策略(ONCONT 要 RTH 開收、GAPFADE 要前日 RTH 收盤)
+        # 必須在這裡也更新,否則它們永遠看不到 RTH 的 K 棒。
         self._roll(candle)
+        self._track(candle)
+
+    def _track(self, candle: Candle) -> None:
+        """跨時段狀態記錄。預設不做事;需要的子類覆寫,並在 evaluate 開頭呼叫。"""
+        return None
 
     def get_phase_label(self) -> str:
         return f"{self.NAME} {self._state}"
@@ -147,6 +155,41 @@ class _ResearchBase:
             sl, tp = self._round(entry + risk), self._round(entry - risk * self.rr)
         if entry == sl or entry == tp:
             return None
+        self._daily[d] = self._daily.get(d, 0) + 1
+        self._state = "confirmed"
+        return TradeSignal(
+            strategy=StrategyType.TREND_FOLLOW,
+            direction=direction,
+            entry_price=entry, sl_price=sl, tp_price=tp,
+            zone_id=f"{self.NAME}:{d}:{_utc(candle.timestamp).isoformat()}",
+            zone_source="research",
+            reason=f"{self.NAME} | {reason}",
+            order_type="market",
+        )
+
+    def _make_at(self, candle: Candle, direction: Direction,
+                 sl_px: float, tp_px: float, reason: str) -> Optional[TradeSignal]:
+        """1.0.9: SL/TP 用**絕對價位**,不是 entry ± ATR 倍數。
+
+        給 fib 型策略用 —— 停損停利掛在 fib 層級本身(0.75 / 0.90),
+        風險大小自然隨當天走勢幅度縮放,而不是隨波動率指標縮放。
+        進場仍是觸價後的市價(candle.close),名目風險與實際會略有出入,
+        這是誠實的:限價單成交假設無法在回測裡驗證。
+        """
+        if not self._side_ok(direction):
+            return None
+        d = self._trade_date(candle.timestamp)
+        if self.max_trades_per_day and self._daily.get(d, 0) >= self.max_trades_per_day:
+            return None
+        entry = self._round(candle.close)
+        sl, tp = self._round(sl_px), self._round(tp_px)
+        # 觸價瞬間市價進場,可能已穿過 SL 或還沒到 TP 的正確側 —— 兩者都廢單
+        if direction == Direction.BUY:
+            if not (sl < entry < tp):
+                return None
+        else:
+            if not (tp < entry < sl):
+                return None
         self._daily[d] = self._daily.get(d, 0) + 1
         self._state = "confirmed"
         return TradeSignal(
@@ -326,16 +369,20 @@ class GapFade(_ResearchBase):
         self._fired = False
         self._last_rth_close = None
 
-    def evaluate(self, candle, zones=None, is_mature=True):
-        self._roll(candle)
+    def _track(self, candle) -> None:
         ts = _utc(candle.timestamp)
         d = self._trade_date(ts)
         if d != self._day:
             self._day, self._fired = d, False
             self._prev_close = self._last_rth_close
-        hm = (ts.hour, ts.minute)
-        if hm >= self.RTH_CLOSE:
+        if (ts.hour, ts.minute) >= self.RTH_CLOSE:
             self._last_rth_close = candle.close
+
+    def evaluate(self, candle, zones=None, is_mature=True):
+        self._roll(candle)
+        self._track(candle)
+        ts = _utc(candle.timestamp)
+        hm = (ts.hour, ts.minute)
         if self._fired or self._prev_close is None:
             return None
         if hm < self.RTH_OPEN or hm > (self.RTH_OPEN[0], self.RTH_OPEN[1] + 15):
@@ -353,14 +400,33 @@ class GapFade(_ResearchBase):
 
 # ── 6. Market Intraday Momentum ──────────────────────────────
 
-class IntradayMomentum(_ResearchBase):
-    """開盤第一段的報酬方向,用來預測尾盤同向 —— 日內動能效應。"""
-    NAME = "INTRAMOM"
+class MomentumContinuation(_ResearchBase):
+    """交易日開頭第一段的報酬方向 → 同向進場(日內動能延續)。
+
+    ⚠️ 命名沿用文獻的 Market Intraday Momentum,但**實際量測的不是 RTH 開盤
+    後 30 分鐘**。這裡的「開盤」是 Topstep 交易日邊界(22:00 UTC = 3pm PT,
+    夜盤開盤),因為 _trade_date() 用的是 17:00 CT 換日。實測 MNQ 的進場時刻
+    絕大多數落在 **22:30 UTC**(= 交易日開始後 30 分鐘)。
+
+    entry_hour 只在「該交易日 22:00 沒有 K 棒」(週末/假日順延)時才會真正
+    生效 —— 那時 30 分鐘標記會落在更晚,才需要等到指定小時。所以密網格裡
+    17/18/19/20 的通過率幾乎相同(28/26/27/28),不是因為它穩健,而是因為它
+    大部分時候不起作用。
+
+    驗證結果見 docs/1.0.9_RESEARCH_FINDINGS.md:960 格密網格 × 雙商品交集
+    22 組、鄰域 6/7 在門檻之上,是唯一在 MNQ 與 MES 上 MC+走查全通過的策略。
+    """
+    NAME = "MOMENTUM"
 
     def __init__(self, params):
         super().__init__(params)
-        self.first_minutes = int(getattr(params, "research_first_minutes", 30) or 30)
-        self.entry_hour = int(getattr(params, "research_entry_hour", 19) or 19)  # UTC
+        # 正式參數名優先;research_* 是研究腳本用的別名
+        self.first_minutes = int(
+            getattr(params, "momentum_first_minutes", None)
+            or getattr(params, "research_first_minutes", 30) or 30)
+        self.entry_hour = int(
+            getattr(params, "momentum_entry_hour", None)
+            or getattr(params, "research_entry_hour", 18) or 18)   # UTC
         self._day = None
         self._open_px = None
         self._first_ret = None
@@ -443,13 +509,308 @@ class BollingerReversion(_ResearchBase):
         return None
 
 
+# ── 9. 白天方向 → 夜盤延續 / 反向 ────────────────────────────
+
+class OvernightContinuation(_ResearchBase):
+    """白天(RTH)漲跌定方向,夜盤開盤進場。
+
+    時區(夏令 PDT = UTC-7):
+        13:30 UTC = 6:30 PT   RTH 開盤,記錄開盤價
+        20:00 UTC = 1:00 PT   RTH 收盤 → 白天方向定案
+        22:00 UTC = 3:00 PT   夜盤(ASIA)開盤 → 進場
+
+    ⚠️ 結構限制:週五 21:00 UTC 收盤後到週日才開市,**週五沒有當晚夜盤**,
+    所以本策略每週只有週一~週四 4 個機會,樣本天生比別的策略少 20%。
+
+    research_reverse=True 時改成反向做(白天漲→夜盤做空)。實測 MNQ 2026-05~08
+    這段(單邊跌市)顯示夜盤偏均值回歸而非動能延續,但那可能只是市況產物 ——
+    所以兩個方向都要能測,交給 G5 跨商品去分辨。
+    """
+    NAME = "ONCONT"
+
+    RTH_OPEN = (13, 30)
+    RTH_CLOSE = (20, 0)
+    NIGHT_OPEN = (22, 0)
+
+    def __init__(self, params):
+        super().__init__(params)
+        self.min_move_atr = float(getattr(params, "research_move_atr", 0.5) or 0.5)
+        self.reverse = bool(getattr(params, "research_reverse", False))
+        # 1.0.9: 風險寬度基準。門檻(min_move_atr)一律用日 ATR —— 那是在
+        # 描述「白天走了多大」;但 SL/TP 寬度可以另外選。日 ATR 約 517 點、
+        # 5m atr_blend 約 30 點,差 17 倍,同一個 sl_value 是完全不同的策略。
+        # SESSFIB 換基準後 PF 從 0.66 翻到 2.83,所以這個必須能分開測。
+        self.risk_basis = str(
+            getattr(params, "research_risk_basis", "daily") or "daily").lower()
+        self._day = None
+        self._rth_open_px = None
+        self._rth_close_px = None
+        self._rth_hi = self._rth_lo = None
+        self._day_ranges: deque = deque(maxlen=14)
+        self._fired = False
+
+    def _daily_atr(self) -> Optional[float]:
+        if len(self._day_ranges) < 5:
+            return None
+        return sum(self._day_ranges) / len(self._day_ranges)
+
+    def _track(self, candle: Candle) -> None:
+        ts = _utc(candle.timestamp)
+        hm = (ts.hour, ts.minute)
+        d = ts.date()
+        if d != self._day:
+            # 換日:把昨天的 RTH 幅度存進 ATR 樣本
+            if self._rth_hi is not None and self._rth_lo is not None:
+                self._day_ranges.append(self._rth_hi - self._rth_lo)
+            self._day = d
+            self._rth_open_px = self._rth_close_px = None
+            self._rth_hi = self._rth_lo = None
+            self._fired = False
+        if self.RTH_OPEN <= hm < self.RTH_CLOSE:
+            if self._rth_open_px is None:
+                self._rth_open_px = candle.open
+            self._rth_hi = candle.high if self._rth_hi is None else max(self._rth_hi, candle.high)
+            self._rth_lo = candle.low if self._rth_lo is None else min(self._rth_lo, candle.low)
+            self._rth_close_px = candle.close
+
+    def evaluate(self, candle: Candle, zones=None, is_mature: bool = True):
+        self._roll(candle)
+        self._track(candle)
+        ts = _utc(candle.timestamp)
+        hm = (ts.hour, ts.minute)
+        if self.RTH_OPEN <= hm < self.RTH_CLOSE:
+            return None
+
+        if hm < self.NIGHT_OPEN or self._fired:
+            return None
+        if self._rth_open_px is None or self._rth_close_px is None:
+            return None
+        atr = self._daily_atr()
+        if not atr or atr <= 0:
+            return None
+
+        move = self._rth_close_px - self._rth_open_px
+        if abs(move) / atr < self.min_move_atr:
+            return None
+        self._fired = True
+
+        up = move > 0
+        if self.reverse:
+            up = not up
+        direction = Direction.BUY if up else Direction.SELL
+        width = atr if self.risk_basis == "daily" else self._atr_blend()
+        if width is None or width <= 0:
+            return None
+        return self._make(candle, direction,
+                          f"RTH {move:+.1f} ({move/atr:+.2f} ATR)"
+                          + (" REVERSED" if self.reverse else "")
+                          + f" [{self.risk_basis}]",
+                          width=width)
+
+
+# ── 10. NY session Fib 回撤掛單 ──────────────────────────────
+
+class BetaFibRetrace(_ResearchBase):
+    """完整 NY session(RTH)漲跌 → 在 Fib 回撤位掛限價單,順著 session 方向。
+
+    與 INTRAMOM 的差別(這是使用者原本想要的版本):
+      INTRAMOM  量夜盤前 30 分鐘 → 到時間就市價進場
+      本策略    量**整個 RTH**(13:30–20:00 UTC)→ 在 0.8 回撤位**掛單等**
+
+    規則:
+      1. RTH 收盤定案 move = rth_close - rth_open
+      2. |move| 需 > min_move_atr × 日ATR(否則當天不掛)
+      3. 掛單價 = rth_close - retrace_frac × move
+         retrace_frac=0.2 → 守住 fib 0.8(價格回吐 20% 漲幅);
+         這正是「回踩到 0.8 支撐」的口語說法。
+      4. 夜盤(20:00 → 隔日 13:30 UTC)內價格觸及該價位才成交,順 session 方向:
+         session 漲 → 回踩到位做多;session 跌 → 反彈到位做空
+      5. 沒觸及就當天作廢(限價單的本質:不追價,寧可漏單)
+
+    ⚠️ 觸價後走**市價**進場(order_type="market"),不是在掛單價成交。理由:
+    靜止限價單的漏單風險在回測裡無法誠實建模(你不知道排隊位置),而市價
+    版本會吃滿實測 14t 往返滑價 —— 寧可低估績效也不要高估。
+    """
+    NAME = "BETAFIB"
+
+    RTH_OPEN = (13, 30)
+    RTH_CLOSE = (20, 0)
+
+    def __init__(self, params):
+        super().__init__(params)
+        # 1.0.9: 上線後參數改叫 sessfib_*(UI 直接可調),research_* 保留給
+        # scripts/ 的掃描腳本當 fallback,兩邊都能跑同一份程式碼。
+        # UI 給的是「進場 fib」(0.618),內部沿用 retrace_frac = 1 - entry_fib。
+        _entry = getattr(params, "betafib_entry_fib", None)
+        if _entry is not None:
+            self.retrace_frac = 1.0 - float(_entry)
+        else:
+            self.retrace_frac = float(getattr(params, "research_retrace_frac", 0.2) or 0.2)
+        self.min_move_atr = float(getattr(params, "research_min_move_atr", 0.3) or 0.3)
+        # 1.0.9: 風險寬度基準 —— 「日 ATR」(RTH 幅度 14 日均,MNQ 約 517 點)
+        # 與 BEST 用的 5m atr_blend(中位 30.4 點)差 17 倍。同一個 sl_value
+        # 在兩種基準下是完全不同的策略,必須能分開測。
+        #   "daily"     日 ATR(隔夜部位的自然尺度)
+        #   "atr_blend" 5m atr_blend —— 與 BEST / FACTOR 完全同口徑
+        #   "fib"       SL/TP 直接掛在 fib 層級 —— 風險隨當天走勢幅度縮放,
+        #               不隨波動率指標縮放
+        self.risk_basis = str(
+            getattr(params, "betafib_risk_basis", None)
+            or getattr(params, "research_risk_basis", "daily") or "daily").lower()
+        # 1.0.9: fib 基準專用。層級以 rth_open 為 0、rth_close 為 1 度量:
+        #   price(f) = rth_open + f × move
+        # 進場 = 1 - retrace_frac(預設 0.8);SL 更深(0.75/0.70);TP 更淺(0.90)
+        self.sl_fib = float(getattr(params, "research_sl_fib", 0.75) or 0.75)
+        self.tp_fib = float(getattr(params, "research_tp_fib", 0.90) or 0.90)
+        # 1.0.9: 觸發門檻的第二種寫法 —— 當日 RTH 漲跌的**百分比**。
+        # ATR 倍數會隨波動率漂移,「今天漲了 0.4%」則是固定、可直接對話的口徑。
+        self.min_move_pct = float(
+            getattr(params, "betafib_min_move_pct", None)
+            or getattr(params, "research_min_move_pct", 0.0) or 0.0)
+        # 1.0.9: fib 錨點。使用者圖表確認實際是後者。
+        #   "oc" RTH open → close(舊行為)
+        #   "hl" RTH 擺動低 → 擺動高(推動腿)—— 交易者實際畫線的方式,
+        #        上漲日取「最高點之前」的最低點,下跌日鏡像
+        self.fib_anchor = str(
+            getattr(params, "betafib_anchor", None)
+            or getattr(params, "research_fib_anchor", "oc") or "oc").lower()
+        self._day = None
+        # hl 錨點的串流狀態
+        self._run_lo = self._run_hi = None
+        self._lo_before_hi = self._hi_before_lo = None
+        self._rth_open_px = self._rth_close_px = None
+        self._rth_hi = self._rth_lo = None
+        self._day_ranges: deque = deque(maxlen=14)
+        self._level = None          # 掛單價
+        self._level_dir = None      # Direction
+        self._fired = False
+
+    def _daily_atr(self) -> Optional[float]:
+        if len(self._day_ranges) < 5:
+            return None
+        return sum(self._day_ranges) / len(self._day_ranges)
+
+    def _session_day(self, ts: datetime):
+        """1.0.9 BUG FIX:以 RTH 開盤(13:30 UTC)為界的交易日,不是 UTC 日曆日。
+
+        原本用 `ts.date()` 分日 —— 但夜盤等單視窗是 20:00 UTC → 隔日 13:30 UTC,
+        中途會跨過 UTC 00:00。日曆日一換 `_level` 就被清成 None,等於掛單只在
+        20:00–23:59(4 小時)有效,而不是文件寫的 17.5 小時。訊號量被砍掉七成,
+        這正是先前 SESSFIB 在 MES 上湊不到 15 筆的原因。
+        """
+        d = ts.date()
+        if (ts.hour, ts.minute) < self.RTH_OPEN:
+            d = d - timedelta(days=1)
+        return d
+
+    def _track(self, candle: Candle) -> None:
+        ts = _utc(candle.timestamp)
+        hm = (ts.hour, ts.minute)
+        d = self._session_day(ts)
+        if d != self._day:
+            if self._rth_hi is not None and self._rth_lo is not None:
+                self._day_ranges.append(self._rth_hi - self._rth_lo)
+            self._day = d
+            self._rth_open_px = self._rth_close_px = None
+            self._rth_hi = self._rth_lo = None
+            self._level = self._level_dir = None
+            self._fired = False
+            self._run_lo = self._run_hi = None
+            self._lo_before_hi = self._hi_before_lo = None
+        if self.RTH_OPEN <= hm < self.RTH_CLOSE:
+            if self._rth_open_px is None:
+                self._rth_open_px = candle.open
+            # 串流版的擺動腿追蹤:創新高時,記下「到此為止的最低點」
+            self._run_lo = candle.low if self._run_lo is None else min(self._run_lo, candle.low)
+            self._run_hi = candle.high if self._run_hi is None else max(self._run_hi, candle.high)
+            if self._rth_hi is None or candle.high >= self._rth_hi:
+                self._lo_before_hi = self._run_lo
+            if self._rth_lo is None or candle.low <= self._rth_lo:
+                self._hi_before_lo = self._run_hi
+            self._rth_hi = candle.high if self._rth_hi is None else max(self._rth_hi, candle.high)
+            self._rth_lo = candle.low if self._rth_lo is None else min(self._rth_lo, candle.low)
+            self._rth_close_px = candle.close
+            return
+        # RTH 之後第一次進來 → 定案掛單價
+        if hm >= self.RTH_CLOSE and self._level is None and self._rth_close_px is not None:
+            atr = self._daily_atr()
+            if not atr or atr <= 0:
+                return
+            up = self._rth_close_px > self._rth_open_px
+            if self.fib_anchor == "hl":
+                # 推動腿:上漲日 = 最高點之前的最低點 → 最高點
+                a0 = self._lo_before_hi if up else self._hi_before_lo
+                a1 = self._rth_hi if up else self._rth_lo
+                if a0 is None or a1 is None:
+                    return
+                anchor, move = a0, a1 - a0
+            else:
+                anchor = self._rth_open_px
+                move = self._rth_close_px - self._rth_open_px
+            if move == 0 or anchor <= 0:
+                return
+            if abs(move) / atr < self.min_move_atr:
+                return
+            # 1.0.9: 百分比門檻 —— 「今天漲了 0.4% 才算大漲」
+            if self.min_move_pct > 0:
+                if abs(move) / anchor * 100.0 < self.min_move_pct:
+                    return
+            # retrace_frac 是「回吐比例」,進場 fib = 1 - retrace_frac
+            self._level = anchor + (1.0 - self.retrace_frac) * move
+            self._level_dir = Direction.BUY if move > 0 else Direction.SELL
+            self._level_move = move
+            self._level_atr = atr
+            self._level_open = anchor                 # fib 基準的原點
+
+    def evaluate(self, candle: Candle, zones=None, is_mature: bool = True):
+        self._roll(candle)
+        self._track(candle)
+        if self._fired or self._level is None or self._level_dir is None:
+            return None
+        # 限價單:價格必須真的走到掛單價才成交
+        if self._level_dir == Direction.BUY:
+            if candle.low > self._level:
+                return None
+        else:
+            if candle.high < self._level:
+                return None
+        self._fired = True
+        # 1.0.9: 觸價後走**市價**,不是在掛單價成交。
+        # 靜止限價單會假設你剛好在該價位成交(理想化);市價是偵測到觸及後
+        # 以當根收盤進場並吃滿滑價 —— 保守得多,也跟「全部改市價」的方針一致。
+        # (先前研究已證實限價的漏單風險無法在回測裡誠實建模。)
+        pct = abs(self._level_move) / self._level_open * 100.0
+        if self.risk_basis == "fib":
+            # SL/TP 掛在 fib 層級本身:price(f) = rth_open + f × move
+            # 漲勢:進場 0.8 → SL 0.75/0.70(更深回撤)、TP 0.90(反彈回去)
+            # 跌勢:move 為負,同一組 f 自動鏡像,幾何完全對稱
+            sl_px = self._level_open + self.sl_fib * self._level_move
+            tp_px = self._level_open + self.tp_fib * self._level_move
+            return self._make_at(
+                candle, self._level_dir, sl_px, tp_px,
+                reason=f"RTH {self._level_move:+.1f} ({pct:.2f}%) "
+                       f"→ 進 fib {1 - self.retrace_frac:.3f} @ {self._level:.2f} "
+                       f"| SL {self.sl_fib:.2f} TP {self.tp_fib:.2f}")
+        width = self._level_atr if self.risk_basis == "daily" else self._atr_blend()
+        if width is None or width <= 0:
+            return None
+        return self._make(candle, self._level_dir,
+                          f"RTH {self._level_move:+.1f} "
+                          f"({self._level_move / self._level_atr:+.2f} ATR) "
+                          f"→ fib {1 - self.retrace_frac:.3f} @ {self._level:.2f} "
+                          f"(market, {self.risk_basis})",
+                          width=width)
+
+
 RESEARCH_STRATEGIES = {
     "ORB": ORBreakout,
     "VWAPREV": VwapReversion,
     "IBS": IbsReversion,
     "RSI2": Rsi2Reversion,
     "GAPFADE": GapFade,
-    "INTRAMOM": IntradayMomentum,
+    "MOMENTUM": MomentumContinuation,
     "DONCHIAN": DonchianBreakout,
     "BBREV": BollingerReversion,
+    "ONCONT": OvernightContinuation,
+    "BETAFIB": BetaFibRetrace,
 }

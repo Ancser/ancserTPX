@@ -802,9 +802,14 @@ class FactorSignalStrategy:
         用途是 prop firm 的兩條線:單筆風險(maxDD)與單日獲利佔比
         (consistency rule —— 單日賺太多會推高通關/出金門檻)。
 
-        兩個上限都以 **ticks(單口)** 計:
+        兩個上限都以 **價格距離的 tick 數**計,與口數無關:
             max_risk_ticks    SL 寬度上限
             max_profit_ticks  TP 寬度上限
+        (原註解寫「單口」是錯的,造成過混淆。實作是 `reward / tick_size`,
+         純粹是價格距離;口數只影響那段距離值多少錢:
+         美元上限 = ticks × tick_size × point_value × 口數。
+         例:MNQ 2000t → 1 口 $1,000 / 2 口 $2,000 / 3 口 $3,000。
+         所以 UI 的美元滑桿在換合約或改口數時必須重算 tick 數。)
         取較嚴的那個縮放因子,同時乘在 risk 與 reward 上,所以 RR 不變 ——
         只是整組 SL/TP 等比縮小。
 

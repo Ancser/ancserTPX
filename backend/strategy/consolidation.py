@@ -69,6 +69,9 @@ class ZoneEvent:
 
 import logging
 _logger = logging.getLogger(__name__)
+# 1.0.9: 本模組的逐-zone 訊息一律 DEBUG —— 圖表 zone 偵測會掃完整段
+# 歷史(85 天約 425 個 session zone),用 INFO 會刷上千行,讓使用者
+# 誤以為程式卡住。要追 zone 細節時把 logger 調成 DEBUG。
 
 class SessionZoneDetector:
     """
@@ -128,7 +131,7 @@ class SessionZoneDetector:
 
         # Debug: log first candle and every transition
         if self._session_date is None:
-            _logger.info(
+            _logger.debug(
                 f"[SessionZone] FIRST candle: ts={candle.timestamp} "
                 f"h={candle.timestamp.hour} m={candle.timestamp.minute} "
                 f"tzinfo={candle.timestamp.tzinfo} → session_id={session_id}"
@@ -136,7 +139,7 @@ class SessionZoneDetector:
 
         if session_id != self._session_date:
             if self._session_date is not None:
-                _logger.info(
+                _logger.debug(
                     f"[SessionZone] SESSION CHANGE: {self._session_date} → {session_id} "
                     f"@ ts={candle.timestamp} (h={candle.timestamp.hour}:{candle.timestamp.minute})"
                 )
@@ -148,7 +151,7 @@ class SessionZoneDetector:
             self._val_history = []
             self._candle_count_since_recalc = 0
             if event:
-                _logger.info(f"[SessionZone] New session {session_id} | previous zone closed")
+                _logger.debug(f"[SessionZone] New session {session_id} | previous zone closed")
             # Start collecting from this candle
             self._create_zone(candle)
             return event
@@ -192,7 +195,7 @@ class SessionZoneDetector:
             if self._zone_mature and not was_mature:
                 zone.status = ZoneStatus.ACTIVE
                 zone.mature = True  # permanent flag
-                _logger.info(
+                _logger.debug(
                     f"[SessionZone] Zone mature: {zone.zone_id} | "
                     f"POC={zone.poc:.2f} VAH={zone.vah_80:.2f} VAL={zone.val_80:.2f} | "
                     f"bars={zone.num_candles}"
@@ -317,7 +320,7 @@ class SessionZoneDetector:
             timeframe="session",  # 1.0.8: UI 標籤/trade_tf 用
         )
         self._all_zones.append(self._active_zone)
-        _logger.info(f"[SessionZone] Created session zone {zone_id} @ {candle.timestamp}")
+        _logger.debug(f"[SessionZone] Created session zone {zone_id} @ {candle.timestamp}")
 
     def _recalculate_vp(self):
         """Recalculate VP from all session candles."""

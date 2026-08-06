@@ -141,7 +141,6 @@ def _normalize_factor_family(value) -> str:
         "pmo": "emapmo",
         "ema_pmo": "emapmo",
         "mrev": "momentum_reversion",
-        "momentum": "momentum_reversion",
         "kdjma": "icefishball",
         "ifb": "icefishball",
     }

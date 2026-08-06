@@ -517,6 +517,9 @@ function normalizeStrategyName(value) {
     if (v === 'sigma') return 'sigma';
     if (v === 'fade') return 'fade';   // 1.0.8: DAY ZONE 前日VA回歸
     if (v === 'factor') return 'factor';
+    // 1.0.9: 改名相容 —— 舊 preset 存的是 intramom / sessfib
+    if (v === 'momentum' || v === 'intramom' || v === 'claudefib') return 'momentum';   // 1.0.9: MOMENTUM 日內動能延續
+    if (v === 'betafib' || v === 'sessfib') return 'betafib';     // 1.0.9: SESSFIB 夜盤 Fib 回撤(觀察用)
     // 1.0.8: 移除 ml_consolidation_v2 (mlc2) 策略映射
     // 1.0.9: TREND 已移除 —— 舊 preset 的 'trend' 一律落到 factor,
     // 否則 _setChoice 找不到選項會自己補一個死選項回下拉選單。
@@ -579,7 +582,9 @@ function strategyDisplayName(value) {
     if (v === 'sigma') return 'DISTRIBUTION';
     if (v === 'pmo') return 'PMO';
     if (v === 'factor') return 'FACTOR';
-    return 'TREND';
+    if (v === 'momentum') return 'MOMENTUM';
+    if (v === 'betafib') return 'BETA FIB';
+    return 'FACTOR';   // 1.0.9: TREND 已移除,未知值顯示為預設策略
 }
 
 function strategyIdPrefix(kind) {
@@ -647,7 +652,20 @@ function updateStrategyParamVisibility(mode) {
     }
     // 1.0.9: fade 進場模式列僅 fade 顯示;唯讀 SL 模型顯示依策略/fade 子模式更新
     show('fade-entry-mode-row-' + mode, isFade);
-    show('factor-params-' + mode, isFactor);
+    // 1.0.9: INTRAMOM 沿用 FACTOR 區塊的 SL/方向/RR 控制項,所以兩者一起顯示;
+    // 但 EMAPMO 專屬的因子族/訊號模式/門檻滑桿在 INTRAMOM 下無意義。
+    const isIntramom = strategy === 'momentum';
+    // 1.0.9: SESSFIB 與 INTRAMOM 同樣沿用 FACTOR 區塊的 SL/方向/RR,
+    // 但 EMAPMO 專屬的因子族/訊號模式/VA 濾網對兩者都無意義。
+    const isSessfib = strategy === 'betafib';
+    show('factor-params-' + mode, isFactor || isIntramom || isSessfib);
+    show('momentum-params-' + mode, isIntramom);
+    show('betafib-params-' + mode, isSessfib);
+    ['factor-family-', 'factor-pmo-mode-', 'factor-va-filter-'].forEach((id) => {
+        const el = document.getElementById(id + mode);
+        const row = el && el.closest ? el.closest('.form-group') : null;
+        if (row) row.style.display = (isIntramom || isSessfib) ? 'none' : '';
+    });
     syncEmapmoThresholdRow(mode);   // 1.0.9: 門檻滑桿只在 EMAPMO 顯示
     let slText;
     if (isFade) {
@@ -1201,6 +1219,15 @@ function collectStrategyParams(mode) {
         // 1.0.9: EMAPMO 進場門檻滑桿 → early(SIG)門檻的縮放係數。
         // 1.0 = 原始 -0.100;非 EMAPMO 家族送 1.0(引擎端等同不套用)。
         factor_pmo_early_scale: _emapmoThresholdScale(mode),
+        // 1.0.9: INTRAMOM 專屬(觀察窗 / 進場時);其餘沿用 factor_* 與 rr_ratio
+        momentum_first_minutes: _int('momentum-first-' + mode, 30) || 30,
+        momentum_entry_hour: _int('momentum-hour-' + mode, 18) || 18,
+        // 1.0.9: SESSFIB 專屬。fib 級別可調 —— 0.618 是 576 變體掃描中
+        // 唯一通過 G0–G4 的進場位;0.786 太淺(94% 夜盤都會觸及)。
+        betafib_entry_fib: _float('betafib-entry-' + mode, 0.618),
+        betafib_anchor: _mlSelectValue('betafib-anchor-' + mode, 'hl'),
+        betafib_risk_basis: _mlSelectValue('betafib-basis-' + mode, 'atr_blend'),
+        betafib_min_move_pct: _float('betafib-minpct-' + mode, 0),
         // 1.0.9: 單筆風險/獲利寬度上限(ticks/口);0 → null = 不限
         max_risk_ticks: _int('max-risk-ticks-' + mode, 0) || null,
         max_profit_ticks: _int('max-profit-ticks-' + mode, 0) || null,
@@ -1338,8 +1365,25 @@ function applyStrategyParams(mode, params) {
     _setChoice('factor-pmo-mode-' + mode, _factorPmoValue(p.factor_pmo_signal_mode));
     _setChoice('factor-va-filter-' + mode, String(p.factor_session_va_filter || 'off') === 'outside' ? 'outside' : 'off');
     _setEmapmoThreshold(mode, p.factor_pmo_early_scale);
+    _set('momentum-first-' + mode, String(p.momentum_first_minutes != null ? p.momentum_first_minutes : 30));
+    _set('momentum-hour-' + mode, String(p.momentum_entry_hour != null ? p.momentum_entry_hour : 18));
+    _set('betafib-entry-' + mode, String(p.betafib_entry_fib != null ? p.betafib_entry_fib : 0.618));
+    _set('betafib-anchor-' + mode, String(p.betafib_anchor || 'hl'));
+    _set('betafib-basis-' + mode, String(p.betafib_risk_basis || 'atr_blend'));
+    _set('betafib-minpct-' + mode, String(p.betafib_min_move_pct != null ? p.betafib_min_move_pct : 0));
     _set('max-risk-ticks-' + mode, String(p.max_risk_ticks != null ? p.max_risk_ticks : 0));
-    _set('max-profit-ticks-' + mode, String(p.max_profit_ticks != null ? p.max_profit_ticks : 0));
+    // 1.0.9: preset 存的是 ticks,滑桿顯示美元 —— 反算回去並吸附到 500 的級距
+    (() => {
+        const ticks = parseInt(p.max_profit_ticks != null ? p.max_profit_ticks : 0, 10) || 0;
+        const cEl = document.getElementById('contract-' + mode);
+        const sEl = document.getElementById('size-' + mode);
+        const tv = tickDollarValue(String((cEl && cEl.value) || ''),
+                                   (sEl ? parseInt(sEl.value, 10) : 1) || 1);
+        const usd = ticks > 0 ? Math.round(ticks * tv / 500) * 500 : 0;
+        _set('tp-cap-usd-' + mode, String(Math.max(0, Math.min(2000, usd))));
+        _set('max-profit-ticks-' + mode, String(ticks));
+        syncTpCapUsd(mode);
+    })();
     _set('risk-cap-mode-' + mode, String(p.risk_cap_mode || 'block'));
     updateRiskCapHint(mode);
     _setChoice('factor-sl-rule-' + mode, _factorRuleValue(p.factor_sl_rule, 'atr_blend'));
@@ -4130,6 +4174,35 @@ function _drawSessionDevelopingVa(ctx, W, H, priceToY, tX, vFrom, vTo) {
 }
 
 // Render the selected-timeframe zones onto the VP overlay canvas.
+// 1.0.9: SESSFIB —— 每晚一條 fib 掛單線,橫跨該夜盤時段。
+// 琥珀色虛線 + 左端標籤,與 VAH/VAL(白/藍)和成交決策疊圖區隔。
+function _drawBetafibLevels(ctx, H, priceToY, tX) {
+    ctx.save();
+    _betafibLevels.forEach((lv) => {
+        const y = priceToY(Number(lv.level));
+        if (!(y >= 0 && y <= H)) return;
+        const x0 = tX(lv.t_from);
+        const x1 = tX(lv.t_to);
+        if (x0 === null || x1 === null || x1 <= x0) return;
+        ctx.strokeStyle = 'rgba(251, 191, 36, 0.85)';
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x0, y);
+        ctx.lineTo(x1, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = 'rgba(251, 191, 36, 0.95)';
+        ctx.font = '10px ui-monospace, monospace';
+        ctx.textBaseline = 'bottom';
+        const tag = 'fib ' + Number(lv.entry_fib).toFixed(3)
+            + ' ' + (lv.direction === 'long' ? '↑' : '↓')
+            + ' ' + Number(lv.move_pct).toFixed(2) + '%';
+        ctx.fillText(tag, x0 + 3, y - 2);
+    });
+    ctx.restore();
+}
+
 function renderTfZones() {
     const canvas = createVPOverlay();
     const container = document.getElementById('chart-container');
@@ -4155,6 +4228,12 @@ function renderTfZones() {
     // Always show the current session developing VA80 boundary in white.
     if (_tfAllZones && _tfAllZones.length > 0) {
         _drawSessionDevelopingVa(ctx, W, H, priceToY, tX, vFrom, vTo);
+    }
+
+    // 1.0.9: SESSFIB 掛單線。畫在早退(有成交決策疊圖時)之前,
+    // 否則一旦跑過回測就永遠看不到掛單位。
+    if (_betafibLevels.length) {
+        _drawBetafibLevels(ctx, H, priceToY, tX);
     }
 
     // Once trade-decision overlays exist, suppress the generic bucket reference
@@ -5321,7 +5400,7 @@ function renderSweepTable(sortKey) {
     const money = (v, pos) => '<span style="color:var(--' + (v >= 0 ? (pos || 'green') : 'red') + ');">' +
         (v >= 0 ? '+' : '') + Math.round(v) + '</span>';
     // 1.0.9: params 拆成 model / risk 兩欄(risk = 封鎖型設定;sweep 不掃 risk 變體)
-    const RISK_KEYS = ['tr_daily_loss_stop', 'tr_daily_win_stop', 'tr_prev_rv_gate',
+    const RISK_KEYS = ['tr_daily_loss_stop', 'tr_daily_win_stop', 'tr_daily_profit_stop', 'tr_prev_rv_gate',
         'tr_allowed_sessions', 'tr_one_trade_per_session', 'factor_max_trades_per_day',
         'pmo_max_trades_per_day'];
     const fmtParams = (p, riskSide) => Object.keys(p || {})
@@ -5539,6 +5618,13 @@ async function runBacktest() {
         renderMetrics(backtestData.metrics, backtestData.trades);
         renderTrades(backtestData.trades);
         _saveBacktestCache(backtestData);   // persist for next app restart
+        try {
+            setPerfSource({
+                preset: backtestData.preset_name,
+                strategy: normalizeStrategyName(_mlSelectValue('strategy-bt', 'factor')),
+                saved_at: new Date().toISOString(), stale: false,
+            });
+        } catch (e) {}
         if (!document.getElementById('btab-pnl').classList.contains('hidden')) renderPnlCurve();
         await refreshTradeHistoryForCurrentAccount(true);
         succeeded = true;
@@ -5597,6 +5683,9 @@ async function runBacktest() {
 let _overlaySyncRAF = null;
 let _overlaySyncData = null;
 let _indicatorSignalRows = [];
+// 1.0.9: SESSFIB 掛單線。點狀 marker 走 _indicatorSignalRows,
+// 水平線走這裡 —— 兩者的繪製路徑完全不同。
+let _betafibLevels = [];
 let _indicatorSignalCanvas = null;
 let _indicatorSignalsLoading = false;
 let _indicatorSignalsQueued = false;
@@ -5613,6 +5702,9 @@ const INDICATOR_SIGNAL_TYPES = {
     // 1.0.9: MREV 泡泡縮小到與 KDJMA 圓點同尺寸 (16 → 6)
     momentum_reversion: { kind: 'bubble', radius: 6 },
     icefishball: { kind: 'dot', radius: 6 },
+    // 1.0.9: INTRAMOM —— 白色上下箭頭,與三個因子的顏色明確區隔。
+    // 進場時刻絕大多數是 22:30 UTC(交易日開始後 30 分鐘)。
+    intramom: { kind: 'arrow', radius: 7, rgb: '255, 255, 255' },
 };
 const INDICATOR_LONG_RGB = '56, 189, 248';
 const INDICATOR_SHORT_RGB = '168, 85, 247';
@@ -5726,6 +5818,36 @@ function _drawKdjmaDot(ctx, x, y, radius, rgb) {
 // 1.0.9: EMAPMO signal triangle. dir='long' → up triangle sitting just below
 // the bar low; dir='short' → down triangle just above the bar high. yRef is the
 // screen-Y of the bar low (long) or high (short).
+function _drawIndicatorArrow(ctx, cx, yRef, dir, rgb) {
+    // 1.0.9: INTRAMOM 的白色箭頭 —— 箭頭 + 箭桿,與 EMAPMO 的純三角形區隔。
+    const half = 6;      // 箭頭底邊半寬
+    const head = 9;      // 箭頭高
+    const shaft = 7;     // 箭桿長
+    const gap = 4;       // 與 K 棒的間距
+    const up = dir !== 'short';
+    const tipY = up ? (yRef + gap) : (yRef - gap);
+    const s = up ? 1 : -1;               // 往下為正
+    ctx.save();
+    ctx.lineWidth = 1.6;
+    ctx.strokeStyle = 'rgba(' + rgb + ', 1)';
+    ctx.fillStyle = 'rgba(' + rgb + ', 0.92)';
+    // 箭桿
+    ctx.beginPath();
+    ctx.moveTo(cx, tipY + s * head);
+    ctx.lineTo(cx, tipY + s * (head + shaft));
+    ctx.stroke();
+    // 箭頭(頂點朝向 K 棒)
+    ctx.beginPath();
+    ctx.moveTo(cx, tipY);
+    ctx.lineTo(cx - half, tipY + s * head);
+    ctx.lineTo(cx + half, tipY + s * head);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+}
+
+
 function _drawIndicatorTriangle(ctx, cx, yRef, dir, rgb) {
     // 1.0.9: 縮小到與 KDJMA 圓點 (r=6, 直徑12px) 相同視覺大小
     const half = 6;      // half base width (base 12px)
@@ -5822,7 +5944,8 @@ function drawIndicatorSignalOverlay() {
         if (x === null || x < -80 || x > W + 80) continue;
 
         const dir = row.direction === 'short' ? 'short' : 'long';
-        const rgb = dir === 'short' ? INDICATOR_SHORT_RGB : INDICATOR_LONG_RGB;
+        // spec.rgb 讓某些訊號用固定色(INTRAMOM 白)而非多空雙色
+        const rgb = spec.rgb || (dir === 'short' ? INDICATOR_SHORT_RGB : INDICATOR_LONG_RGB);
 
         if (spec.kind === 'triangle') {
             // 1.0.9: EMAPMO — anchor to the bar's high (short) / low (long)
@@ -5835,6 +5958,22 @@ function drawIndicatorSignalOverlay() {
             try { yRef = candleSeries.priceToCoordinate(Number(refPrice)); } catch (_) {}
             if (yRef === null || yRef === undefined || yRef < -80 || yRef > H + 80) continue;
             _drawIndicatorTriangle(ctx, x, yRef, dir, rgb);
+            continue;
+        }
+
+        if (spec.kind === 'arrow') {
+            // 1.0.9: INTRAMOM —— 帶箭桿的空心箭頭,和 EMAPMO 的實心三角形
+            // 在形狀上就分得開(顏色也不同)。long 在低點下方朝上,short 在
+            // 高點上方朝下。
+            const candle = _findCandleAtChartTime(t);
+            const refPrice = candle
+                ? (dir === 'short' ? candle.high : candle.low)
+                : _indicatorSignalPrice(row);
+            if (refPrice === null || refPrice === undefined) continue;
+            let yRef = null;
+            try { yRef = candleSeries.priceToCoordinate(Number(refPrice)); } catch (_) {}
+            if (yRef === null || yRef === undefined || yRef < -80 || yRef > H + 80) continue;
+            _drawIndicatorArrow(ctx, x, yRef, dir, rgb);
             continue;
         }
 
@@ -5866,6 +6005,7 @@ async function refreshIndicatorSignalMarkers(logSummary) {
         const data = await resp.json();
         if (data.skipped) {
             _indicatorSignalRows = [];
+            _betafibLevels = [];
             applyIndicatorSignalCandleColors();
             _refreshAllMarkers();
             clearIndicatorSignalOverlay();
@@ -5884,8 +6024,10 @@ async function refreshIndicatorSignalMarkers(logSummary) {
             seen.add(key);
             return true;
         });
+        _betafibLevels = Array.isArray(data.betafib_levels) ? data.betafib_levels : [];
         applyIndicatorSignalCandleColors();
         _refreshAllMarkers();
+        if (typeof renderTfZones === 'function') renderTfZones();
 
         if (logSummary) {
             const counts = data.counts || {};
@@ -6431,6 +6573,51 @@ function _weeklyFromDaily(daily) {
     return { weekly_count: n, weekly_std: std, weekly_cv: cv, weekly_consistency: positive / n };
 }
 
+// 1.0.9: 把訊息安全塞進 title="" —— 提示字裡有 $ 與括號,不轉義會破壞屬性。
+function _attr(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// 1.0.9: 單筆獲利上限 —— 滑桿用**美元**,引擎吃的是價格距離 ticks。
+// 換算需要合約的每 tick 值 × 口數(tickDollarValue 已含口數),所以換合約或
+// 改口數都要重算 —— 否則 $2,000 的上限在 MES 上會變成完全不同的價格距離。
+//
+// 為什麼是「單筆」而不是「每日」:實測 BEST/EMAPMO 一個交易日只開一單,
+// 所以擋新單的日上限(PDPT)完全沒作用,$2,572 是單筆賺出來的。
+// 真正能壓住 Topstep 一致性天花板的只有單筆 TP 上限。
+function syncTpCapUsd(mode) {
+    const sl = document.getElementById('tp-cap-usd-' + mode);
+    const out = document.getElementById('tp-cap-usd-' + mode + '-val');
+    const hid = document.getElementById('max-profit-ticks-' + mode);
+    const hint = document.getElementById('tp-cap-hint-' + mode);
+    if (!sl || !hid) return;
+    const usd = parseInt(sl.value, 10) || 0;
+    const cEl = document.getElementById('contract-' + mode);
+    const sEl = document.getElementById('size-' + mode);
+    const cid = String((cEl && cEl.value) || '');
+    const size = (sEl ? parseInt(sEl.value, 10) : 1) || 1;
+    const tv = tickDollarValue(cid, size);          // $ / tick(已乘口數)
+    const ticks = (usd > 0 && tv > 0) ? Math.max(1, Math.round(usd / tv)) : 0;
+    hid.value = String(ticks);
+    if (out) {
+        out.textContent = usd > 0 ? ('$' + usd.toLocaleString()) : 'OFF';
+        out.classList.toggle('off', usd === 0);
+    }
+    if (hint) {
+        hint.textContent = usd > 0
+            ? ('(價距 ' + ticks + 't · ' + size + ' 口 → $' + tv.toFixed(2) + '/tick)')
+            : '(單筆獲利上限 · 0=不限)';
+    }
+    // 上限一旦啟用就必須是 clamp —— block 會把整張單丟掉,不是我們要的
+    if (usd > 0) _set('risk-cap-mode-' + mode, 'clamp');
+    if (typeof updateRiskCapHint === 'function') updateRiskCapHint(mode);
+}
+
+// 換合約/改口數後,同一個美元上限對應的 tick 數會變 —— 重算
+function refreshTpCapForContract(mode) { syncTpCapUsd(mode); }
+
 function renderMetrics(m, backtestTrades) {
     const panel = document.getElementById('metrics-panel');
     // Only show the metrics panel when the BACKTEST tab is active.
@@ -6579,6 +6766,29 @@ function renderMetrics(m, backtestTrades) {
     const liveDailyVals = liveStats && liveStats.daily_pnl ? Object.values(liveStats.daily_pnl) : [];
     const liveWorst = liveDailyVals.length ? Math.min(...liveDailyVals) : null;
 
+    // 1.0.9: BEST DAY + Topstep XFA 一致性檢查。
+    // XFA 請款門檻 = 最大單日淨利 ÷ 總淨利 <= 40%。關鍵在於**最大單日一旦創新高
+    // 就鎖定到請款為止** —— 所以這張卡要一直看得到,不能只在超標時出現。
+    // activeDaily 已經用 topstepTradeDateKey(17:00 CT 換日)分組,與 Topstep 一致。
+    const bestDay = _dailyVals.length ? Math.max(..._dailyVals) : null;
+    const netTotal = _dailyVals.reduce((a, b) => a + b, 0);
+    const consistPct = (bestDay != null && bestDay > 0 && netTotal > 0)
+        ? (bestDay / netTotal) : null;
+    const consistOver = consistPct != null && consistPct > 0.40;
+    // 超標時要再賺多少才合格:bestDay / 0.40 - 目前總淨利
+    const consistNeed = consistOver ? (bestDay / 0.40 - netTotal) : 0;
+    const consistTip = consistPct == null
+        ? 'Topstep XFA consistency: largest single trade-day net / total net must be <= 40%.'
+        : (consistOver
+            ? ('Topstep XFA consistency ' + (consistPct * 100).toFixed(0) + '% — OVER the 40% limit. '
+               + 'Payout is blocked until total net profit reaches $'
+               + (bestDay / 0.40).toFixed(0) + ' (earn $' + consistNeed.toFixed(0) + ' more). '
+               + 'The best day is locked in until you take a payout — a NEW record day raises the bar again. '
+               + 'Use the PDPT slider in RISK MANAGEMENT to cap daily gains.')
+            : ('Topstep XFA consistency ' + (consistPct * 100).toFixed(0) + '% — within the 40% limit. '
+               + 'Any single trade-day above $' + (netTotal * 0.40).toFixed(0)
+               + ' would push you over.'));
+
     // 1.0.8: MONTHLY GAIN AVG = 30.44 天歸一化月率(run-rate,非日曆月平均)。
     // 例:2 個月賺 $4k → $2k/月;1 週 $400 → ~$1.7k/月。部分月不失真。
     const _monthlyRate = (dailyMap, totalPnl) => {
@@ -6602,6 +6812,18 @@ function renderMetrics(m, backtestTrades) {
         { label: 'MAX DD',
           value: '$' + max_dd.toFixed(0) + paren(liveStats ? '$' + liveStats.max_dd.toFixed(0) : ''),
           cls: max_dd > 0 ? 'neg' : '' },
+        // 1.0.9: BEST DAY —— Topstep XFA 一致性的分子。超過 40% 時掛黃色警告三角。
+        { label: 'BEST DAY'
+                 + (consistOver
+                    ? ' <span class="tpx-warn" title="' + _attr(consistTip) + '">&#9888;</span>'
+                    : ''),
+          value: (bestDay != null ? '$' + bestDay.toFixed(0) : '--')
+                 + (consistPct != null
+                    ? ' <span class="metric-real' + (consistOver ? ' tpx-warn' : '')
+                      + '" title="' + _attr(consistTip) + '">('
+                      + (consistPct * 100).toFixed(0) + '% consist)</span>'
+                    : ''),
+          cls: consistOver ? 'neg' : (bestDay > 0 ? 'pos' : '') },
         { label: 'TOTAL GAIN',
           value: '$' + total_gain.toFixed(0) + paren(liveStats ? '$' + liveStats.total_gain.toFixed(0) : ''),
           cls: total_gain > 0 ? 'pos' : '' },
@@ -7502,6 +7724,188 @@ function _robMcPass(mc) {
     return !!mc && mc.pLoss <= 0.05 && mc.ddP95 < 2000 && mc.pfP5 > 1.0;
 }
 
+let _robLegacyMcCache = null;
+let _robTopstepCache = null;
+
+function _robTradesCacheKey(trades) {
+    return (trades || []).map(tr => [
+        tr.trade_id || '', tr.exit_time || tr.entry_time || '',
+        Number(tr.pnl || 0).toFixed(4), Number(tr.size || 1).toFixed(2), tr.symbol || '',
+    ].join(':')).join('|');
+}
+
+function _robCachedMonteCarlo(trades, pnls, force) {
+    const cacheKey = _robTradesCacheKey(trades);
+    if (!force && _robLegacyMcCache && _robLegacyMcCache.cacheKey === cacheKey) {
+        return _robLegacyMcCache.value;
+    }
+    const value = _robMonteCarlo(pnls, 1000);
+    _robLegacyMcCache = { cacheKey: cacheKey, value: value };
+    return value;
+}
+
+function _robPct(value, digits) {
+    if (value == null) return '—';
+    const n = Number(value);
+    return Number.isFinite(n) ? (n * 100).toFixed(digits == null ? 1 : digits) + '%' : '—';
+}
+
+function _robUsd(value) {
+    if (value == null) return '—';
+    const n = Number(value);
+    return Number.isFinite(n)
+        ? '$' + Math.round(n).toLocaleString('en-US')
+        : '—';
+}
+
+function _robTopstepOutcomeText(result, contracts, limit) {
+    if (!result || !Array.isArray(result.observed)) return contracts + ' MNQ —';
+    const row = result.observed.find(r => r.contracts === contracts && r.consistencyLimit === limit);
+    if (!row) return contracts + ' MNQ —';
+    const label = row.status === 'pass' ? 'met' : (row.status === 'fail' ? 'MLL fail' : 'not yet');
+    return contracts + ' MNQ ' + label + ' d' + row.days
+        + ' · equity ' + _robUsd(row.equity) + ' / required ' + _robUsd(row.target);
+}
+
+function _robTopstepRow(result, contracts, limit) {
+    return result && Array.isArray(result.rows)
+        ? result.rows.find(r => r.contracts === contracts && r.consistencyLimit === limit)
+        : null;
+}
+
+function _robTopstepAnalysis(trades, slipPerContract, force) {
+    const api = window.TPXTopstepEval;
+    if (!api || typeof api.runPairedMonteCarlo !== 'function') {
+        return { ok: false, error: 'Topstep simulator did not load.' };
+    }
+    const slipKey = Number(slipPerContract || 0).toFixed(6);
+    const tradesKey = _robTradesCacheKey(trades);
+    if (!force && _robTopstepCache
+        && _robTopstepCache.tradesKey === tradesKey
+        && _robTopstepCache.slipKey === slipKey) {
+        return _robTopstepCache.value;
+    }
+
+    const common = {
+        iterations: 10000,
+        horizonDays: 60,
+        maxLossLimit: 2000,
+        sizes: [1, 2],
+        slippagePerContract: Number(slipPerContract) || 0,
+    };
+    const source = api.buildActiveDays(trades);
+    common.source = source;
+    // These are deliberately separate programs. Trading Combine uses the
+    // official 50% consistency target and $3k objective. After passing, the
+    // optional XFA Consistency payout path uses 40%, at least three active
+    // days, and enough balance for the $125 minimum payout (50% of $250).
+    const combine = api.runPairedMonteCarlo(trades, Object.assign({}, common, {
+        baseTarget: 3000,
+        minimumDays: 2,
+        consistencyLimits: [0.5],
+    }));
+    const xfa = api.runPairedMonteCarlo(trades, Object.assign({}, common, {
+        baseTarget: 250,
+        minimumDays: 3,
+        consistencyLimits: [0.4],
+    }));
+    const value = {
+        ok: !!(combine.ok && xfa.ok),
+        error: combine.error || xfa.error || null,
+        combine: combine,
+        xfa: xfa,
+        slipPerContract: Number(slipPerContract) || 0,
+    };
+    _robTopstepCache = { tradesKey: tradesKey, slipKey: slipKey, value: value };
+    return value;
+}
+
+function _robTopstepHtml(analysis, slipTicks) {
+    if (!analysis || !analysis.ok) {
+        return '<div class="institution-card institution-wide"><h3>TOPSTEP 50K</h3>'
+            + '<div class="institution-status">' + ((analysis && analysis.error) || 'No result.') + '</div></div>';
+    }
+
+    const combine = analysis.combine;
+    const xfa = analysis.xfa;
+    const c1 = _robTopstepRow(combine, 1, 0.5);
+    const c2 = _robTopstepRow(combine, 2, 0.5);
+    const x1 = _robTopstepRow(xfa, 1, 0.4);
+    const x2 = _robTopstepRow(xfa, 2, 0.4);
+    const winner = combine.recommendation ? combine.recommendation.contracts : 1;
+    const xfaWinner = xfa.recommendation ? xfa.recommendation.contracts : 1;
+    const winRow = winner === 1 ? c1 : c2;
+    const loseRow = winner === 1 ? c2 : c1;
+    const passEdge = winRow && loseRow ? Math.abs(winRow.passRate - loseRow.passRate) * 100 : 0;
+    const faster = c1 && c2 && c1.medianPassDays != null && c2.medianPassDays != null
+        ? Math.abs(c1.medianPassDays - c2.medianPassDays) : null;
+    const fasterSize = c1 && c2 && c1.medianPassDays <= c2.medianPassDays ? 1 : 2;
+    const xfaWinRow = xfaWinner === 1 ? x1 : x2;
+    const xfaLoseRow = xfaWinner === 1 ? x2 : x1;
+    const xfaEdge = xfaWinRow && xfaLoseRow
+        ? Math.abs(xfaWinRow.passRate - xfaLoseRow.passRate) * 100 : 0;
+    const daysText = row => row && row.medianPassDays != null && row.p90PassDays != null
+        ? row.medianPassDays + ' / ' + row.p90PassDays : '—';
+
+    const combineRow = row => {
+        if (!row) return '';
+        return '<tr class="' + (row.contracts === winner ? 'rob-size-winner' : '') + '">'
+            + '<td>' + row.contracts + ' MNQ</td>'
+            + '<td class="institution-pos">' + _robPct(row.passRate, 2) + '</td>'
+            + '<td class="' + (row.failRate > 0.02 ? 'institution-neg' : '') + '">' + _robPct(row.failRate, 2) + '</td>'
+            + '<td>' + _robPct(row.openRate, 2) + '</td>'
+            + '<td>' + daysText(row) + '</td>'
+            + '<td>' + _robPct(row.targetRaisedAmongPassRate, 1) + '</td>'
+            + '<td>' + _robUsd(row.medianPassTarget) + '</td>'
+            + '</tr>';
+    };
+    const xfaRow = row => {
+        if (!row) return '';
+        return '<tr class="' + (row.contracts === xfaWinner ? 'rob-size-winner' : '') + '">'
+            + '<td>' + row.contracts + ' MNQ</td>'
+            + '<td class="institution-pos">' + _robPct(row.passRate, 2) + '</td>'
+            + '<td class="' + (row.failRate > 0.02 ? 'institution-neg' : '') + '">' + _robPct(row.failRate, 2) + '</td>'
+            + '<td>' + _robPct(row.openRate, 2) + '</td>'
+            + '<td>' + daysText(row) + '</td>'
+            + '<td>' + _robUsd(row.medianPassTarget) + '</td>'
+            + '</tr>';
+    };
+
+    const source = combine.source || {};
+    const slipLabel = Number(slipTicks || 0) > 0
+        ? Math.round(slipTicks) + 't (' + _robUsd(analysis.slipPerContract) + '/contract) entry-slip stress'
+        : 'no added slippage';
+    return '<div class="institution-card institution-wide rob-topstep-card">'
+        + '<h3>TOPSTEP 50K · PAIRED EVALUATION MONTE CARLO · 10,000×</h3>'
+        + '<div class="rob-topstep-verdict"><strong>COMBINE · ' + winner + ' MNQ = HIGHER PASS ODDS</strong>'
+        + '<span>within 60 active days · +' + passEdge.toFixed(2) + ' percentage points vs ' + (winner === 1 ? 2 : 1) + ' MNQ'
+        + (faster != null && faster > 0 ? ' · ' + fasterSize + ' MNQ is ' + faster + ' active day(s) faster at median' : '')
+        + '</span></div>'
+        + '<div class="rob-topstep-rules">'
+        + '<section class="rob-topstep-rule"><h4>TRADING COMBINE · 50% <span>pass evaluation</span></h4>'
+        + '<table class="institution-table"><thead><tr><th>SIZE</th><th>PASS</th><th>MLL FAIL</th><th>OPEN@60</th><th>DAYS P50/P90</th><th>TARGET ↑</th><th>REQ P50</th></tr></thead><tbody>'
+        + combineRow(c1) + combineRow(c2) + '</tbody></table>'
+        + '<div class="rob-topstep-observed">Observed sequence · '
+        + _robTopstepOutcomeText(combine, 1, 0.5) + '<br>'
+        + _robTopstepOutcomeText(combine, 2, 0.5) + '</div>'
+        + '<div class="rob-note">$2,500 best day ⇒ $5,000 evaluation target (best day ÷ 50%). Minimum 2 active days.</div>'
+        + '</section>'
+        + '<section class="rob-topstep-rule"><h4>XFA CONSISTENCY · 40% <span>after pass · first payout eligibility</span></h4>'
+        + '<div class="rob-topstep-program-verdict"><strong>' + xfaWinner + ' MNQ</strong> = higher first-payout eligibility within 60 active days · +'
+        + xfaEdge.toFixed(2) + ' percentage points</div>'
+        + '<table class="institution-table"><thead><tr><th>SIZE</th><th>ELIGIBLE</th><th>MLL FAIL</th><th>OPEN@60</th><th>DAYS P50/P90</th><th>MIN PAYOUT BAL P50</th></tr></thead><tbody>'
+        + xfaRow(x1) + xfaRow(x2) + '</tbody></table>'
+        + '<div class="rob-topstep-observed">Observed sequence · '
+        + _robTopstepOutcomeText(xfa, 1, 0.4) + '<br>'
+        + _robTopstepOutcomeText(xfa, 2, 0.4) + '</div>'
+        + '<div class="rob-note">$2,500 best day ⇒ $6,250 net balance needed (best day ÷ 40%). Minimum 3 active days. The starting $250 here is not a profit target: $125 minimum request ÷ 50% payoutable balance = $250. This does not change the Combine target.</div>'
+        + '</section></div>'
+        + '<div class="rob-note">' + source.tradeCount + ' settled MNQ trades · ' + source.days.length
+        + ' Topstep active days · 60-active-day horizon · same sampled days for both sizes · ' + slipLabel
+        + '. MLL is replayed from closed-trade P&amp;L; intratrade unrealized drawdown is unavailable, so probabilities are optimistic.</div>'
+        + '</div>';
+}
+
 function _robWalkForward(trades) {
     const rows = trades.filter(tr => tr.entry_time);
     if (rows.length < 6) return null;
@@ -7601,8 +8005,13 @@ function renderResearchRobustness(force) {
         + ' · PnL $' + Math.round(base.pnl)
         + ' · maxDD $' + Math.round(base.maxDd);
 
+    const slip = _robMeasureSlip();
+    const topstepSlipPerContract = Math.max(0, Number(slip.usedTicks) || 0) * tickVal;
+    const topstep = _robTopstepAnalysis(trades, topstepSlipPerContract, !!force);
+    const topstepHtml = _robTopstepHtml(topstep, slip.usedTicks);
+
     // ── Monte Carlo ──────────────────────────────────────────
-    const mc = _robMonteCarlo(pnls, 1000);
+    const mc = _robCachedMonteCarlo(trades, pnls, !!force);
     let mcHtml;
     if (!mc) {
         mcHtml = '<div class="institution-status">' + t('Not enough trades (need ≥10).') + '</div>';
@@ -7641,7 +8050,6 @@ function renderResearchRobustness(force) {
     }
 
     // ── Slippage injection ───────────────────────────────────
-    const slip = _robMeasureSlip();
     const sizes = trades.map(tr => Number(tr.size) || 1);
     const used = Math.max(1, Math.round(slip.usedTicks));
     const levels = [1, 2, 4, 8];
@@ -7675,6 +8083,7 @@ function renderResearchRobustness(force) {
     const usedStats = _robSeriesStats(pnls.map((p, i) => p - used * tickVal * sizes[i]));
     content.innerHTML =
         '<div class="institution-grid">'
+        + topstepHtml
         + '<div class="institution-card"><h3>' + t('MONTE CARLO') + ' · 1000×'
         + (mc ? ' ' + _robBadge(_robMcPass(mc), 'PASS', 'FAIL') : '') + '</h3>' + mcHtml + '</div>'
         + '<div class="institution-card"><h3>' + t('WALK-FORWARD') + ' · 3 ' + t('segments')
@@ -7849,8 +8258,10 @@ function _restoreBacktestCache() {
     try { renderMetrics(d.metrics, d.trades || []); } catch (e) {}
     try { renderTrades(d.trades || []); } catch (e) {}
     try {
+        setPerfSource({ preset: d.preset_name, saved_at: d.saved_at, stale: true });
         log('Restored last backtest (' + (d.metrics.total_trades || (d.trades || []).length) +
-            ' trades) from cache · ' + (d.saved_at ? d.saved_at.slice(0, 16).replace('T', ' ') : ''), 'info');
+            ' trades) from cache · ' + (d.preset_name || '?') + ' · ' +
+            (d.saved_at ? d.saved_at.slice(0, 16).replace('T', ' ') : ''), 'info');
     } catch (e) {}
 }
 // Script tag is at end of <body>, so the DOM is already parsed here.
@@ -8184,7 +8595,7 @@ const I18N_ZH = {
     'ORDER COMPARISON': '訂單比對', 'Selected Preset vs Live Execution': '選定預設組 vs 實盤執行',
     'Historical live rows may not include preset names.': '歷史實盤列可能沒有預設組名稱。',
     'RESEARCH': '研究',
-    'Robustness — Monte Carlo · Walk-Forward · Slippage': '穩健性 — 蒙地卡羅 · 走查 · 滑價',
+    'Robustness — Topstep · Monte Carlo · Walk-Forward · Slippage': '穩健性 — Topstep · 蒙地卡羅 · 走查 · 滑價',
     'Refresh': '刷新',
     'Run a backtest first — analysis uses the latest backtest trades.': '先跑回測 — 分析使用最近一次回測交易。',
     'trades': '筆交易',
@@ -8322,7 +8733,7 @@ function syncEmapmoThresholdRow(mode) {
     // 注意:show() 是 buildParams 內的區域 helper,全域函式取不到,直接設 display。
     const row = document.getElementById('emapmo-th-row-' + mode);
     if (!row) return;
-    const isFactor = String(_mlSelectValue('strategy-' + mode, 'trend')) === 'factor';
+    const isFactor = String(_mlSelectValue('strategy-' + mode, 'factor')) === 'factor';
     row.style.display = (isFactor && _emapmoFamily(mode) === 'emapmo') ? '' : 'none';
     onEmapmoThresholdChange(mode);
 }
@@ -8354,4 +8765,25 @@ function updateRiskCapHint(mode) {
     if (risk) parts.push('風險 ≤ $' + Math.round(risk * tv));
     if (prof) parts.push('獲利 ≤ $' + Math.round(prof * tv));
     hint.textContent = '(' + parts.join(' · ') + ' @ ' + size + ' 口)';
+}
+
+
+// 1.0.9: 標示 PERFORMANCE 面板顯示的是哪一次回測的結果。
+// 啟動時會從 localStorage 還原上次結果,不標示的話使用者會誤以為那是
+// 當前 preset / 策略跑出來的(實際可能是好幾天前、別的策略的)。
+function setPerfSource(info) {
+    const el = document.getElementById('perf-source');
+    if (!el) return;
+    if (!info) { el.textContent = ''; el.classList.remove('stale'); return; }
+    const who = info.preset || info.strategy || '?';
+    const when = info.saved_at ? info.saved_at.slice(0, 16).replace('T', ' ') : '';
+    if (info.stale) {
+        el.textContent = '⚠ 快取 · ' + who + (when ? ' · ' + when : '');
+        el.classList.add('stale');
+        el.title = '這是上次回測的結果,不是當前設定跑出來的。按 EXECUTE BACKTEST 重跑。';
+    } else {
+        el.textContent = who + (when ? ' · ' + when : '');
+        el.classList.remove('stale');
+        el.title = '';
+    }
 }

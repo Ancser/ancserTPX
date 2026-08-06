@@ -22,7 +22,7 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.9g&nowrap=1&englishlog=1&i18n=1&research=1&statuscompact=1">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.9l&intraarrow=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=1&statuscompact=1">
     <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.9-glass55">
 </head>
 <body>
@@ -120,14 +120,14 @@
             <div class="form-row">
                 <div class="form-group fx2">
                     <label>CONTRACT</label>
-                    <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt')">
+                    <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt'); syncTpCapUsd('bt')">
                         <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
                         <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                     </select>
                 </div>
                 <div class="form-group fx1">
                     <label>SIZE</label>
-                    <select id="size-bt" onchange="updateTrailBounds('bt')"></select>
+                    <select id="size-bt" onchange="updateTrailBounds('bt'); syncTpCapUsd('bt')"></select>
                 </div>
             </div>
             <div class="form-row">
@@ -138,6 +138,8 @@
                         <option value="sigma">DISTRIBUTION Rolling Fade</option>
                         <option value="pmo">PMO EMAPMO</option>
                         <option value="factor">FACTOR (EMAPMO / KDJMA / MREV)</option>
+                        <option value="momentum">MOMENTUM 日內動能延續</option>
+                        <option value="betafib">BETA FIB 夜盤 Fib 回撤 (觀察用)</option>
                         <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
                 </div>
@@ -456,6 +458,76 @@
                         <input type="hidden" id="trail-sl-ticks-bt" value="20">
                     </div>
                 </div>
+                <!-- 1.0.9: INTRAMOM(Market Intraday Momentum)
+                     開盤 N 分鐘的報酬方向 → 預測當日稍晚同向延續。
+                     960 格密網格 × 雙商品:交集 22 組、鄰域 6/7 在門檻之上(高原),
+                     且是唯一在 MNQ 與 MES 上蒙地卡羅+走查全通過的策略。
+                     SL / 方向 / RR 沿用上方 FACTOR 區塊的同名控制項。
+                     見 docs/1.0.9_RESEARCH_FINDINGS.md -->
+                <div id="momentum-params-bt" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>觀察窗 <span class="lbl-hint">(開盤後 N 分鐘)</span></label>
+                            <select id="momentum-first-bt">
+                                <option value="15">15 分鐘</option>
+                                <option value="30" selected>30 分鐘 (交集 22/22)</option>
+                                <option value="45">45 分鐘</option>
+                                <option value="60">60 分鐘</option>
+                                <option value="90">90 分鐘</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>進場時 <span class="lbl-hint">(UTC · 17~20 差異極小)</span></label>
+                            <select id="momentum-hour-bt">
+                                <option value="17">17:00 UTC</option>
+                                <option value="18" selected>18:00 UTC</option>
+                                <option value="19">19:00 UTC</option>
+                                <option value="20">20:00 UTC</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div id="betafib-params-bt" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>進場 Fib <span class="lbl-hint">(1.0 = 推動腿終點)</span></label>
+                            <select id="betafib-entry-bt">
+                                <option value="0.854">0.854 (極淺)</option>
+                                <option value="0.786">0.786 (94% 夜盤會觸及)</option>
+                                <option value="0.764">0.764</option>
+                                <option value="0.618" selected>0.618 (唯一過 G0–G4)</option>
+                                <option value="0.5">0.500</option>
+                                <option value="0.382">0.382 (深)</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>Fib 錨點 <span class="lbl-hint">(推動腿怎麼量)</span></label>
+                            <select id="betafib-anchor-bt">
+                                <option value="hl" selected>擺動低 → 高</option>
+                                <option value="oc">RTH open → close</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>SL/TP 基準 <span class="lbl-hint">(atr_blend = 與 BEST 同口徑)</span></label>
+                            <select id="betafib-basis-bt">
+                                <option value="atr_blend" selected>5m atr_blend</option>
+                                <option value="daily">日 ATR (約 17 倍寬)</option>
+                                <option value="fib">Fib 層級</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>腿幅門檻 <span class="lbl-hint">(% · 0 = 不篩選)</span></label>
+                            <select id="betafib-minpct-bt">
+                                <option value="0" selected>0 (不篩選)</option>
+                                <option value="1">1.0%</option>
+                                <option value="1.5">1.5%</option>
+                                <option value="2">2.0%</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
                 <div class="panel-title mt14">RISK MANAGEMENT</div>
                 <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
                 <!-- 1.0.9: 單筆風險/獲利寬度上限。FACTOR 的 atr_blend SL 會隨波動
@@ -476,14 +548,16 @@
                         </select>
                     </div>
                     <div class="form-group fx1">
-                        <label>MAX PROFIT <span class="lbl-hint">(ticks/口 · 0=不限)</span></label>
-                        <select id="max-profit-ticks-bt" onchange="updateRiskCapHint('bt')">
-                            <option value="0" selected>OFF</option>
-                            <option value="900">900t</option>
-                            <option value="1200">1200t</option>
-                            <option value="1800">1800t</option>
-                            <option value="2400">2400t</option>
-                        </select>
+                        <label>MAX PROFIT
+                            <span class="lbl-hint" id="tp-cap-hint-bt">(單筆獲利上限 · 0=不限)</span>
+                        </label>
+                        <div class="pdpt-row">
+                            <input type="range" id="tp-cap-usd-bt"
+                                   min="0" max="2000" step="500" value="0"
+                                   oninput="syncTpCapUsd('bt')">
+                            <span class="pdpt-val off" id="tp-cap-usd-bt-val">OFF</span>
+                        </div>
+                        <input type="hidden" id="max-profit-ticks-bt" value="0">
                     </div>
                 </div>
                 <div class="form-group">
@@ -521,7 +595,7 @@
                         <option value="5">5</option><option value="6">6</option>
                     </select>
                 </div>
-                <div class="form-group">
+                                <div class="form-group">
                     <label>HIGH VOLATILITY LOCK <span class="lbl-hint">(prev-day high vol pauses today, 0=OFF)</span></label>
                     <select id="tr-prev-rv-gate-bt">
                         <option value="0" selected>OFF</option>
@@ -586,6 +660,10 @@
         <div class="panel" id="metrics-panel" style="display:none;">
             <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
                 <span>PERFORMANCE</span>
+                <!-- 1.0.9: 顯示這些數字是「誰」跑出來的。啟動時會從 localStorage
+                     還原上次回測,若不標示來源,使用者會以為看到的是當前 preset 的
+                     結果(實際可能是好幾天前別的 preset 的)。 -->
+                <span id="perf-source" class="perf-source"></span>
                 <select id="perf-window" onchange="onPerfWindowChange()" title="Lookback window — recomputes all metrics over the selected period"
                         style="background:#0d0f15;color:#9aa7bd;border:1px solid rgba(100,220,255,0.18);font-family:inherit;font-size:10px;padding:2px 6px;border-radius:3px;cursor:pointer;">
                     <option value="0">ALL</option>
@@ -612,14 +690,14 @@
                 <div class="form-row">
                     <div class="form-group fx2">
                         <label>CONTRACT</label>
-                        <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live')">
+                        <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live'); syncTpCapUsd('live')">
                             <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
                             <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                         </select>
                     </div>
                     <div class="form-group fx1">
                         <label>SIZE</label>
-                        <select id="size-live" onchange="updateTrailBounds('live')"></select>
+                        <select id="size-live" onchange="updateTrailBounds('live'); syncTpCapUsd('live')"></select>
                     </div>
                 </div>
                 <div class="form-row">
@@ -630,6 +708,8 @@
                             <option value="sigma">DISTRIBUTION Rolling Fade</option>
                             <option value="pmo">PMO EMAPMO</option>
                             <option value="factor">FACTOR (EMAPMO / KDJMA / MREV)</option>
+                        <option value="momentum">MOMENTUM 日內動能延續</option>
+                        <option value="betafib">BETA FIB 夜盤 Fib 回撤 (觀察用)</option>
                             <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
                     </div>
@@ -948,6 +1028,76 @@
                         <input type="hidden" id="trail-sl-ticks-live" value="20">
                     </div>
                 </div>
+                <!-- 1.0.9: INTRAMOM(Market Intraday Momentum)
+                     開盤 N 分鐘的報酬方向 → 預測當日稍晚同向延續。
+                     960 格密網格 × 雙商品:交集 22 組、鄰域 6/7 在門檻之上(高原),
+                     且是唯一在 MNQ 與 MES 上蒙地卡羅+走查全通過的策略。
+                     SL / 方向 / RR 沿用上方 FACTOR 區塊的同名控制項。
+                     見 docs/1.0.9_RESEARCH_FINDINGS.md -->
+                <div id="momentum-params-live" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>觀察窗 <span class="lbl-hint">(開盤後 N 分鐘)</span></label>
+                            <select id="momentum-first-live">
+                                <option value="15">15 分鐘</option>
+                                <option value="30" selected>30 分鐘 (交集 22/22)</option>
+                                <option value="45">45 分鐘</option>
+                                <option value="60">60 分鐘</option>
+                                <option value="90">90 分鐘</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>進場時 <span class="lbl-hint">(UTC · 17~20 差異極小)</span></label>
+                            <select id="momentum-hour-live">
+                                <option value="17">17:00 UTC</option>
+                                <option value="18" selected>18:00 UTC</option>
+                                <option value="19">19:00 UTC</option>
+                                <option value="20">20:00 UTC</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div id="betafib-params-live" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>進場 Fib <span class="lbl-hint">(1.0 = 推動腿終點)</span></label>
+                            <select id="betafib-entry-live">
+                                <option value="0.854">0.854 (極淺)</option>
+                                <option value="0.786">0.786 (94% 夜盤會觸及)</option>
+                                <option value="0.764">0.764</option>
+                                <option value="0.618" selected>0.618 (唯一過 G0–G4)</option>
+                                <option value="0.5">0.500</option>
+                                <option value="0.382">0.382 (深)</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>Fib 錨點 <span class="lbl-hint">(推動腿怎麼量)</span></label>
+                            <select id="betafib-anchor-live">
+                                <option value="hl" selected>擺動低 → 高</option>
+                                <option value="oc">RTH open → close</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>SL/TP 基準 <span class="lbl-hint">(atr_blend = 與 BEST 同口徑)</span></label>
+                            <select id="betafib-basis-live">
+                                <option value="atr_blend" selected>5m atr_blend</option>
+                                <option value="daily">日 ATR (約 17 倍寬)</option>
+                                <option value="fib">Fib 層級</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>腿幅門檻 <span class="lbl-hint">(% · 0 = 不篩選)</span></label>
+                            <select id="betafib-minpct-live">
+                                <option value="0" selected>0 (不篩選)</option>
+                                <option value="1">1.0%</option>
+                                <option value="1.5">1.5%</option>
+                                <option value="2">2.0%</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
                 <div class="panel-title mt14">RISK MANAGEMENT</div>
                 <!-- 1.0.9: 封鎖型 risk gate — 日虧斷路器 / PREV-RV 波動閘 移到 SL 模型與其參數之後 -->
                 <!-- 1.0.9: 單筆風險/獲利寬度上限。FACTOR 的 atr_blend SL 會隨波動
@@ -968,14 +1118,16 @@
                         </select>
                     </div>
                     <div class="form-group fx1">
-                        <label>MAX PROFIT <span class="lbl-hint">(ticks/口 · 0=不限)</span></label>
-                        <select id="max-profit-ticks-live" onchange="updateRiskCapHint('live')">
-                            <option value="0" selected>OFF</option>
-                            <option value="900">900t</option>
-                            <option value="1200">1200t</option>
-                            <option value="1800">1800t</option>
-                            <option value="2400">2400t</option>
-                        </select>
+                        <label>MAX PROFIT
+                            <span class="lbl-hint" id="tp-cap-hint-live">(單筆獲利上限 · 0=不限)</span>
+                        </label>
+                        <div class="pdpt-row">
+                            <input type="range" id="tp-cap-usd-live"
+                                   min="0" max="2000" step="500" value="0"
+                                   oninput="syncTpCapUsd('live')">
+                            <span class="pdpt-val off" id="tp-cap-usd-live-val">OFF</span>
+                        </div>
+                        <input type="hidden" id="max-profit-ticks-live" value="0">
                     </div>
                 </div>
                 <div class="form-group">
@@ -1013,7 +1165,7 @@
                         <option value="5">5</option><option value="6">6</option>
                     </select>
                 </div>
-                <div class="form-group">
+                                <div class="form-group">
                     <label>HIGH VOLATILITY LOCK <span class="lbl-hint">(prev-day high vol pauses today, 0=OFF)</span></label>
                     <select id="tr-prev-rv-gate-live">
                         <option value="0" selected>OFF</option>
@@ -1152,6 +1304,8 @@
                 <div><span style="color:rgb(56,189,248);">▲</span><span style="color:rgb(168,85,247);">▼</span> EMAPMO LONG/SHORT</div>
                 <div><span style="color:rgba(56,189,248,0.85);">●</span><span style="color:rgba(168,85,247,0.85);">●</span> MREV LONG/SHORT</div>
                 <div><span style="color:rgba(250,204,21,0.9);">●</span><span style="color:rgba(244,63,94,0.9);">●</span> KDJMA LONG/SHORT</div>
+                <!-- 1.0.9: INTRAMOM 用白色箭頭,與三個因子的顏色明確區隔 -->
+                <div><span style="color:#fff;">⇧</span><span style="color:#fff;">⇩</span> INTRAMOM LONG/SHORT</div>
                 <div><span style="color:#00e5a0;">↑</span><span style="color:#ff4060;">↓</span> BACKTEST ENTRY WIN/LOSS · <span style="color:#ffa726;">↑</span> LIVE</div>
             </div>
 
@@ -1299,7 +1453,7 @@
         <div class="institution-head">
             <div>
                 <div class="institution-kicker">RESEARCH</div>
-                <div class="institution-title">Robustness — Monte Carlo · Walk-Forward · Slippage</div>
+                <div class="institution-title">Robustness — Topstep · Monte Carlo · Walk-Forward · Slippage</div>
             </div>
             <button class="cal-todaybtn" onclick="renderResearchRobustness(true)">Refresh</button>
         </div>
@@ -1308,7 +1462,8 @@
     </div>
 </div>
 
-    <script src="/static/ancserTPX.js?v=1.0.9g&nowrap=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=1&accountstate=1&backtestfix=1"></script>
+    <script src="/static/topstep-eval.js?v=1.0.9k-topstep1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.9l&intraarrow=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=1&accountstate=1&backtestfix=1"></script>
     <!-- Production handlers bind first; the skin then moves those same nodes. -->
     <script src="/static/tpx-glass-skin.js?v=1.0.9-glass55"></script>
     <script src="/static/tpx-glass.js?v=1.0.9-glass55"></script>
