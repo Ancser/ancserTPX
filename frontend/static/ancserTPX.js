@@ -1192,7 +1192,6 @@ function collectStrategyParams(mode) {
         tr_daily_loss_stop: Math.max(0, Math.min(6, _int('tr-daily-stop-' + mode, 0))),
         tr_daily_win_stop: Math.max(0, Math.min(6, _int('tr-daily-win-stop-' + mode, 0))),  // 1.0.9: FULL WIN LOCK
         // 1.0.9: prevRV 波動閘 + fade 進場模式
-        tr_prev_rv_gate: Math.max(0, Math.min(60, _int('tr-prev-rv-gate-' + mode, 0))),
         fade_entry_mode: (function (m) { return (m === 'rejection' || m === 'or15') ? m : 'limit'; })(_mlSelectValue('fade-entry-mode-' + mode, 'limit')),  // 1.0.9: +or15
         sigma_window_minutes: parseInt(applied.sigma_window_minutes != null ? applied.sigma_window_minutes : 15, 10) || 15,
         sigma_method: String(applied.sigma_method || 'std') === 'mad' ? 'mad' : 'std',
@@ -1229,9 +1228,8 @@ function collectStrategyParams(mode) {
         betafib_risk_basis: _mlSelectValue('betafib-basis-' + mode, 'atr_blend'),
         betafib_min_move_pct: _float('betafib-minpct-' + mode, 0),
         // 1.0.9: 單筆風險/獲利寬度上限(ticks/口);0 → null = 不限
-        max_risk_ticks: _int('max-risk-ticks-' + mode, 0) || null,
-        max_profit_ticks: _int('max-profit-ticks-' + mode, 0) || null,
-        risk_cap_mode: _mlSelectValue('risk-cap-mode-' + mode, 'block'),
+        // 1.0.9: 讀 hidden(價距 ticks)—— 唯一真相,滑桿與文字都從它衍生
+        max_profit_ticks: capTicks(mode) || null,
         factor_sl_rule: factorSlRule,
         factor_tp_rule: factorSlRule,
         factor_sl_value: factorSlValue,
@@ -1340,7 +1338,6 @@ function applyStrategyParams(mode, params) {
     _set('tr-daily-stop-' + mode, String(Math.max(0, Math.min(6, parseInt(p.tr_daily_loss_stop != null ? p.tr_daily_loss_stop : 0, 10) || 0))));
     _set('tr-daily-win-stop-' + mode, String(Math.max(0, Math.min(6, parseInt(p.tr_daily_win_stop != null ? p.tr_daily_win_stop : 0, 10) || 0))));  // 1.0.9: FULL WIN LOCK
     // 1.0.9: prevRV 波動閘 + fade 進場模式
-    _set('tr-prev-rv-gate-' + mode, String(Math.max(0, Math.min(60, parseInt(p.tr_prev_rv_gate != null ? p.tr_prev_rv_gate : 0, 10) || 0))));
     _set('fade-entry-mode-' + mode, (function (m) { return (m === 'rejection' || m === 'or15') ? m : 'limit'; })(String(p.fade_entry_mode || 'limit')));  // 1.0.9: +or15
 
     // FACTOR params restored when the preset uses the factor strategy.
@@ -1371,20 +1368,9 @@ function applyStrategyParams(mode, params) {
     _set('betafib-anchor-' + mode, String(p.betafib_anchor || 'hl'));
     _set('betafib-basis-' + mode, String(p.betafib_risk_basis || 'atr_blend'));
     _set('betafib-minpct-' + mode, String(p.betafib_min_move_pct != null ? p.betafib_min_move_pct : 0));
-    _set('max-risk-ticks-' + mode, String(p.max_risk_ticks != null ? p.max_risk_ticks : 0));
-    // 1.0.9: preset 存的是 ticks,滑桿顯示美元 —— 反算回去並吸附到 500 的級距
-    (() => {
-        const ticks = parseInt(p.max_profit_ticks != null ? p.max_profit_ticks : 0, 10) || 0;
-        const cEl = document.getElementById('contract-' + mode);
-        const sEl = document.getElementById('size-' + mode);
-        const tv = tickDollarValue(String((cEl && cEl.value) || ''),
-                                   (sEl ? parseInt(sEl.value, 10) : 1) || 1);
-        const usd = ticks > 0 ? Math.round(ticks * tv / 500) * 500 : 0;
-        _set('tp-cap-usd-' + mode, String(Math.max(0, Math.min(2000, usd))));
-        _set('max-profit-ticks-' + mode, String(ticks));
-        syncTpCapUsd(mode);
-    })();
-    _set('risk-cap-mode-' + mode, String(p.risk_cap_mode || 'block'));
+    // 1.0.9: preset 存的是價距 ticks —— 直接寫進唯一真相,
+    // setCapTicks 會把滑桿位置與文字一起重畫,兩者不可能不同步。
+    setCapTicks(mode, parseInt(p.max_profit_ticks != null ? p.max_profit_ticks : 0, 10) || 0);
     updateRiskCapHint(mode);
     _setChoice('factor-sl-rule-' + mode, _factorRuleValue(p.factor_sl_rule, 'atr_blend'));
     _setChoice('factor-sl-value-' + mode, String(p.factor_sl_value != null ? p.factor_sl_value : 2.5));
@@ -2405,11 +2391,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (calView) calView.classList.add('hidden');
             if (tab === 'backtest') {
                 backtestPanels.classList.remove('hidden');
+                // 1.0.9: 切回來時重新算一次標籤。滑桿的 value 在切頁時不會變,
+                // 但標籤 span 是 JS 寫上去的,任何一次 applyStrategyParams 都可能
+                // 把它蓋回 OFF —— 送出值一直是對的,只有顯示會騙人。
+                try { refreshCapsForContract('bt'); } catch (e) {}
                 if (metricsPanel.style.display === 'block') metricsPanel.classList.remove('hidden');
                 livePanel.classList.add('hidden');
                 liveTopBar.style.display = 'none';
             } else if (tab === 'live') {
                 backtestPanels.classList.add('hidden');
+                try { refreshCapsForContract('live'); } catch (e) {}
                 metricsPanel.classList.add('hidden');
                 livePanel.classList.remove('hidden');
                 if (_liveInterval || _liveStatusInterval) liveTopBar.style.display = 'block';
@@ -5400,7 +5391,7 @@ function renderSweepTable(sortKey) {
     const money = (v, pos) => '<span style="color:var(--' + (v >= 0 ? (pos || 'green') : 'red') + ');">' +
         (v >= 0 ? '+' : '') + Math.round(v) + '</span>';
     // 1.0.9: params 拆成 model / risk 兩欄(risk = 封鎖型設定;sweep 不掃 risk 變體)
-    const RISK_KEYS = ['tr_daily_loss_stop', 'tr_daily_win_stop', 'tr_daily_profit_stop', 'tr_prev_rv_gate',
+    const RISK_KEYS = ['tr_daily_loss_stop', 'tr_daily_win_stop', 'tr_daily_profit_stop',
         'tr_allowed_sessions', 'tr_one_trade_per_session', 'factor_max_trades_per_day',
         'pmo_max_trades_per_day'];
     const fmtParams = (p, riskSide) => Object.keys(p || {})
@@ -6587,36 +6578,67 @@ function _attr(s) {
 // 為什麼是「單筆」而不是「每日」:實測 BEST/EMAPMO 一個交易日只開一單,
 // 所以擋新單的日上限(PDPT)完全沒作用,$2,572 是單筆賺出來的。
 // 真正能壓住 Topstep 一致性天花板的只有單筆 TP 上限。
-function syncTpCapUsd(mode) {
-    const sl = document.getElementById('tp-cap-usd-' + mode);
-    const out = document.getElementById('tp-cap-usd-' + mode + '-val');
-    const hid = document.getElementById('max-profit-ticks-' + mode);
-    const hint = document.getElementById('tp-cap-hint-' + mode);
-    if (!sl || !hid) return;
-    const usd = parseInt(sl.value, 10) || 0;
+// 1.0.9: 換算需要合約的每 tick 值 × 口數(tickDollarValue 已含口數)。
+function capTickValue(mode) {
     const cEl = document.getElementById('contract-' + mode);
     const sEl = document.getElementById('size-' + mode);
-    const cid = String((cEl && cEl.value) || '');
     const size = (sEl ? parseInt(sEl.value, 10) : 1) || 1;
-    const tv = tickDollarValue(cid, size);          // $ / tick(已乘口數)
-    const ticks = (usd > 0 && tv > 0) ? Math.max(1, Math.round(usd / tv)) : 0;
-    hid.value = String(ticks);
+    return { size: size, tv: tickDollarValue(String((cEl && cEl.value) || ''), size) };
+}
+
+// ── 單一真相:hidden input `max-profit-ticks-<mode>`(價距 ticks)────────
+// 滑桿位置與文字**都**從它衍生,所以兩者不可能各說各話。
+// 先前是滑桿當真相、文字跟著它:applyStrategyParams 改了值之後只有文字更新,
+// 滑桿留在舊位置 —— 畫面顯示 $2,000 但實際參數是 OFF。
+function capTicks(mode) {
+    const hid = document.getElementById('max-profit-ticks-' + mode);
+    return hid ? (parseInt(hid.value, 10) || 0) : 0;
+}
+
+function setCapTicks(mode, ticks) {
+    const hid = document.getElementById('max-profit-ticks-' + mode);
+    if (hid) hid.value = String(Math.max(0, ticks | 0));
+    renderCapUi(mode);
+}
+
+// 把 hidden 的 ticks 畫成「滑桿位置 + 文字」。任何改動最後都要走這裡。
+function renderCapUi(mode) {
+    const ticks = capTicks(mode);
+    const c = capTickValue(mode);
+    const sl = document.getElementById('tp-cap-usd-' + mode);
+    const out = document.getElementById('tp-cap-usd-' + mode + '-val');
+    const hint = document.getElementById('tp-cap-hint-' + mode);
+    let usd = (ticks > 0 && c.tv > 0) ? Math.round(ticks * c.tv / 500) * 500 : 0;
+    usd = Math.max(0, Math.min(2000, usd));
+    if (sl) {
+        sl.value = String(usd);
+        // glass skin 把 range 換成 proxy div,只有拖曳會單向寫回真的 input。
+        // 程式改 .value 它不會重畫,所以要主動通知(見 tpx-glass.js 的 glass-sync)。
+        try { sl.dispatchEvent(new Event('glass-sync', { bubbles: false })); } catch (e) {}
+    }
     if (out) {
         out.textContent = usd > 0 ? ('$' + usd.toLocaleString()) : 'OFF';
         out.classList.toggle('off', usd === 0);
     }
     if (hint) {
         hint.textContent = usd > 0
-            ? ('(價距 ' + ticks + 't · ' + size + ' 口 → $' + tv.toFixed(2) + '/tick)')
+            ? ('(價距 ' + ticks + 't · ' + c.size + ' 口 → $' + c.tv.toFixed(2) + '/tick)')
             : '(單筆獲利上限 · 0=不限)';
     }
-    // 上限一旦啟用就必須是 clamp —— block 會把整張單丟掉,不是我們要的
-    if (usd > 0) _set('risk-cap-mode-' + mode, 'clamp');
-    if (typeof updateRiskCapHint === 'function') updateRiskCapHint(mode);
 }
 
-// 換合約/改口數後,同一個美元上限對應的 tick 數會變 —— 重算
-function refreshTpCapForContract(mode) { syncTpCapUsd(mode); }
+// 使用者拖滑桿 → 美元換成 ticks 寫回真相,再重畫
+function syncTpCapUsd(mode) {
+    const sl = document.getElementById('tp-cap-usd-' + mode);
+    if (!sl) return;
+    const usd = parseInt(sl.value, 10) || 0;
+    const c = capTickValue(mode);
+    setCapTicks(mode, (usd > 0 && c.tv > 0) ? Math.max(1, Math.round(usd / c.tv)) : 0);
+}
+
+// 換合約/改口數 → ticks 不變(價距是絕對的),美元顯示要重算
+function refreshCapsForContract(mode) { renderCapUi(mode); }
+function refreshTpCapForContract(mode) { renderCapUi(mode); }
 
 function renderMetrics(m, backtestTrades) {
     const panel = document.getElementById('metrics-panel');
@@ -8762,9 +8784,10 @@ function updateRiskCapHint(mode) {
     const size = (sEl ? parseInt(sEl.value, 10) : 1) || 1;
     const tv = 0.25 * pv * size;
     const parts = [];
+    // 1.0.9: 兩個上限各自獨立夾,不再等比縮放 —— 壓 TP 不會動到 SL
     if (risk) parts.push('風險 ≤ $' + Math.round(risk * tv));
     if (prof) parts.push('獲利 ≤ $' + Math.round(prof * tv));
-    hint.textContent = '(' + parts.join(' · ') + ' @ ' + size + ' 口)';
+    hint.textContent = '(' + parts.join(' · ') + ' @ ' + size + ' 口 · SL/TP 各自獨立)';
 }
 
 

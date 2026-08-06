@@ -390,7 +390,6 @@ class StrategyParams:
     tr_daily_profit_stop: float = 0.0
     # 1.0.9: prevRV regime gate — 前一交易日已實現波動落在近 N 日最高三分位 → 今日不進場
     # (回測 DD -42%;波動率自相關 +0.73 故前一日可預測)。0=OFF,>0=回看視窗天數
-    tr_prev_rv_gate: int = 0
     # 1.0.9: FADE 專用 — TP 佔 VAL→POC 比例(0.75 較穩)、進場模式(limit / rejection / or15)
     fade_tp_frac: float = 0.75
     fade_entry_mode: str = "limit"         # "limit" | "rejection" | "or15"
@@ -413,7 +412,8 @@ class StrategyParams:
     pmo_tp_atr: float = 1.0
     pmo_max_hold_bars: int = 0            # 1.0.9: HOLD 5m system removed → SL/TP-only exits
     pmo_max_trades_per_day: int = 3
-    pmo_warmup_bars: int = 150
+    pmo_warmup_bars: int = 320  # 1.0.9: 150 → 320。EMAPMO 是 EMA100→EMA50→EMA10 三層串接,150 根的
+    # 暖機暫態會讓 SIG 偏 0.117,比 ±0.10 的進場門檻還大 —— 足以偽造訊號。
     # 1.0.10: Generic completed-candle factor strategy. Used when
     # strategy == "factor"; supports EMAPMO, momentum reversion, and icefishball.
     factor_timeframe_minutes: int = 5
@@ -427,7 +427,7 @@ class StrategyParams:
     factor_tp_value: float = 2.0
     factor_max_hold_bars: int = 0        # 1.0.9: HOLD 5m system removed → SL/TP-only exits
     factor_max_trades_per_day: int = 3
-    factor_warmup_bars: int = 150
+    factor_warmup_bars: int = 320
     # 1.0.9: PMO 進場門檻的波動縮放(1.0 = MNQ 原始行為;MES ≈ 0.55)
     factor_pmo_threshold_scale: float = 1.0
     # 1.0.9: 分開鬆綁 normal(比 PMO)/ early(比 SIG)門檻;0 = 沿用上面那個
@@ -464,7 +464,6 @@ class StrategyParams:
     conf_max_risk_ticks: Optional[int] = None  # optional risk-width cap; None/0 = off
     # 1.0.9: 全策略通用的單筆風險寬度上限(ticks)。None/0 = 不限(既有行為)。
     # confluence 仍優先用 conf_max_risk_ticks;其餘策略吃這個。
-    max_risk_ticks: Optional[int] = None
     # 1.0.9: TP 寬度上限(ticks,單口)—— prop firm 的 consistency rule:
     # 單日獲利佔比過高會推高通關/出金門檻。
     max_profit_ticks: Optional[int] = None
@@ -473,7 +472,6 @@ class StrategyParams:
     # 1.0.9: 實測 BLOCK 優於 CLAMP —— 夾窄 SL 會讓停損更常被掃到
     # (risk<=$1000 clamp 使最差日 -685 惡化到 -1002、maxDD 1638→1832;
     #  同條件 block 則兩者都不變)。預設與 UI 一致。
-    risk_cap_mode: str = "block"
     conf_sl_reference_tf: str = "largest"  # "largest" original behavior, "smallest" tightens SL/TP basis
     conf_allowed_sessions: Optional[List[str]] = field(default_factory=lambda: ["ASIA", "PRE"])
     # --- STYLE: optional exit-policy (break-even / trail / lock). All-OFF == original behaviour ---

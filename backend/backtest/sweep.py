@@ -145,7 +145,7 @@ _PRESET_SNAPSHOT_KEYS = (
     "strategy", "contract_id", "contract_size", "candle_seconds",
     "value_area_pct", "area_timeframe", "method", "tf_combo", "tr_overlap_trade_tf",
     "rr_ratio", "breakout_confirm_bars", "tr_exit_mode",
-    "tr_daily_loss_stop", "tr_daily_win_stop", "tr_prev_rv_gate",
+    "tr_daily_loss_stop", "tr_daily_win_stop",
     "sl_ticks", "tr_sl_ticks", "tp_ticks", "tr_tp_ticks",
     "trail_enabled", "tr_trail_enabled", "trail_trigger_pct", "tr_trail_trigger_pct",
     "trail_sl_ticks", "tr_trail_sl_ticks", "trail_sl_pct", "tr_trail_sl_pct",
@@ -164,7 +164,7 @@ _PRESET_SNAPSHOT_KEYS = (
     # 1.0.9: 新增參數也要進快照,否則 sweep 結果存成 preset 時會遺失,
     # 而且 G5 跨商品重跑會用到錯的門檻/風險上限。
     "factor_pmo_threshold_scale", "factor_pmo_normal_scale", "factor_pmo_early_scale",
-    "max_risk_ticks", "max_profit_ticks", "risk_cap_mode",
+    "max_profit_ticks",
 )
 
 

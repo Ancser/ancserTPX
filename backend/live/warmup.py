@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional, Tuple
 
 from backend.db.models import Candle
+from backend.strategy.factor import FACTOR_EMAPMO_HISTORY_BARS
 from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, is_allowed_session
 
 
@@ -25,12 +26,33 @@ def _utc(ts: datetime) -> datetime:
 def signal_warmup_spec(params) -> Optional[Tuple[int, int, int]]:
     """Return ``(required bars, timeframe minutes, source seconds)`` if needed."""
     strategy = str(getattr(params, "strategy", "") or "").lower()
+    # 1.0.9: 改名相容 —— 舊 preset 存的是 intramom / sessfib
+    strategy = {"intramom": "momentum", "claudefib": "momentum",
+                "sessfib": "betafib"}.get(strategy, strategy)
     if strategy == "factor":
-        required = max(20, int(getattr(params, "factor_warmup_bars", 150) or 150))
+        required = max(20, int(getattr(params, "factor_warmup_bars", 320) or 320))
+        # 必須跟 FactorSignalStrategy.effective_warmup 同一個算式,否則抓資料的
+        # 迴圈以為湊夠了就停,策略端卻還在 WARM-UP,live 會靜默地不下單。
+        _fam = str(
+            getattr(params, "factor_signal_family", "emapmo") or "emapmo").lower()
+        if _fam in ("emapmo", "pmo", "ema_pmo"):
+            required = max(required, FACTOR_EMAPMO_HISTORY_BARS)
         timeframe = max(1, int(getattr(params, "factor_timeframe_minutes", 5) or 5))
     elif strategy == "pmo":
-        required = max(20, int(getattr(params, "pmo_warmup_bars", 150) or 150))
+        required = max(20, int(getattr(params, "pmo_warmup_bars", 320) or 320))
         timeframe = max(1, int(getattr(params, "pmo_timeframe_minutes", 5) or 5))
+    elif strategy == "momentum":
+        # MOMENTUM 只需要 _atr_blend(ATR14 + ATR50)暖起來 —— 50 根就夠,
+        # 給到 120 是留餘裕。它不看更長的歷史。
+        required = 120
+        timeframe = max(1, int(getattr(params, "research_tf_minutes", 5) or 5))
+    elif strategy == "betafib":
+        # BETA FIB 的日 ATR 需要 **5 個已完成的 RTH 交易日**
+        # (_day_ranges maxlen=14,_daily_atr 在 <5 時回 None)。
+        # 全時段 1 天約 276 根 5m,5 天約 1,380 —— 抓 2 天絕對不夠,
+        # 不寫在這裡的話擴窗迴圈會在 2 天就停手。
+        required = 1400
+        timeframe = max(1, int(getattr(params, "research_tf_minutes", 5) or 5))
     else:
         return None
     source_seconds = max(1, int(getattr(params, "candle_seconds", 60) or 60))

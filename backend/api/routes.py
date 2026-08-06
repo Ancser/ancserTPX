@@ -383,9 +383,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         conf_use_scorer=bool(getattr(req, "conf_use_scorer", True)),
         conf_enable_breakout=bool(getattr(req, "conf_enable_breakout", False)),
         conf_max_risk_ticks=getattr(req, "conf_max_risk_ticks", None),
-        max_risk_ticks=getattr(req, "max_risk_ticks", None),
         max_profit_ticks=getattr(req, "max_profit_ticks", None),
-        risk_cap_mode=str(getattr(req, "risk_cap_mode", "block") or "block"),
         conf_sl_reference_tf=_normalize_conf_sl_reference_tf(
             getattr(req, "conf_sl_reference_tf", "largest")
         ),
@@ -432,7 +430,6 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         tr_daily_profit_stop=max(0.0, min(20000.0, float(
             getattr(req, "tr_daily_profit_stop", 0) or 0))),
         # 1.0.9: prevRV regime gate + fade 專用
-        tr_prev_rv_gate=max(0, min(60, int(getattr(req, "tr_prev_rv_gate", 0) or 0))),
         fade_tp_frac=float(getattr(req, "fade_tp_frac", 0.75) or 0.75),
         fade_entry_mode=(lambda m: m if m in ("limit", "rejection", "or15") else "limit")(str(getattr(req, "fade_entry_mode", "limit") or "limit").lower()),  # 1.0.9: +or15
         sigma_window_minutes=max(5, int(getattr(req, "sigma_window_minutes", 15) or 15)),
@@ -468,7 +465,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         # both backtest and live) so no stored/incoming value can re-enable it.
         pmo_max_hold_bars=0,
         pmo_max_trades_per_day=max(0, int(getattr(req, "pmo_max_trades_per_day", 3) or 0)),
-        pmo_warmup_bars=max(20, int(getattr(req, "pmo_warmup_bars", 150) or 150)),
+        pmo_warmup_bars=max(20, int(getattr(req, "pmo_warmup_bars", 320) or 320)),
         factor_timeframe_minutes=max(1, int(getattr(req, "factor_timeframe_minutes", 5) or 5)),
         factor_signal_family=_normalize_factor_family(getattr(req, "factor_signal_family", "emapmo")),
         factor_side_mode=_normalize_factor_side(getattr(req, "factor_side_mode", "all")),
@@ -481,7 +478,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         # 1.0.9: HOLD 5m-candle system removed — FACTOR exits are SL/TP only. See pmo note above.
         factor_max_hold_bars=0,
         factor_max_trades_per_day=max(0, int(getattr(req, "factor_max_trades_per_day", 3) or 0)),
-        factor_warmup_bars=max(20, int(getattr(req, "factor_warmup_bars", 150) or 150)),
+        factor_warmup_bars=max(20, int(getattr(req, "factor_warmup_bars", 320) or 320)),
         factor_pmo_threshold_scale=abs(float(
             getattr(req, "factor_pmo_threshold_scale", 1.0) or 1.0)),
         factor_pmo_normal_scale=abs(float(
@@ -1039,7 +1036,6 @@ class BacktestRequest(BaseModel):
     # 1.0.9: PDPT — 當日獲利達此金額($)後停開新單(0=OFF)。Topstep XFA 一致性用。
     tr_daily_profit_stop: float = 0.0
     sweep_models: Optional[List[str]] = None  # 1.0.9: sweep run/lock — 要跑的 model 清單(None=全部)
-    tr_prev_rv_gate: int = 0              # 1.0.9: prevRV regime gate 回看天數(0=OFF)
     fade_tp_frac: float = 0.75            # 1.0.9: DAY ZONE TP=VAL→POC 比例
     fade_entry_mode: str = "limit"        # 1.0.9: DAY ZONE 進場 limit|rejection|or15
     # Contract & sizing (defaults to 3× Micro NQ)
@@ -1059,7 +1055,7 @@ class BacktestRequest(BaseModel):
     pmo_tp_atr: float = 1.0
     pmo_max_hold_bars: int = 24
     pmo_max_trades_per_day: int = 3
-    pmo_warmup_bars: int = 150
+    pmo_warmup_bars: int = 320
     factor_timeframe_minutes: int = 5
     factor_signal_family: str = "emapmo"
     factor_side_mode: str = "all"
@@ -1071,7 +1067,7 @@ class BacktestRequest(BaseModel):
     factor_tp_value: float = 2.0
     factor_max_hold_bars: int = 24
     factor_max_trades_per_day: int = 3
-    factor_warmup_bars: int = 150
+    factor_warmup_bars: int = 320
     factor_pmo_threshold_scale: float = 1.0
     factor_pmo_normal_scale: float = 0.0
     factor_pmo_early_scale: float = 0.0
@@ -1108,9 +1104,7 @@ class BacktestRequest(BaseModel):
     conf_use_scorer: bool = True          # True=trained JSON, False=heuristic prior
     conf_enable_breakout: bool = False    # include breakout-retrace candidate (False=momentum+reversion only)
     conf_max_risk_ticks: Optional[int] = None  # drop signals with SL > N ticks (None=no cap)
-    max_risk_ticks: Optional[int] = None       # 1.0.9: same cap for non-confluence strategies
     max_profit_ticks: Optional[int] = None     # 1.0.9: TP width cap (prop-firm consistency rule)
-    risk_cap_mode: str = "block"               # clamp = scale SL/TP keeping RR; block = skip signal
     conf_sl_reference_tf: str = "largest" # "largest"=original, "smallest"=lowest contributing TF anchors SL/TP
     conf_allowed_sessions: Optional[List[str]] = Field(
         default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
@@ -3078,7 +3072,6 @@ class LiveStartRequest(BaseModel):
     tr_daily_win_stop: int = 0            # 1.0.9: FULL WIN LOCK — 日贏 N 單停新單(0=OFF)
     # 1.0.9: PDPT — 當日獲利達此金額($)後停開新單(0=OFF)。Topstep XFA 一致性用。
     tr_daily_profit_stop: float = 0.0
-    tr_prev_rv_gate: int = 0              # 1.0.9: prevRV regime gate 回看天數(0=OFF)
     fade_tp_frac: float = 0.75            # 1.0.9: DAY ZONE TP=VAL→POC 比例
     fade_entry_mode: str = "limit"        # 1.0.9: DAY ZONE 進場 limit|rejection|or15
     # v1.0.6: "single" = one area timeframe; "overlap" = enter at the AVERAGE
@@ -3121,7 +3114,7 @@ class LiveStartRequest(BaseModel):
     pmo_tp_atr: float = 1.0
     pmo_max_hold_bars: int = 24
     pmo_max_trades_per_day: int = 3
-    pmo_warmup_bars: int = 150
+    pmo_warmup_bars: int = 320
     factor_timeframe_minutes: int = 5
     factor_signal_family: str = "emapmo"
     factor_side_mode: str = "all"
@@ -3133,7 +3126,7 @@ class LiveStartRequest(BaseModel):
     factor_tp_value: float = 2.0
     factor_max_hold_bars: int = 24
     factor_max_trades_per_day: int = 3
-    factor_warmup_bars: int = 150
+    factor_warmup_bars: int = 320
     factor_pmo_threshold_scale: float = 1.0
     factor_pmo_normal_scale: float = 0.0
     factor_pmo_early_scale: float = 0.0
@@ -3163,9 +3156,7 @@ class LiveStartRequest(BaseModel):
     conf_use_scorer: bool = True
     conf_enable_breakout: bool = False
     conf_max_risk_ticks: Optional[int] = None
-    max_risk_ticks: Optional[int] = None
     max_profit_ticks: Optional[int] = None
-    risk_cap_mode: str = "block"
     conf_sl_reference_tf: str = "largest"
     conf_allowed_sessions: Optional[List[str]] = Field(
         default_factory=lambda: list(DEFAULT_ALLOWED_SESSIONS)
@@ -4005,7 +3996,7 @@ _DEFAULT_PRESET_PARAMS = {
     "pmo_tp_atr": 1.0,
     "pmo_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
     "pmo_max_trades_per_day": 3,
-    "pmo_warmup_bars": 150,
+    "pmo_warmup_bars": 320,
     "factor_timeframe_minutes": 5,
     "factor_signal_family": "emapmo",
     "factor_side_mode": "all",
@@ -4017,7 +4008,7 @@ _DEFAULT_PRESET_PARAMS = {
     "factor_tp_value": 2.0,
     "factor_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
     "factor_max_trades_per_day": 3,
-    "factor_warmup_bars": 150,
+    "factor_warmup_bars": 320,
     "factor_pmo_threshold_scale": 1.0,
     # 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 }

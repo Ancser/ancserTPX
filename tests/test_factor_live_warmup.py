@@ -57,7 +57,7 @@ class LiveWarmupTests(unittest.IsolatedAsyncioTestCase):
     def test_weekend_nonempty_window_is_still_insufficient(self):
         params = _params()
         candles = _candles(datetime(2026, 7, 12, 22, 0, tzinfo=UTC), 60)
-        self.assertEqual(signal_warmup_progress(candles, params), (12, 150))
+        self.assertEqual(signal_warmup_progress(candles, params), (12, 320))
 
     def test_progress_matches_factor_strategy_ingest(self):
         params = _params()
@@ -96,14 +96,18 @@ class LiveWarmupTests(unittest.IsolatedAsyncioTestCase):
     async def test_terminal_fetch_expands_nonempty_short_window(self):
         params = _params()
         short = _candles(datetime(2026, 7, 12, 22, 0, tzinfo=UTC), 60)
-        enough = _asia_history()
+        # 1.0.9: EMAPMO 的暖機門檻提到 320(見 factor.effective_warmup),
+        # 所以「夠」的 fixture 必須跨更多天,否則擴窗迴圈會一直往下試。
+        enough = _asia_history(days=12)
         client = unittest.mock.Mock()
         client.get_historical_bars_paginated = AsyncMock(side_effect=[short, enough])
 
         result = await _fetch_warmup_candles(client, "CON.F.US.MNQ.U26", params)
 
         self.assertEqual(client.get_historical_bars_paginated.await_count, 2)
-        self.assertEqual(signal_warmup_progress(result, params), (150, 150))
+        completed, required = signal_warmup_progress(result, params)
+        self.assertEqual(required, 320)
+        self.assertGreaterEqual(completed, required)
 
     async def test_terminal_fetch_keeps_fullest_nonempty_candidate(self):
         params = _params()
@@ -118,7 +122,7 @@ class LiveWarmupTests(unittest.IsolatedAsyncioTestCase):
         result = await _fetch_warmup_candles(client, "CON.F.US.MNQ.U26", params)
 
         self.assertEqual(client.get_historical_bars_paginated.await_count, 3)
-        self.assertEqual(signal_warmup_progress(result, params), (100, 150))
+        self.assertEqual(signal_warmup_progress(result, params), (100, 320))
 
 
 class FactorStatusTests(unittest.TestCase):
@@ -130,15 +134,15 @@ class FactorStatusTests(unittest.TestCase):
         label = strategy.get_phase_label()
 
         lines = label.splitlines()
-        self.assertIn("EMAPMO WARM-UP: 11/150 completed 5m bars", lines[0])
-        self.assertIn("139 remaining; trading disabled", lines[0])
+        self.assertIn("EMAPMO WARM-UP: 11/320 completed 5m bars", lines[0])
+        self.assertIn("309 remaining; trading disabled", lines[0])
         self.assertRegex(lines[1], r"^SIG: -?\d+\.\d{5}$")
         self.assertRegex(lines[2], r"^PMO: -?\d+\.\d{5}$")
         self.assertNotRegex(label, r"[\u3400-\u9fff]")
 
     def test_best_wait_status_lists_early_long_conditions_and_values(self):
         strategy = FactorSignalStrategy(_params())
-        strategy._bars.extend(_candles(datetime(2026, 7, 6, 22, 0, tzinfo=UTC), 150))
+        strategy._bars.extend(_candles(datetime(2026, 7, 6, 22, 0, tzinfo=UTC), 320))
         snapshot = {
             "pmo": -0.08,
             "signal": -0.07,
@@ -175,7 +179,7 @@ class FactorStatusTests(unittest.TestCase):
 
     def test_long_only_status_does_not_advertise_short_as_tradeable(self):
         strategy = FactorSignalStrategy(_params())
-        strategy._bars.extend(_candles(datetime(2026, 7, 6, 22, 0, tzinfo=UTC), 150))
+        strategy._bars.extend(_candles(datetime(2026, 7, 6, 22, 0, tzinfo=UTC), 320))
         snapshot = {
             "pmo": 0.08,
             "signal": 0.07,
@@ -201,7 +205,7 @@ class FactorStatusTests(unittest.TestCase):
 
     def test_short_early_status_displays_sig_pmo_relation_on_separate_lines(self):
         strategy = FactorSignalStrategy(_params(factor_side_mode="short_only"))
-        strategy._bars.extend(_candles(datetime(2026, 7, 6, 22, 0, tzinfo=UTC), 150))
+        strategy._bars.extend(_candles(datetime(2026, 7, 6, 22, 0, tzinfo=UTC), 320))
         snapshot = {
             "pmo": 0.08,
             "signal": 0.07,

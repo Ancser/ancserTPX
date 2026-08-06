@@ -1722,3 +1722,8 @@
 /* 1.0.9: Topstep XFA 一致性警告 —— 黃色三角,hover 顯示說明 */
 .tpx-warn { color: #fbbf24; cursor: help; }
 .metric-card .label .tpx-warn { margin-left: 4px; font-size: 1.1em; }
+
+/* 1.0.9: 風險上限=紅、獲利上限=綠。兩條滑桿長得一樣時很容易設錯邊,
+   而設錯邊的後果不對稱:誤把風險當獲利壓,會直接放大回撤。 */
+.pdpt-row input[type="range"].cap-profit { accent-color: #22c55e; }
+#tp-cap-usd-bt-val:not(.off), #tp-cap-usd-live-val:not(.off) { color: #22c55e; }

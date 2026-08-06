@@ -971,7 +971,17 @@
             : Math.max(sourceRect.height, sourceStage.scrollHeight);
         world.style.width = `${sourceW}px`;
         world.style.height = `${sourceH}px`;
-        stageCopy.style.width = `${sourceW}px`;
+        /* 畫布尺寸 ≠ 版面寬度。
+           world 用 scrollWidth 是對的:它只是容器,要大到不裁切水平溢出的內容。
+           但 stageCopy 是**會被重新排版的 clone** —— 給它 scrollWidth 就等於
+           給了比實際內容區更寬的容器,於是原本會換行的文字在 clone 裡變成一行。
+           Research 分頁的 .institution-table 夠寬,scrollWidth 就超過 clientWidth,
+           結果 clone 少一行、底下所有內容整體上移,鏡頭裡跟實際畫面對不齊。
+           clone 要用**內容區寬度**排版,水平溢出交給 overflow:visible 畫出去。 */
+        const layoutW = localContent
+            ? sourceRect.width
+            : (sourceStage.clientWidth || sourceRect.width);
+        stageCopy.style.width = `${layoutW}px`;
         stageCopy.style.height = `${sourceH}px`;
         world.style.transformOrigin = "0 0";
         world.style.transform =
@@ -2690,6 +2700,31 @@
             apply();
             syncOpticalSurfaces("slider", false, surface);
         }).observe(root);
+
+        /* 反向同步:skin 模式下真正的 <input type=range> 還在 DOM(隱藏),
+           程式碼改它的 .value 時,這個玻璃滑桿完全不知道 —— 拖曳是單向的
+           (thumb → proxy),沒有回路。結果就是「參數已經變成 OFF、文字也顯示
+           OFF,但看得到的那條還停在舊位置」。
+           讓 proxy 發 "glass-sync" 就能把值推回來。原生的 change 也一併收,
+           涵蓋不經過我們程式碼的路徑。 */
+        const proxyEl = root.dataset.sliderProxy && byId(root.dataset.sliderProxy);
+        if (proxyEl) {
+            const pull = () => {
+                if (dragging) return;          // 拖曳中不要被覆蓋
+                const span = (max - min) || 1;
+                const next = clamp((parseFloat(proxyEl.value || "0") - min) / span, 0, 1);
+                if (Math.abs(next - value) < 1e-6) return;
+                value = next;
+                thumbX = value * travel();
+                root.dataset.value = String(value);
+                emit();
+                apply();
+                syncOpticalSurfaces("slider", false, surface);
+            };
+            proxyEl.addEventListener("glass-sync", pull);
+            proxyEl.addEventListener("change", pull);
+        }
+
         thumbX = value * travel();
         emit();
         apply();

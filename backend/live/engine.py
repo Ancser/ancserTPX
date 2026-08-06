@@ -199,8 +199,6 @@ class LiveTradingEngine:
             getattr(self.strategy_params, "tr_daily_profit_stop", 0) or 0))
         self._daily_profit_td: float = 0.0
         # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單(0=OFF)
-        self._prev_rv_gate = max(0, int(getattr(self.strategy_params, "tr_prev_rv_gate", 0) or 0))
-        self._gate_block_today: bool = False
         if self.strategy_mode == "pmo":
             self._pmo_max_hold_minutes = (
                 max(0, int(getattr(self.strategy_params, "pmo_max_hold_bars", 0) or 0))
@@ -2206,11 +2204,6 @@ class LiveTradingEngine:
                         and self._daily_profit_td >= self._tr_daily_profit_stop
                     ),
                 },
-                # PREV-RV 波動閘:前一日高波動 → 今日封鎖新單
-                "prev_rv": {
-                    "lookback": self._prev_rv_gate,
-                    "blocking": bool(self._prev_rv_gate and self._gate_block_today),
-                },
                 # 每 zone/方向 一單(session-direction lock)開關
                 "session_limit": {
                     "on": bool(
@@ -2578,7 +2571,6 @@ class LiveTradingEngine:
         self._last_candle_time = historical_candles[-1].timestamp.isoformat() if historical_candles else None
         # 1.0.8: fade 模式 — warm-up 完成後計算前日 VA 水位
         self._refresh_fade_levels()
-        self._refresh_prev_rv_gate()  # 1.0.9
 
         # Legacy fallback: old strategies only warmed recent-candle buffers, so
         # clear any accidental state. 策略的 observe() intentionally
@@ -3287,7 +3279,6 @@ class LiveTradingEngine:
                 "New trading day; PnL reset (CT 17:00)"
             )
             self._refresh_fade_levels()    # 1.0.8: fade 前日水位換日重算
-            self._refresh_prev_rv_gate()    # 1.0.9: regime gate 換日重算
 
         # Check position status from API (ALWAYS, even without new candle)
         await self._sync_position()
@@ -3544,11 +3535,6 @@ class LiveTradingEngine:
                 )
 
         if signal and not self._pending_order_id:
-            # 1.0.9: prevRV regime gate — 前一日高波動 → 今日不進場
-            if self._prev_rv_gate and self._gate_block_today:
-                self._unlock_signal_breakout(signal)
-                strat.notify_order_cancelled()
-                return
             # 1.0.8: 日虧斷路器 — 當日虧損單數達上限,今日不再開新單
             if (self._tr_daily_loss_stop
                     and self._daily_loss_count >= self._tr_daily_loss_stop):
@@ -5005,42 +4991,6 @@ class LiveTradingEngine:
             f"POC={vp.poc:.2f} VAH={vp.vah:.2f} VAL={vp.val:.2f} | "
             "today: BUY LIMIT @ VAL -> TP POC"
         )
-
-    def _refresh_prev_rv_gate(self) -> None:
-        """1.0.9: prevRV regime gate — 用歷史 K 線算各交易日 RV,決定今日是否封鎖。
-        呼叫時機:warm-up 完成後、CT 17:00 rollover(與 _refresh_fade_levels 並列)。"""
-        if not self._prev_rv_gate:
-            return
-        import math as _m
-        import statistics as _st
-        today = self._get_topstep_trade_date()
-        by_day: Dict[str, List[float]] = {}
-        for c in self._all_candles:
-            d = _topstep_trade_date(c.timestamp)
-            by_day.setdefault(d, []).append(float(c.close))
-        days = sorted(d for d in by_day if d < today)
-        rvs = []
-        for d in days:
-            cs = by_day[d]
-            rets = [_m.log(cs[i] / cs[i - 1]) for i in range(1, len(cs))
-                    if cs[i - 1] > 0 and cs[i] > 0]
-            rvs.append(_st.pstdev(rets) if len(rets) > 1 else 0.0)
-        if len(rvs) < 7:
-            self._gate_block_today = False
-            return
-        prev_rv = rvs[-1]
-        hist = rvs[-1 - self._prev_rv_gate: -1] if len(rvs) > 1 else []
-        if len(hist) >= 6:
-            cut = sorted(hist)[len(hist) * 2 // 3]
-            self._gate_block_today = prev_rv >= cut
-            self._log_event(
-                f"[REGIME] Previous RV={prev_rv:.5f} vs upper tercile over "
-                f"{len(hist)} days {cut:.5f}; "
-                + ("new orders blocked today" if self._gate_block_today else "trading allowed today"),
-                "warn" if self._gate_block_today else "info",
-            )
-        else:
-            self._gate_block_today = False
 
     def get_candle_history(self) -> List[Candle]:
         """Warm-up + live 1m candles (chronological) for multi-TF zone detection."""

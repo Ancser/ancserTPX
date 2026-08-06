@@ -315,19 +315,34 @@ class FactorSignalStrategy:
         self.pmo_early_scale = float(
             getattr(p, "factor_pmo_early_scale", 0) or 0) or None
         # 1.0.9: SL/TP 寬度上下限(ticks,單口)。見 _clamp_risk_reward。
-        self.max_risk_ticks = float(getattr(p, "max_risk_ticks", 0) or 0)
         self.max_profit_ticks = float(getattr(p, "max_profit_ticks", 0) or 0)
-        self.risk_cap_mode = str(
-            getattr(p, "risk_cap_mode", "block") or "block").lower()
-        if self.risk_cap_mode not in {"clamp", "block"}:
-            self.risk_cap_mode = "clamp"
         self.sl_rule = str(getattr(p, "factor_sl_rule", "atr") or "atr").lower()
         self.tp_rule = str(getattr(p, "factor_tp_rule", "atr") or "atr").lower()
         self.sl_value = max(0.01, float(getattr(p, "factor_sl_value", 1.5) or 1.5))
         self.tp_value = max(0.01, float(getattr(p, "factor_tp_value", 2.0) or 2.0))
         self.max_hold_bars = max(0, int(getattr(p, "factor_max_hold_bars", 24) or 0))
         self.max_trades_per_day = max(0, int(getattr(p, "factor_max_trades_per_day", 3) or 0))
-        self.warmup_bars = max(20, int(getattr(p, "factor_warmup_bars", 150) or 150))
+        self.warmup_bars = max(20, int(getattr(p, "factor_warmup_bars", 320) or 320))
+        # 1.0.9 BUG FIX:EMAPMO 是 ROC → EMA100 → EMA50 → EMA10 三層串接,而
+        # `_ema` 用第一個值當種子(沒有 SMA 預熱),初始暫態要很久才散掉。
+        # 實測(MNQ 5m,對比全量歷史):
+        #     150 根 → SIG 誤差 0.117  ← 比訊號門檻 ±0.10 本身還大
+        #     200 根 → 0.012
+        #     320 根 → 0.0013(200 個時間點最大 0.0185)
+        # 用 150 根就開始交易,暫態本身就足以偽造一個 `SIG < -0.10` 的多單訊號。
+        # 320 = FACTOR_EMAPMO_HISTORY_BARS,也正好是 _bars 的視窗長度 ——
+        # 「能算的長度」與「敢交易的長度」本來就該一致。
+        # MREV(41 根 + EMA12 + ATR14)與 KDJMA(RSV9 + RSI14)不需要那麼長,
+        # 所以只對 emapmo 家族提高門檻,不拖慢另外兩個。
+        # 1.0.9 BUG FIX:這個值原本算出來卻沒被任何閘門用到(三處都還在比
+        # warmup_bars)。EMAPMO 是 EMA100 → EMA50 → EMA10 三層串接,且 _ema 用
+        # 第一個值當種子,收斂需要遠超過 150 根:實測 150 根算出的 SIG 與收斂值
+        # 差 0.117,而進場門檻本身只有 ±0.10 —— 暖機暫態足以偽造一個訊號。
+        # 320 根的誤差中位數只有 0.0013(200 個時間點抽樣,最大 0.019)。
+        self.effective_warmup = (
+            max(self.warmup_bars, FACTOR_EMAPMO_HISTORY_BARS)
+            if self.signal_family == "emapmo" else self.warmup_bars
+        )
         self.tick_size = max(0.0001, float(get_tick_size(getattr(p, "contract_id", ""))))
         self.trend_sl_ticks = max(1, int(getattr(p, "tr_sl_ticks", getattr(p, "sl_ticks", 50)) or 50))
         self.rr_ratio = max(1, min(6, int(getattr(p, "rr_ratio", 2) or 2)))
@@ -405,10 +420,10 @@ class FactorSignalStrategy:
             snapshot = self._emapmo_snapshot()
             pmo_s = self._format_indicator(snapshot.get("pmo"), 5)
             sig_s = self._format_indicator(snapshot.get("signal"), 5)
-            if n < self.warmup_bars:
-                missing = self.warmup_bars - n
+            if n < self.effective_warmup:
+                missing = self.effective_warmup - n
                 return "\n".join([
-                    f"{fam} WARM-UP: {n}/{self.warmup_bars} completed "
+                    f"{fam} WARM-UP: {n}/{self.effective_warmup} completed "
                     f"{self.timeframe_minutes}m bars ({missing} remaining; trading disabled)",
                     f"SIG: {sig_s}",
                     f"PMO: {pmo_s}",
@@ -435,8 +450,8 @@ class FactorSignalStrategy:
                     lines.append(f"Blocked: {blocked} signal ignored ({self.side_mode})")
             return "\n".join(lines)
 
-        if n < self.warmup_bars:
-            return f"{fam} WARM-UP: {n}/{self.warmup_bars} completed bars ({self.timeframe_minutes}m)"
+        if n < self.effective_warmup:
+            return f"{fam} WARM-UP: {n}/{self.effective_warmup} completed bars ({self.timeframe_minutes}m)"
         atr = self._atr(14, 7)
         atr_s = f"ATR{self.timeframe_minutes}m: {atr:.2f}" if atr else "ATR: ?"
         try:
@@ -640,8 +655,12 @@ class FactorSignalStrategy:
 
     def _emapmo_snapshot(self) -> dict[str, Any]:
         """One EMAPMO calculation shared by trading and the explainable status."""
+        # 1.0.9: 固定截到 FACTOR_EMAPMO_HISTORY_BARS —— 圖表收集器用的就是這個
+        # 長度。原本直接餵整個 deque,而 deque 大小是 max(warmup+120, 320),
+        # 只要 warmup 調高就會超過 320,策略與圖表就會算出不同的 PMO/SIG。
+        closes = [float(c.close) for c in self._bars][-FACTOR_EMAPMO_HISTORY_BARS:]
         return calculate_emapmo_snapshot(
-            [float(c.close) for c in self._bars], self.pmo_threshold_scale,
+            closes, self.pmo_threshold_scale,
             self.pmo_normal_scale, self.pmo_early_scale)
 
     def _emapmo_direction(self, snapshot: dict[str, Any]) -> Optional[Direction]:
@@ -731,7 +750,7 @@ class FactorSignalStrategy:
         return f"Waiting for:\n{conditions}"
 
     def _factor_direction(self) -> tuple[Optional[Direction], dict[str, Any]]:
-        if len(self._bars) < self.warmup_bars:
+        if len(self._bars) < self.effective_warmup:
             return None, {}
         bars = list(self._bars)
         closes = [float(c.close) for c in bars]
@@ -802,46 +821,43 @@ class FactorSignalStrategy:
         用途是 prop firm 的兩條線:單筆風險(maxDD)與單日獲利佔比
         (consistency rule —— 單日賺太多會推高通關/出金門檻)。
 
-        兩個上限都以 **價格距離的 tick 數**計,與口數無關:
-            max_risk_ticks    SL 寬度上限
+        上限以 **價格距離的 tick 數**計,與口數無關:
             max_profit_ticks  TP 寬度上限
-        (原註解寫「單口」是錯的,造成過混淆。實作是 `reward / tick_size`,
-         純粹是價格距離;口數只影響那段距離值多少錢:
-         美元上限 = ticks × tick_size × point_value × 口數。
-         例:MNQ 2000t → 1 口 $1,000 / 2 口 $2,000 / 3 口 $3,000。
-         所以 UI 的美元滑桿在換合約或改口數時必須重算 tick 數。)
-        取較嚴的那個縮放因子,同時乘在 risk 與 reward 上,所以 RR 不變 ——
-        只是整組 SL/TP 等比縮小。
+        美元上限 = ticks × tick_size × point_value × 口數。
+        例:MNQ 2000t → 1 口 $1,000 / 2 口 $2,000 / 3 口 $3,000。
+        所以 UI 的美元滑桿在換合約或改口數時必須重算 tick 數。
 
-        ⚠️ 夾窄 SL 不是免費的:停損離進場更近,高波動時被掃出場的機率上升。
-        改動前務必用 scripts/clamp_cap_study.py 回測比較。
+        1.0.9 改為**只夾 TP,不動 SL**:
+            reward = min(reward, max_profit_ticks × tick)
 
-        risk_cap_mode:
-            "clamp"(預設,有設上限時)  縮放到上限,照樣進場
-            "block"                    超過上限就跳過這個訊號
+        1.0.9 移除 max_risk_ticks:實測它把「本來會提早出場的單」變成滿額停損。
+        BEST 2 口設 $1,000 上限後,最差單筆從 −$685 惡化到 **−$1,002**,
+        ddP95 從 $2,662 升到 $3,574。而且名目 SL > $1,000 的只有 2 筆,
+        那 2 筆本來都是贏的(+$1,825)。對 MOMENTUM/BETA FIB 則完全不觸發。
+
+        舊版是取較嚴的縮放因子同時乘在兩邊(維持 RR),但那有個反效果:
+        只想壓低單日獲利時,SL 會跟著縮窄 → 更容易被掃出場。實測 BEST 加
+        $2,000 上限後,7/2 那筆從 −$216(未觸 SL)變成 −$669(觸滿 SL),
+        整體爆倉機率從 1.2% 升到 4.3%。
+        獨立夾之後:**壓 TP 不動 SL,風險完全不變,只是少賺**(RR 變差)。
+
+        1.0.9 移除 "block" 模式:它是把整張單丟掉,實測 7 月從 23 筆掉到 20 筆、
+        P/L 從 +$5,199 掉到 +$2,705 —— 放棄了最大的贏單卻沒換到任何風險減少。
         兩個上限都沒設 → 原樣返回,行為與 1.0.8 完全相同。
         """
-        max_risk = self.max_risk_ticks
         max_profit = self.max_profit_ticks
-        if not max_risk and not max_profit:
+        if not max_profit:
             return risk, reward, ""
 
         tick = self.tick_size
-        risk_t = risk / tick
         reward_t = reward / tick
-        scale = 1.0
         why = []
-        if max_risk and risk_t > max_risk:
-            scale = min(scale, max_risk / risk_t)
-            why.append(f"risk {risk_t:.0f}t>{max_risk:g}t")
         if max_profit and reward_t > max_profit:
-            scale = min(scale, max_profit / reward_t)
-            why.append(f"reward {reward_t:.0f}t>{max_profit:g}t")
-        if scale >= 1.0:
+            why.append(f"reward {reward_t:.0f}t->{max_profit:g}t")
+            reward = max_profit * tick
+        if not why:
             return risk, reward, ""
-        if self.risk_cap_mode == "block":
-            return None, reward, "blocked"
-        return risk * scale, reward * scale, " CLAMP(" + ", ".join(why) + ")"
+        return risk, reward, " CAP(" + ", ".join(why) + ")"
 
     def _build_signal(
         self,

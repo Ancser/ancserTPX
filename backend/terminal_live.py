@@ -580,7 +580,6 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         tr_daily_loss_stop=max(0, min(9, _conf_int("tr_daily_loss_stop", 0))),
         tr_daily_win_stop=max(0, min(9, _conf_int("tr_daily_win_stop", 0))),  # 1.0.9: 日盈休息(之前漏傳)
         # 1.0.9: prevRV regime gate + fade 專用
-        tr_prev_rv_gate=max(0, min(60, _conf_int("tr_prev_rv_gate", 0))),
         fade_tp_frac=float(preset.get("fade_tp_frac", 0.75) or 0.75),
         fade_entry_mode=(lambda m: m if m in ("limit", "rejection", "or15") else "limit")(str(preset.get("fade_entry_mode") or "limit").lower()),  # 1.0.9: +or15
         sigma_window_minutes=max(5, _conf_int("sigma_window_minutes", 15)),

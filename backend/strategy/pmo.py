@@ -95,7 +95,7 @@ class EMAPMOStrategy:
         self.sl_atr = max(0.1, float(getattr(p, "pmo_sl_atr", 1.0) or 1.0))
         self.tp_atr = max(0.1, float(getattr(p, "pmo_tp_atr", 1.0) or 1.0))
         self.max_trades_per_day = max(0, int(getattr(p, "pmo_max_trades_per_day", 3) or 0))
-        self.warmup_bars = max(20, int(getattr(p, "pmo_warmup_bars", 150) or 150))
+        self.warmup_bars = max(20, int(getattr(p, "pmo_warmup_bars", 320) or 320))
         self.tick_size = max(0.0001, float(get_tick_size(getattr(p, "contract_id", ""))))
 
         self._bars: deque[Candle] = deque(maxlen=max(self.warmup_bars + 80, 260))

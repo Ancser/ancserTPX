@@ -166,11 +166,6 @@ class BacktestEngine:
         self._daily_profit_td: float = 0.0
         self._loss_count_date: Optional[str] = None
         # 1.0.9: prevRV regime gate — 前一日 RV 落在近 N 日最高三分位 → 今日不進場
-        self._prev_rv_gate = max(0, int(getattr(self.strategy_params, "tr_prev_rv_gate", 0) or 0))
-        self._rv_history: List[float] = []      # 近 N 日已完成交易日的 RV
-        self._rv_day_closes: List[float] = []    # 當日累積 close(算 RV 用)
-        self._rv_cur_day: Optional[str] = None
-        self._gate_block_today: bool = False     # 今日是否被 regime gate 封鎖
         if self.strategy_mode == "pmo":
             self._pmo_max_hold_minutes = (
                 max(0, int(getattr(self.strategy_params, "pmo_max_hold_bars", 0) or 0))
@@ -464,29 +459,6 @@ class BacktestEngine:
             self._daily_loss_count = 0
             self._daily_win_count = 0   # 1.0.9: FULL WIN LOCK 換日重置
             self._daily_profit_td = 0.0  # 1.0.9: PDPT 換日重置
-        # 1.0.9: prevRV regime gate — 日 rollover 時結算前一日 RV,決定今日是否封鎖
-        if self._prev_rv_gate and _ts_date != self._rv_cur_day:
-            if self._rv_day_closes and len(self._rv_day_closes) > 2:
-                import math as _m
-                rets = [_m.log(self._rv_day_closes[i] / self._rv_day_closes[i - 1])
-                        for i in range(1, len(self._rv_day_closes))
-                        if self._rv_day_closes[i - 1] > 0 and self._rv_day_closes[i] > 0]
-                if len(rets) > 1:
-                    import statistics as _st
-                    prev_rv = _st.pstdev(rets)
-                    # 今日是否封鎖:前一日 RV >= 近 N 日(不含今日)最高三分位
-                    hist = self._rv_history[-self._prev_rv_gate:]
-                    if len(hist) >= 6:
-                        cut = sorted(hist)[len(hist) * 2 // 3]
-                        self._gate_block_today = prev_rv >= cut
-                    else:
-                        self._gate_block_today = False
-                    self._rv_history.append(prev_rv)
-                    self._rv_history = self._rv_history[-max(self._prev_rv_gate, 20):]
-            self._rv_cur_day = _ts_date
-            self._rv_day_closes = []
-        if self._prev_rv_gate:
-            self._rv_day_closes.append(float(candle.close))
         if self.strategy_mode == "fade":
             if _ts_date != self._fade_day:
                 self._close_fade_level_zone(candle.timestamp)
@@ -660,10 +632,6 @@ class BacktestEngine:
                 # 1.0.9: PDPT —— 當日獲利達標,停開新單(既有部位照常由 SL/TP 結束)
                 if (self._tr_daily_profit_stop
                         and self._daily_profit_td >= self._tr_daily_profit_stop):
-                    self.trend_follow.notify_order_cancelled()
-                    return
-                # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單
-                if self._prev_rv_gate and self._gate_block_today:
                     self.trend_follow.notify_order_cancelled()
                     return
                 if self._signal_full_tp_locked(signal, candle):
