@@ -5,5 +5,32 @@
   "first_ts": "2026-05-27T01:30:00+00:00",
   "last_ts": "2026-07-24T20:59:00+00:00",
   "updated_at": "2026-07-26T01:29:07.159109+00:00",
-  "source": "mes_deep_fetch stitched front-month"
+  "source": "mes_deep_fetch stitched front-month",
+  "known_seams": [
+    {
+      "timestamp": "2026-05-27T01:30:00+00:00",
+      "kind": "databento_backfill_join",
+      "offset_applied": 0.0,
+      "internal_rolls_flattened": [
+        [
+          "2026-03-18 00:00:00+00:00",
+          51.5,
+          42003800,
+          42005163
+        ]
+      ],
+      "overlap_bars": 10829,
+      "detail": "2026-01-01~2026-05-27 \u4f86\u81ea Databento,\u5df2\u5c0d\u9f4a\u672c\u6a5f\u9328\u9ede,\u91cd\u758a\u5340\u6b98\u5dee 0.25 \u9ede",
+      "action": "\u63a5\u7e2b\u5df2\u9a57\u8b49;\u6b64\u9ede\u4e4b\u524d\u7684 bar source='databento'"
+    },
+    {
+      "timestamp": "2026-06-15T00:00:00+00:00",
+      "kind": "roll_anchor_mismatch",
+      "jump_points": 63.0,
+      "detail": "\u672c\u6a5f\u5728\u6b64\u76f4\u63a5\u7531 MESM6 \u63db\u5230 MESU6 \u4e14\u672a\u505a\u56de\u6eaf\u8abf\u6574(\u5169\u6bb5\u7686\u70ba\u539f\u59cb\u50f9),\u6191\u7a7a\u7522\u751f 63.00 \u9ede\u8df3\u7a7a\u3002\u4ee5 Databento \u539f\u59cb\u5408\u7d04\u67e5\u8b49:\u63a5\u7e2b\u524d\u672c\u6a5f=MESM6(+0.00),\u63a5\u7e2b\u5f8c\u672c\u6a5f=MESU6(+0.00)\u3002\u6b21\u5927\u7684\u77ed\u9593\u9694\u8df3\u7a7a\u53ea\u6709 6.25 \u9ede\u3002",
+      "verified_against": "Databento GLBX.MDP3 MESM6/MESU6 ohlcv-1m",
+      "action": "\u4e0d\u4fee\u6539\u8cc7\u6599(\u8207 MNQ 2026-06-11 \u540c\u4e00\u6c7a\u5b9a)\u3002\u56de\u770b\u7a97\u53e3\u8de8\u904e\u6b64\u9ede\u7684\u56de\u6e2c\u9808\u5b58\u7591\u3002",
+      "affects": "S3 \u5340\u6bb5(6-8\u6708)\u7684 MES \u56de\u6e2c"
+    }
+  ]
 }

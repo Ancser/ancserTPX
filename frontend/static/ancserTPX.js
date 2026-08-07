@@ -2423,6 +2423,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (tab === 'presets') renderSweepTable();
             if (tab === 'log') scrollSystemLogToBottom();
             if (tab === 'pnl') renderPnlCurve();
+            glassResample();   // 1.0.10 #1:面板剛換,取樣還是舊分頁的內容
         };
     });
 });
@@ -7238,6 +7239,19 @@ function _fmtTs(s) {
 // settled PnL sets a new equity high ("increase as income settles every day"),
 // then LOCKS at break-even (0) once it has climbed from -2000 to 0 — i.e. once
 // cumulative profit reaches +$2000. Mirrors Topstep's EOD trailing drawdown.
+// 1.0.10 #1:內容畫好之後才叫 glass 重新取樣。
+// glass 的折射是 DOM 快照,MutationObserver 那條路有 320ms 防抖 +
+// requestIdleCallback + 每次只重建一個 stage,最壞超過一秒 —— 期間取樣停在
+// 「內容還沒生成」的狀態,PNL 曲線連座標軸都還沒畫就被拷走,看起來就是全黑。
+// 在真正畫完的那一刻主動通知,黑畫面與過時取樣都會消失。
+// rAF 包一層是因為 canvas/表格常常在同一個 tick 才剛寫進 DOM。
+function glassResample(target) {
+    if (!window.TpxGlass || typeof TpxGlass.resample !== 'function') return;
+    requestAnimationFrame(() => {
+        try { TpxGlass.resample(target); } catch (e) {}
+    });
+}
+
 function renderPnlCurve() {
     const host = document.getElementById('pnl-curve-body');
     if (!host) return;
@@ -7410,6 +7424,7 @@ function renderPnlCurve() {
         ctx.fillText('— live', padL + 200, padT + 2);
     }
     // 1.0.9: 標題列統計 hint 已移除(final/peak/maxDD 文字)
+    glassResample();   // 1.0.10 #1:曲線與座標軸畫完才取樣
 }
 
 function updateClock() {
@@ -8119,6 +8134,7 @@ function renderResearchRobustness(force) {
 function calShiftMonth(delta) {
     _calMonth = new Date(_calMonth.getFullYear(), _calMonth.getMonth() + delta, 1);
     renderCalendar();
+    glassResample('#calendar-view');   // 1.0.10 #1:日曆重畫後才取樣
 }
 function calGoToday() {
     const key = topstepTradeDateKey(new Date());
@@ -8130,6 +8146,7 @@ function calGoToday() {
         _calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
     }
     renderCalendar();
+    glassResample('#calendar-view');   // 1.0.10 #1:日曆重畫後才取樣
 }
 async function renderCalendar(force) {
     await _calFetchLive(force);
@@ -8247,6 +8264,7 @@ async function renderCalendar(force) {
     renderWeeklyIncomeCurve(bt, live);
     renderOrderComparison();
     renderResearchRobustness();   // 1.0.9: Monte Carlo / Walk-Forward / Slippage
+    glassResample('#calendar-view');   // 1.0.10 #1
 }
 
 // ════════════════════════════════════════════════════════════════════════

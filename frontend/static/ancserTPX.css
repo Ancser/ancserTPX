@@ -1206,10 +1206,15 @@
             gap: 10px;
         }
         .cal-nav { display: flex; align-items: center; gap: 8px; }
-        .cal-nav #cal-month-label {
-            font-family: -apple-system, 'Segoe UI', Roboto, 'Noto Sans TC', sans-serif;
-            font-size: 1.25rem; font-weight: 700;
-            letter-spacing: 0.3px; color: var(--text);
+        /* 1.0.10 #1:原本是 `.cal-nav #cal-month-label`(id 選擇器)+ sans-serif 700。
+           兩個問題:
+             a) 粗體 sans 是當初為了可視性犧牲藝術字體,使用者要換回來;
+             b) glass 的折射 clone 會被 sanitizeClone 剝掉 id,這條規則對 clone
+                失效 → 鏡頭裡是 Rajdhani 細體、實際頁面是粗體 sans,兩邊字寬不同。
+           改用 class 之後 clone 自動一致,不必再去 tpx-glass.css 補特例。 */
+        .cal-nav .cal-month-label {
+            font-size: 1.05rem; font-weight: 500;
+            letter-spacing: 0.6px; color: var(--text);
             min-width: 150px; text-align: center;
         }
         .cal-navbtn, .cal-todaybtn {

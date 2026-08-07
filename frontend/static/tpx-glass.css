@@ -157,9 +157,26 @@
 .optical-stage-copy {
     position: absolute !important;
     inset: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
+    /* 1.0.10 #2:width/height 不能用 !important。
+       syncOpticalSurfaces 需要把「畫布尺寸」與「版面寬度」分開設定:
+       world 要吃 scrollWidth(不裁切水平溢出),但 clone 必須用 clientWidth
+       排版,否則寬表格造成的溢出會讓 clone 比實際內容區更寬 —— 原本兩行的
+       段落在 clone 裡變一行,底下所有內容整體上移,鏡頭跟實際畫面對不齊。
+       先前 JS 已經在寫 stageCopy.style.width,但被這裡的 !important 蓋掉,
+       等於死碼。改成一般宣告當預設值,JS 的 inline style 才拿得回控制權。 */
+    width: 100%;
+    height: 100%;
     margin: 0 !important;
+    /* 1.0.10 D1 稽核找到的:surface 常常掛在 <button>/<select> 之類的元素裡,
+       UA stylesheet 對它們有自己的 font(Chrome: 400 13.3333px Arial)。
+       clone 是 surface 的**子節點**,於是整份拷貝繼承到按鈕的字體,而不是
+       文件的 —— 實測 18 個元素 Rajdhani → Arial、font-size 24px → 28.5px。
+       字寬不同 → 換行位置不同 → 鏡頭與實際畫面對不齊。
+       clone 要重新宣告文件排版基準;子節點自己的字體規則照樣覆蓋這裡。 */
+    /* 靜態基準不夠:switch/segment 這類 surface 的 stage 本身就在按鈕裡,
+       它們的原件確實是 Arial 13.33px,寫死 Rajdhani 反而讓 clone 錯另一邊。
+       正解是從**實際 stage** 複製 computed font —— 見 tpx-glass.js 的
+       copyStageTypography(),它在建立/重建 clone 時寫成 inline style。 */
     /* The clone carries the stage's own classes, so a scrollable stage
        (.sidebar is overflow-y:auto) clones its clipping too — and the
        clone's scrollTop is always 0. That silently truncated the
@@ -208,6 +225,12 @@
         min-height: 0;
     }
 }
+
+/* 1.0.10 D1:這兩個是 id 選擇器(#chart-quick-btns / #bottom-drag-handle),
+   clone 被剝掉 id 後 display:flex 失效 → 子元素改成 block 堆疊,clone 高度
+   與原件不同。用 clone 內的 class 重建。 */
+.optical-stage-copy .chart-quick-btns-shape,
+.optical-stage-copy [data-clone-display="flex"] { display: flex !important; }
 
 .optical-stage-copy [data-optical] { visibility: hidden !important; }
 .optical-background-copy .control-source-content { visibility: hidden !important; }

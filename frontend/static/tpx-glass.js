@@ -600,9 +600,15 @@
             <feDisplacementMap data-node="shrink-displacement" in="blurred" in2="shrinkMap" scale="0" xChannelSelector="R" yChannelSelector="G" result="shrunk"></feDisplacementMap>
             ${nestedShrinkResolver}
             <feImage data-node="displacement-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="displacementMapRaw"></feImage>
+            <!-- 1.0.10 #5:對**位移貼圖**做極輕度模糊,不是對輸出。
+                 feDisplacementMap 的位移量是整數像素,貼圖上相鄰像素的位移差
+                 造成階梯狀邊緣。把貼圖平滑之後位移量的空間變化連續,鋸齒明顯
+                 下降,而輸出影像本身完全不模糊。
+                 成本極低:貼圖比輸出小很多,且只在建立時算一次。 -->
+            <feGaussianBlur data-node="displacement-aa" in="displacementMapRaw" stdDeviation="0.5" result="displacementMapAA"></feGaussianBlur>
             <feMerge result="displacementMap">
                 <feMergeNode in="neutralPad"></feMergeNode>
-                <feMergeNode in="displacementMapRaw"></feMergeNode>
+                <feMergeNode in="displacementMapAA"></feMergeNode>
             </feMerge>
             <feDisplacementMap data-node="displacement" in="${displacementInput}" in2="displacementMap" scale="50" xChannelSelector="R" yChannelSelector="G" result="refracted"></feDisplacementMap>
             <feColorMatrix data-node="saturation" in="refracted" type="saturate" values="1.3" result="refractedSaturated"></feColorMatrix>
@@ -688,9 +694,39 @@
         return copy;
     }
 
+    /* 1.0.10 D1:clone 是 surface 的子節點,而 surface 常常掛在 <button>/<select>
+       裡 —— UA stylesheet 對那些元素有自己的 font(Chrome: 400 13.3333px Arial)。
+       於是整份拷貝的字體基準來自按鈕,不是它原本所在的位置。字寬一變,換行位置
+       就變,鏡頭與實際畫面對不齊。
+       靜態 CSS 基準解不了,因為 switch/segment 的 stage 本身就在按鈕裡(它們的
+       原件確實是 Arial)。只有從**實際 stage** 讀 computed 值才會兩邊都對。 */
+    const TYPOGRAPHY_PROPS = [
+        "font-family", "font-size", "font-weight", "font-style",
+        "line-height", "letter-spacing", "text-transform", "white-space",
+    ];
+
+    function copyStageTypography(source, copy) {
+        try {
+            const cs = getComputedStyle(source);
+            TYPOGRAPHY_PROPS.forEach((prop) => {
+                copy.style.setProperty(prop, cs.getPropertyValue(prop));
+            });
+        } catch (e) { /* source 已從 DOM 移除 */ }
+    }
+
+    /* #chart-quick-btns / #bottom-drag-handle 的 display:flex 來自 id 選擇器,
+       clone 剝了 id 就失效。標成 clone-safe 屬性讓 CSS 重建。 */
+    function markCloneDisplay(root) {
+        root.querySelectorAll("#chart-quick-btns, #bottom-drag-handle").forEach((n) => {
+            n.dataset.cloneDisplay = "flex";
+        });
+    }
+
     function cloneOpticalSource(source, roleClasses = []) {
+        markCloneDisplay(source);
         const copy = cloneSourceTree(source);
         sanitizeClone(copy);
+        copyStageTypography(source, copy);
         copy.classList.add("optical-stage-copy", ...roleClasses);
         /* A rebuild can land during the short inverse-mask animation.
            The sampled content copy must never inherit that live cutout. */
@@ -756,6 +792,19 @@
         });
     }
 
+    /* key → 該滑桿的 live fill 元素。所有 clone 的同 key fill 都跟著它。 */
+    const sliderFills = new Map();
+
+    function syncSliderFillsIn(copy) {
+        if (!copy || !sliderFills.size) return;
+        copy.querySelectorAll("[data-slider-key]").forEach((node) => {
+            const live = sliderFills.get(node.dataset.sliderKey);
+            if (!live) return;
+            const target = node.querySelector(".slider-fill");
+            if (target) target.style.width = live.style.width;
+        });
+    }
+
     function markComponentSources() {
         liveAll(".glass-slider").forEach((root) => {
             if (!root.dataset.sliderKey) {
@@ -785,6 +834,9 @@
         const stages = Array.from(document.querySelectorAll("[data-stage]"));
         stages.forEach((stage) => {
             markScrollSources(stage);
+            /* 1.0.10 #3:canvas key 必須在拷貝**之前**編好,clone 才帶得到,
+               否則 bindMirrors 只能退回位置索引。 */
+            ensureCanvasKeys(stage);
             stageTemplates.set(stage, cloneOpticalSource(stage));
         });
 
@@ -1059,6 +1111,8 @@
         surfaces.forEach((surface) => {
             if (targetSurface && surface !== targetSurface) return;
             if (component && surface.component !== component) return;
+            syncSliderFillsIn(surface.stageCopy);            // 1.0.10 #2
+            if (surface.contentStageCopy) syncSliderFillsIn(surface.contentStageCopy);
             if (surface.syncSample) {
                 surface.syncSample(surface.stageCopy);
                 if (surface.contentStageCopy) surface.syncSample(surface.contentStageCopy);
@@ -1203,18 +1257,47 @@
             (c) => !c.closest(".optical-stage-copy") && !c.closest(".optical-layer")
         );
 
+    /* 1.0.10 #3:配對從「位置索引」改成「穩定 key」。
+       原本是 targets[i] —— app 在 clone 之後才建立的 canvas(切分頁時才畫的
+       PNL 曲線是典型)會讓後面所有索引錯位,或直接找不到對應者 → 那塊全黑,
+       要等 armStageCloneRebuild 走完 320ms 防抖 + idle callback + 每次只重建
+       一個 stage 的排隊,最壞超過一秒。
+       給每個 live canvas 一個一次性 id,clone 會原樣帶著它,之後就能用 key 對,
+       新增/刪除 canvas 都不會影響既有配對。 */
+    let canvasKeySeq = 0;
+
+    function ensureCanvasKeys(root) {
+        liveCanvases(root).forEach((c) => {
+            if (!c.dataset.glassCanvasKey) {
+                c.dataset.glassCanvasKey = `gc${canvasKeySeq++}`;
+            }
+        });
+    }
+
     function bindMirrors(surface) {
+        ensureCanvasKeys(surface.stage);
         const sources = liveCanvases(surface.stage);
         surface.mirrorPairs = [];
         if (!sources.length) return;
         /* Canvas pixels belong to the main stage only. A dock's content
            copy has an unrelated local source and must never receive chart
            canvases merely because one is added to that track later. */
-        const targets = [...surface.stageCopy.querySelectorAll("canvas")];
+        const byKey = new Map();
+        surface.stageCopy.querySelectorAll("canvas[data-glass-canvas-key]")
+            .forEach((c) => byKey.set(c.dataset.glassCanvasKey, c));
+        /* 沒有 key 的是 clone 建立前就存在、當時還沒編號的舊節點 —— 用位置
+           索引當後備,行為與 1.0.9 相同。 */
+        const positional = [...surface.stageCopy.querySelectorAll("canvas")];
+        let missing = 0;
         sources.forEach((src, i) => {
-            if (targets[i]) surface.mirrorPairs.push([src, targets[i]]);
+            const target = byKey.get(src.dataset.glassCanvasKey) || positional[i];
+            if (target) surface.mirrorPairs.push([src, target]);
+            else missing += 1;
         });
         surface.mirrorSourceCount = sources.length;
+        /* clone 裡沒有對應者 = 那塊會是黑的。立刻排重建,不要等下一次
+           MutationObserver 觸發。 */
+        if (missing) scheduleStageCloneRebuild(surface.stage);
     }
 
     /* Which stages actually need re-cloning. A workspace switch used to
@@ -1364,6 +1447,17 @@
         markStageDirty(stage);
         if (mirror.rebuildIdle) return;
         armStageCloneRebuild();
+    }
+
+    /* 1.0.10 #4:視窗尺寸變化時,stage 的 rect 與 scrollWidth 都變了,但 clone
+       還是舊排版 —— 折射影像會整體位移。原本只有滑桿掛了 ResizeObserver,
+       stage 層完全沒有。 */
+    function observeStageResize() {
+        if (typeof ResizeObserver === "undefined") return;
+        const ro = new ResizeObserver((entries) => {
+            entries.forEach((entry) => scheduleStageCloneRebuild(entry.target));
+        });
+        stageTemplates.forEach((_, stage) => ro.observe(stage));
     }
 
     function observeLiveStageContent() {
@@ -1535,6 +1629,7 @@
         targets.forEach((stage) => dirtyStages.delete(stage));
         stageTemplates.forEach((_, stage) => {
             if (!targets.has(stage)) return;
+            ensureCanvasKeys(stage);   // 1.0.10 #3
             stageTemplates.set(stage, cloneOpticalSource(stage));
         });
         surfaces.forEach((surface) => {
@@ -1994,7 +2089,30 @@
         let returningFlat = false;
         const dragDistancePx = 6;
         const pad = () => padOf(dock);
-        const cell = () => (dock.clientWidth - pad() * 2) / buttons.length;
+        /* 1.0.10 #3:cell 同時被當成「步距」與「膠囊寬度」,但這兩個值不同。
+           (clientWidth - pad*2) / n 假設按鈕填滿軌道 —— 主 dock 剛好成立
+           (軌道 452、pad 9、3 顆各 144,等分 144 = 實際間距 144),底部不成立:
+           軌道 1424、pad 4、5 顆各 263.7、實際間距 287.7,等分卻算出 282.8。
+           結果膠囊比按鈕寬 19px,而且每格少 4.9px、逐格累積(第 5 格差 20px)。
+
+           拆成兩個量,等間距模型本身完全不動(拖曳邏輯照舊):
+             stepSize()  相鄰按鈕的實際間距 —— 定位用
+             cellWidth() 按鈕自己的寬度 —— 膠囊寬度用
+           量不到就退回原本的等分值,行為與 1.0.9 相同。 */
+        const equalCell = () => (dock.clientWidth - pad() * 2) / buttons.length;
+        const stepSize = () => {
+            if (buttons.length < 2) return equalCell();
+            const a = buttons[0].getBoundingClientRect().left;
+            const b = buttons[1].getBoundingClientRect().left;
+            const d = b - a;
+            return d > 1 ? d : equalCell();
+        };
+        const cellWidth = () => {
+            const w = buttons[0] ? buttons[0].getBoundingClientRect().width : 0;
+            return w > 1 ? w : equalCell();
+        };
+        const cell = () => stepSize();
+
         const targetFor = (index) => index * cell();
         const apply = () => {
             const moving = [x, scale, stretch].some((spring) => !spring.settled(0.002));
@@ -2023,7 +2141,7 @@
                in the same frame. */
             dock.style.setProperty("--control-content", maskActive ? "1" : "0");
             bubble.style.left = `${pad() + x.value}px`;
-            bubble.style.width = `${cell()}px`;
+            bubble.style.width = `${cellWidth()}px`;   // 1.0.10 #3:寬度用按鈕實寬,不是步距
             bubble.style.transform =
                 `scale(${scale.value * stretch.value}, ${scale.value / stretch.value})`;
             if (REFRACT_CONTROL_LABELS.has("dock")) {
@@ -2176,7 +2294,30 @@
         let returningFlat = true;
         const dragDistancePx = 6;
         const pad = () => padOf(track);
-        const cell = () => (track.clientWidth - pad() * 2) / buttons.length;
+        /* 1.0.10 #3:cell 同時被當成「步距」與「膠囊寬度」,但這兩個值不同。
+           (clientWidth - pad*2) / n 假設按鈕填滿軌道 —— 主 dock 剛好成立
+           (軌道 452、pad 9、3 顆各 144,等分 144 = 實際間距 144),底部不成立:
+           軌道 1424、pad 4、5 顆各 263.7、實際間距 287.7,等分卻算出 282.8。
+           結果膠囊比按鈕寬 19px,而且每格少 4.9px、逐格累積(第 5 格差 20px)。
+
+           拆成兩個量,等間距模型本身完全不動(拖曳邏輯照舊):
+             stepSize()  相鄰按鈕的實際間距 —— 定位用
+             cellWidth() 按鈕自己的寬度 —— 膠囊寬度用
+           量不到就退回原本的等分值,行為與 1.0.9 相同。 */
+        const equalCell = () => (track.clientWidth - pad() * 2) / buttons.length;
+        const stepSize = () => {
+            if (buttons.length < 2) return equalCell();
+            const a = buttons[0].getBoundingClientRect().left;
+            const b = buttons[1].getBoundingClientRect().left;
+            const d = b - a;
+            return d > 1 ? d : equalCell();
+        };
+        const cellWidth = () => {
+            const w = buttons[0] ? buttons[0].getBoundingClientRect().width : 0;
+            return w > 1 ? w : equalCell();
+        };
+        const cell = () => stepSize();
+
         const apply = () => {
             // Match the top dock: scale/stretch motion remains optically
             // active even after the horizontal spring reaches its cell.
@@ -2208,7 +2349,7 @@
                in the same frame. */
             track.style.setProperty("--control-content", maskActive ? "1" : "0");
             indicator.style.left = `${pad() + x.value}px`;
-            indicator.style.width = `${cell()}px`;
+            indicator.style.width = `${cellWidth()}px`;   // 1.0.10 #3:寬度用按鈕實寬,不是步距
             indicator.style.transform =
                 `scale(${scale.value * stretch.value}, ${scale.value / stretch.value})`;
             if (REFRACT_CONTROL_LABELS.has("segment")) {
@@ -2580,18 +2721,17 @@
         let value = clamp(parseFloat(root.dataset.value ?? "0.42"), 0, 1);
         let thumbX = 0;
 
-        /* The clone must show the same fill width as the live track,
-           or the refracted image lags a frame behind the thumb. */
+        /* 1.0.10 #2:fill 的同步改成全域註冊 —— 原本只掛在 thumb 自己的 surface
+           上,同一條滑桿也出現在側欄/dock/lens 等其他 surface 的取樣裡,那些
+           clone 的 fill 寬度永遠停在拷貝當下。thumb 帶 data-optical,在 clone
+           裡被 visibility:hidden 藏起來,於是取樣只看得到一條長度過時的進度條、
+           沒有滑塊。
+           ⚠️ surface 本身仍然要留著:同一個閉包後面的 ResizeObserver、
+           spring loop、glass-sync 都拿它呼叫 syncOpticalSurfaces()。
+           先前把它一起刪掉,ResizeObserver 每次觸發都丟
+           `ReferenceError: surface is not defined`。 */
         const surface = surfaceFor(thumb);
-        if (surface) {
-            surface.syncSample = (copy) => {
-                const sampleRoot = sampleInCopy(
-                    copy, `[data-slider-key="${root.dataset.sliderKey}"]`
-                );
-                const sampleFill = sampleRoot?.querySelector(".slider-fill");
-                if (sampleFill) sampleFill.style.width = fill.style.width;
-            };
-        }
+        sliderFills.set(root.dataset.sliderKey, fill);
 
         const snap = (raw) => {
             if (!step) return raw;
@@ -2956,6 +3096,7 @@
         loadTuning();
         buildOpticalSurfaces();
         observeLiveStageContent();
+        observeStageResize();   // 1.0.10 #4:視窗縮放 → 重建 clone
 
         liveAll(".glass-dock").forEach((dock) => {
             initDragDock(dock, (button) => {
@@ -3032,6 +3173,21 @@
             setTheme,
             sync: scheduleOpticalSync,
             refresh: () => { scheduleOpticalSync(); scheduleFilterRebuild(); },
+            /* 1.0.10 #1:立即重新拷貝,不走 armStageCloneRebuild 的
+               320ms 防抖 + requestIdleCallback + 每次只重建一個 stage 的排隊
+               (最壞超過一秒)。app 在「內容真的畫好了」的那一刻自己呼叫,
+               取樣就不會停在空白的初始狀態。
+               用法:TpxGlass.resample()            全部
+                    TpxGlass.resample('#calendar-view')  單一 stage */
+            resample(target) {
+                const stage = typeof target === "string"
+                    ? document.querySelector(target)
+                    : (target || null);
+                if (stage) markStageDirty(stage);
+                else rebuildAllStages = true;
+                rebuildStageClones();
+                scheduleOpticalSync();
+            },
             /* Off => canvas-backed stages refract blank space and the
                idle backdrop-filter is all you see. Use it to A/B the
                cost of option 2 against option 1. */
@@ -3098,6 +3254,99 @@
                     if (Object.keys(diff).length) out[component] = diff;
                 });
                 return JSON.stringify(out, null, 4);
+            },
+            /* 1.0.10 D1:clone 一致性稽核。
+               折射的前提是 clone 與原件像素級一致,但 sanitizeClone 會剝掉所有
+               id —— ancserTPX.css 有 17 條含 id 的選擇器,其中 13 條影響排版或
+               字體,任何一條都足以讓 clone 的換行位置不同,鏡頭就對不齊。
+               目前的做法是「使用者肉眼發現 → 手工補一條 .optical-stage-copy 規則」,
+               這個函式把它變成可檢測的:平行走訪 clone 與原件,比對會影響排版的
+               computed style,回報所有差異。
+
+               用法(console):  TpxGlass.auditClones()
+                              TpxGlass.auditClones({ verbose: true }) */
+            auditClones(options = {}) {
+                const PROPS = [
+                    "font-family", "font-size", "font-weight", "line-height",
+                    "letter-spacing", "white-space", "padding-left", "padding-right",
+                    "box-sizing", "display", "flex-direction",
+                ];
+                const findings = [];
+                const walk = (live, copy, path, depth) => {
+                    if (!live || !copy || depth > 24) return;
+                    if (live.nodeType !== 1 || copy.nodeType !== 1) return;
+                    const a = getComputedStyle(live);
+                    const b = getComputedStyle(copy);
+                    const diffs = PROPS
+                        .filter((prop) => a.getPropertyValue(prop) !== b.getPropertyValue(prop))
+                        .map((prop) => ({
+                            prop,
+                            live: a.getPropertyValue(prop),
+                            clone: b.getPropertyValue(prop),
+                        }));
+                    /* 寬度差 > 1px 就足以改變換行位置 */
+                    const wLive = live.getBoundingClientRect().width;
+                    const wCopy = copy.getBoundingClientRect().width;
+                    if (Math.abs(wLive - wCopy) > 1) {
+                        diffs.push({
+                            prop: "rect.width",
+                            live: `${wLive.toFixed(1)}px`,
+                            clone: `${wCopy.toFixed(1)}px`,
+                        });
+                    }
+                    if (diffs.length) {
+                        findings.push({
+                            path,
+                            tag: live.tagName.toLowerCase(),
+                            id: live.id || null,
+                            cls: live.className || null,
+                            diffs,
+                        });
+                    }
+                    const la = [...live.children];
+                    const lb = [...copy.children];
+                    if (la.length !== lb.length) {
+                        findings.push({
+                            path, tag: live.tagName.toLowerCase(),
+                            id: live.id || null,
+                            diffs: [{ prop: "childCount", live: la.length, clone: lb.length }],
+                        });
+                        return;   /* 結構已分岔,再往下比對只會產生雜訊 */
+                    }
+                    la.forEach((child, i) => walk(
+                        child, lb[i], `${path} > ${child.tagName.toLowerCase()}`, depth + 1
+                    ));
+                };
+                surfaces.forEach((surface) => {
+                    if (!surface.stage || !surface.stageCopy) return;
+                    walk(surface.stage, surface.stageCopy,
+                         surface.stage.dataset.stage || "stage", 0);
+                });
+                /* 同一個 stage 被多個 surface 各拷一份,差異會重複出現 —— 去重 */
+                const seen = new Set();
+                const unique = findings.filter((f) => {
+                    const key = f.path + "|" + f.diffs.map((d) => d.prop).join(",");
+                    if (seen.has(key)) return false;
+                    seen.add(key);
+                    return true;
+                });
+                if (!unique.length) {
+                    console.log("[TPX Glass] clone 稽核:無差異 ✔");
+                    return [];
+                }
+                console.warn(
+                    `[TPX Glass] clone 稽核:${unique.length} 處差異 —— `
+                    + "每一處都可能讓鏡頭與實際畫面對不齊"
+                );
+                console.table(unique.flatMap((f) => f.diffs.map((d) => ({
+                    element: f.id ? `#${f.id}` : (f.cls ? `.${String(f.cls).split(" ")[0]}` : f.tag),
+                    path: f.path.slice(-60),
+                    prop: d.prop,
+                    live: String(d.live).slice(0, 32),
+                    clone: String(d.clone).slice(0, 32),
+                }))));
+                if (options.verbose) console.log(unique);
+                return unique;
             },
             get diagnostics() {
                 return {

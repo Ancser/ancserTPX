@@ -35,6 +35,7 @@ import logging
 import pickle
 import time as _time
 import calendar
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -152,15 +153,82 @@ def save(bars: List[Candle], symbol: str = "MNQ", base: int = 1) -> None:
     logger.info(f"[CandleStore] saved {len(bars)} bars → {p.name}")
 
 
+# ── Re-anchor detection (1.0.10) ──────────────────────────────────────────
+# 換月時 routes._build_continuous_candles 會用「當前前月」當價格錨點回溯調整
+# 舊合約。但那個調整值是**每次 fetch 重算**的,而本 store 是只增不改的 ——
+# 增量抓取只涵蓋當前合約時 prev_bars 為空,調整值退回 0,那批 bar 就以未調整
+# 狀態寫進來,與先前已調整的舊 bar 並存。
+#
+# 結果就是 2026-06-11T00:00Z 那個 268.50 點的假跳空:接縫前套了 +269.25,
+# 接縫後沒套。原始 M26 在該點是連續的,跳空純粹是拼接產物。
+#
+# 修法:**store 自己就是錨點。** 併入前先用重疊區量測 incoming 相對 store
+# 的偏移,若偏移大且高度一致(= 換了錨,不是正常的 bar 修訂),就把 incoming
+# 平移回 store 的錨位再寫入。已寫入的歷史一律不動。
+_REANCHOR_MIN_POINTS = 5.0      # 小於此視為正常 bar 修訂,不處理
+_REANCHOR_MIN_AGREE = 0.90      # 重疊 bar 至少九成同意才算換錨
+_REANCHOR_MIN_SAMPLES = 20      # 重疊太少不足以判斷,寧可不動
+
+
+def detect_reanchor(new_bars: List[Candle],
+                    existing_by_ts: Dict[datetime, Candle]) -> Optional[float]:
+    """量測 incoming 相對 store 的固定價格偏移。
+
+    回傳 incoming − store 的偏移量;判定不是換錨則回傳 None。
+    正常的 bar 修訂差異小且雜亂,換錨則是大而高度一致的常數。
+    """
+    diffs = []
+    for b in new_bars:
+        old = existing_by_ts.get(_as_utc(b.timestamp))
+        if old is not None:
+            diffs.append(round(b.close - old.close, 4))
+    if len(diffs) < _REANCHOR_MIN_SAMPLES:
+        return None
+    counts: Dict[float, int] = {}
+    for d in diffs:
+        counts[d] = counts.get(d, 0) + 1
+    offset, hits = max(counts.items(), key=lambda kv: kv[1])
+    if abs(offset) < _REANCHOR_MIN_POINTS:
+        return None
+    if hits / len(diffs) < _REANCHOR_MIN_AGREE:
+        return None
+    return offset
+
+
+def _shift(c: Candle, delta: float) -> Candle:
+    return replace(c, open=c.open - delta, high=c.high - delta,
+                   low=c.low - delta, close=c.close - delta)
+
+
 def merge(new_bars: List[Candle], symbol: str = "MNQ",
           base: int = 1) -> Tuple[int, int]:
     """Upsert new_bars into the persistent store.  Returns (total, added).
-    Newer fetch wins on timestamp clash (bar revision)."""
+    Newer fetch wins on timestamp clash (bar revision).
+
+    1.0.10: 併入前先做換錨偵測。store 的價格錨點是權威,incoming 若換了錨
+    就先平移回來 —— 否則換月時會在 store 內部長出假跳空。
+    """
     existing = load(symbol, base)
     by_ts: Dict[datetime, Candle] = {
         _as_utc(b.timestamp): b for b in existing
     }
     before = len(by_ts)
+
+    offset = detect_reanchor(new_bars, by_ts) if by_ts else None
+    if offset is not None:
+        logger.warning(
+            "[CandleStore] %s re-anchor detected: incoming is %+.2f vs store. "
+            "Shifting incoming back to the store anchor so no synthetic gap is "
+            "created. (This is the 2026-06-11 bug class.)", symbol, offset)
+        new_bars = [_shift(b, offset) for b in new_bars]
+        _record_seam(symbol, base, {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "kind": "reanchor_corrected",
+            "offset": offset,
+            "bars": len(new_bars),
+            "note": "incoming shifted to store anchor; stored history untouched",
+        })
+
     for b in new_bars:
         by_ts[_as_utc(b.timestamp)] = b
     merged = sorted(by_ts.values(), key=lambda c: c.timestamp)
@@ -280,6 +348,39 @@ def save_meta(meta: dict, symbol: str = "MNQ", base: int = 1) -> None:
     p = _meta_path(symbol, base)
     with open(p, "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=2, default=str)
+
+
+# ── Known-bad seam registry (1.0.10) ──────────────────────────────────────
+# 已知的資料瑕疵記在 meta 裡,而不是去改資料。回測照常使用全部 bar
+# (使用者的要求:預設一起回測),但任何回看窗口跨過這些點的結果都該存疑。
+
+def _record_seam(symbol: str, base: int, entry: dict) -> None:
+    meta = load_meta(symbol, base)
+    seams = meta.setdefault("known_seams", [])
+    seams.append(entry)
+    save_meta(meta, symbol, base)
+
+
+def known_seams(symbol: str = "MNQ", base: int = 1) -> List[dict]:
+    """已標記的資料接縫。回測/研究可據此判斷結果是否落在污染窗內。"""
+    return load_meta(symbol, base).get("known_seams", [])
+
+
+def seams_within(start: datetime, end: datetime, symbol: str = "MNQ",
+                 base: int = 1) -> List[dict]:
+    """回傳落在 [start, end] 區間內、且會影響價格連續性的接縫。"""
+    hits = []
+    for s in known_seams(symbol, base):
+        ts = s.get("timestamp")
+        if not ts:
+            continue
+        try:
+            t = _as_utc(datetime.fromisoformat(str(ts)))
+        except Exception:
+            continue
+        if _as_utc(start) <= t <= _as_utc(end):
+            hits.append(s)
+    return hits
 
 
 def advance_frozen(candles: List[Candle], symbol: str = "MNQ",

@@ -63,6 +63,11 @@ class Candle:
     volume: int
     symbol: str = "NQ"
     interval: str = "5m"
+    # 1.0.10: 資料來源。回測預設把所有來源一起用,這個欄位只做內部區分
+    # 與稽核 —— live 與未來的資料累積仍然只靠 topstepx。
+    # 舊 pickle 沒有這個欄位,但 dataclass 的預設值是類別屬性,所以舊物件
+    # 讀到的是 "topstepx",正好正確(store 裡既有的 bar 全部來自券商)。
+    source: str = "topstepx"
 
     @property
     def mid(self) -> float:
