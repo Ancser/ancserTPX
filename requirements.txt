@@ -1,5 +1,13 @@
-# ancserTPX 執行期依賴。版本鎖定到實際在跑的那組(pip freeze 2026-08-08),
-# 因為交易行為對 pandas/numpy 的變更敏感,不該讓 CI 悄悄升版。
+# ancserTPX runtime dependencies.
+#
+# Pinned to the exact set actually running (pip freeze 2026-08-08): trading
+# behaviour is sensitive to pandas/numpy changes, so CI must not silently
+# pick up a new minor version.
+#
+# ASCII ONLY. pip reads requirements files with the *locale* encoding, not
+# UTF-8. A GitHub runner with LANG unset resolves to ASCII, so a non-ASCII
+# comment here makes `pip install -r` die with UnicodeDecodeError before a
+# single test runs. (This is what broke the first CI run on 6e1b915.)
 fastapi==0.115.6
 uvicorn==0.34.0
 pydantic==2.10.4
@@ -11,3 +19,10 @@ websockets==14.1
 signalrcore==0.9.5
 numpy==2.2.6
 pandas==2.2.3
+# emapmo_messenger renders the 1280x720 signal chart. Imported lazily but with
+# no fallback -- missing it is a hard failure, not a degraded mode.
+matplotlib==3.10.8
+# Slim Linux containers often ship no system tzdata and zoneinfo then raises
+# ZoneInfoNotFoundError. Trade-date boundaries, the PI pre-session filter and
+# session gating all depend on zoneinfo -- do not leave it to chance.
+tzdata

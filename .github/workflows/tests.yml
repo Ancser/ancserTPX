@@ -14,19 +14,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
           cache: pip
 
-      - run: pip install -r requirements-dev.txt
+      # 開發機是 Windows、CI 是 Linux。第一次跑就失敗而本機全綠時,
+      # 這幾行是唯一能區分「環境差異」和「程式壞了」的資訊。
+      - name: environment
+        run: |
+          python -VV
+          python -c "import platform, sys; print(platform.platform()); print(sys.getdefaultencoding(), sys.getfilesystemencoding())"
+          python -c "from zoneinfo import ZoneInfo; [print(z, ZoneInfo(z)) for z in ('America/Los_Angeles','America/New_York','America/Chicago')]"
+
+      - name: install
+        run: pip install -r requirements-dev.txt
 
       # 測試不得依賴 .env 憑證或券商連線。少了這行,漏寫 mock 的測試會在
       # 本機因為讀得到 .env 而通過,在 CI 才炸 —— 那時已經推上去了。
+      #
+      # -rA 印出每一個測試的結果:CI 失敗時「哪幾個紅」比 traceback 更早需要。
       - name: pytest
-        run: python -m pytest tests/ -q --tb=short
+        run: python -m pytest tests/ -q -rA --tb=short
         env:
           TOPSTEPX_USERNAME: ''
           TOPSTEPX_API_KEY: ''
@@ -36,14 +47,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+      - uses: actions/checkout@v5
       # 前端 9,333 行沒有任何測試。語法檢查擋不了邏輯錯誤,但擋得住
       # 「區塊替換把括號吃掉」這類編輯事故,成本幾乎為零。
+      # ubuntu runner 本身就帶 node,不需要 setup-node。
       - name: node --check on frontend JS
         run: |
+          node --version
           for f in frontend/static/*.js; do
             echo "checking $f"
             node --check "$f"
