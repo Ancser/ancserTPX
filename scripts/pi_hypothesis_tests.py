@@ -31,8 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from backend.data.pi_history import load_rows  # noqa: E402
 from backend.data import candle_store              # noqa: E402
-from backend.live.pi_listener import is_pre_session  # noqa: E402
 
 SYMBOL_MAP = {"QQQ": "MNQ", "SPY": "MES"}
 POINT_VALUE = {"MNQ": 2.0, "MES": 5.0}
@@ -211,11 +211,9 @@ def P(lbl, s, w=30):
 
 
 def main():
-    rows = json.load(open(ROOT / "data" / "research" / "pi_signals.json", encoding="utf-8"))
-    n0 = len(rows)
-    rows = [r for r in rows if not (r.get("pre_session") or
-            is_pre_session(datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00"))))]
-    print(f"[PI] 濾除開盤前重播 {n0 - len(rows)} 則 → {len(rows)} 則盤中訊號")
+    # 1.0.10: 走共用 loader(backend/data/pi_history.py)。先前八個研究腳本
+    # 各自複製一份過濾邏輯,結果 loader 修好了它們卻還在用污染資料。
+    rows = load_rows()
 
     sigs = []
     for r in rows:

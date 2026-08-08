@@ -1689,3 +1689,24 @@
 @media (max-width: 900px) {
     .sidebar-fog { display: none; }
 }
+
+/* 1.0.10: 語言切換搬進玻璃頂欄(先前被 skin 直接 remove 掉)。
+   外觀對齊旁邊的 theme switch,不搶視覺重心。 */
+.glass-topbar .topbar-lang {
+    flex: none;
+    min-width: 2.25rem;
+    height: 1.75rem;
+    padding: 0 0.5rem;
+    border: 1px solid var(--glass-rim);
+    border-radius: 999px;
+    background: var(--glass-tint);
+    color: var(--text2);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.6667rem;
+    font-weight: 600;
+    letter-spacing: 0.0417rem;
+    cursor: pointer;
+    backdrop-filter: blur(11px) saturate(1.12);
+    -webkit-backdrop-filter: blur(11px) saturate(1.12);
+}
+.glass-topbar .topbar-lang:hover { color: var(--text); border-color: var(--cyan); }

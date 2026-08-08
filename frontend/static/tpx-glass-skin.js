@@ -182,8 +182,18 @@
         account.appendChild(orb);
         account.appendChild(panel);
 
-        // Right cluster: theme switch sits immediately left of the orb.
+        // Right cluster: language + theme switch sit immediately left of the orb.
         const right = el("div", "topbar-right");
+
+        // 1.0.10 BUG FIX:原本這裡是 `#lang-toggle.remove()` —— 套上玻璃皮膚
+        // 就再也切不了語言。皮膚是外觀,不該拿掉功能。
+        // 把原本那顆按鈕**搬過來**而不是複製一個:onclick="toggleLanguage()"
+        // 與 i18n 的 DOM walker 都認這個 id,複製會變成兩個真相。
+        const lang = byId("lang-toggle");
+        if (lang) {
+            lang.classList.add("topbar-lang");
+            right.appendChild(lang);
+        }
         const themeTrack = el("button", "glass-switch topbar-theme", {
             type: "button", role: "switch", title: "Light / dark",
         });
@@ -201,7 +211,6 @@
             clock.classList.add("glass-runtime-anchor");
             document.body.appendChild(clock);
         }
-        document.querySelector("#lang-toggle")?.remove();
         header.remove();
 
         // One stationary workspace fog spans both the scrolling sidebar and

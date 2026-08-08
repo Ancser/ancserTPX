@@ -40,16 +40,9 @@ def main():
     ap.add_argument("--short-hold", type=int, default=60)
     a = ap.parse_args()
 
-    rows = json.load(open(ROOT / "data" / "research" / "pi_signals.json", encoding="utf-8"))
-    # 1.0.10: 濾掉07:00 PT 之前的訊號(開盤後半小時是前一交易日的重播)。
-    # 不濾的話訊號數虛增 27%、標記數虛增 44%,而且方向來自已走完的行情。
-    from backend.live.pi_listener import is_pre_session as _recap
-    from datetime import datetime as _dt
-    _n0 = len(rows)
-    rows = [r for r in rows if not (
-        r.get("pre_session") or
-        _recap(_dt.fromisoformat(str(r["ts"]).replace("Z", "+00:00"))))]
-    print(f"[PI] 濾除開盤前重播 {_n0 - len(rows)} 則 → 保留 {len(rows)} 則盤中訊號")
+    # 1.0.10: 走共用 loader(backend/data/pi_history.py)。先前八個研究腳本
+    # 各自複製一份過濾邏輯,結果 loader 修好了它們卻還在用污染資料。
+    rows = load_rows()
     data = {s: build(s) for s in ("MNQ", "MES")}
 
     trades = []

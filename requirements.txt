@@ -1,0 +1,13 @@
+# ancserTPX 執行期依賴。版本鎖定到實際在跑的那組(pip freeze 2026-08-08),
+# 因為交易行為對 pandas/numpy 的變更敏感,不該讓 CI 悄悄升版。
+fastapi==0.115.6
+uvicorn==0.34.0
+pydantic==2.10.4
+python-dotenv==1.0.1
+httpx==0.28.1
+requests==2.34.2
+aiohttp==3.14.3
+websockets==14.1
+signalrcore==0.9.5
+numpy==2.2.6
+pandas==2.2.3

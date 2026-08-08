@@ -1,0 +1,50 @@
+# 1.0.10: 這個 repo 先前沒有 CI —— 142 個測試只有在有人手動輸入指令時才跑。
+# 治理文件整套建立在「characterization test 會保護你」之上,但 opt-in 的測試
+# 保護不了任何東西。這是那個假設的地基。
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      - run: pip install -r requirements-dev.txt
+
+      # 測試不得依賴 .env 憑證或券商連線。少了這行,漏寫 mock 的測試會在
+      # 本機因為讀得到 .env 而通過,在 CI 才炸 —— 那時已經推上去了。
+      - name: pytest
+        run: python -m pytest tests/ -q --tb=short
+        env:
+          TOPSTEPX_USERNAME: ''
+          TOPSTEPX_API_KEY: ''
+          DISCORD_TOKEN: ''
+
+  syntax:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # 前端 9,333 行沒有任何測試。語法檢查擋不了邏輯錯誤,但擋得住
+      # 「區塊替換把括號吃掉」這類編輯事故,成本幾乎為零。
+      - name: node --check on frontend JS
+        run: |
+          for f in frontend/static/*.js; do
+            echo "checking $f"
+            node --check "$f"
+          done
