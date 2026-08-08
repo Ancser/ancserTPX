@@ -191,6 +191,12 @@ def load(symbol: str = "MNQ", base: int = 1, use_cache: bool = True) -> List[Can
         return []
     if use_cache and mtime is not None:
         _CACHE[key] = (mtime, bars)
+        # 1.0.10 BUG FIX:這裡原本 `return bars` —— 那是**快取裡的那個 list
+        # 本身**。快取命中的路徑有做淺拷貝,但未命中(第一次載入)的路徑沒有,
+        # 所以「第一個」呼叫端拿到的是共用 list。accumulator.store_status()
+        # 會對結果做 bars.sort(),於是第一次載入之後快取就被就地改過了。
+        # 不會拋例外,只是之後每個人拿到的順序都可能不對。
+        return list(bars)
     return bars
 
 

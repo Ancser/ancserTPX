@@ -39,7 +39,7 @@
 | LIVE-002 | 沒有歷史 K 棒時熱身以 **error** 記錄並跳過,不得當成正常路徑靜默通過 | `test_live_warmup_safety.py` |
 | LIVE-007 | session 不允許交易的時段,熱身必須重置 breakout 確認狀態(`_reset_breakout_confirmation`),不得讓跨 session 的殘留狀態影響第一根實盤 K 棒 | `test_live_warmup_safety.py` |
 | LIVE-003 | Zone 資料超過 12 小時視為過期,不得用來下單 | `UNPROTECTED` |
-| LIVE-004 | 每日獲利休息 = **只停開新單**。既有部位由 SL/TP/trail 自然了結,**不得強制平倉** | `UNPROTECTED` ⚠️ |
+| LIVE-004 | 每日風控休息(虧損單數 / 贏單數 / PDPT)= **只停開新單**。既有部位由 SL/TP/trail 自然了結,**不得強制平倉**。閘門是 `>=`,0 代表停用 | `test_live_daily_rest.py` |
 | LIVE-005 | 交易日邊界走 `zoneinfo` 的真實 CME 日曆(週日 18:00 ET → 週五 17:00 ET,每日 17:00–18:00 維護),不是寫死的 UTC 22:00 | `test_live_daily_locks.py` |
 | LIVE-006 | 每日虧損鎖觸發後不得再開新倉 | `test_live_daily_locks.py` |
 
@@ -60,9 +60,9 @@
 | ID | 不變量 | Test |
 |---|---|---|
 | DATA-001 | Store 只增不減,永不截斷 | `test_candle_store.py` |
-| DATA-002 | `merge()` 必須保留錨點,防止換月接縫(9 月 U26→Z26)產生假跳空 | `UNPROTECTED` ⚠️ |
-| DATA-003 | 換月判準是 `instrument_id`,**不是跳幅大小**。用跳幅猜會把真實行情(2026-04-10 CPI +69 點)當成換月抹平 | `UNPROTECTED` ⚠️ |
-| DATA-004 | `load()` 回傳**淺拷貝** —— 呼叫端會對結果就地 `sort()`,共用 list 會污染快取 | `UNPROTECTED` |
+| DATA-002 | `merge()` 必須保留錨點:store 的錨點是權威,incoming 換了錨就平移 incoming,已存歷史一個字不動。且不得把正常 bar 修訂誤判成換錨 | `test_candle_store_anchor.py` |
+| DATA-003 | 換月判準是 `instrument_id`,**不是跳幅大小**。用跳幅猜會把真實行情(2026-04-10 +69 點)當成換月抹平,而且不可逆 | `test_roll_detection.py` |
+| DATA-004 | `load()` **兩條路徑**(快取命中與未命中)都要回傳淺拷貝。呼叫端會就地 `sort()`,共用 list 會污染快取 | `test_candle_store_anchor.py`(2026-08-08 修復:未命中路徑原本直接回傳快取本體) |
 | DATA-005 | 缺口偵測不得把常態休市誤報:16:15–16:30 ET 收盤休止、盤外極短破洞、假日 | `test_candle_store.py` |
 | DATA-006 | 完整 store(210MB/商品)不進版控;`data/store/seed/` 的開機種子只含自家 TopstepX 抓的資料,不含 Databento(授權) | `UNPROTECTED` |
 
@@ -90,13 +90,17 @@
 
 ## 目前的覆蓋缺口(誠實版)
 
-**36 條裡有 17 條是 `UNPROTECTED`。** 標 ⚠️ 的 3 條是我認為最該優先補的,
-因為它們的失敗模式是**靜默的**且直接影響金錢或資料正確性:
+**36 條裡有 13 條是 `UNPROTECTED`,23 條有測試。**
+先前標 ⚠️ 的高風險項(熱身安全、引擎白名單、錨點保留、換月判準、休息不強平)
+**已全部補完**。剩下的多半集中在 Glass/前端 —— 那裡沒有測試框架,
+而且 `frontend/static/ancserTPX.js` 有 9,333 行、0 個測試。
+
+補測試的過程本身抓到三個真問題:
 
 ```
-LIVE-004  休息時強制平倉 → 砍掉本來會獲利的部位
-DATA-002  接縫未保留錨點 → 回測資料出現假跳空
-DATA-003  用跳幅猜換月 → 把真實行情抹平(已發生過一次)
+candle_store.load()  快取未命中時回傳快取本體,不是淺拷貝(已修)
+INVARIANTS.md        LIVE-001 指名一個不存在的函式(已修,見下)
+test_roll_detection  第一版把跳幅放錯位置,連錯誤實作都會通過(已修)
 ```
 
 ### ⚠️ 這份文件本身也會過期
