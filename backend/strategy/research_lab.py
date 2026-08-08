@@ -660,13 +660,27 @@ class BetaFibRetrace(_ResearchBase):
         # 1.0.9: fib 基準專用。層級以 rth_open 為 0、rth_close 為 1 度量:
         #   price(f) = rth_open + f × move
         # 進場 = 1 - retrace_frac(預設 0.8);SL 更深(0.75/0.70);TP 更淺(0.90)
-        self.sl_fib = float(getattr(params, "research_sl_fib", 0.75) or 0.75)
-        self.tp_fib = float(getattr(params, "research_tp_fib", 0.90) or 0.90)
+        # 1.0.10: 這兩個先前寫死且沒有 UI —— risk_basis="fib" 等於沒有 TP 選項。
+        self.sl_fib = float(
+            getattr(params, "betafib_sl_fib", None)
+            or getattr(params, "research_sl_fib", 0.75) or 0.75)
+        self.tp_fib = float(
+            getattr(params, "betafib_tp_fib", None)
+            or getattr(params, "research_tp_fib", 0.90) or 0.90)
         # 1.0.9: 觸發門檻的第二種寫法 —— 當日 RTH 漲跌的**百分比**。
         # ATR 倍數會隨波動率漂移,「今天漲了 0.4%」則是固定、可直接對話的口徑。
         self.min_move_pct = float(
             getattr(params, "betafib_min_move_pct", None)
             or getattr(params, "research_min_move_pct", 0.0) or 0.0)
+        # 1.0.10: 腿幅**上限**。暴漲日(>4%)的回撤行為與溫和上漲日不同,
+        # 只有下限的話兩者會被混在同一個統計裡。0 = 無上限。
+        self.max_move_pct = float(
+            getattr(params, "betafib_max_move_pct", 0.0) or 0.0)
+        # 1.0.10: 進場時窗(UTC 小時)。推動腿一律在 RTH 量測(13:30–20:00 UTC
+        # = 加州 6:30am–1pm),但掛單等回撤的時段可以另外限定。
+        # 例:加州 3pm–6pm = UTC 22–01(跨午夜)。None = 不限制。
+        self.entry_start_h = getattr(params, "betafib_entry_start_hour", None)
+        self.entry_end_h = getattr(params, "betafib_entry_end_hour", None)
         # 1.0.9: fib 錨點。使用者圖表確認實際是後者。
         #   "oc" RTH open → close(舊行為)
         #   "hl" RTH 擺動低 → 擺動高(推動腿)—— 交易者實際畫線的方式,
@@ -684,6 +698,18 @@ class BetaFibRetrace(_ResearchBase):
         self._level = None          # 掛單價
         self._level_dir = None      # Direction
         self._fired = False
+
+    def _in_entry_window(self, ts: datetime) -> bool:
+        """1.0.10: 是否落在允許進場的 UTC 小時區間(可跨午夜)。
+
+        兩端任一為 None = 不限制,維持原本整個夜盤都能進場的行為。
+        22→1 這種跨午夜的區間是 [22,24) ∪ [0,1),所以用 or 而不是 and。
+        """
+        a, b = self.entry_start_h, self.entry_end_h
+        if a is None or b is None:
+            return True
+        h = ts.hour
+        return (a <= h < b) if a < b else (h >= a or h < b)
 
     def _daily_atr(self) -> Optional[float]:
         if len(self._day_ranges) < 5:
@@ -752,9 +778,13 @@ class BetaFibRetrace(_ResearchBase):
             if abs(move) / atr < self.min_move_atr:
                 return
             # 1.0.9: 百分比門檻 —— 「今天漲了 0.4% 才算大漲」
-            if self.min_move_pct > 0:
-                if abs(move) / anchor * 100.0 < self.min_move_pct:
-                    return
+            # 1.0.10: 加上限 → 變成區間「漲 1~4% 才算數」。暴漲日的回撤
+            # 行為與溫和上漲日不同,不排除的話兩者會被混進同一個統計。
+            move_pct = abs(move) / anchor * 100.0
+            if self.min_move_pct > 0 and move_pct < self.min_move_pct:
+                return
+            if self.max_move_pct > 0 and move_pct > self.max_move_pct:
+                return
             # retrace_frac 是「回吐比例」,進場 fib = 1 - retrace_frac
             self._level = anchor + (1.0 - self.retrace_frac) * move
             self._level_dir = Direction.BUY if move > 0 else Direction.SELL
@@ -766,6 +796,10 @@ class BetaFibRetrace(_ResearchBase):
         self._roll(candle)
         self._track(candle)
         if self._fired or self._level is None or self._level_dir is None:
+            return None
+        # 1.0.10: 進場時窗。_track() 照常在整個夜盤維護掛單價,只是在窗外
+        # 不成交 —— 這樣切換時窗不會改變 fib 層級本身,兩個維度可以獨立測。
+        if not self._in_entry_window(_utc(candle.timestamp)):
             return None
         # 限價單:價格必須真的走到掛單價才成交
         if self._level_dir == Direction.BUY:

@@ -100,13 +100,6 @@ DEFAULT_PRESET_PARAMS = {
     "sigma_stop_span": 1.0,
     "sigma_accept_sigma": 2.0,
     "sigma_accept_bars": 2,
-    "pmo_timeframe_minutes": 5,
-    "pmo_signal_mode": "normal",
-    "pmo_sl_atr": 1.0,
-    "pmo_tp_atr": 1.0,
-    "pmo_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
-    "pmo_max_trades_per_day": 3,
-    "pmo_warmup_bars": 150,
     # 1.0.9: FACTOR 策略預設(與 routes._DEFAULT_PRESET_PARAMS 同步)
     "factor_timeframe_minutes": 5,
     "factor_signal_family": "emapmo",
@@ -604,15 +597,6 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         sigma_stop_span=max(0.25, _conf_float("sigma_stop_span", 1.0)),
         sigma_accept_sigma=max(1.0, _conf_float("sigma_accept_sigma", 2.0)),
         sigma_accept_bars=max(1, _conf_int("sigma_accept_bars", 2)),
-        pmo_timeframe_minutes=max(1, _conf_int("pmo_timeframe_minutes", 5)),
-        pmo_signal_mode=(
-            "early" if str(preset.get("pmo_signal_mode") or "").lower() == "early" else "normal"
-        ),
-        pmo_sl_atr=max(0.1, _conf_float("pmo_sl_atr", 1.0)),
-        pmo_tp_atr=max(0.1, _conf_float("pmo_tp_atr", 1.0)),
-        pmo_max_hold_bars=0,   # 1.0.9: HOLD 5m system removed → SL/TP-only exits
-        pmo_max_trades_per_day=max(0, _conf_int("pmo_max_trades_per_day", 3)),
-        pmo_warmup_bars=max(20, _conf_int("pmo_warmup_bars", 150)),
         # 1.0.9: FACTOR 參數(與 routes 的 StrategyParams 組裝同步)
         factor_timeframe_minutes=max(1, _conf_int("factor_timeframe_minutes", 5)),
         factor_signal_family=_normalize_factor_family(preset.get("factor_signal_family", "emapmo")),

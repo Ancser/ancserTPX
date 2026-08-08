@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, patch
 from backend.db.models import Candle, Direction, StrategyParams
 from backend.live.warmup import completed_signal_bars, signal_warmup_progress
 from backend.strategy.factor import FactorSignalStrategy
-from backend.strategy.pmo import EMAPMOStrategy
 from backend.terminal_live import _fetch_warmup_candles
 
 
@@ -79,19 +78,6 @@ class LiveWarmupTests(unittest.IsolatedAsyncioTestCase):
             strategy.observe(candle, [], True)
         self.assertEqual(len(strategy._bars), 1)
         self.assertEqual(completed_signal_bars(candles, params), 1)
-
-    def test_progress_also_matches_standalone_pmo_strategy(self):
-        params = _params(
-            strategy="pmo",
-            pmo_timeframe_minutes=5,
-            pmo_warmup_bars=150,
-        )
-        candles = _asia_history()
-        strategy = EMAPMOStrategy(params)
-        for candle in candles:
-            strategy.observe(candle, [], True)
-        self.assertEqual(completed_signal_bars(candles, params), len(strategy._bars))
-        self.assertEqual(len(strategy._bars), 150)
 
     async def test_terminal_fetch_expands_nonempty_short_window(self):
         params = _params()

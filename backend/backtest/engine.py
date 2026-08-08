@@ -30,7 +30,6 @@ from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
 )
 from backend.strategy.sigma import RollingSigmaFade
-from backend.strategy.pmo import EMAPMOStrategy
 from backend.strategy.factor import FactorSignalStrategy
 from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
@@ -108,7 +107,7 @@ class BacktestEngine:
         # 1.0.8: strategy_mode "trend"(現行)或 "fade"(前日 VA 回歸)。
         # 屬性名沿用 trend_follow,兩策略介面相容,其餘管線不變。
         _strat = str(getattr(self.strategy_params, "strategy", "") or "").lower()
-        self.strategy_mode = _strat if _strat in ("fade", "sigma", "pmo", "factor", "momentum", "betafib") else "factor"
+        self.strategy_mode = _strat if _strat in ("fade", "sigma", "factor", "momentum", "betafib", "pi") else "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
             if str(getattr(self.strategy_params, "fade_entry_mode", "") or "").lower() == "or15":
@@ -117,10 +116,13 @@ class BacktestEngine:
                 self.trend_follow = PrevDayFade(params=self.strategy_params)
         elif self.strategy_mode == "sigma":
             self.trend_follow = RollingSigmaFade(params=self.strategy_params)
-        elif self.strategy_mode == "pmo":
-            self.trend_follow = EMAPMOStrategy(params=self.strategy_params)
         elif self.strategy_mode == "factor":
             self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
+        # 1.0.10: PI —— 外部 Discord 訊號驅動。進場時機來自推播,
+        # 出場/風控/下單路徑與其他策略完全共用。
+        elif self.strategy_mode == "pi":
+            from backend.strategy.pi_signal import PiSignalStrategy
+            self.trend_follow = PiSignalStrategy(params=self.strategy_params)
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
         # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
@@ -166,15 +168,21 @@ class BacktestEngine:
         self._daily_profit_td: float = 0.0
         self._loss_count_date: Optional[str] = None
         # 1.0.9: prevRV regime gate — 前一日 RV 落在近 N 日最高三分位 → 今日不進場
-        if self.strategy_mode == "pmo":
-            self._pmo_max_hold_minutes = (
-                max(0, int(getattr(self.strategy_params, "pmo_max_hold_bars", 0) or 0))
-                * max(1, int(getattr(self.strategy_params, "pmo_timeframe_minutes", 5) or 5))
-            )
-        elif self.strategy_mode == "factor":
+        # 1.0.10 BUG FIX:原本只有 strategy_mode == "factor" 才算出非零值,
+        # 但下方 _process_candle 的時間出場閘門檢查的是 FACTOR_PIPELINE_STRATEGIES
+        # (含 momentum / betafib)—— 閘門看起來支援它們,值卻永遠是 0。
+        # 實測:MOMENTUM/BETAFIB 在 12/24/48 根四種設定下回傳**完全相同**的結果,
+        # 就是這個靜默無效造成的;研究時會誤判成「時間出場對這兩族沒影響」。
+        # 預設 factor_max_hold_bars=0,所以修正後生產行為不變。
+        if self.strategy_mode in FACTOR_PIPELINE_STRATEGIES:
+            # 兩族的「一根」定義不同:factor 用 factor_timeframe_minutes,
+            # research_lab(momentum / betafib)用 research_tf_minutes。
+            _tf = (int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5)
+                   if self.strategy_mode == "factor"
+                   else int(getattr(self.strategy_params, "research_tf_minutes", 5) or 5))
             self._pmo_max_hold_minutes = (
                 max(0, int(getattr(self.strategy_params, "factor_max_hold_bars", 0) or 0))
-                * max(1, int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5))
+                * max(1, _tf)
             )
         else:
             self._pmo_max_hold_minutes = 0
@@ -550,9 +558,17 @@ class BacktestEngine:
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
-                if self._pmo_max_hold_minutes > 0 and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES:
+                # 1.0.10: PI 策略的持倉上限**依方向不同** —— 實測多單抱越久越好
+                # (240m PF 2.80)、空單抱越久越差(240m PF 0.79)。空單用 60m
+                # 時間出場的 PF 是純 SL/TP 的 2.28 vs 1.89(總額幾乎相同,
+                # 差在時間出場會把一部分虧損單提早砍掉)。
+                _hold = self._pmo_max_hold_minutes
+                if self.strategy_mode == "pi" and self._open_position.direction == Direction.SELL:
+                    _hold = max(0, int(getattr(
+                        self.strategy_params, "pi_short_hold_min", 0) or 0))
+                if _hold > 0 and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES:
                     held = (candle.timestamp - self._open_position.entry_time).total_seconds() / 60.0
-                    if held >= self._pmo_max_hold_minutes:
+                    if held >= _hold:
                         self._force_exit(candle, ExitReason.FLATTEN)
                         return
                 # ── Trailing SL: trigger at configured TP%, then move SL from entry ──
@@ -598,10 +614,6 @@ class BacktestEngine:
                 eval_zones = []
                 eval_mature = True
                 zone_source = "rolling_sigma"
-            elif self.strategy_mode == "pmo":
-                eval_zones = []
-                eval_mature = True
-                zone_source = "pmo"
             elif self.strategy_mode == "factor":
                 eval_zones = []
                 eval_mature = True

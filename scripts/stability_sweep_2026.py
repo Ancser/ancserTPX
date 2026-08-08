@@ -82,7 +82,7 @@ def build_grid():
     grid = []
     f_base = _base("BEST")            # FACTOR 族基底
     m_base = _base("MOMENTUM BEST")   # MOMENTUM 族基底
-    b_base = _base("BETA FIB")        # BETAFIB 族基底
+    b_base = _base("BETAFIB BEST")    # BETAFIB 族基底(舊的 "BETA FIB" 已由使用者刪除)
 
     # 限流維度:兩個最穩的既有 preset(BETA FIB / MOMENTUM BEST)都用
     # max_trades_per_day=1 + one_trade_per_session_direction=True。
@@ -149,6 +149,43 @@ def build_grid():
             "rr_ratio": rr,
             "factor_max_trades_per_day": mx,
         })
+
+    # 1.0.10: 補上先前漏測的兩族。它們原本走 sweep.py 的 run_day_zone_sweep /
+    # run_distribution_sweep,那兩支有自己的指標格式,無法跟本檔的穩定性閘門
+    # 相比 —— 所以改成同樣以 preset 為基底、跑同一套指標。
+    # 參數名取自 sweep.py 的對應迴圈,確保與正式路徑一致。
+    for entry, sl, tp_frac in product(
+        ("limit", "rejection"), (60, 80, 120, 160), (0.50, 0.75, 1.00),
+    ):
+        grid.append({**f_base,
+            "_tag": f"DAYZONE/{entry}/sl{sl}/tp{int(tp_frac*100)}",
+            "strategy": "fade",
+            "fade_entry_mode": entry,
+            "fade_tp_frac": tp_frac,
+            "sl_ticks": sl, "tr_sl_ticks": sl,
+            "area_timeframe": "15m", "method": "single", "tf_combo": [],
+        })
+    # OR15 的 SL/TP 是內建比例,只有進場模式這一個維度
+    grid.append({**f_base,
+        "_tag": "DAYZONE/or15",
+        "strategy": "fade", "fade_entry_mode": "or15", "fade_tp_frac": 1.0,
+        "area_timeframe": "15m", "method": "single", "tf_combo": [],
+    })
+
+    for win, meth, entry, acc, span, tgt in product(
+        (15, 30, 60), ("std", "mad"), ("blind", "reject"),
+        ("none", "filter"), (0.75, 1.0, 1.5), ("half", "center"),
+    ):
+        grid.append({**f_base,
+            "_tag": f"DIST/{win}m/{meth}/{entry}/{acc}/span{span}/{tgt}",
+            "strategy": "sigma",
+            "sigma_window_minutes": win,
+            "sigma_method": meth,
+            "sigma_entry_mode": entry,
+            "sigma_accept_mode": acc,
+            "sigma_stop_span": span,
+            "sigma_target_mode": tgt,
+        })
     return grid
 
 
@@ -211,7 +248,22 @@ def _run(spec):
     profitable = sum(1 for m in months if mstats[m][1] > 0)
     worst_month_pnl = min((mstats[m][1] for m in months), default=0.0)
 
-    # 三段走查
+    # 1.0.10: 資料擴到 2020–2026 之後,固定三段已無意義 —— 改成**逐年**。
+    # 每年至少要有 n_min 筆才納入,否則部分年度(2026 只到 8 月)會用極少樣本
+    # 拉低或拉高 worst_year。
+    YEAR_MIN_N = 8
+    by_year = defaultdict(list)
+    for m in months:
+        by_year[m[:4]].extend(by_month[m])
+    years = sorted(by_year)
+    ystats = {y: _stats(by_year[y]) for y in years}
+    eligible = [y for y in years if ystats[y][0] >= YEAR_MIN_N]
+    year_pf = {y: ystats[y][2] for y in years}
+    finite_y = [ystats[y][2] for y in eligible if ystats[y][2] != float("inf")]
+    worst_year_pf = min(finite_y) if finite_y else 0.0
+    years_profitable = sum(1 for y in eligible if ystats[y][1] > 0)
+
+    # 舊的三段仍保留(向後相容,且短期資料下仍可讀)
     segs = {"S1": ("2026-01", "2026-03"), "S2": ("2026-04", "2026-06"),
             "S3": ("2026-06", "2026-08")}
     seg_pf, seg_n = {}, {}
@@ -227,6 +279,12 @@ def _run(spec):
         "months_traded": len(months), "months_profitable": profitable,
         "worst_month_pnl": round(worst_month_pnl, 1),
         "worst_seg_pf": round(worst_seg_pf, 3),
+        # 1.0.10: 逐年
+        "years_traded": len(eligible), "years_profitable": years_profitable,
+        "worst_year_pf": round(worst_year_pf, 3),
+        "yearly": {y: {"n": ystats[y][0], "pnl": round(ystats[y][1], 1),
+                       "pf": None if ystats[y][2] == float("inf") else round(ystats[y][2], 3)}
+                   for y in years},
         "seg_pf": {k: (None if v == float("inf") else round(v, 3))
                    for k, v in seg_pf.items()},
         "seg_n": seg_n,
@@ -238,15 +296,32 @@ def _run(spec):
 
 
 def passes(r):
+    """1.0.10: 資料擴到 6 年後改用**逐年**閘門。
+
+    舊版的「三段走查」在 2020–2026 上是每 2.2 年一段,粗到看不出年度崩壞;
+    而且 months_profitable>=5 這種絕對數字在 80 個月的樣本下形同虛設。
+    改成比例式 + 逐年最差,才會隨資料長度自動收緊。
+    """
     if r.get("error") or r["n"] < 30:
         return False
     if (r["pf"] or 0) <= 1.3:
         return False
-    if r["months_profitable"] < 5:
-        return False
+    yt = r.get("years_traded", 0)
+    if yt >= 3:
+        # 六年資料:每一個有效年度都要 PF>1,且至少 70% 的月份為正
+        if (r.get("worst_year_pf") or 0) <= 1.0:
+            return False
+        if r["years_profitable"] < yt:
+            return False
+        if r["months_traded"] and r["months_profitable"] / r["months_traded"] < 0.55:
+            return False
+    else:
+        # 短樣本沿用舊閘門
+        if r["months_profitable"] < 5:
+            return False
+        if any((v is not None and v <= 1.0) for v in r["seg_pf"].values()):
+            return False
     if r["worst_month_pnl"] <= -1000:
-        return False
-    if any((v is not None and v <= 1.0) for v in r["seg_pf"].values()):
         return False
     return True
 
@@ -256,12 +331,43 @@ def main():
     ap.add_argument("--workers", type=int, default=14)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--symbol", default="MNQ")
+    ap.add_argument("--tags", default="",
+                    help="只跑這個 JSON 檔列出的 tag(6 年資料下全網格要 4 小時/商品)")
+    ap.add_argument("--out-suffix", default="")
     a = ap.parse_args()
 
-    out = OUT.with_name(f"stability_sweep_2026_{a.symbol}.json")
+    out = OUT.with_name(f"stability_sweep_2026_{a.symbol}{a.out_suffix}.json")
     grid = build_grid()
+    if a.tags:
+        want = set(json.load(open(a.tags, encoding="utf-8")))
+        # 基準線一定要在(BEST 是這輪的對照組)
+        want |= {"FACTOR/emapmo/long_only/sl2.5/tp7.5/early/1dir",
+                 "MOMENTUM/long_only/sl1.5/rr1/first60/max1",
+                 "BETAFIB/fib0.382/hl/sl2.5/rr3/max1"}
+        grid = [g for g in grid if g["_tag"] in want]
+        print(f"[sweep] --tags: {len(want)} 個目標 → 網格命中 {len(grid)}", flush=True)
     if a.limit:
         grid = grid[:a.limit]
+    # 1.0.10: 依可用記憶體自動夾住 worker 數。
+    # 每個 worker 都會把整份 candle 載進自己的位址空間 —— 233 萬根 = 常駐 1.25GB、
+    # 載入峰值 2.37GB。用 14 workers 跑 6 年資料需要 17.5GB > 實體 15.9GB,
+    # 結果不是變慢而是整台機器 thrashing(實測 free RAM 掉到 0.3GB,零進度)。
+    try:
+        import psutil
+        from backend.data import candle_store as _cs
+        n_bars = len(_cs.load(a.symbol, 1))
+        per_worker_gb = n_bars * 576 / 1024 ** 3          # 實測每根 576 bytes
+        avail_gb = psutil.virtual_memory().available / 1024 ** 3
+        # 留 2GB 給 OS,並用**載入峰值**(常駐的 1.9 倍)當上限
+        cap = max(1, int((avail_gb - 2.0) / max(per_worker_gb * 1.9, 1e-6)))
+        if cap < a.workers:
+            print(f"[sweep] 記憶體上限:每 worker 約 {per_worker_gb:.2f}GB(峰值 "
+                  f"{per_worker_gb*1.9:.2f}GB),可用 {avail_gb:.1f}GB "
+                  f"→ workers {a.workers} 降為 {cap}", flush=True)
+            a.workers = cap
+    except Exception as _e:
+        print(f"[sweep] 記憶體檢查略過: {type(_e).__name__}", flush=True)
+
     print(f"[sweep] {a.symbol} {len(grid)} 變體 × {a.workers} workers", flush=True)
     t0 = time.time()
     results = []
@@ -278,7 +384,9 @@ def main():
 
     errs = [r for r in results if r.get("error")]
     good = [r for r in results if not r.get("error")]
-    good.sort(key=lambda r: (-(r["worst_seg_pf"] or 0), -(r["pf"] or 0)))
+    # 1.0.10: 六年資料下用逐年最差排序;短樣本仍用三段
+    _key = "worst_year_pf" if any(r.get("years_traded", 0) >= 3 for r in good) else "worst_seg_pf"
+    good.sort(key=lambda r: (-(r.get(_key) or 0), -(r["pf"] or 0)))
     winners = [r for r in good if passes(r)]
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -292,12 +400,15 @@ def main():
           f"過閘 {len(winners)}/{len(good)}")
     if errs:
         print(f"  範例錯誤: {errs[0]['tag']} -> {errs[0]['error']}")
-    print(f"\n{'變體':<52}{'n':>4}{'PnL':>9}{'PF':>6}{'最差段':>7}{'獲利月':>7}")
-    print("-" * 88)
-    for r in (winners or good)[:25]:
-        print(f"{r['tag'][:50]:<52}{r['n']:>4}{r['pnl']:>9,.0f}"
-              f"{(r['pf'] or 0):>6.2f}{r['worst_seg_pf']:>7.2f}"
-              f"{r['months_profitable']:>4}/{r['months_traded']}")
+    print(f"\n{'變體':<50}{'n':>5}{'PnL':>10}{'PF':>6}"
+          f"{'最差年PF':>9}{'獲利年':>7}{'獲利月':>8}")
+    print("-" * 96)
+    for r in (winners or good)[:30]:
+        yt = r.get("years_traded", 0)
+        print(f"{r['tag'][:48]:<50}{r['n']:>5}{r['pnl']:>10,.0f}"
+              f"{(r['pf'] or 0):>6.2f}{(r.get('worst_year_pf') or 0):>9.2f}"
+              f"{r.get('years_profitable', 0):>4}/{yt}"
+              f"{r['months_profitable']:>5}/{r['months_traded']}")
     print(f"\n結果寫入 {out}")
 
 

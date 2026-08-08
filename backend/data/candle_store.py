@@ -60,7 +60,12 @@ STORE_DIR = ROOT / "data" / "store"
 
 _MAX_DAILY_GAP_MIN = 100            # anything ≤100 min within the window → daily
 _MIN_WEEKEND_GAP_HOURS = 36         # anything ≥36h spanning a Sat → weekend/holiday
+# 1.0.10: 盤外短於這個長度的破洞視為「那幾分鐘沒成交」,不是資料遺失。
+# 實測 2020–2026 的 101 個 <10 分鐘破洞**全部在 RTH 之外**,所以這條不會遮蔽
+# RTH 的真實遺失。RTH 內即使 1 分鐘的洞仍會被標記。
+_MIN_THIN_GAP_MIN = 10
 _CT = ZoneInfo("America/Chicago")
+_ET = ZoneInfo("America/New_York")
 
 # CME session boundary: bars stop appearing around 22:00 UTC and resume ~23:00
 # UTC.  A "complete trading day" ends just before the maintenance gap.
@@ -129,17 +134,53 @@ def _meta_path(symbol: str = "MNQ", base: int = 1) -> Path:
 
 # ── Core: load / save / merge ─────────────────────────────────────────────
 
-def load(symbol: str = "MNQ", base: int = 1) -> List[Candle]:
+# 1.0.10: 以檔案 mtime 為鍵的記憶體快取。
+# 233 萬根的 pkl 讀取加排序要約 8 秒,而一次連線流程會呼叫 load() 好幾次
+# (fetch-historical、帳號輪詢、圖表),前端就卡在 LOADING DATA。
+# mtime 變了就自動失效,所以 save() 之後一定讀得到新資料。
+#
+# ⚠️ 記憶體代價:每根 Candle 約 576 bytes → 233 萬根約 1.25GB/商品。
+# 這是 web server 程序常駐的量。sweep 是另開子程序,不共用這份快取
+# (見 memory project_sweep_memory_limit)。
+_CACHE: Dict[str, Tuple[float, List[Candle]]] = {}
+
+
+def load(symbol: str = "MNQ", base: int = 1, use_cache: bool = True) -> List[Candle]:
     """Load the persistent store (sorted), or [] if none yet."""
     p = _store_path(symbol, base)
     if not p.exists():
         return []
+    key = f"{symbol}:{base}"
+    try:
+        mtime = p.stat().st_mtime
+    except OSError:
+        mtime = None
+    if use_cache and mtime is not None:
+        hit = _CACHE.get(key)
+        if hit and hit[0] == mtime:
+            # 回傳**淺拷貝**:Candle 物件共用(唯讀),但 list 本身獨立。
+            # 實測 accumulator.store_status() 會對結果做 bars.sort() ——
+            # 那是就地修改共享 list。內容上雖是 no-op(load 已排序),
+            # 但呼叫端有 30 多處,無法逐一稽核。複製 233 萬個指標約 20ms,
+            # 相對於重讀 10 秒是極便宜的保險。
+            return list(hit[1])
     try:
         bars = pickle.load(open(p, "rb"))
-        return sorted(bars, key=lambda c: c.timestamp)
+        bars = sorted(bars, key=lambda c: c.timestamp)
     except Exception as e:
         logger.warning(f"[CandleStore] failed to load {p}: {e}")
         return []
+    if use_cache and mtime is not None:
+        _CACHE[key] = (mtime, bars)
+    return bars
+
+
+def invalidate_cache(symbol: Optional[str] = None, base: int = 1) -> None:
+    """手動清快取。symbol=None 清全部。"""
+    if symbol is None:
+        _CACHE.clear()
+    else:
+        _CACHE.pop(f"{symbol}:{base}", None)
 
 
 def save(bars: List[Candle], symbol: str = "MNQ", base: int = 1) -> None:
@@ -278,6 +319,41 @@ def is_expected_gap(gap_start: datetime, gap_end: datetime) -> bool:
         missing_start_ct = (gs + timedelta(minutes=1)).astimezone(_CT)
         if missing_start_ct.hour == 16 and ge_ct.hour == 17:
             return True
+
+    # ── 1.0.10: 補進 2020–2026 歷史後才浮現的三類誤判 ──────────────────
+    # 加入 Databento 的 2020 起歷史之後,偵測器一次報 546 個「破洞」。
+    # 逐一測繪後全部是可解釋的休市,不是資料遺失 —— 而且它們會擠掉
+    # routes.py 的自動回補名額,讓真正的近期破洞永遠修不到。
+
+    gs_et = gs.astimezone(_ET)
+    ge_et = ge.astimezone(_ET)
+
+    # (A) 16:15–16:30 ET 收盤休止 —— 546 個裡佔 370 個。
+    # CME 股指期貨在 RTH 收盤後有 15 分鐘休止,2021 年後 CME 改時程才消失,
+    # 所以只出現在 2020(249)與 2021(121)。最後一根 16:14、下一根 16:30。
+    if dur_min <= 20 and gs_et.hour == 16 and 10 <= gs_et.minute <= 20 \
+            and ge_et.hour == 16 and ge_et.minute >= 25:
+        return True
+
+    # (B) 盤外的極短破洞 —— 那一分鐘沒有成交,不是資料遺失。
+    # 實測 101 個 <10 分鐘的破洞**全部在 RTH 之外**(RTH 內 0 個),
+    # 所以這條規則不可能遮蔽 RTH 的真實資料遺失。2020 年 MNQ 流動性低,
+    # 夜盤常有幾分鐘無人成交。
+    if dur_min < _MIN_THIN_GAP_MIN:
+        in_rth = (9, 30) <= (gs_et.hour, gs_et.minute) < (16, 0)
+        if not in_rth:
+            return True
+
+    # (C) 跨越假日的休市 —— 現行規則有 8h~36h 的死角:
+    # 聖誕夜 13:14 ET 收、隔日 18:00 才開 = 28.8h;跨年夜同理 25.0h。
+    # 兩者都短於 36h 的週末門檻、又長於 8h 的提早收盤門檻。
+    # 改判準:破洞期間內**任何一天是假日**就算預期(含假日前一日的提早收盤)。
+    day = gs_et.date()
+    end_day = ge_et.date()
+    while day <= end_day:
+        if _is_us_futures_holiday(day) or _is_us_futures_holiday(day + timedelta(days=1)):
+            return True
+        day += timedelta(days=1)
 
     return False
 

@@ -77,7 +77,8 @@ def store_status(symbol: str) -> dict:
     if not bars:
         return {"symbol": symbol, "bars": 0, "first": None, "last": None,
                 "age_days": None, "state": "EMPTY"}
-    bars.sort(key=lambda c: c.timestamp)
+    # 1.0.10: candle_store.load() 已保證排序 —— 這裡的 sort 是多餘的 233 萬筆
+    # 運算,而且是就地修改(load 現在回傳淺拷貝所以不會污染快取,但仍沒必要)。
     lo, hi = _utc(bars[0].timestamp), _utc(bars[-1].timestamp)
     age = (now - hi).days
     return {"symbol": symbol, "bars": len(bars), "first": lo, "last": hi,

@@ -214,9 +214,13 @@ def _normalize_strategy_name(value: str) -> str:
     # 1.0.9: 改名相容 —— 舊 preset 存的是 intramom / sessfib
     v = {"intramom": "momentum", "claudefib": "momentum", "sessfib": "betafib"}.get(v, v)
     # 1.0.9: TREND 已移除 —— 未知值一律落到 factor
-    return v if v in ("fade", "sigma", "pmo", "factor", "momentum", "betafib") else "factor"
+    return v if v in ("fade", "sigma", "factor", "momentum", "betafib", "pi") else "factor"
 
 
+
+# 1.0.10: TopstepX 的 1m 歷史保留期(天)。超過這個範圍的破洞不該向券商重抓 ——
+# 那段歷史是 Databento 補的,券商本來就沒有。
+BROKER_HISTORY_DAYS = 60
 
 AREA_TIMEFRAME_CHOICES = ("15m", "30m", "1h", "4h", "session")  # 1.0.8: +session 生長區間
 
@@ -364,6 +368,33 @@ def _conf_allowed_sessions_list(val) -> Optional[List[str]]:
     return list(allowed) if allowed is not None else None
 
 
+def _parse_iso_utc(v) -> Optional[datetime]:
+    """1.0.10: 解析 "2026-06-01T00:00:00Z" 這類字串成 aware UTC。
+    解析失敗回 None(呼叫端會當成「不限制」),不讓格式問題炸掉整個抓取。"""
+    if not v:
+        return None
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _betafib_hour(val) -> Optional[int]:
+    """1.0.10: 進場時窗的 UTC 小時。空字串 / None / 非法值 = 不限制。
+
+    UI 用 select 傳字串,空值代表「整個夜盤」(原本的行為),不能被 int("")
+    炸掉,也不能被 `or None` 把合法的 0 點吃掉。
+    """
+    if val is None or val == "":
+        return None
+    try:
+        h = int(val)
+    except (TypeError, ValueError):
+        return None
+    return h if 0 <= h <= 23 else None
+
+
 def _build_strategy_params_from_request(req, contract_size: int) -> StrategyParams:
     # v1.0.6: "confluence" selects the explainable ML engine; anything else is trend.
     raw_strat = str(getattr(req, "strategy", "factor") or "").strip().lower()
@@ -454,18 +485,9 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         sigma_stop_span=max(0.25, float(getattr(req, "sigma_stop_span", 1.0) or 1.0)),
         sigma_accept_sigma=max(1.0, float(getattr(req, "sigma_accept_sigma", 2.0) or 2.0)),
         sigma_accept_bars=max(1, int(getattr(req, "sigma_accept_bars", 2) or 2)),
-        pmo_timeframe_minutes=max(1, int(getattr(req, "pmo_timeframe_minutes", 5) or 5)),
-        pmo_signal_mode=(
-            "early" if str(getattr(req, "pmo_signal_mode", "normal") or "normal").lower() == "early" else "normal"
-        ),
-        pmo_sl_atr=max(0.1, float(getattr(req, "pmo_sl_atr", 1.0) or 1.0)),
-        pmo_tp_atr=max(0.1, float(getattr(req, "pmo_tp_atr", 1.0) or 1.0)),
         # 1.0.9: HOLD 5m-candle system removed — exits are SL/TP only, always,
         # for every current and future preset. Forced 0 here (authoritative for
         # both backtest and live) so no stored/incoming value can re-enable it.
-        pmo_max_hold_bars=0,
-        pmo_max_trades_per_day=max(0, int(getattr(req, "pmo_max_trades_per_day", 3) or 0)),
-        pmo_warmup_bars=max(20, int(getattr(req, "pmo_warmup_bars", 320) or 320)),
         factor_timeframe_minutes=max(1, int(getattr(req, "factor_timeframe_minutes", 5) or 5)),
         factor_signal_family=_normalize_factor_family(getattr(req, "factor_signal_family", "emapmo")),
         factor_side_mode=_normalize_factor_side(getattr(req, "factor_side_mode", "all")),
@@ -483,6 +505,8 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             getattr(req, "factor_pmo_threshold_scale", 1.0) or 1.0)),
         factor_pmo_normal_scale=abs(float(
             getattr(req, "factor_pmo_normal_scale", 0) or 0)),
+        factor_pmo_adaptive_window=max(0, int(
+            getattr(req, "factor_pmo_adaptive_window", 0) or 0)),
         factor_pmo_early_scale=abs(float(
             getattr(req, "factor_pmo_early_scale", 0) or 0)),
         momentum_first_minutes=max(5, int(
@@ -501,6 +525,23 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             in ("atr_blend", "daily", "fib") else "atr_blend"),
         betafib_min_move_pct=max(0.0, float(
             getattr(req, "betafib_min_move_pct", 0.0) or 0.0)),
+        # 1.0.10: 腿幅上限(0 = 無上限)、進場時窗、fib 基準的 SL/TP 層級
+        betafib_max_move_pct=max(0.0, float(
+            getattr(req, "betafib_max_move_pct", 0.0) or 0.0)),
+        betafib_entry_start_hour=_betafib_hour(
+            getattr(req, "betafib_entry_start_hour", None)),
+        betafib_entry_end_hour=_betafib_hour(
+            getattr(req, "betafib_entry_end_hour", None)),
+        pi_long_only=bool(getattr(req, "pi_long_only", False)),
+        pi_signal_set=str(getattr(req, "pi_signal_set", "pi_only") or "pi_only").lower(),
+        pi_max_signal_age_min=max(1, min(60, int(
+            getattr(req, "pi_max_signal_age_min", 5) or 5))),
+        pi_short_sl_value=max(0.1, float(getattr(req, "pi_short_sl_value", 2.5) or 2.5)),
+        pi_short_hold_min=max(0, int(getattr(req, "pi_short_hold_min", 60) or 0)),
+        betafib_sl_fib=min(1.5, max(-0.5, float(
+            getattr(req, "betafib_sl_fib", 0.75) or 0.75))),
+        betafib_tp_fib=min(1.5, max(-0.5, float(
+            getattr(req, "betafib_tp_fib", 0.90) or 0.90))),
         area_timeframe=_normalize_area_timeframe(getattr(req, "area_timeframe", "15m")),
         value_area_pct=_normalize_value_area_pct(getattr(req, "value_area_pct", 0.80)),
         rr_ratio=_normalize_rr_ratio(getattr(req, "rr_ratio", 2)),
@@ -1049,13 +1090,6 @@ class BacktestRequest(BaseModel):
     sigma_stop_span: float = 1.0
     sigma_accept_sigma: float = 2.0
     sigma_accept_bars: int = 2
-    pmo_timeframe_minutes: int = 5
-    pmo_signal_mode: str = "normal"
-    pmo_sl_atr: float = 1.0
-    pmo_tp_atr: float = 1.0
-    pmo_max_hold_bars: int = 24
-    pmo_max_trades_per_day: int = 3
-    pmo_warmup_bars: int = 320
     factor_timeframe_minutes: int = 5
     factor_signal_family: str = "emapmo"
     factor_side_mode: str = "all"
@@ -1074,10 +1108,23 @@ class BacktestRequest(BaseModel):
     momentum_first_minutes: int = 30
     momentum_entry_hour: int = 18
     # 1.0.9 SESSFIB —— fib 級別可調。0.618 是掃描中唯一通過 G0–G4 的進場位。
+    factor_pmo_adaptive_window: int = 0
     betafib_entry_fib: float = 0.618
     betafib_anchor: str = "hl"
     betafib_risk_basis: str = "atr_blend"
     betafib_min_move_pct: float = 0.0
+    # 1.0.10: 腿幅上限 + 進場時窗(UTC 小時) + fib 基準的 SL/TP 層級
+    betafib_max_move_pct: float = 0.0
+    betafib_entry_start_hour: Optional[int] = None
+    betafib_entry_end_hour: Optional[int] = None
+    # 1.0.10: π 外部訊號策略
+    pi_long_only: bool = False
+    pi_signal_set: str = "pi_only"
+    pi_max_signal_age_min: int = 5
+    pi_short_sl_value: float = 2.5
+    pi_short_hold_min: int = 60
+    betafib_sl_fib: float = 0.75
+    betafib_tp_fib: float = 0.90
     contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     contract_size: int = 3
     full_tp_lock: int = 0                 # 0=OFF, 1/2/3 TP exits
@@ -1129,6 +1176,9 @@ class FetchHistoricalRequest(BaseModel):
     append: bool = False           # True = merge into existing historical candles
     continuous_contract: bool = True  # True = merge previous quarterly contract for rollover history
     force_full: bool = False        # True = ignore local store, re-pull everything from API
+    # 1.0.10: True = 完全不打券商,只用本機 store。券商維護時間仍可回測 ——
+    # store 已有 2020 起的 233 萬根,不需要 API 也能跑完整回測。
+    store_only: bool = False
 
 
 class TradeResponse(BaseModel):
@@ -1842,7 +1892,11 @@ async def fetch_historical(req: FetchHistoricalRequest):
 
         contract_batches: Dict[str, List[Candle]] = {}
         contract_counts: Dict[str, int] = {}
-        for cid in fetch_contracts:
+        # 1.0.10: store_only → 完全跳過券商。維護時段或斷線時仍可回測。
+        _skip_api = bool(getattr(req, "store_only", False)) and from_store
+        if _skip_api:
+            logger.info("[Store] store_only=True — 跳過券商,只用本機 %d 根", len(store_bars))
+        for cid in ([] if _skip_api else fetch_contracts):
             batch = await client.get_historical_bars_paginated(
                 contract_id=cid,
                 unit=BarUnit(req.unit),
@@ -1866,29 +1920,58 @@ async def fetch_historical(req: FetchHistoricalRequest):
             )
 
         # ── Merge store + fresh fetch ──
+        _store_dirty = False
         if from_store:
             # Upsert fresh API bars into the stored set (newer wins on clash)
             by_ts: Dict[str, Candle] = {_candle_key(c): c for c in store_bars}
             for c in candles:
-                by_ts[_candle_key(c)] = c
+                k = _candle_key(c)
+                old = by_ts.get(k)
+                # 1.0.10: 逐根比對,只有真的新增或修訂才算「有變更」。
+                # 實測連線後常見 `2331102 stored + 121 fetched → 2331102 unique`
+                # —— 那 121 根本來就在 store 裡、內容也一樣,卻仍觸發整份重寫。
+                if old is None or (old.open, old.high, old.low, old.close, old.volume) != \
+                        (c.open, c.high, c.low, c.close, c.volume):
+                    by_ts[k] = c
+                    _store_dirty = True
             candles = sorted(by_ts.values(), key=_candle_time)
-            logger.info(f"[Store] merged: {len(store_bars)} stored + {sum(contract_counts.values())} fetched → {len(candles)} unique")
+            logger.info(
+                f"[Store] merged: {len(store_bars)} stored + "
+                f"{sum(contract_counts.values())} fetched → {len(candles)} unique"
+                f"{'' if _store_dirty else ' (無變更,略過寫盤)'}")
 
         # ── Persist to local store (1m bars only) ──
-        if req.unit_number == 1 and candles:
+        # 1.0.10: 只有真的變更才寫盤。233 萬根整份重寫要 14–17 秒,而一次連線
+        # 流程會觸發多次 fetch —— 實測啟動時寫了三遍、合計約 48 秒,前端就卡在
+        # LOADING DATA。沒有 store 基底時(首次抓取)一律寫。
+        if req.unit_number == 1 and candles and not _skip_api and (_store_dirty or not from_store):
             try:
                 _store_save(candles, symbol)
             except Exception as e:
                 logger.warning(f"[Store] save failed (non-fatal): {e}")
 
         # ── Gap detection + auto-recovery ──
-        if req.unit_number == 1 and candles and not req.append:
+        # 1.0.10: 資料沒變就不必重掃 —— 233 萬根掃一次約 2 秒,而且結果必定相同。
+        if (req.unit_number == 1 and candles and not req.append and not _skip_api
+                and (_store_dirty or not from_store)):
             try:
                 gaps = _store_detect_gaps(candles)
                 if gaps:
                     logger.info(f"[Store] detected {len(gaps)} unexpected gap(s), attempting recovery...")
+                    # 1.0.10 BUG FIX:原本是 `gaps[:5]`,而 gaps 依時間排序 ——
+                    # 永遠取到最舊的 5 個(2020 年)。券商只保留約 60 天,那 5 次
+                    # 請求必定回 0 bars;更糟的是**真正該修的近期破洞永遠排不進
+                    # 那 5 個名額**。改成只回補券商真的拿得到的範圍,並取最新的。
+                    _now = datetime.now(timezone.utc)
+                    _reach = _now - timedelta(days=BROKER_HISTORY_DAYS)
+                    _fixable = [g for g in gaps if _store_utc(g[0]) >= _reach]
+                    _old = len(gaps) - len(_fixable)
+                    if _old:
+                        logger.info(
+                            "[Store] %d 個破洞早於券商保留期(%d 天),不嘗試回補 —— "
+                            "那段是 Databento 補的歷史,券商沒有", _old, BROKER_HISTORY_DAYS)
                     recovered = 0
-                    for gap_start, gap_end, dur in gaps[:5]:  # cap at 5 recovery fetches
+                    for gap_start, gap_end, dur in _fixable[-5:]:  # 取**最新**的 5 個
                         pad = timedelta(minutes=5)
                         gs = (gap_start - pad).strftime("%Y-%m-%dT%H:%M:%SZ")
                         ge = (gap_end + pad).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1924,7 +2007,23 @@ async def fetch_historical(req: FetchHistoricalRequest):
         if req.append:
             _upsert_historical_candles(candles)
         else:
-            _historical_candles = sorted(candles, key=_candle_time)
+            # 1.0.10: store 是累積器(保留全部),但**記憶體工作集只放要求的範圍**。
+            # 先前不管請求什麼日期,_historical_candles 一律是整份 233 萬根 ——
+            # 回測就在這上面跑,單次約 219 秒(3.7 分鐘),使用者只看到畫面不動。
+            # PI 只需要 2026-06 起的 6.8 萬根,縮到範圍內約 7 秒。
+            _win = sorted(candles, key=_candle_time)
+            _lo = _parse_iso_utc(req.start_time) if req.start_time else None
+            _hi = _parse_iso_utc(req.end_time) if req.end_time else None
+            if _lo or _hi:
+                _before = len(_win)
+                _win = [c for c in _win
+                        if (_lo is None or _store_utc(c.timestamp) >= _lo)
+                        and (_hi is None or _store_utc(c.timestamp) <= _hi)]
+                if len(_win) != _before:
+                    logger.info(
+                        "[Store] 工作集裁到請求範圍: %d → %d 根 (%s → %s)",
+                        _before, len(_win), req.start_time or "-", req.end_time or "-")
+            _historical_candles = _win
 
         stored = _historical_candles
 
@@ -2331,9 +2430,8 @@ def _sync_latest_sweep_presets(payload: dict, req: BacktestRequest, contract_siz
         "DAY ZONE": "fade",
         "DISTRIBUTION": "sigma",
         "FACTOR": "factor",
-        "PMO": "pmo",
     }
-    model_order = ["FACTOR", "DISTRIBUTION", "DAY ZONE", "TREND", "PMO"]
+    model_order = ["FACTOR", "DISTRIBUTION", "DAY ZONE", "TREND"]
 
     def _factor_family_key(row: dict) -> str:
         params = row.get("params") or {}
@@ -3108,13 +3206,6 @@ class LiveStartRequest(BaseModel):
     sigma_stop_span: float = 1.0
     sigma_accept_sigma: float = 2.0
     sigma_accept_bars: int = 2
-    pmo_timeframe_minutes: int = 5
-    pmo_signal_mode: str = "normal"
-    pmo_sl_atr: float = 1.0
-    pmo_tp_atr: float = 1.0
-    pmo_max_hold_bars: int = 24
-    pmo_max_trades_per_day: int = 3
-    pmo_warmup_bars: int = 320
     factor_timeframe_minutes: int = 5
     factor_signal_family: str = "emapmo"
     factor_side_mode: str = "all"
@@ -3990,13 +4081,6 @@ _DEFAULT_PRESET_PARAMS = {
     "sigma_stop_span": 1.0,
     "sigma_accept_sigma": 2.0,
     "sigma_accept_bars": 2,
-    "pmo_timeframe_minutes": 5,
-    "pmo_signal_mode": "normal",
-    "pmo_sl_atr": 1.0,
-    "pmo_tp_atr": 1.0,
-    "pmo_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
-    "pmo_max_trades_per_day": 3,
-    "pmo_warmup_bars": 320,
     "factor_timeframe_minutes": 5,
     "factor_signal_family": "emapmo",
     "factor_side_mode": "all",
@@ -4067,7 +4151,7 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         strategy = str(params.get("strategy") or "").lower()
         # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend;+fade 放行
         # 1.0.9: TREND 已移除,未知/舊值一律落到 factor
-        normalized_strategy = strategy if strategy in ("fade", "sigma", "pmo", "factor", "momentum", "betafib") else "factor"
+        normalized_strategy = strategy if strategy in ("fade", "sigma", "factor", "momentum", "betafib", "pi") else "factor"
         # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         _cid_new = normalize_contract_id_to_front(params.get("contract_id") or "")
         if _cid_new != params.get("contract_id"):
@@ -4083,11 +4167,13 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             changed = True
         # 1.0.9: HOLD 5m-candle system removed — force every stored preset to
         # SL/TP-only exits (hold OFF). Applies to all current presets on load.
+        # 1.0.10: 獨立 PMO 策略已移除,但舊 preset 檔裡可能還留著 pmo_max_hold_bars,
+        # 保留在清單中讓它一併被歸零,避免殘值被寫回。
         for _hold_key in ("factor_max_hold_bars", "pmo_max_hold_bars"):
             if params.get(_hold_key) not in (0, None):
                 params[_hold_key] = 0
                 changed = True
-        if normalized_strategy in ("sigma", "pmo", "factor", "momentum", "betafib") and "tr_allowed_sessions" not in params:
+        if normalized_strategy in ("sigma", "factor", "momentum", "betafib", "pi") and "tr_allowed_sessions" not in params:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
             changed = True
             changed = True
@@ -4235,3 +4321,45 @@ async def delete_preset_body(req: PresetDeleteRequest):
 async def delete_preset(name: str):
     """刪除 preset"""
     return _delete_preset_by_name(name)
+
+@router.get("/pi/signals")
+async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
+    """1.0.10: 給圖表用的 PI 標記。
+
+    只回時間 + 標記種類/尺寸 —— 價格由前端拿當根 K 棒的高低點決定,
+    因為 PI 訊號來自 SPY/QQQ,本身沒有 MNQ/MES 的價位。
+    """
+    from backend.strategy.pi_signal import _HIST_PATH
+
+    if not _HIST_PATH.exists():
+        return {"signals": []}
+    try:
+        rows = json.loads(_HIST_PATH.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"pi_signals.json 讀取失敗: {exc}")
+
+    lo, hi = _parse_iso_utc(start), _parse_iso_utc(end)
+    want = (symbol or "").upper()
+    out = []
+    for r in rows:
+        ts = _parse_iso_utc(r.get("ts", ""))
+        if ts is None:
+            continue
+        if lo and ts < lo:
+            continue
+        if hi and ts > hi:
+            continue
+        # MNQ 跟 QQQ、MES 跟 SPY。沒指定商品就全給。
+        sym = str(r.get("symbol") or "").upper()
+        if want:
+            if want.startswith("MNQ") and sym != "QQQ":
+                continue
+            if want.startswith("MES") and sym != "SPY":
+                continue
+        out.append({
+            "ts": ts.isoformat(),
+            "symbol": sym,
+            "marks": [{"kind": m.get("kind"), "size": m.get("size"),
+                       "count": m.get("count", 1)} for m in (r.get("marks") or [])],
+        })
+    return {"signals": out, "total": len(out)}

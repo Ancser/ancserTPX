@@ -38,9 +38,10 @@ def signal_warmup_spec(params) -> Optional[Tuple[int, int, int]]:
         if _fam in ("emapmo", "pmo", "ema_pmo"):
             required = max(required, FACTOR_EMAPMO_HISTORY_BARS)
         timeframe = max(1, int(getattr(params, "factor_timeframe_minutes", 5) or 5))
-    elif strategy == "pmo":
-        required = max(20, int(getattr(params, "pmo_warmup_bars", 320) or 320))
-        timeframe = max(1, int(getattr(params, "pmo_timeframe_minutes", 5) or 5))
+    # 1.0.10: 獨立的 strategy=="pmo" 分支已移除(與 factor+emapmo 家族重複)。
+    # 上面那個 `_fam in ("emapmo", "pmo", "ema_pmo")` 是**族別**別名,必須保留 ——
+    # 舊設定的 strategy="pmo" 會被正規化成 factor,族別再對到 emapmo,暖機需求
+    # 因此走 FACTOR_EMAPMO_HISTORY_BARS,與先前等價。
     elif strategy == "momentum":
         # MOMENTUM 只需要 _atr_blend(ATR14 + ATR50)暖起來 —— 50 根就夠,
         # 給到 120 是留餘裕。它不看更長的歷史。

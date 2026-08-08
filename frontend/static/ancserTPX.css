@@ -173,6 +173,9 @@
         .status-dot.ok { background: var(--green); box-shadow: 0 0 8px var(--green); }
         .status-dot.err { background: var(--red); box-shadow: 0 0 8px var(--red); }
         .status-dot.loading { background: var(--amber); animation: pulse 1.2s ease-in-out infinite; }
+        /* 1.0.10: 四段語意 —— 灰=離線(刻意不連) / 紅=連線失敗 / 黃=進行中 / 綠=完全連上。
+           先前離線時借用紅色,與「連線失敗」混淆:一個是使用者的選擇,一個是故障。 */
+        .status-dot.off { background: #6b7280; box-shadow: none; opacity: 0.8; }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.2; } }
 
         #clock {
@@ -550,6 +553,26 @@
         }
 
         .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text2); }
+        /* 1.0.10: OFFLINE MODE —— 與 CONNECT 同樣的字級/字距,但灰邊灰字,
+           表示它是「不連線」而不是另一個連線動作。啟用時轉紅,與狀態燈一致。 */
+        .btn-offline {
+            background: transparent;
+            /* var(--border) 是 rgba(100,220,255,0.08) —— 實測幾乎看不見。
+               這裡要的是「明確的灰框」,所以直接給灰,不沿用 --border。 */
+            border: 1px solid rgba(120, 134, 160, 0.45);
+            color: var(--text2);
+            margin-top: 4px;
+        }
+        .btn-offline:hover {
+            border-color: rgba(150, 165, 190, 0.75);
+            color: var(--text);
+        }
+        .btn-offline.active {
+            border-color: var(--red);
+            color: var(--red);
+            background: rgba(239, 68, 68, 0.10);
+        }
+        .btn-offline.active:hover { background: rgba(239, 68, 68, 0.18); }
         .btn-outline:hover { border-color: var(--text2); color: var(--text); }
 
         /* ── Checkbox ── */
@@ -1212,10 +1235,18 @@
              b) glass 的折射 clone 會被 sanitizeClone 剝掉 id,這條規則對 clone
                 失效 → 鏡頭裡是 Rajdhani 細體、實際頁面是粗體 sans,兩邊字寬不同。
            改用 class 之後 clone 自動一致,不必再去 tpx-glass.css 補特例。 */
+        /* 1.0.10:原本是 `min-width:150px` + `width:auto` —— 那只是地板,
+           超過的月份仍會撐開並把 › 按鈕往右推。實測 12 個月份在此字體下
+           104px(May)~179px(September),其中 February/November/December/
+           September 四個超過 150px,最多推開 29px。
+           改成固定寬度 + flex 不伸不縮,兩顆按鈕的位置就完全不動。
+           月份名一律走 toLocaleString('en-US'),不隨 i18n 變,所以 190px 夠用。 */
         .cal-nav .cal-month-label {
             font-size: 1.05rem; font-weight: 500;
             letter-spacing: 0.6px; color: var(--text);
-            min-width: 150px; text-align: center;
+            width: 190px; flex: 0 0 190px;
+            text-align: center;
+            white-space: nowrap;
         }
         .cal-navbtn, .cal-todaybtn {
             background: var(--bg3);
@@ -1724,11 +1755,112 @@
 }
 .pdpt-val.off { color: var(--muted, #64748b); font-weight: 400; }
 
+/* 1.0.10: CONTRACT × SIZE —— 兩欄等寬,中間的 × 對齊 select(要壓過 label 高度)。
+   玻璃皮膚有一條 `:root[data-tpx-glass-skin="on"] .sidebar .form-row{display:block}`
+   會把側欄所有 form-row 改成垂直堆疊,所以這裡必須用更高特異性才並排得起來。 */
+.form-row-mult,
+:root[data-tpx-glass-skin="on"] .sidebar .form-row.form-row-mult {
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+}
+:root[data-tpx-glass-skin="on"] .sidebar .form-row.form-row-mult .form-group { flex: 1; }
+
+/* 1.0.10: 玻璃皮膚把側欄所有 .action-row 壓成單欄(理由是兩欄的 select 會
+   截斷選項文字)。但 SAVE / DEL 是短按鈕不是 select,兩欄剛好。
+   glass 那條的 display:grid 是 !important,這裡只要覆寫欄數就夠。 */
+:root[data-tpx-glass-skin="on"] .sidebar .action-row.action-row-split {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+.action-row.action-row-split { display: flex; gap: 6px; }
+.action-row.action-row-split > * { flex: 1 1 50%; min-width: 0; }
+.form-mult {
+    flex: 0 0 auto;
+    padding: 0 6px 7px;
+    color: var(--muted, #64748b);
+    font-size: 13px;
+    line-height: 1;
+    user-select: none;
+}
+
 /* 1.0.9: Topstep XFA 一致性警告 —— 黃色三角,hover 顯示說明 */
 .tpx-warn { color: #fbbf24; cursor: help; }
 .metric-card .label .tpx-warn { margin-left: 4px; font-size: 1.1em; }
+/* 1.0.10: 兩段警示 —— >=40%(XFA)黃色 ⚠,>=50%(Combine)紅色 ▲。
+   BEST DAY 的數值本身保持綠色,風險只用圖示表達。 */
+.tpx-danger { color: var(--red); cursor: help; }
+.metric-card .label .tpx-danger { margin-left: 4px; font-size: 1.1em; }
 
 /* 1.0.9: 風險上限=紅、獲利上限=綠。兩條滑桿長得一樣時很容易設錯邊,
    而設錯邊的後果不對稱:誤把風險當獲利壓,會直接放大回撤。 */
 .pdpt-row input[type="range"].cap-profit { accent-color: #22c55e; }
 #tp-cap-usd-bt-val:not(.off), #tp-cap-usd-live-val:not(.off) { color: #22c55e; }
+
+/* ── 1.0.10 圖層開關彈窗 ─────────────────────────────────────────
+   按鈕本身不在這裡:它被塞進 #chart-quick-btns,由 tpx-glass-skin.js 的
+   skinChartButtons() 轉成圓形玻璃 fab-action,所以外觀跟 ⌖ / ≫ 一致。
+   這裡只管彈窗。玻璃 FAB 展開時會往上長,所以彈窗往左讓開那一欄。 */
+#chart-layer-pop {
+    position: absolute;
+    right: 8.5rem;                        /* 204px — 讓開 FAB 那一欄 */
+    bottom: 1.4167rem;                    /* 34px — 讓開時間軸 */
+    z-index: 17;
+    width: max-content;
+    max-width: calc(100% - 10rem);
+    max-height: calc(100% - 3rem);
+    overflow-y: auto;
+    padding: 0.5rem 0.6667rem 0.6667rem;
+    border: 1px solid var(--glass-border, #3a4048);
+    border-radius: var(--glass-radius, 0.5rem);
+    background: var(--glass-bg-strong, rgba(8, 9, 13, 0.95));
+    box-shadow: 0 0.75rem 1.9167rem var(--glass-shadow, rgba(0, 0, 0, 0.55));
+    backdrop-filter: blur(18px) saturate(1.3);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+}
+#chart-layer-pop.hidden { display: none; }
+
+#chart-layer-pop .layer-title {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.5rem;                    /* 12px */
+    font-weight: 600;
+    letter-spacing: 0.0833rem;
+    color: var(--text3);
+    padding-bottom: 0.25rem;
+    margin-bottom: 0.1667rem;
+    border-bottom: 1px solid var(--border);
+}
+
+#chart-layer-pop .layer-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.125rem 0;
+}
+
+/* 字級對齊頂欄的 FUNDED 徽章(Rajdhani 600 / 22.5px / ls 1.5px) */
+#chart-layer-pop .layer-name {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    letter-spacing: 0.0625rem;
+    line-height: 1.15;
+    color: var(--text2);
+    white-space: nowrap;
+}
+#chart-layer-pop .layer-row:hover .layer-name { color: var(--text); }
+
+/* 拇指少了 .optical-surface 就沒有 position/radius/border,會塌成 0×0。
+   這裡補回幾何,但不碰折射鏡那套(見 HTML 註解)。 */
+#chart-layer-pop .switch-thumb {
+    position: absolute;
+    z-index: 5;
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    overflow: hidden;
+    contain: paint;
+    transform-origin: center;
+    will-change: transform;
+}

@@ -35,7 +35,6 @@ from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
 )
 from backend.strategy.sigma import RollingSigmaFade
-from backend.strategy.pmo import EMAPMOStrategy
 from backend.strategy.factor import FactorSignalStrategy
 from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
@@ -144,7 +143,7 @@ class LiveTradingEngine:
         # Strategy mode: trend/fade/sigma.  The trend-slot object is ALWAYS built
         # so legacy state/helpers keep working; fade/sigma replace that slot.
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "factor") or "factor").lower()
-        if self.strategy_mode not in ("fade", "sigma", "pmo", "factor", "momentum", "betafib"):
+        if self.strategy_mode not in ("fade", "sigma", "factor", "momentum", "betafib", "pi"):
             self.strategy_mode = "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
@@ -154,10 +153,13 @@ class LiveTradingEngine:
                 self.trend_follow = PrevDayFade(params=self.strategy_params)
         elif self.strategy_mode == "sigma":
             self.trend_follow = RollingSigmaFade(params=self.strategy_params)
-        elif self.strategy_mode == "pmo":
-            self.trend_follow = EMAPMOStrategy(params=self.strategy_params)
         elif self.strategy_mode == "factor":
             self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
+        # 1.0.10: PI —— 外部 Discord 訊號驅動。進場時機來自推播,
+        # 出場/風控/下單路徑與其他策略完全共用。
+        elif self.strategy_mode == "pi":
+            from backend.strategy.pi_signal import PiSignalStrategy
+            self.trend_follow = PiSignalStrategy(params=self.strategy_params)
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
         # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
@@ -199,12 +201,7 @@ class LiveTradingEngine:
             getattr(self.strategy_params, "tr_daily_profit_stop", 0) or 0))
         self._daily_profit_td: float = 0.0
         # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單(0=OFF)
-        if self.strategy_mode == "pmo":
-            self._pmo_max_hold_minutes = (
-                max(0, int(getattr(self.strategy_params, "pmo_max_hold_bars", 0) or 0))
-                * max(1, int(getattr(self.strategy_params, "pmo_timeframe_minutes", 5) or 5))
-            )
-        elif self.strategy_mode == "factor":
+        if self.strategy_mode == "factor":
             self._pmo_max_hold_minutes = (
                 max(0, int(getattr(self.strategy_params, "factor_max_hold_bars", 0) or 0))
                 * max(1, int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5))
@@ -248,6 +245,9 @@ class LiveTradingEngine:
         # Live state
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        # 1.0.10: PI 外部訊號監聽 —— 只有 strategy_mode == "pi" 才會在 start() 建立
+        self._pi_listener = None
+        self._pi_task: Optional[asyncio.Task] = None
         self._pending_order_id: Optional[int] = None
         self._pending_signal: Optional[TradeSignal] = None
         self._pending_age: int = 0
@@ -630,15 +630,6 @@ class LiveTradingEngine:
                 f"factor {self.trend_follow.sl_rule}:{self.trend_follow.sl_value:g}/"
                 f"{self.trend_follow.tp_rule}:{self.trend_follow.tp_value:g}"
             )
-        elif self.strategy_mode == "pmo" and isinstance(self.trend_follow, EMAPMOStrategy):
-            atr = self.trend_follow._atr14()
-            if atr is not None and atr > 0:
-                risk = max(self.tick_size, float(atr) * self.trend_follow.sl_atr)
-                reward = max(self.tick_size, float(atr) * self.trend_follow.tp_atr)
-                source = (
-                    f"pmo atr14:{float(atr):.5f} "
-                    f"sl:{self.trend_follow.sl_atr:g}/tp:{self.trend_follow.tp_atr:g}"
-                )
         if risk is None or reward is None or risk <= 0 or reward <= 0:
             return None
 
@@ -2438,9 +2429,9 @@ class LiveTradingEngine:
         """
         if self.strategy_mode == "confluence":
             return self._get_confluence_phase()
-        # 1.0.9: 信號型策略(factor/pmo/sigma/fade)顯示各自的信號狀態
+        # 1.0.9: 信號型策略(factor/sigma/fade)顯示各自的信號狀態
         # (上次信號、ATR、指標值…),而不是套用只對 trend 有意義的「突破階段」。
-        if self.strategy_mode in ("factor", "pmo", "sigma", "fade"):
+        if self.strategy_mode in ("factor", "sigma", "fade"):
             try:
                 label = self.trend_follow.get_phase_label()
                 if label:
@@ -2652,6 +2643,33 @@ class LiveTradingEngine:
                 "error",
             )
 
+        # 1.0.10: PI 外部訊號監聽,只在 strategy_mode == "pi" 時啟動。
+        # 訊號進佇列後由下一根 K 棒的 evaluate() 取出 → 會經過引擎既有的全部
+        # 閘門(幾何驗證、日虧斷路器、時段限制、每日筆數上限),不繞過任何檢查。
+        if self.strategy_mode == "pi":
+            try:
+                from backend.live.pi_listener import PiListener
+
+                def _on_pi(sig):
+                    # 只入列,不直接下單 —— 下單走主迴圈的正常路徑
+                    if not hasattr(self.trend_follow, "push"):
+                        self._log_event("[PI] 策略不支援 push(),訊號丟棄", "error")
+                        return
+                    if self.trend_follow.push(sig):
+                        self._log_event(
+                            f"[PI] 訊號入列 {sig.equity}→{sig.future} "
+                            f"{sig.side} {sig.kind}/{sig.size}")
+
+                self._pi_listener = PiListener.from_env(
+                    _on_pi, poll_seconds=30.0, rate_limit_per_min=30)
+                self._pi_task = asyncio.create_task(self._pi_listener.run())
+                self._log_event("[PI] Discord 監聽已啟動(6:30–13:00 PT · 每 30 秒)")
+            except Exception as exc:
+                # 監聽起不來就不能假裝在跑 —— 明確報錯,否則使用者會以為
+                # 「今天沒訊號」,實際上是根本沒連上
+                self._log_event(
+                    f"[PI] 監聽啟動失敗: {exc.__class__.__name__}: {exc}", "error")
+
         # Start main loop
         self._task = asyncio.create_task(self._main_loop())
 
@@ -2659,6 +2677,17 @@ class LiveTradingEngine:
         """Stop the engine. Cancel pending orders. Save zones to disk."""
         self._save_zones()  # persist zones before shutdown
         self._running = False
+        # 1.0.10: 先停 PI 監聽,避免關閉過程中還有新訊號入列
+        if getattr(self, "_pi_listener", None):
+            try:
+                self._pi_listener.stop()
+                if getattr(self, "_pi_task", None):
+                    await asyncio.wait_for(self._pi_task, timeout=5)
+            except Exception:
+                if getattr(self, "_pi_task", None):
+                    self._pi_task.cancel()
+            self._pi_listener = None
+            self._pi_task = None
         if self._task:
             self._task.cancel()
             try:
@@ -3404,7 +3433,7 @@ class LiveTradingEngine:
             return
 
         if (
-            self.strategy_mode in ("trend", "sigma", "pmo", "factor")
+            self.strategy_mode in ("trend", "sigma", "factor")
             and self._pending_order_id
             and not self._trend_session_allowed(candle.timestamp)
         ):
@@ -3491,7 +3520,7 @@ class LiveTradingEngine:
         # 1.0.8: 移除「所有 TF 同方向突破」gate — live 與 backtest 對齊。
         # (回測未含此 gate;A/B 測試證實 gate 對 overlap preset #3 幾乎毀掉績效。
         #  突破判定改由 trend_follow.evaluate 對交易 zone 判斷,live == backtest。)
-        if self.strategy_mode in ("sigma", "pmo", "factor", "fade"):
+        if self.strategy_mode in ("sigma", "factor", "fade"):
             eval_zones = []
             eval_mature = True
         else:
@@ -3509,7 +3538,7 @@ class LiveTradingEngine:
             strat.reset()
 
         signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
-        if signal and self.strategy_mode in ("sigma", "pmo", "factor", "fade"):
+        if signal and self.strategy_mode in ("sigma", "factor", "fade"):
             signal.zone_source = self.strategy_mode
 
         # Report the actionable indicator TradeSignal itself. This is before

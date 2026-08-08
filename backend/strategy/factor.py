@@ -158,12 +158,52 @@ def calculate_emapmo_series(
 EMAPMO_LONG_THRESHOLD = -0.10
 EMAPMO_SHORT_THRESHOLD = 0.06
 
+# 1.0.10: 自適應門檻的參考離散度。取 MNQ 2026 全期 PMO σ 的中位數,
+# 使 MNQ 在該期間的縮放係數約為 1.0 —— 開啟自適應後與現行行為近似,
+# 差異來自體制變化而非重新標定。
+EMAPMO_SIGMA_REF = 0.065
+
+
+def emapmo_adaptive_scale(pmo: list[Optional[float]], window: int) -> Optional[float]:
+    """1.0.10: 讓固定門檻隨 PMO 自身的離散度縮放,消除體制依賴。
+
+    問題:`EMAPMO_LONG_THRESHOLD` / `SHORT` 是絕對常數,但 PMO 由**百分比 ROC**
+    建構,量級隨波動率縮放。實測 MNQ 2026 逐月:PMO σ 在 0.0449~0.0832 之間
+    擺盪(1.9 倍),門檻觸發率隨之在 14.9%~29.4% 之間擺盪(2.0 倍),
+    corr(σ, 觸發率) = +0.40。跨商品的版本更誇張 —— 同一組門檻在 MNQ 觸發
+    6.6% 的 5m bar、MES 只有 1.9%,現行做法是人工把 `pmo_threshold_scale`
+    調成 0.55 去補,那本身就是這個問題的補丁。
+
+    做法:回傳 `σ(最近 window 根 PMO) / EMAPMO_SIGMA_REF`。呼叫端把門檻乘上
+    這個值,等於改用「N 個標準差」計量,觸發率依構造趨於恆定 —— 跨體制與
+    跨商品都是,`pmo_threshold_scale` 的人工校準也就不再需要。
+
+    回傳 None = 樣本不足,呼叫端應沿用固定門檻。
+    """
+    if window < 30:
+        return None
+    vals = [float(v) for v in pmo[-window:] if v is not None]
+    # 1.0.10 BUG FIX:原本寫 `len(vals) < max(30, window // 2)`。呼叫端的 PMO
+    # 序列被截到 FACTOR_EMAPMO_HISTORY_BARS(320),所以 window=1200 會要求 600 根
+    # 卻只拿得到 320 → 回傳 None → **靜默退回固定門檻**,A/B 測出來的數字與固定
+    # 門檻位元相同,看起來像「自適應無效」,實際是根本沒啟用。
+    # 改成只要求絕對下限:有多少用多少,不足 60 根才放棄。
+    if len(vals) < 60:
+        return None
+    mu = sum(vals) / len(vals)
+    sd = (sum((v - mu) ** 2 for v in vals) / len(vals)) ** 0.5
+    if not math.isfinite(sd) or sd <= 0:
+        return None
+    # 夾住極端值:體制轉換初期樣本少,不讓縮放係數失控
+    return min(3.0, max(0.33, sd / EMAPMO_SIGMA_REF))
+
 
 def calculate_emapmo_snapshot(
     closes: list[float],
     threshold_scale: float = 1.0,
     normal_scale: Optional[float] = None,
     early_scale: Optional[float] = None,
+    adaptive_window: int = 0,
 ) -> dict[str, Any]:
     """Calculate the exact EMAPMO conditions shared by trading and charting.
 
@@ -212,6 +252,17 @@ def calculate_emapmo_snapshot(
         return result
 
     pmo, sig = calculate_emapmo_series(closes)
+    # 1.0.10: adaptive_window > 0 → 門檻改隨 PMO 自身的離散度縮放。
+    # 0(預設)完全不動,現行行為位元相同。
+    if adaptive_window > 0:
+        _adj = emapmo_adaptive_scale(pmo, adaptive_window)
+        if _adj is not None:
+            n_long_th *= _adj
+            n_short_th *= _adj
+            e_long_th *= _adj
+            e_short_th *= _adj
+            long_th, short_th = n_long_th, n_short_th
+            result["adaptive_scale"] = round(_adj, 4)
     if pmo and pmo[-1] is not None:
         result["pmo"] = float(pmo[-1])
     if sig and sig[-1] is not None:
@@ -308,6 +359,10 @@ class FactorSignalStrategy:
         # 見 calculate_emapmo_snapshot 與 scripts/emapmo_vol_calibration.py。
         self.pmo_threshold_scale = abs(float(
             getattr(p, "factor_pmo_threshold_scale", 1.0) or 1.0))
+        # 1.0.10: 自適應門檻窗口(5m bar 數)。0 = 關閉,行為與先前位元相同。
+        # 開啟後門檻改隨 PMO 自身離散度縮放,見 emapmo_adaptive_scale()。
+        self.pmo_adaptive_window = max(0, int(
+            getattr(p, "factor_pmo_adaptive_window", 0) or 0))
         # 1.0.9: normal(比 PMO)與 early(比 SIG)的門檻可分開鬆綁;
         # 0/None = 沿用共用的 pmo_threshold_scale。
         self.pmo_normal_scale = float(
@@ -661,7 +716,8 @@ class FactorSignalStrategy:
         closes = [float(c.close) for c in self._bars][-FACTOR_EMAPMO_HISTORY_BARS:]
         return calculate_emapmo_snapshot(
             closes, self.pmo_threshold_scale,
-            self.pmo_normal_scale, self.pmo_early_scale)
+            self.pmo_normal_scale, self.pmo_early_scale,
+            self.pmo_adaptive_window)
 
     def _emapmo_direction(self, snapshot: dict[str, Any]) -> Optional[Direction]:
         use_normal = self.pmo_signal_mode in {"normal", "both"}

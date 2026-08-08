@@ -326,10 +326,10 @@ class BreakoutAnalysis:
 #      zone detector。這兩個策略根本不看 zone,那是純浪費。
 #
 # backtest 與 live 兩個引擎共用這兩個常數,確保 live == backtest。
-FACTOR_PIPELINE_STRATEGIES = ("pmo", "factor", "momentum", "betafib")
-ZONELESS_STRATEGIES = ("sigma", "fade", "pmo", "factor", "momentum", "betafib")
+FACTOR_PIPELINE_STRATEGIES = ("factor", "momentum", "betafib", "pi")
+ZONELESS_STRATEGIES = ("sigma", "fade", "factor", "momentum", "betafib", "pi")
 # 不渲染 detector zone 的策略(fade 另有自己的前日 VA 水位,單獨處理)
-ZONELESS_ZONE_RENDER = ("sigma", "pmo", "factor", "momentum", "betafib")
+ZONELESS_ZONE_RENDER = ("sigma", "factor", "momentum", "betafib", "pi")
 
 
 # ── 策略參數 ──────────────────────────────────────────
@@ -411,13 +411,6 @@ class StrategyParams:
     sigma_accept_bars: int = 2
     # 1.0.10: EMAPMO / PMO. Signals are calculated on completed 5m bars;
     # risk is ATR-based and entries are market orders.
-    pmo_timeframe_minutes: int = 5
-    pmo_signal_mode: str = "normal"       # "normal" | "early"
-    pmo_sl_atr: float = 1.0
-    pmo_tp_atr: float = 1.0
-    pmo_max_hold_bars: int = 0            # 1.0.9: HOLD 5m system removed → SL/TP-only exits
-    pmo_max_trades_per_day: int = 3
-    pmo_warmup_bars: int = 320  # 1.0.9: 150 → 320。EMAPMO 是 EMA100→EMA50→EMA10 三層串接,150 根的
     # 暖機暫態會讓 SIG 偏 0.117,比 ±0.10 的進場門檻還大 —— 足以偽造訊號。
     # 1.0.10: Generic completed-candle factor strategy. Used when
     # strategy == "factor"; supports EMAPMO, momentum reversion, and icefishball.
@@ -438,6 +431,9 @@ class StrategyParams:
     # 1.0.9: 分開鬆綁 normal(比 PMO)/ early(比 SIG)門檻;0 = 沿用上面那個
     factor_pmo_normal_scale: float = 0.0
     factor_pmo_early_scale: float = 0.0
+    # 1.0.10: EMAPMO 自適應門檻窗口(5m bar 數)。0 = 關閉,行為不變。
+    # 開啟後固定門檻會隨 PMO 自身離散度縮放,消除體制/跨商品依賴。
+    factor_pmo_adaptive_window: int = 0
     # 1.0.9: INTRAMOM(Market Intraday Momentum)—— 開盤 N 分鐘的報酬方向
     # 預測當日稍晚的同向延續。960 格密網格 × 雙商品交集 22 組,鄰域 6/7
     # 在門檻之上(高原);是唯一在 MNQ 與 MES 上 MC+走查全通過的策略。
@@ -451,7 +447,27 @@ class StrategyParams:
     betafib_entry_fib: float = 0.618      # 進場 fib(1.0 = 推動腿終點)
     betafib_anchor: str = "hl"            # "hl" 擺動低→高 / "oc" RTH open→close
     betafib_risk_basis: str = "atr_blend"  # SL/TP 基準,與 BEST 同口徑
-    betafib_min_move_pct: float = 0.0     # 推動腿幅度門檻 %;0 = 不篩選
+    betafib_min_move_pct: float = 0.0     # 推動腿幅度門檻 %(下限);0 = 不篩選
+    # 1.0.10: 門檻改成**區間**。「漲超過 1%」跟「漲 1~4%」是不同的假設 ——
+    # 暴漲日(>4%)的回撤行為與溫和上漲日不同,能排除才測得出來。0 = 無上限。
+    betafib_max_move_pct: float = 0.0
+    # 1.0.10: 進場時窗(UTC 小時)。推動腿一律在 RTH(13:30–20:00 UTC =
+    # 加州 6:30am–1pm)量測,但**掛單等回撤的時段**現在可以單獨限定。
+    # 例:加州 3pm–6pm = UTC 22–01(跨午夜,程式會處理繞回)。
+    # 兩者皆 None = 不限制,維持原本的整個夜盤視窗(20:00 → 隔日 13:30)。
+    betafib_entry_start_hour: Optional[int] = None
+    betafib_entry_end_hour: Optional[int] = None
+    # 1.0.10: risk_basis="fib" 時的 SL/TP 層級。先前寫死 0.75/0.90 且無 UI,
+    # 等於這個模式根本沒有 TP 選項。
+    # 1.0.10: π 外部訊號策略。多空可分別設定出場結構 ——
+    # 實測多單抱越久越好、空單抱越久越差(見 memory project_pi_signal_source)。
+    pi_long_only: bool = False
+    pi_signal_set: str = "pi_only"        # 訊號級別組合,見 PI_SIGNAL_SETS
+    pi_max_signal_age_min: int = 5        # 超過即丟棄(BLOCK 不是 WARN)
+    pi_short_sl_value: float = 2.5        # 空單 SL(×atr_blend)
+    pi_short_hold_min: int = 60           # 空單時間出場(分鐘);0 = 不用
+    betafib_sl_fib: float = 0.75
+    betafib_tp_fib: float = 0.90
     # --- v1.0.6: explainable multi-timeframe confluence (ML scorer) ---
     # Activated when strategy == "confluence". The live engine then runs the
     # SAME ConfluenceBacktester logic (per-TF detectors + trained scorer) so

@@ -71,6 +71,8 @@ function refreshContractOptions() {
     if (cidInput && cidInput.value) cidInput.value = rewrite(cidInput.value);
 }
 document.addEventListener('DOMContentLoaded', refreshContractOptions);
+// 1.0.10: 還原 OFFLINE MODE(重整後保持)
+document.addEventListener('DOMContentLoaded', _restoreOfflineMode);
 
 const DEFAULT_STRATEGY_PARAMS = {
     // 1.0.9: TREND 已移除,預設策略改為 factor
@@ -129,13 +131,6 @@ const DEFAULT_STRATEGY_PARAMS = {
     sigma_stop_span: 1.0,
     sigma_accept_sigma: 2.0,
     sigma_accept_bars: 2,
-    pmo_timeframe_minutes: 5,
-    pmo_signal_mode: 'normal',
-    pmo_sl_atr: 1.0,
-    pmo_tp_atr: 1.0,
-    pmo_max_hold_bars: 0,   // 1.0.9: HOLD 5m system removed → SL/TP-only exits
-    pmo_max_trades_per_day: 3,
-    pmo_warmup_bars: 150,
     factor_timeframe_minutes: 5,
     factor_signal_family: 'emapmo',
     factor_side_mode: 'long_only',
@@ -513,7 +508,10 @@ function onOverlapTradeTfChange(mode) {
 
 function normalizeStrategyName(value) {
     const v = String(value || '').trim().toLowerCase();
-    if (v === 'pmo') return 'pmo';
+    // 1.0.10: 獨立 PMO 策略已移除 —— 舊設定落到 factor(等價的 emapmo 家族),
+    // 與後端 _normalize_strategy_name 的行為一致。
+    if (v === 'pmo') return 'factor';
+    if (v === 'pi') return 'pi';          // 1.0.10: 外部 Discord 訊號
     if (v === 'sigma') return 'sigma';
     if (v === 'fade') return 'fade';   // 1.0.8: DAY ZONE 前日VA回歸
     if (v === 'factor') return 'factor';
@@ -579,8 +577,8 @@ function reconcilePresetStrategyForDispatch(mode, params, context) {
 function strategyDisplayName(value) {
     const v = normalizeStrategyName(value);
     if (v === 'fade') return 'DAY ZONE';
+    if (v === 'pi') return 'PI';
     if (v === 'sigma') return 'DISTRIBUTION';
-    if (v === 'pmo') return 'PMO';
     if (v === 'factor') return 'FACTOR';
     if (v === 'momentum') return 'MOMENTUM';
     if (v === 'betafib') return 'BETA FIB';
@@ -624,7 +622,6 @@ function updateStrategyParamVisibility(mode) {
     const isTrend = strategy === 'trend';
     const isFade = strategy === 'fade';   // 1.0.8
     const isSigma = strategy === 'sigma';
-    const isPmo = strategy === 'pmo';
     const isFactor = strategy === 'factor';
     const show = (id, on) => {
         const el = document.getElementById(id);
@@ -632,7 +629,7 @@ function updateStrategyParamVisibility(mode) {
     };
     const showControl = (id, on) => _showParamControl(id + '-' + mode, on);
     // trend-only controls — hidden in ML mode.
-    show('tr-params-' + mode, !isML && !isPmo);
+    show('tr-params-' + mode, !isML);
     show('overlap-tf-row-' + mode, !isML && isTrend);
     show('tr-overlap-trade-row-' + mode, !isML && isTrend);
     showControl('area-pct', !isML && (isTrend || isFade));
@@ -658,13 +655,23 @@ function updateStrategyParamVisibility(mode) {
     // 1.0.9: SESSFIB 與 INTRAMOM 同樣沿用 FACTOR 區塊的 SL/方向/RR,
     // 但 EMAPMO 專屬的因子族/訊號模式/VA 濾網對兩者都無意義。
     const isSessfib = strategy === 'betafib';
-    show('factor-params-' + mode, isFactor || isIntramom || isSessfib);
+    // 1.0.10: PI 沿用 FACTOR 區塊的 SL/TP/方向控制項(多單用),
+    // 但 EMAPMO 專屬的族/訊號模式/VA 濾網對它無意義。
+    const isPi = strategy === 'pi';
+    show('factor-params-' + mode, isFactor || isIntramom || isSessfib || isPi);
     show('momentum-params-' + mode, isIntramom);
     show('betafib-params-' + mode, isSessfib);
+    // 1.0.10: MODEL SETTINGS 已拆成 ENTRY / EXIT 兩段。
+    // factor-params-* 只留進場側(族/方向/訊號/VA),SL 錨點搬到 factor-exit-*,
+    // BETAFIB 的 fib 層級搬到 betafib-exit-*,兩者的顯示條件與各自的進場區塊相同。
+    show('factor-exit-' + mode, isFactor || isIntramom || isSessfib || isPi);
+    show('pi-params-' + mode, isPi);
+    show('pi-exit-' + mode, isPi);
+    show('betafib-exit-' + mode, isSessfib);
     ['factor-family-', 'factor-pmo-mode-', 'factor-va-filter-'].forEach((id) => {
         const el = document.getElementById(id + mode);
         const row = el && el.closest ? el.closest('.form-group') : null;
-        if (row) row.style.display = (isIntramom || isSessfib) ? 'none' : '';
+        if (row) row.style.display = (isIntramom || isSessfib || isPi) ? 'none' : '';
     });
     syncEmapmoThresholdRow(mode);   // 1.0.9: 門檻滑桿只在 EMAPMO 顯示
     let slText;
@@ -675,8 +682,6 @@ function updateStrategyParamVisibility(mode) {
             : 'DAY ZONE: 前日 VAL - 120 tick 固定緩衝';
     } else if (isSigma) {
         slText = 'DISTRIBUTION: preset rolling sigma SL / center TP';
-    } else if (isPmo) {
-        slText = 'PMO: completed 5m EMAPMO signal, ATR SL / ATR TP, market entry';
     } else if (isFactor) {
         slText = 'FACTOR: completed 5m signal, market entry; side/signal/SL/TP use FACTOR controls';
     } else {
@@ -691,8 +696,6 @@ function updateStrategyParamVisibility(mode) {
             : 'DAY ZONE: previous-day value-area level timing; entry type is model-defined';
     } else if (isSigma) {
         slText = 'DISTRIBUTION: rolling distribution band timing; market entry after model signal';
-    } else if (isPmo) {
-        slText = 'PMO: completed 5m EMAPMO signal; next available market entry';
     } else if (isFactor) {
         slText = 'FACTOR: completed 5m factor signal; live/backtest use last completed candle only';
     } else {
@@ -787,6 +790,12 @@ function _factorRiskOptionList(rule, kind) {
             ['0.75', '75% of 15m area'],
         ];
     }
+    // 1.0.10: FIB LEVEL 的 SL 不是倍數,而是 fib 層級本身(由 SL fib 那個下拉決定),
+    // 所以 SL INPUT 在此模式下沒有意義 —— 給一個明確的佔位而不是誤導性的 ATR 倍數。
+    if (rule === 'fib') {
+        return [['0', '由 SL fib 決定']];
+    }
+    // DAILY ATR 與 ATR/ATR BLEND 同樣是倍數,共用同一組
     return [['1', '1 x ATR'], ['1.5', '1.5 x ATR'], ['2', '2 x ATR'], ['2.5', '2.5 x ATR'], ['3', '3 x ATR']];
 }
 
@@ -812,6 +821,9 @@ function onFactorRiskAnchorChange(mode, kind) {
         valEl.appendChild(opt);
     }
     if (current !== '') valEl.value = current;
+    // 1.0.10: SL ANCHOR 已併入 BETAFIB 的基準選擇 —— 選到 FIB LEVEL 時要
+    // 把 fib 層級(SL fib / TP fib)那一列叫出來,那組才是該模式下的實際 TP。
+    if (kind === 'sl' && typeof onBetafibBasisChange === 'function') onBetafibBasisChange(mode);
 }
 
 function syncFactorRiskControls(mode) {
@@ -831,6 +843,28 @@ function onRrModeChange(mode) {
 function _mlSelectValue(id, fallback) {
     const el = document.getElementById(id);
     return el ? el.value : fallback;
+}
+
+// 1.0.10: SL/TP fib 層級只有 risk_basis="fib" 用得到,其他基準下顯示它們
+// 會讓人以為改了有效 —— 實際上 atr_blend/daily 的 TP 是 rr_ratio 決定的。
+function onBetafibBasisChange(mode) {
+    // 1.0.10: 改讀合併後的 SL ANCHOR(原本的 betafib-basis-* 下拉已移除)
+    const basis = _mlSelectValue('factor-sl-rule-' + mode, 'atr_blend');
+    const row = document.getElementById('betafib-fiblevels-' + mode);
+    if (row) row.style.display = (basis === 'fib') ? '' : 'none';
+}
+
+// 1.0.10: BETAFIB 進場時窗。單一 select 的值是 "start,end"(UTC 小時),
+// 空字串 = 不限制(整個夜盤,原本的行為)。idx 0 取起點、1 取終點。
+// 回傳 null 而不是 0 —— 0 是合法的 UTC 小時,不能被當成「沒設定」。
+function _betafibWin(mode, idx) {
+    const el = document.getElementById('betafib-window-' + mode);
+    const raw = el ? String(el.value || '') : '';
+    if (!raw) return null;
+    const parts = raw.split(',');
+    if (parts.length !== 2) return null;
+    const n = parseInt(parts[idx], 10);
+    return Number.isFinite(n) ? n : null;
 }
 
 function _fmtMlProb(v) {
@@ -908,10 +942,34 @@ function updateMlParamSummary(mode) {
         ' · market ' + marketSession + ' · size follows top selector.';
 }
 
+// 1.0.10: PI 的訊號只有 2026-06-11 之後(Discord 頻道全部歷史就這麼多),
+// 用預設的 FULL_RANGE_START(2008)回測等於白掃 233 萬根、載入 10 秒起跳,
+// 而 2026-06 之前一筆訊號都沒有。切到 PI 時自動把起始日縮到訊號範圍。
+const PI_SIGNAL_FIRST_DATE = '2026-06-01';
+
+function _scopeDatesForStrategy(mode, strategy) {
+    if (mode !== 'bt') return;
+    const startEl = document.getElementById('start-date');
+    if (!startEl) return;
+    if (strategy === 'pi') {
+        if (startEl.value < PI_SIGNAL_FIRST_DATE) {
+            startEl.dataset.piPrev = startEl.value;   // 記住原值,切回時還原
+            startEl.value = PI_SIGNAL_FIRST_DATE;
+            log('PI 訊號最早只到 ' + PI_SIGNAL_FIRST_DATE
+                + ' —— 起始日已自動縮短(避免白掃 200 萬根)', 'info');
+        }
+    } else if (startEl.dataset.piPrev) {
+        startEl.value = startEl.dataset.piPrev;
+        delete startEl.dataset.piPrev;
+    }
+}
+
 function onStrategyChange(mode) {
     const el = document.getElementById('strategy-' + mode);
-    _setStrategySelect(mode, el ? el.value : DEFAULT_STRATEGY_PARAMS.strategy);
+    const strat = el ? el.value : DEFAULT_STRATEGY_PARAMS.strategy;
+    _setStrategySelect(mode, strat);
     updateStrategyParamVisibility(mode);
+    _scopeDatesForStrategy(mode, normalizeStrategyName(strat));
 }
 
 // Re-detect zones at the selected area timeframe + value-area % and redraw VAH/VAL/POC.
@@ -1151,7 +1209,15 @@ function collectStrategyParams(mode) {
     };
     const rrRaw = Math.max(0.1, Math.min(6, parseFloat(_mlSelectValue('rr-ratio-' + mode, '2')) || 2));
     const rrInt = Math.max(1, Math.min(6, parseInt(_mlSelectValue('rr-ratio-' + mode, '2'), 10) || 2));
-    const factorSlRule = _factorRule(_paramVal('factor-sl-rule', 'factor_sl_rule', 'atr_blend'), 'atr_blend');
+    // 1.0.10: SL ANCHOR 是**單一**下拉,依策略寫進不同欄位:
+    //   BETAFIB → betafib_risk_basis (atr_blend / daily / fib)
+    //   其他    → factor_sl_rule     (atr / atr_blend / range15_pct)
+    // 兩個白名單各自過濾,所以選了 daily/fib 時 factor_sl_rule 會安全退回
+    // atr_blend,選了 atr/range15_pct 時 betafib_risk_basis 退回 atr_blend。
+    // 這樣同一份 preset 在切換策略時不會帶著對方看不懂的值。
+    const slAnchorRaw = String(_paramVal('factor-sl-rule', 'factor_sl_rule', 'atr_blend') || '').toLowerCase();
+    const betafibBasis = ['atr_blend', 'daily', 'fib'].includes(slAnchorRaw) ? slAnchorRaw : 'atr_blend';
+    const factorSlRule = _factorRule(slAnchorRaw, 'atr_blend');
     const factorSlValue = _paramNum('factor-sl-value', 'factor_sl_value', 2.5) || 2.5;
     // 1.0.9: HOLD 5m-candle system removed — FACTOR exits are SL/TP only, always,
     // for every current and future preset. Pinned 0 regardless of any stored value.
@@ -1203,13 +1269,6 @@ function collectStrategyParams(mode) {
         sigma_stop_span: Number(applied.sigma_stop_span != null ? applied.sigma_stop_span : 1.0) || 1.0,
         sigma_accept_sigma: Number(applied.sigma_accept_sigma != null ? applied.sigma_accept_sigma : 2.0) || 2.0,
         sigma_accept_bars: parseInt(applied.sigma_accept_bars != null ? applied.sigma_accept_bars : 2, 10) || 2,
-        pmo_timeframe_minutes: parseInt(applied.pmo_timeframe_minutes != null ? applied.pmo_timeframe_minutes : 5, 10) || 5,
-        pmo_signal_mode: String(applied.pmo_signal_mode || 'normal') === 'early' ? 'early' : 'normal',
-        pmo_sl_atr: Number(applied.pmo_sl_atr != null ? applied.pmo_sl_atr : 1.0) || 1.0,
-        pmo_tp_atr: Number(applied.pmo_tp_atr != null ? applied.pmo_tp_atr : 1.0) || 1.0,
-        pmo_max_hold_bars: parseInt(applied.pmo_max_hold_bars != null ? applied.pmo_max_hold_bars : 24, 10) || 24,
-        pmo_max_trades_per_day: dailyMaxTrades,
-        pmo_warmup_bars: parseInt(applied.pmo_warmup_bars != null ? applied.pmo_warmup_bars : 150, 10) || 150,
         factor_timeframe_minutes: parseInt(applied.factor_timeframe_minutes != null ? applied.factor_timeframe_minutes : 5, 10) || 5,
         factor_signal_family: _factorFamily(_paramVal('factor-family', 'factor_signal_family', 'emapmo')),
         factor_side_mode: _factorSide(_paramVal('factor-side', 'factor_side_mode', 'long_only')),
@@ -1225,8 +1284,21 @@ function collectStrategyParams(mode) {
         // 唯一通過 G0–G4 的進場位;0.786 太淺(94% 夜盤都會觸及)。
         betafib_entry_fib: _float('betafib-entry-' + mode, 0.618),
         betafib_anchor: _mlSelectValue('betafib-anchor-' + mode, 'hl'),
-        betafib_risk_basis: _mlSelectValue('betafib-basis-' + mode, 'atr_blend'),
+        betafib_risk_basis: betafibBasis,   // 1.0.10: 來自合併後的 SL ANCHOR
         betafib_min_move_pct: _float('betafib-minpct-' + mode, 0),
+        // 1.0.10: PI 外部訊號
+        pi_signal_set: _mlSelectValue('pi-signal-set-' + mode, 'pi_only'),
+        pi_long_only: _mlSelectValue('pi-long-only-' + mode, '0') === '1',
+        pi_max_signal_age_min: _int('pi-max-age-' + mode, 5),
+        pi_short_sl_value: _float('pi-short-sl-' + mode, 2.5),
+        pi_short_hold_min: _int('pi-short-hold-' + mode, 60),
+        // 1.0.10: 腿幅上限 + 進場時窗 + fib 基準的 SL/TP 層級。
+        // 時窗用單一 select,值是 "start,end"(UTC 小時);空字串 = 不限制。
+        betafib_max_move_pct: _float('betafib-maxpct-' + mode, 0),
+        betafib_entry_start_hour: _betafibWin(mode, 0),
+        betafib_entry_end_hour: _betafibWin(mode, 1),
+        betafib_sl_fib: _float('betafib-slfib-' + mode, 0.75),
+        betafib_tp_fib: _float('betafib-tpfib-' + mode, 0.90),
         // 1.0.9: 單筆風險/獲利寬度上限(ticks/口);0 → null = 不限
         // 1.0.9: 讀 hidden(價距 ticks)—— 唯一真相,滑桿與文字都從它衍生
         max_profit_ticks: capTicks(mode) || null,
@@ -1366,13 +1438,35 @@ function applyStrategyParams(mode, params) {
     _set('momentum-hour-' + mode, String(p.momentum_entry_hour != null ? p.momentum_entry_hour : 18));
     _set('betafib-entry-' + mode, String(p.betafib_entry_fib != null ? p.betafib_entry_fib : 0.618));
     _set('betafib-anchor-' + mode, String(p.betafib_anchor || 'hl'));
-    _set('betafib-basis-' + mode, String(p.betafib_risk_basis || 'atr_blend'));
+    // 1.0.10: BETAFIB preset 的 SL 錨點存在 betafib_risk_basis,要回填到合併後的
+    // SL ANCHOR;非 BETAFIB 的 preset 則由下方的 factor-sl-rule 回填,不能互相蓋掉。
+    if (String(p.strategy || '').toLowerCase() === 'betafib') {
+        _setChoice('factor-sl-rule-' + mode, String(p.betafib_risk_basis || 'atr_blend'));
+    }
     _set('betafib-minpct-' + mode, String(p.betafib_min_move_pct != null ? p.betafib_min_move_pct : 0));
+    // 1.0.10: PI
+    _set('pi-signal-set-' + mode, String(p.pi_signal_set || 'pi_only'));
+    _set('pi-long-only-' + mode, p.pi_long_only ? '1' : '0');
+    _set('pi-max-age-' + mode, String(p.pi_max_signal_age_min != null ? p.pi_max_signal_age_min : 5));
+    _set('pi-short-sl-' + mode, String(p.pi_short_sl_value != null ? p.pi_short_sl_value : 2.5));
+    _set('pi-short-hold-' + mode, String(p.pi_short_hold_min != null ? p.pi_short_hold_min : 60));
+    // 1.0.10
+    _set('betafib-maxpct-' + mode, String(p.betafib_max_move_pct != null ? p.betafib_max_move_pct : 0));
+    _set('betafib-window-' + mode,
+        (p.betafib_entry_start_hour == null || p.betafib_entry_end_hour == null)
+            ? '' : (p.betafib_entry_start_hour + ',' + p.betafib_entry_end_hour));
+    _set('betafib-slfib-' + mode, String(p.betafib_sl_fib != null ? p.betafib_sl_fib : 0.75));
+    _set('betafib-tpfib-' + mode, String(p.betafib_tp_fib != null ? p.betafib_tp_fib : 0.90));
+    onBetafibBasisChange(mode);   // 套用 preset 後同步 fib 層級列的顯示
+    _scopeDatesForStrategy(mode, normalizeStrategyName(p.strategy));
     // 1.0.9: preset 存的是價距 ticks —— 直接寫進唯一真相,
     // setCapTicks 會把滑桿位置與文字一起重畫,兩者不可能不同步。
     setCapTicks(mode, parseInt(p.max_profit_ticks != null ? p.max_profit_ticks : 0, 10) || 0);
     updateRiskCapHint(mode);
-    _setChoice('factor-sl-rule-' + mode, _factorRuleValue(p.factor_sl_rule, 'atr_blend'));
+    // 1.0.10: BETAFIB 的 SL 錨點在上面已由 betafib_risk_basis 回填,這裡不能再蓋回去。
+    if (String(p.strategy || '').toLowerCase() !== 'betafib') {
+        _setChoice('factor-sl-rule-' + mode, _factorRuleValue(p.factor_sl_rule, 'atr_blend'));
+    }
     _setChoice('factor-sl-value-' + mode, String(p.factor_sl_value != null ? p.factor_sl_value : 2.5));
     _setChoice('factor-hold-' + mode, '0');   // 1.0.9: HOLD 5m system removed → always OFF (SL/TP-only)
     _setChoice('factor-max-trades-' + mode, String(p.factor_max_trades_per_day != null ? p.factor_max_trades_per_day : (p.pmo_max_trades_per_day != null ? p.pmo_max_trades_per_day : 3)));
@@ -1550,7 +1644,6 @@ function _namingModelFromParams(params) {
     const strategy = normalizeStrategyName((params || {}).strategy);
     if (strategy === 'fade') return 'DAY ZONE';
     if (strategy === 'sigma') return 'DISTRIBUTION';
-    if (strategy === 'pmo') return 'PMO';
     if (strategy === 'factor') return 'FACTOR';
     return 'TREND';
 }
@@ -1604,19 +1697,6 @@ function buildPresetParamToken(params) {
             'Accept' + String(p.sigma_accept_mode || 'none'),
             'TP' + String(p.sigma_target_mode || 'half'),
             'SL' + String(p.sigma_stop_span != null ? p.sigma_stop_span : 1),
-            market,
-            _contractPresetToken(p),
-        ].join(' ');
-    }
-    if (normalizeStrategyName(p.strategy) === 'pmo') {
-        const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : null);
-        return [
-            'PMO',
-            String(p.pmo_signal_mode || 'normal').toUpperCase(),
-            String(p.pmo_timeframe_minutes || 5) + 'm',
-            'SL' + String(p.pmo_sl_atr != null ? p.pmo_sl_atr : 1) + 'ATR',
-            'TP' + String(p.pmo_tp_atr != null ? p.pmo_tp_atr : 1) + 'ATR',
-            'H' + String(p.pmo_max_hold_bars != null ? p.pmo_max_hold_bars : 24),
             market,
             _contractPresetToken(p),
         ].join(' ');
@@ -1689,7 +1769,6 @@ function buildPresetParamToken(params) {
 function suggestedPresetPurpose(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
     if (normalizeStrategyName(p.strategy) === 'sigma') return 'Distribution';
-    if (normalizeStrategyName(p.strategy) === 'pmo') return 'PMO';
     if (normalizeStrategyName(p.strategy) === 'factor') return 'Icefishball';
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = Number(p.conf_max_risk_ticks || 0);
@@ -3563,6 +3642,7 @@ async function pollLiveCandle() {
             window._lastChartData.sort((a, b) => a.time - b.time);
             refreshTfZones(!(_tfAllZones && _tfAllZones.length));
             refreshIndicatorSignalMarkers(false);
+            refreshPiSignalMarkers();
             _refreshAllMarkers();
             log('Candle update: ' + newestC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');
         }
@@ -3836,6 +3916,117 @@ function getNextSessionBoundaryMs(isoStr) {
     return best;
 }
 
+
+// ════════════════════════════════════════════════════════════════════
+// 1.0.10: 圖層開關。原本所有 overlay 都無條件畫,圖上東西多到看不出重點。
+// 預設只留 EMAPMO 訊號與 PI 訊號,其餘由右下角的圖層選單自行開啟。
+//
+// 每個 draw 函式在開頭檢查自己的旗標並提早返回 —— 不是隱藏 canvas,
+// 而是根本不畫,順便省掉重繪成本(VP 與 zone 線在 233 萬根上很吃 CPU)。
+// ════════════════════════════════════════════════════════════════════
+const CHART_LAYERS = [
+    { key: 'emapmo',   label: 'EMAPMO 三角',      on: true  },
+    { key: 'pi',       label: 'PI 訊號 (圈/π)',    on: true  },
+    { key: 'trades',   label: '交易框 (SL/TP)',    on: true  },
+    { key: 'mrev',     label: 'MREV 泡泡',         on: false },
+    { key: 'kdjma',    label: 'KDJMA 圓點',        on: false },
+    { key: 'intramom', label: 'INTRAMOM 箭頭',     on: false },
+    { key: 'zonelines',label: 'VAH/VAL/POC 線',    on: false },
+    { key: 'sessva',   label: 'Session VA 發展',   on: false },
+    { key: 'fib',      label: 'BETAFIB 水位線',    on: false },
+    { key: 'dayzone',  label: 'DAY ZONE 前日水位', on: false },
+];
+const CHART_OVERLAYS = Object.fromEntries(CHART_LAYERS.map(l => [l.key, l.on]));
+
+function _clearCanvas(id) {
+    const c = document.getElementById(id);
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, c.width, c.height);
+}
+
+function layerOn(key) { return CHART_OVERLAYS[key] !== false; }
+
+// 四種指標訊號共用 indicator-signal-overlay 這張畫布,所以不能整層關掉,
+// 得逐筆依 row.type 過濾。
+const _SIGNAL_TYPE_LAYER = {
+    emapmo: 'emapmo',
+    momentum_reversion: 'mrev',
+    icefishball: 'kdjma',
+    intramom: 'intramom',
+};
+
+function toggleChartLayer(key, on) {
+    CHART_OVERLAYS[key] = !!on;
+    if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
+    try { redrawAllOverlays(); } catch (e) {}
+}
+
+// 圖例跟著圖層走 —— 關掉的層不該還列在圖例上
+function syncSignalLegend() {
+    document.querySelectorAll('#signal-legend [data-legend-layer]').forEach(row => {
+        row.style.display = layerOn(row.dataset.legendLayer) ? '' : 'none';
+    });
+}
+
+function redrawAllOverlays() {
+    syncSignalLegend();
+    try { drawSessionDividers(); } catch (e) {}
+    try { drawIndicatorSignalOverlay(); } catch (e) {}
+    try { drawPiSignalOverlay(); } catch (e) {}
+    try { if (_cachedVPZones) drawVolumeProfile(_cachedVPZones); } catch (e) {}
+    try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
+    try { drawPositionTools(backtestData && backtestData.trades ? backtestData.trades : []); } catch (e) {}
+}
+
+// 開關是靜態 HTML(玻璃引擎的 liveAll() 只掃一次,動態產生的抓不到),
+// 所以這裡只做「把 DOM 狀態同步回 CHART_OVERLAYS」,不再生成 markup。
+function buildChartLayerMenu() {
+    document.querySelectorAll('#chart-layer-pop .glass-switch').forEach(tr => {
+        const key = String(tr.dataset.switchProxy || '').replace(/^lp-/, '');
+        if (!(key in CHART_OVERLAYS)) return;
+        const on = CHART_OVERLAYS[key];
+        // 只翻 `on` class 沒有用 —— 拇指位置活在彈簧裡,class 和位置會各說各話
+        // (軌道變綠但拇指還停在左邊)。tpxSetState 才會把彈簧一起推過去。
+        //
+        // 但 tpxSetState 的行程是從 track.clientWidth 算的,面板還 display:none
+        // 時那是 0 → 行程被夾成 1px,拇指就卡在最左邊不動了。所以有版面才推。
+        if (tr.tpxSetState && tr.clientWidth > 0) tr.tpxSetState(on);
+        else tr.classList.toggle('on', on);
+    });
+}
+
+// tpx-glass.js 的 switch onChange 走 `byId(proxy).click()`,不帶新狀態進來。
+// commit() 在呼叫 onChange **之前**就寫好 aria-checked,但 `on` class 要等
+// 下一幀彈簧 apply() 才更新 —— 所以讀 aria-checked,不要讀 class。
+function onLayerProxy(key) {
+    const tr = document.querySelector('#chart-layer-pop [data-switch-proxy="lp-' + key + '"]');
+    if (!tr) return;
+    toggleChartLayer(key, tr.getAttribute('aria-checked') === 'true');
+}
+
+function toggleChartLayerMenu(force) {
+    const pop = document.getElementById('chart-layer-pop');
+    if (!pop) return;
+    const show = (force === undefined) ? pop.classList.contains('hidden') : !!force;
+    pop.classList.toggle('hidden', !show);
+    if (show) buildChartLayerMenu();
+}
+
+document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
+    buildChartLayerMenu();   // 面板還隱藏著,只對齊 class
+    syncSignalLegend();
+}, 0));
+// 點圖層選單以外的地方就收起來
+document.addEventListener('click', (e) => {
+    const pop = document.getElementById('chart-layer-pop');
+    const btn = document.getElementById('chart-layer-btn');
+    if (!pop || pop.classList.contains('hidden')) return;
+    if (pop.contains(e.target) || (btn && btn.contains(e.target))) return;
+    pop.classList.add('hidden');
+});
+
 function drawSessionDividers() {
     if (!candleSeries || !chart) return;
     const canvas = createSessionDividerCanvas();
@@ -3876,6 +4067,15 @@ function drawSessionDividers() {
     ctx.fillStyle = 'rgba(247, 239, 224, 0.5)';
     ctx.textAlign = 'left';
 
+    // 1.0.10: 盤段標籤從頂端移到底部時間軸正上方 —— 頂端是價格行為最密集的
+    // 區域,標籤壓在那裡會擋住 K 棒;貼著時間軸則跟它標示的時間位置在同一側。
+    let _axisH = 28;
+    try {
+        const ts = chart.timeScale();
+        if (ts && typeof ts.height === 'function') _axisH = ts.height() || _axisH;
+    } catch (e) { /* 舊版 lightweight-charts 沒有 height(),用預設值 */ }
+    const labelY = Math.max(11, H - _axisH - 4);
+
     for (let d = startDay.getTime(); d <= endMs; d += dayMs) {
         const day = new Date(d);
         SESSION_BOUNDARIES.forEach(b => {
@@ -3898,8 +4098,8 @@ function drawSessionDividers() {
             ctx.lineTo(x, H);
             ctx.stroke();
 
-            // Label at top
-            ctx.fillText(b.label, x + 3, 11);
+            // 1.0.10: 標籤貼在時間軸上方,不再壓在頂端 K 棒上
+            ctx.fillText(b.label, x + 3, labelY);
         });
     }
 
@@ -3951,6 +4151,33 @@ function drawNYOpenZoneBackgrounds(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
         });
     }
     ctx.restore();
+}
+
+// 1.0.10: 目前視野中「禁交易窗」的像素 x 區間。
+// drawRiskRewardBox() 要據此判斷紅綠底會不會被斜線蓋掉 —— 斜線是 0.55 alpha
+// 每 10px 一條,紅綠底只有 0.105/0.115,疊在一起完全看不見。
+function _noTradeXRanges() {
+    if (!chart || !candleSeries) return [];
+    const range = chart.timeScale().getVisibleRange();
+    if (!range || !range.from || !range.to) return [];
+    const fromMs = range.from * 1000, toMs = range.to * 1000;
+    const dayMs = 86400000;
+    const start = new Date(fromMs - dayMs);
+    start.setUTCHours(0, 0, 0, 0);
+    const out = [];
+    for (let d = start.getTime(); d <= toMs + dayMs; d += dayMs) {
+        const day = new Date(d);
+        NO_TRADE_WINDOWS_UTC.forEach(w => {
+            const a = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.startH, w.startM, 0);
+            const b = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.endH, w.endM, 0);
+            if (b < fromMs || a > toMs) return;
+            const x1 = chart.timeScale().timeToCoordinate(utcMsToChartTime(a));
+            const x2 = chart.timeScale().timeToCoordinate(utcMsToChartTime(b));
+            if (x1 === null || x2 === null) return;
+            out.push([Math.min(x1, x2), Math.max(x1, x2)]);
+        });
+    }
+    return out;
 }
 
 function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
@@ -4071,6 +4298,7 @@ async function refreshTfZones(force) {
 // Draw one zone's VAH/VAL (solid) + POC (dashed) horizontal lines.
 // `op` is an opacity multiplier (backtest zones = 0.8, live/current zone = 1.0).
 function _drawZoneLines(ctx, z, tf, lw, color, op, W, H, rightX, priceToY, tX) {
+    if (!layerOn('zonelines')) return;
     const yVAH = priceToY(z.vah_80);
     const yVAL = priceToY(z.val_80);
     const yPOC = priceToY(z.poc);
@@ -4196,6 +4424,12 @@ function _drawBetafibLevels(ctx, H, priceToY, tX) {
 }
 
 function renderTfZones() {
+    // 1.0.10: VAH/VAL/POC 白線、session VA、fib 三者共用 vp-overlay,
+    // 全關時直接清畫布返回 —— 否則上一次畫的線會留在上面。
+    if (!layerOn('zonelines') && !layerOn('sessva') && !layerOn('fib')) {
+        try { clearVPOverlay(); } catch (e) {}
+        return;
+    }
     const canvas = createVPOverlay();
     const container = document.getElementById('chart-container');
     const dpr = window.devicePixelRatio || 1;
@@ -4219,13 +4453,13 @@ function renderTfZones() {
 
     // Always show the current session developing VA80 boundary in white.
     if (_tfAllZones && _tfAllZones.length > 0) {
-        _drawSessionDevelopingVa(ctx, W, H, priceToY, tX, vFrom, vTo);
+        if (layerOn('sessva')) _drawSessionDevelopingVa(ctx, W, H, priceToY, tX, vFrom, vTo);
     }
 
     // 1.0.9: SESSFIB 掛單線。畫在早退(有成交決策疊圖時)之前,
     // 否則一旦跑過回測就永遠看不到掛單位。
     if (_betafibLevels.length) {
-        _drawBetafibLevels(ctx, H, priceToY, tX);
+        if (layerOn('fib')) _drawBetafibLevels(ctx, H, priceToY, tX);
     }
 
     // Once trade-decision overlays exist, suppress the generic bucket reference
@@ -4314,6 +4548,7 @@ function clearFadeDailyLevels() {
 }
 
 function drawFadeDailyLevels(zones) {
+    if (!layerOn('dayzone')) { try { _clearCanvas('fade-level-overlay'); } catch (e) {} return; }
     const fadeZones = (zones || []).filter(z => String(z.timeframe || '').toLowerCase() === 'fade');
     if (!fadeZones.length) {
         clearFadeDailyLevels();
@@ -4597,6 +4832,7 @@ function createPosToolCanvas() {
 }
 
 function drawPositionTools(trades) {
+    if (!layerOn('trades')) trades = [];
     clearPositionOverlay();
     if (!trades || trades.length === 0) return;
 
@@ -4613,6 +4849,9 @@ function drawPositionTools(trades) {
 
     const chartW = container.clientWidth;
     const chartH = container.clientHeight;
+    // 1.0.10: 每筆單都重算會變成 O(交易數 × 可視天數) 次 timeToCoordinate,
+    // 視野一整個月時是上千次 —— 一次算好給所有單共用。
+    const noTradeRanges = _noTradeXRanges();
 
     // 1.0.9: 繪製夾在價格窗格內 — 交易框/區間線不再蓋住底部時間軸
     ctx.beginPath();
@@ -4761,14 +5000,23 @@ function drawPositionTools(trades) {
         const inPane = (yy) => yy >= -20 && yy <= paneH + 20;
         const MIN_FILL_H = 6;
 
+        // 1.0.10: 落在禁交易窗裡的單,紅綠底會被斜線吃掉。斜線是 0.55 alpha
+        // 每 10px 一條的紅色,紅綠底只有 0.105/0.115 —— 疊上去完全看不見,
+        // 而且斜線也是紅的,連紅色 SL 側都糊在一起。
+        // 不能用不透明底色壓掉斜線(那層在 z=2,壓下去會連 K 棒一起遮住),
+        // 也不加回先前已移除的三條橫線 —— 只在重疊時加深底色。
+        const overlapNoTrade = noTradeRanges.some(([a, b]) => xEnd > a && x0 < b);
+        const gAlpha = overlapNoTrade ? 0.34 : 0.105;
+        const rAlpha = overlapNoTrade ? 0.36 : 0.115;
+
         ctx.save();
         ctx.setLineDash([]);
         if (greenH >= MIN_FILL_H && inPane(yEntry) && inPane(yTP)) {
-            ctx.fillStyle = 'rgba(0, 229, 160, 0.105)';
+            ctx.fillStyle = 'rgba(0, 229, 160, ' + gAlpha + ')';
             ctx.fillRect(x0, greenTop, xEnd - x0, greenH);
         }
         if (redH >= MIN_FILL_H && inPane(yEntry) && inPane(ySL)) {
-            ctx.fillStyle = 'rgba(255, 64, 96, 0.115)';
+            ctx.fillStyle = 'rgba(255, 64, 96, ' + rAlpha + ')';
             ctx.fillRect(x0, redTop, xEnd - x0, redH);
         }
         // 1.0.8: 依使用者要求移除 entry/TP/SL 三條橫線,只保留紅綠底
@@ -4934,14 +5182,33 @@ async function checkHealth() {
 }
 
 async function connectAPI() {
+    // 1.0.10: OFFLINE 只擋**資料請求**,不擋帳號連線 —— 帳號狀態、部位、
+    // 交易紀錄仍需要連線;卡住的從來不是認證,是 233 萬根的抓取/寫盤。
     const btn = document.getElementById('btn-connect');
     const username = document.getElementById('username').value.trim();
     const apikey = document.getElementById('apikey').value.trim();
     const contractId = document.getElementById('contract-id').value.trim();
+    if (btn.dataset.busy === '1') {
+        log('已在連線中,略過重複點擊', 'warn');
+        return;
+    }
+    btn.dataset.busy = '1';
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"><span></span><span></span><span></span><span></span></span> CONNECTING...';
     setStatus('loading', 'CONNECTING...');
     log('Connecting to TopstepX API...', 'info');
+
+    // 1.0.10: 硬性逾時。實測後端全部 200 回來了,前端卻仍卡在 CONNECTING ——
+    // 中間某個 await 沒有 resolve。與其逐一追,不如保證 UI 一定會還原:
+    // 逾時後把按鈕與狀態燈復位,並明確告訴使用者連線沒完成。
+    const _connWatchdog = setTimeout(() => {
+        if (btn.dataset.busy !== '1') return;
+        btn.dataset.busy = '';
+        btn.disabled = false;
+        btn.textContent = 'CONNECT';
+        setStatus('err', 'CONNECT TIMED OUT');
+        log('連線逾時(60 秒)—— 已解除卡住的 UI。券商維護中可改用 OFFLINE MODE。', 'error');
+    }, 60000);
 
     // CONNECT loads only the recent warm-up window (CONNECT_WARMUP_DAYS) so the
     // app is interactive immediately. The full multi-year range is pulled lazily
@@ -5048,8 +5315,12 @@ async function connectAPI() {
         setStatus('err', 'FAILED');
         log('Connection failed: ' + e.message, 'error');
     } finally {
+        clearTimeout(_connWatchdog);
+        btn.dataset.busy = '';
         btn.disabled = false;
         btn.textContent = 'CONNECT';
+        // 離線模式下不要把燈留在「連上」的綠色
+        if (isOffline()) setStatus('off', 'OFFLINE — K 棒用本機資料');
     }
 }
 
@@ -5097,6 +5368,7 @@ function showCandleData(candles) {
     // Populate the all-timeframe zone cache so the filter draws lines immediately.
     refreshTfZones(true);
     refreshIndicatorSignalMarkers(true);
+    refreshPiSignalMarkers();
 }
 
 function applyDefaultChartView(chartData, zones) {
@@ -5232,7 +5504,9 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
         end_time:   endDate   + 'T23:59:59Z',
         append: appendFetch,
         continuous_contract: true,
-        force_full: !!force };
+        force_full: !!force,
+        // 1.0.10: OFFLINE MODE → 後端完全跳過券商,只用本機 store
+        store_only: isOffline() };
     if (username)    body.username    = username;
     if (apikey)      body.api_key     = apikey;
     if (contractId)  body.contract_id = contractId;
@@ -5915,7 +6189,7 @@ function drawIndicatorSignalOverlay() {
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
 
-    if (!_indicatorSignalRows || _indicatorSignalRows.length === 0) return;
+    if (!_indicatorSignalRows || _indicatorSignalRows.length === 0) { drawPiSignalOverlay(); return; }
 
     // 1.0.9: 夾在價格窗格內 — 信號不再蓋住底部時間軸
     ctx.beginPath();
@@ -5928,6 +6202,7 @@ function drawIndicatorSignalOverlay() {
     for (const row of _indicatorSignalRows) {
         const spec = INDICATOR_SIGNAL_TYPES[row.type];
         if (!spec) continue;
+        if (!layerOn(_SIGNAL_TYPE_LAYER[row.type] || row.type)) continue;
         const t = Number(row.chartTime);
         if (!Number.isFinite(t)) continue;
         if (visibleRange && (t < visibleRange.from - 300 || t > visibleRange.to + 300)) continue;
@@ -5982,6 +6257,192 @@ function drawIndicatorSignalOverlay() {
             _drawKdjmaDot(ctx, x, y, spec.radius, dotRgb);
         }
     }
+    drawPiSignalOverlay();
+}
+
+
+// ════════════════════════════════════════════════════════════════════
+// 1.0.10: PI 訊號標記。畫在 indicator-signal-overlay 這張畫布上,和
+// EMAPMO 三角形共用一層。
+//
+// 顏色語意來自使用者:**藍色 = 上漲、紫/粉 = 下跌**。π 字符是「π 級別」
+// (青π / 粉π —— PF 3.05 / 2.28),圈是「圈級別」(淡蓝 PF 1.35、
+// 紫圈 PF 1.18,接近噪音)。所以 π 畫實心加粗、圈畫空心細框,
+// 一眼就分得出哪個是策略真的在吃的訊號。
+//
+// PI 沒有自己的 MNQ/MES 價位(訊號源是 SPY/QQQ),所以錨在該根 K 棒的
+// 高/低點:看多錨低點下方,看空錨高點上方。
+// ════════════════════════════════════════════════════════════════════
+const PI_MARK_STYLE = {
+    '青π':   { rgb: '34, 211, 238',  glyph: 'π', dir: 'long',  strong: true  },
+    '深蓝圈': { rgb: '37, 99, 235',   glyph: null, dir: 'long',  strong: true  },
+    '淡蓝圈': { rgb: '125, 211, 252', glyph: null, dir: 'long',  strong: false },
+    '粉π':   { rgb: '244, 114, 182', glyph: 'π', dir: 'short', strong: true  },
+    '紫圈':   { rgb: '168, 85, 247',  glyph: null, dir: 'short', strong: false },
+};
+// 圈的半徑(MREV 泡泡是 6,這裡放大到 2.3~4 倍)/ π 的字級
+const PI_BUBBLE_R = { '大': 24, '中': 18, '小': 14 };
+const PI_GLYPH_SZ = { '大': 11, '中': 9, '小': 7.5 };
+
+let _piSignalRows = [];        // [{chartTime, marks:[{kind,size}]}]
+let _piSignalsLoading = false;
+
+async function refreshPiSignalMarkers() {
+    if (_piSignalsLoading) return;   // 進行中就跳過;呼叫端每次圖表同步都會再叫一次
+    if (!layerOn('pi')) { _piSignalRows = []; return; }
+    const rows = window._lastChartData;
+    if (!rows || !rows.length) return;
+    _piSignalsLoading = true;
+    try {
+        // contract_id 形如 CON.F.US.MNQ.U26 —— 取第 4 段。
+        // 1.0.10 BUG:這裡原本寫 fv('contract-id', ...)。fv 不是全域 helper,
+        // 它是 collectConfluenceParams() 內部的區域箭頭函式(而且是 parseFloat,
+        // 本來就讀不了字串)。ReferenceError 被下面的 catch 吞掉 → 靜默清空
+        // _piSignalRows → 圖上永遠沒有 PI 標記,而且 console 一片乾淨。
+        const _cidEl = document.getElementById('contract-id');
+        const cid = (_cidEl && _cidEl.value) || 'CON.F.US.MNQ.U26';
+        const sym = String(cid).split('.')[3] || 'MNQ';
+        const qs = new URLSearchParams({ symbol: sym || '' });
+        const resp = await fetch(API + '/pi/signals?' + qs.toString());
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        _piSignalRows = (data.signals || []).map(sig => ({
+            chartTime: _snapToBarTime(utcMsToChartTime(Date.parse(sig.ts))),
+            marks: sig.marks || [],
+        })).filter(r => Number.isFinite(r.chartTime));
+    } catch (e) {
+        _piSignalRows = [];
+        // 吞掉例外正是上面那個 bug 難找的原因 —— 至少要留下痕跡
+        console.error('[PI] 訊號載入失敗:', e);
+        try { log('PI signal load failed: ' + e.message, 'error'); } catch (_) {}
+    } finally {
+        _piSignalsLoading = false;
+    }
+    drawPiSignalOverlay();
+}
+
+// 把任意秒數的訊號時間吸附到「它所屬的那根 K 棒」。
+//
+// 1.0.10 BUG:PI 訊號的時戳是 Discord 的發文時刻(例如 13:33:01.240),
+// 落在秒上;K 棒時間是整分鐘。_findCandleAtChartTime() 是**精確比對**的
+// 二分搜尋,所以永遠找不到 → 繪製迴圈的 `if (!candle) continue` 把每一筆
+// 都跳掉,圖上一個標記都沒有。EMAPMO 不受影響是因為它的訊號時間由後端
+// 產生時就已經對齊 K 棒了。
+function _snapToBarTime(chartTime) {
+    const cd = window._lastChartData || [];
+    if (!cd.length) return null;
+    if (chartTime < cd[0].time || chartTime > cd[cd.length - 1].time + 3600) return null;
+    let lo = 0, hi = cd.length - 1, best = -1;
+    while (lo <= hi) {                       // 找最後一根 time <= chartTime
+        const mid = (lo + hi) >> 1;
+        if (cd[mid].time <= chartTime) { best = mid; lo = mid + 1; }
+        else hi = mid - 1;
+    }
+    if (best < 0) return null;
+    // 距離太遠代表訊號落在資料缺口裡(收盤、假日),不要硬掛到前一根上
+    return (chartTime - cd[best].time <= 3600) ? cd[best].time : null;
+}
+
+// 由 live listener 推進來的即時訊號,直接補進來不用重打 API
+function pushPiSignalMarker(tsMs, marks) {
+    const t = _snapToBarTime(utcMsToChartTime(tsMs));
+    if (!Number.isFinite(t)) return;
+    _piSignalRows.push({ chartTime: t, marks: marks || [] });
+    drawPiSignalOverlay();
+}
+
+// PI 的「π 級」標記 —— 借 _drawIndicatorTriangle 的錨定方式(多錨低點下方、
+// 空錨高點上方、固定 gap),形狀換成 π 字符。EMAPMO 維持三角形不變,所以兩層
+// 疊在一起還是分得開:▲▼ = EMAPMO,π = PI。
+function _drawPiGlyph(ctx, cx, yRef, dir, rgb, size) {
+    const gap = 4;
+    const h = size * 1.9;
+    const y = (dir === 'short') ? (yRef - gap - h * 0.15) : (yRef + gap + h * 0.85);
+    ctx.save();
+    ctx.font = `700 ${h.toFixed(1)}px "IBM Plex Mono", monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    // 深色描邊,免得 π 落在亮 K 棒上糊掉
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(8, 12, 18, 0.85)';
+    ctx.strokeText('π', cx, y);
+    ctx.fillStyle = `rgba(${rgb}, 1)`;
+    ctx.fillText('π', cx, y);
+    ctx.restore();
+}
+
+// PI 的「圈級」標記 —— 就是 MREV 泡泡(_drawIndicatorBubble)放大版:
+// 同樣是半透明實心圓,只是半徑從 6 拉到 14/18/24,並補一圈邊讓它在
+// 深色背景上有輪廓。
+function _drawPiBubble(ctx, x, y, radius, rgb) {
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${rgb}, 0.34)`;
+    ctx.fill();
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = `rgba(${rgb}, 0.85)`;
+    ctx.stroke();
+}
+
+function drawPiSignalOverlay() {
+    // 和 EMAPMO 共用畫布 —— 由 drawIndicatorSignalOverlay 統一清空後再疊上,
+    // 所以這裡只負責疊,不負責 clear。
+    if (!chart || !candleSeries) return;
+    if (!layerOn('pi') || !_piSignalRows.length) return;
+    const canvas = document.getElementById('indicator-signal-overlay');
+    const container = document.getElementById('chart-container');
+    if (!canvas || !container) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, H - _timeAxisHeight());
+    ctx.clip();
+
+    let visibleRange = null;
+    try { visibleRange = chart.timeScale().getVisibleRange(); } catch (_) {}
+
+    for (const row of _piSignalRows) {
+        const t = Number(row.chartTime);
+        if (visibleRange && (t < visibleRange.from - 300 || t > visibleRange.to + 300)) continue;
+        const x = _indicatorTimeToX(t, W, visibleRange);
+        if (x === null || x < -40 || x > W + 40) continue;
+        const candle = _findCandleAtChartTime(t);
+        if (!candle) continue;
+
+        // 同一則訊息可能帶多個標記 —— 多空各自往外堆疊,不要疊在一起
+        let upN = 0, dnN = 0;
+        for (const m of row.marks) {
+            const style = PI_MARK_STYLE[m.kind];
+            if (!style) continue;
+            const long_ = style.dir === 'long';
+            const px = long_ ? candle.low : candle.high;
+            let yRef = null;
+            try { yRef = candleSeries.priceToCoordinate(Number(px)); } catch (_) {}
+            if (yRef === null || yRef === undefined) continue;
+
+            if (style.glyph) {
+                // π 級:錨在 K 棒外側,和 EMAPMO 三角同一套定位
+                const sz = PI_GLYPH_SZ[m.size] || 9;
+                const step = sz * 2.2;
+                const off = long_ ? (upN++ * step) : -(dnN++ * step);
+                _drawPiGlyph(ctx, x, yRef + off, style.dir, style.rgb, sz);
+            } else {
+                // 圈級:放大的 MREV 泡泡,圓心壓在 K 棒上,像訊號源那張圖
+                const r = PI_BUBBLE_R[m.size] || 18;
+                const off = long_ ? (r + upN++ * 6) : -(r + dnN++ * 6);
+                const y = yRef + off;
+                if (y < -60 || y > H + 60) continue;
+                _drawPiBubble(ctx, x, y, r, style.rgb);
+            }
+        }
+    }
+    ctx.restore();
 }
 
 async function refreshIndicatorSignalMarkers(logSummary) {
@@ -6041,6 +6502,7 @@ async function refreshIndicatorSignalMarkers(logSummary) {
         if (_indicatorSignalsQueued) {
             _indicatorSignalsQueued = false;
             refreshIndicatorSignalMarkers(false);
+            refreshPiSignalMarkers();
         }
     }
 }
@@ -6797,20 +7259,27 @@ function renderMetrics(m, backtestTrades) {
     const netTotal = _dailyVals.reduce((a, b) => a + b, 0);
     const consistPct = (bestDay != null && bestDay > 0 && netTotal > 0)
         ? (bestDay / netTotal) : null;
-    const consistOver = consistPct != null && consistPct > 0.40;
+    // 1.0.10: 兩段警示。分母(總淨利)在**每次請款後歸零**,但最大單日會鎖到
+    // 請款為止 —— 所以「現在佔比很低」不代表安全,下一個請款週期一開始
+    // 同一個 best day 佔比會瞬間變得很高。40% 起就要看得到黃色警告。
+    //   >= 40%  黃色 ⚠  已達 XFA 上限
+    //   >= 50%  紅色 ▲  同時踩到 Combine 的 50% 門檻
+    const consistWarn = consistPct != null && consistPct >= 0.40;
+    const consistDanger = consistPct != null && consistPct >= 0.50;
     // 超標時要再賺多少才合格:bestDay / 0.40 - 目前總淨利
-    const consistNeed = consistOver ? (bestDay / 0.40 - netTotal) : 0;
+    const consistNeed = consistWarn ? (bestDay / 0.40 - netTotal) : 0;
     const consistTip = consistPct == null
         ? 'Topstep XFA consistency: largest single trade-day net / total net must be <= 40%.'
-        : (consistOver
-            ? ('Topstep XFA consistency ' + (consistPct * 100).toFixed(0) + '% — OVER the 40% limit. '
-               + 'Payout is blocked until total net profit reaches $'
+        : (consistWarn
+            ? ('Topstep consistency ' + (consistPct * 100).toFixed(0) + '% — '
+               + (consistDanger ? 'OVER the Combine 50% limit as well. ' : 'at/over the XFA 40% limit. ')
+               + 'Payout blocked until total net reaches $'
                + (bestDay / 0.40).toFixed(0) + ' (earn $' + consistNeed.toFixed(0) + ' more). '
-               + 'The best day is locked in until you take a payout — a NEW record day raises the bar again. '
-               + 'Use the PDPT slider in RISK MANAGEMENT to cap daily gains.')
-            : ('Topstep XFA consistency ' + (consistPct * 100).toFixed(0) + '% — within the 40% limit. '
+               + 'The best day is locked in until you take a payout, and the denominator resets after it — '
+               + 'a NEW record day raises the bar again. Cap daily gains with the PDPT slider.')
+            : ('Topstep consistency ' + (consistPct * 100).toFixed(0) + '% — within the 40% limit. '
                + 'Any single trade-day above $' + (netTotal * 0.40).toFixed(0)
-               + ' would push you over.'));
+               + ' would push you over. Note the denominator resets after each payout.'));
 
     // 1.0.8: MONTHLY GAIN AVG = 30.44 天歸一化月率(run-rate,非日曆月平均)。
     // 例:2 個月賺 $4k → $2k/月;1 週 $400 → ~$1.7k/月。部分月不失真。
@@ -6829,34 +7298,39 @@ function renderMetrics(m, backtestTrades) {
     // 1.0.8: 佈局重排 — WORST DAY 接在 TOTAL LOSS 後;WIN RATE 全寬置於
     // EXIT % 之前;CURRENT ZONE 全寬獨立一行 → ASIA..RTH 兩兩自動對齊。
     const items = [
+        // 1.0.10: 版面兩兩配對(.metrics-grid 是兩欄,順序即配對):
+        //   FINAL PNL | MONTHLY   ·  TOTAL GAIN | TOTAL LOSS  ·  BEST | WORST DAY
+        //   PF | CALMAR           ·  TRADES | RR             ·  LONG | SHORT WIN
+        //   MAX DD | WEEKLY VAR   ← 風險/穩定度收在最後
         { label: totalPnlLabel,
           value: '$' + total_pnl.toFixed(0) + paren(liveStats ? '$' + liveStats.total_pnl.toFixed(0) : ''),
           cls: total_pnl >= 0 ? 'pos' : 'neg' },
-        { label: 'MAX DD',
-          value: '$' + max_dd.toFixed(0) + paren(liveStats ? '$' + liveStats.max_dd.toFixed(0) : ''),
-          cls: max_dd > 0 ? 'neg' : '' },
-        // 1.0.9: BEST DAY —— Topstep XFA 一致性的分子。超過 40% 時掛黃色警告三角。
-        { label: 'BEST DAY'
-                 + (consistOver
-                    ? ' <span class="tpx-warn" title="' + _attr(consistTip) + '">&#9888;</span>'
-                    : ''),
-          value: (bestDay != null ? '$' + bestDay.toFixed(0) : '--')
-                 + (consistPct != null
-                    ? ' <span class="metric-real' + (consistOver ? ' tpx-warn' : '')
-                      + '" title="' + _attr(consistTip) + '">('
-                      + (consistPct * 100).toFixed(0) + '% consist)</span>'
-                    : ''),
-          cls: consistOver ? 'neg' : (bestDay > 0 ? 'pos' : '') },
-        { label: 'TOTAL GAIN',
+        { label: 'MONTHLY PNL',
+          value: (monthlyAvg != null ? '$' + monthlyAvg.toFixed(0) : '--')
+                 + paren(liveMonthlyAvg != null ? '$' + liveMonthlyAvg.toFixed(0) : ''),
+          cls: (monthlyAvg != null && monthlyAvg >= 0) ? 'pos' : 'neg' },
+        { label: 'TOTAL WIN',
           value: '$' + total_gain.toFixed(0) + paren(liveStats ? '$' + liveStats.total_gain.toFixed(0) : ''),
           cls: total_gain > 0 ? 'pos' : '' },
         { label: 'TOTAL LOSS',
           value: '$' + total_loss.toFixed(0) + paren(liveStats ? '$' + liveStats.total_loss.toFixed(0) : ''),
           cls: total_loss < 0 ? 'neg' : '' },
-        { label: 'MONTHLY GAIN AVG',
-          value: (monthlyAvg != null ? '$' + monthlyAvg.toFixed(0) : '--')
-                 + paren(liveMonthlyAvg != null ? '$' + liveMonthlyAvg.toFixed(0) : ''),
-          cls: (monthlyAvg != null && monthlyAvg >= 0) ? 'pos' : 'neg' },
+        // 1.0.10: BEST DAY 的數值本身是獲利,一律綠色 —— 風險只用圖示表達。
+        //   >=40% 黃 ⚠ (XFA)   >=50% 紅 ▲ (Combine)
+        { label: 'BEST DAY'
+                 + (consistDanger
+                    ? ' <span class="tpx-danger" title="' + _attr(consistTip) + '">&#9650;</span>'
+                    : (consistWarn
+                       ? ' <span class="tpx-warn" title="' + _attr(consistTip) + '">&#9888;</span>'
+                       : '')),
+          value: (bestDay != null ? '$' + bestDay.toFixed(0) : '--')
+                 + (consistPct != null
+                    ? ' <span class="metric-real'
+                      + (consistDanger ? ' tpx-danger' : (consistWarn ? ' tpx-warn' : ''))
+                      + '" title="' + _attr(consistTip) + '">('
+                      + (consistPct * 100).toFixed(0) + '% consist)</span>'
+                    : ''),
+          cls: bestDay > 0 ? 'pos' : '' },
         { label: 'WORST DAY',
           value: (worstDay != null ? '$' + worstDay.toFixed(0) : '--')
                  + paren(liveWorst != null ? '$' + liveWorst.toFixed(0) : ''),
@@ -6870,7 +7344,6 @@ function renderMetrics(m, backtestTrades) {
         { label: 'TRADE COUNTS',
           value: String(total_trades || 0) + paren(liveStats ? String(liveStats.trades || 0) : ''),
           cls: '' },
-        weeklyVarItem,
         { label: 'RR RATIO',
           value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
           cls: rr_ratio > 1 ? 'pos' : 'neg' },
@@ -6895,6 +7368,16 @@ function renderMetrics(m, backtestTrades) {
                 value: (sn ? (sw / sn * 100).toFixed(1) : '--') + '%' + paren(sn + ' tr'),
                 cls: sn && sw / sn >= 0.5 ? 'pos' : '' };
         })(),
+        // 1.0.10: MAX DD 顯示為負數 —— 它是回撤,語意上是損失,跟 WORST DAY 一致。
+        // 後端的 max_dd 是正值幅度,這裡只改顯示不動資料。
+        { label: 'MAX DD',
+          value: '$' + (max_dd > 0 ? '-' + max_dd.toFixed(0) : max_dd.toFixed(0))
+                 + paren(liveStats
+                    ? '$' + (liveStats.max_dd > 0 ? '-' + liveStats.max_dd.toFixed(0)
+                                                  : liveStats.max_dd.toFixed(0))
+                    : ''),
+          cls: max_dd > 0 ? 'neg' : '' },
+        weeklyVarItem,
         { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },
@@ -7171,6 +7654,49 @@ function _refreshConnectionState(options) {
     const trigger = document.getElementById('conn-trigger');
     if (trigger) trigger.classList.toggle('connected', state === 'connected');
     return state;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 1.0.10: OFFLINE MODE —— 券商維護時段的離線回測。
+// store 已有 2020 起的 233 萬根(Databento 歷史 + TopstepX 近期),
+// 回測完全不需要券商。啟用後**不連帳號、不抓資料**,狀態燈轉紅。
+//
+// 動機:維護期間券商 API 半死不活 —— 認證會過、但 /api/Trade/search 逾時,
+// 前端卡在 LOADING DATA 不動。與其等它 timeout,不如整段跳過。
+// ════════════════════════════════════════════════════════════════════
+let OFFLINE_MODE = false;
+
+function isOffline() { return OFFLINE_MODE; }
+
+function _applyOfflineUi() {
+    const btn = document.getElementById('btn-offline');
+    if (btn) {
+        btn.classList.toggle('active', OFFLINE_MODE);
+        btn.textContent = OFFLINE_MODE ? 'OFFLINE MODE · ON' : 'OFFLINE MODE';
+    }
+    // CONNECT 保持可用 —— OFFLINE 只影響 K 棒抓取,不影響帳號連線
+    // 灰色 = 刻意離線,不是故障。紅色留給「連線失敗」。
+    if (OFFLINE_MODE) setStatus('off', 'OFFLINE — K 棒用本機資料');
+}
+
+function toggleOfflineMode() {
+    OFFLINE_MODE = !OFFLINE_MODE;
+    _applyOfflineUi();
+    if (OFFLINE_MODE) {
+        log('OFFLINE MODE 開啟 —— 帳號仍可連線,但不抓 K 棒(回測使用本機 store)', 'warn');
+    } else {
+        log('OFFLINE MODE 關閉 —— 恢復增量抓取 K 棒', 'info');
+    }
+}
+
+// 1.0.10: OFFLINE MODE **永遠不持久化** —— 每次開啟一律是關閉狀態。
+// 理由:它會讓 K 棒停在本機資料不更新,若被記住,下次開啟時使用者可能
+// 沒注意到燈是灰的,拿著過期資料回測還以為是最新的。
+// 這是「本次工作階段的臨時開關」,不是偏好設定。
+function _restoreOfflineMode() {
+    OFFLINE_MODE = false;
+    try { localStorage.removeItem('tpx_offline'); } catch (e) {}   // 清掉舊版殘留
+    _applyOfflineUi();
 }
 
 function setStatus(type, text) {
@@ -7579,93 +8105,9 @@ function _fmtPct(v) {
     return Number.isFinite(v) ? (v * 100).toFixed(1) + '%' : '—';
 }
 
-function _orderCard(label, value, sub, cls) {
-    return '<div class="order-compare-card">'
-        + '<div class="k">' + label + '</div>'
-        + '<div class="v ' + (cls || '') + '">' + value + '</div>'
-        + '<div class="s">' + (sub || '') + '</div>'
-        + '</div>';
-}
-
-function renderOrderComparison() {
-    const wrap = document.getElementById('order-compare-cards');
-    const status = document.getElementById('order-compare-status');
-    if (!wrap) return;
-    const btTrades = _calTradesInVisibleMonth(backtestData ? backtestData.trades : []);
-    const liveTrades = _calTradesInVisibleMonth(_calLiveTrades || []);
-    const btFree = btTrades.map((_, i) => i);
-    const pairs = [];
-    const timeLimitMs = 5 * 60 * 1000;
-    const tick = 0.25;
-    for (const lv of liveTrades) {
-        const lt = _tradeTs(lv, 'entry_time');
-        const lp = _tradeEntry(lv);
-        const ld = _tradeDir(lv);
-        if (!lt || lp == null || !ld) continue;
-        let best = -1, bestCost = Infinity;
-        for (const idx of btFree) {
-            const bt = btTrades[idx];
-            if (_tradeDir(bt) !== ld) continue;
-            const btTime = _tradeTs(bt, 'entry_time');
-            const bp = _tradeEntry(bt);
-            if (!btTime || bp == null) continue;
-            const dt = Math.abs(lt - btTime);
-            if (dt > timeLimitMs) continue;
-            const ticks = Math.abs(lp - bp) / tick;
-            const cost = dt / 60000 + ticks * 0.15;
-            if (cost < bestCost) {
-                best = idx;
-                bestCost = cost;
-            }
-        }
-        if (best >= 0) {
-            btFree.splice(btFree.indexOf(best), 1);
-            const bt = btTrades[best];
-            const btTime = _tradeTs(bt, 'entry_time');
-            const bp = _tradeEntry(bt);
-            const dtMin = (lt - btTime) / 60000;
-            const diffTicks = (lp - bp) / tick;
-            const intended = Number(lv.intended_entry_price != null ? lv.intended_entry_price : lv.signal_entry_price);
-            const slipTicks = Number.isFinite(intended) ? ((lp - intended) / tick) : diffTicks;
-            pairs.push({ live: lv, bt, dtMin, diffTicks, slipTicks });
-        }
-    }
-    const matched = pairs.length;
-    const liveOnly = liveTrades.filter(lv => !pairs.some(p => p.live === lv));
-    const btOnly = btFree.map(i => btTrades[i]);
-    const sameLevel = pairs.filter(p => Math.abs(p.diffTicks) <= 2).length;
-    const avgDiff = matched ? pairs.reduce((a, p) => a + Math.abs(p.diffTicks), 0) / matched : 0;
-    const slipRows = pairs.filter(p => Math.abs(p.slipTicks) > 0.5);
-    const avgSlip = slipRows.length ? slipRows.reduce((a, p) => a + Math.abs(p.slipTicks), 0) / slipRows.length : 0;
-    const liveOnlyLoss = liveOnly.filter(t => Number(t.pnl || t.topstep_pnl || 0) < 0);
-    const liveOnlyGain = liveOnly.filter(t => Number(t.pnl || t.topstep_pnl || 0) > 0);
-    const blocked = btOnly.filter(bt => {
-        const btTime = _tradeTs(bt, 'entry_time');
-        if (!btTime) return false;
-        return liveTrades.some(lv => {
-            const a = _tradeTs(lv, 'entry_time');
-            const z = _tradeTs(lv, 'exit_time');
-            return a && z && btTime >= a && btTime <= z;
-        });
-    });
-    const presetSel = document.getElementById('preset-bt');
-    const presetName = presetSel ? presetSel.value : '';
-    const matchRate = Math.max(btTrades.length, liveTrades.length) ? matched / Math.max(btTrades.length, liveTrades.length) : 0;
-    wrap.innerHTML =
-        _orderCard('BT ORDERS', String(btTrades.length), presetName && presetName !== 'default' ? _presetDisplayName(presetName) : 'current backtest') +
-        _orderCard('LIVE ORDERS', String(liveTrades.length), 'deduped visible month') +
-        _orderCard('TIME MATCH ≤5M', _fmtPct(matchRate), matched + ' matched / max(BT,LIVE)', matchRate >= 0.9 ? 'institution-pos' : 'institution-neg') +
-        _orderCard('SAME LEVEL ≤2T', _fmtPct(matched ? sameLevel / matched : 0), sameLevel + '/' + matched + ' matched orders') +
-        _orderCard('AVG ENTRY DIFF', avgDiff.toFixed(1) + 't', 'abs live fill vs BT entry') +
-        _orderCard('FILL SLIP', slipRows.length + ' orders', 'avg ' + avgSlip.toFixed(1) + 't; future ledger exact') +
-        _orderCard('EXTRA LIVE LOSS', String(liveOnlyLoss.length), 'not shown in BT result', liveOnlyLoss.length ? 'institution-neg' : '') +
-        _orderCard('ACCIDENT GAIN', String(liveOnlyGain.length), 'live gain not expected by BT', liveOnlyGain.length ? 'institution-pos' : '') +
-        _orderCard('MISSED BT', String(btOnly.length), 'BT orders not in live') +
-        _orderCard('BLOCKED BY LIVE', String(blocked.length), 'BT signal while live trade still open');
-    if (status) {
-        status.textContent = 'pairing: same direction, entry time within 5m; historical preset attribution is approximate until new ledger fields accumulate.';
-    }
-}
+// 1.0.10: 移除 ORDER COMPARISON(Selected Preset vs Live Execution)。
+// 配對只靠「同方向 + 進場時間 5 分鐘內」,歷史 live 列又常缺 preset 名,
+// 歸因本來就是近似值,面板已從 HTML 移除。
 
 async function _calFetchLive(force) {
     if (_calLiveTrades && !force) return;
@@ -7696,6 +8138,22 @@ function _researchClass(value) {
     const n = Number(value);
     if (!Number.isFinite(n) || n === 0) return '';
     return n > 0 ? 'institution-pos' : 'institution-neg';
+}
+
+// 1.0.10: 月均損益。總 PnL 不可比 —— 回測 7 個月的 $5,000 跟 2 個月的 $5,000
+// 是完全不同的東西,而正是這種比較讓 BEST 的 PF 4.25 看起來很好(那是 6-7 月
+// 兩個月的數字)。一律用 30.44 天歸一化的月率來讀。
+const _ROB_DAYS_PER_MONTH = 30.44;
+
+function _robMonthlyPnl(totalPnl, msStart, msEnd) {
+    const span = (Number(msEnd) - Number(msStart)) / 86400000;   // 天
+    if (!Number.isFinite(span) || span < 1) return null;
+    return Number(totalPnl) / (span / _ROB_DAYS_PER_MONTH);
+}
+
+// 把一段期間的損益直接換算成月率(給走查各段用,各段長度不同才需要歸一化)
+function _robMonthlyOf(pnl, months) {
+    return (Number.isFinite(months) && months > 0) ? Number(pnl) / months : null;
 }
 
 const _ROB_POINT_VALUE = { MNQ: 2, NQ: 20, ENQ: 20, MES: 5, ES: 50, MGC: 10, GC: 100, ZL: 600 };
@@ -7795,14 +8253,7 @@ function _robUsd(value) {
         : '—';
 }
 
-function _robTopstepOutcomeText(result, contracts, limit) {
-    if (!result || !Array.isArray(result.observed)) return contracts + ' MNQ —';
-    const row = result.observed.find(r => r.contracts === contracts && r.consistencyLimit === limit);
-    if (!row) return contracts + ' MNQ —';
-    const label = row.status === 'pass' ? 'met' : (row.status === 'fail' ? 'MLL fail' : 'not yet');
-    return contracts + ' MNQ ' + label + ' d' + row.days
-        + ' · equity ' + _robUsd(row.equity) + ' / required ' + _robUsd(row.target);
-}
+// 1.0.10: _robTopstepOutcomeText 隨「Observed sequence」文字區塊一併移除。
 
 function _robTopstepRow(result, contracts, limit) {
     return result && Array.isArray(result.rows)
@@ -7922,24 +8373,16 @@ function _robTopstepHtml(analysis, slipTicks) {
         + '<section class="rob-topstep-rule"><h4>TRADING COMBINE · 50% <span>pass evaluation</span></h4>'
         + '<table class="institution-table"><thead><tr><th>SIZE</th><th>PASS</th><th>MLL FAIL</th><th>OPEN@60</th><th>DAYS P50/P90</th><th>TARGET ↑</th><th>REQ P50</th></tr></thead><tbody>'
         + combineRow(c1) + combineRow(c2) + '</tbody></table>'
-        + '<div class="rob-topstep-observed">Observed sequence · '
-        + _robTopstepOutcomeText(combine, 1, 0.5) + '<br>'
-        + _robTopstepOutcomeText(combine, 2, 0.5) + '</div>'
-        + '<div class="rob-note">$2,500 best day ⇒ $5,000 evaluation target (best day ÷ 50%). Minimum 2 active days.</div>'
         + '</section>'
         + '<section class="rob-topstep-rule"><h4>XFA CONSISTENCY · 40% <span>after pass · first payout eligibility</span></h4>'
         + '<div class="rob-topstep-program-verdict"><strong>' + xfaWinner + ' MNQ</strong> = higher first-payout eligibility within 60 active days · +'
         + xfaEdge.toFixed(2) + ' percentage points</div>'
         + '<table class="institution-table"><thead><tr><th>SIZE</th><th>ELIGIBLE</th><th>MLL FAIL</th><th>OPEN@60</th><th>DAYS P50/P90</th><th>MIN PAYOUT BAL P50</th></tr></thead><tbody>'
         + xfaRow(x1) + xfaRow(x2) + '</tbody></table>'
-        + '<div class="rob-topstep-observed">Observed sequence · '
-        + _robTopstepOutcomeText(xfa, 1, 0.4) + '<br>'
-        + _robTopstepOutcomeText(xfa, 2, 0.4) + '</div>'
-        + '<div class="rob-note">$2,500 best day ⇒ $6,250 net balance needed (best day ÷ 40%). Minimum 3 active days. The starting $250 here is not a profit target: $125 minimum request ÷ 50% payoutable balance = $250. This does not change the Combine target.</div>'
         + '</section></div>'
-        + '<div class="rob-note">' + source.tradeCount + ' settled MNQ trades · ' + source.days.length
-        + ' Topstep active days · 60-active-day horizon · same sampled days for both sizes · ' + slipLabel
-        + '. MLL is replayed from closed-trade P&amp;L; intratrade unrealized drawdown is unavailable, so probabilities are optimistic.</div>'
+        // 1.0.10: 只留一行來源摘要,長篇規則說明移除(規則見 docs/TOPSTEP_RULES_PLAYBOOK.md)
+        + '<div class="rob-note">' + source.tradeCount + ' trades · ' + source.days.length
+        + ' active days · ' + slipLabel + ' · MLL replayed from closed-trade P&amp;L only</div>'
         + '</div>';
 }
 
@@ -7995,23 +8438,7 @@ function _robMeasureSlip() {
     return out;
 }
 
-function _robHistogram(totals) {
-    const bins = 18;
-    const min = totals[0], max = totals[totals.length - 1];
-    const w = (max - min) || 1;
-    const counts = new Array(bins).fill(0);
-    for (const v of totals) counts[Math.min(bins - 1, Math.floor((v - min) / w * bins))]++;
-    const peak = Math.max(...counts, 1);
-    let html = '<div class="rob-hist">';
-    for (let i = 0; i < bins; i++) {
-        const lo = min + w * i / bins;
-        const hi = min + w * (i + 1) / bins;
-        html += '<i class="' + (hi <= 0 ? 'neg' : 'pos') + '" style="height:'
-            + Math.max(4, counts[i] / peak * 100).toFixed(1) + '%" title="$'
-            + Math.round(lo) + ' .. $' + Math.round(hi) + ' : ' + counts[i] + '"></i>';
-    }
-    return html + '</div>';
-}
+// 1.0.10: _robHistogram 隨蒙地卡羅的圖形區塊移除,只留 P5/P50/P95 表格。
 
 function _robBadge(pass, passText, failText) {
     return '<span class="rob-badge ' + (pass ? 'institution-pos' : 'institution-neg') + '">'
@@ -8035,11 +8462,16 @@ function renderResearchRobustness(force) {
     const times = trades.map(tr => new Date(tr.entry_time).getTime()).filter(Number.isFinite);
     const d0 = times.length ? new Date(Math.min(...times)) : null;
     const d1 = times.length ? new Date(Math.max(...times)) : null;
+    // 1.0.10: 月均是主要數字,總額退居括號 —— 不同長度的回測用總額比較沒有意義。
+    const spanMonths = (d0 && d1) ? ((d1 - d0) / 86400000) / _ROB_DAYS_PER_MONTH : null;
+    const monthly = (d0 && d1) ? _robMonthlyPnl(base.pnl, d0.getTime(), d1.getTime()) : null;
     status.textContent = trades.length + ' ' + t('trades') + ' · '
         + String((trades[0] || {}).symbol || '')
-        + (d0 ? (' · ' + d0.toISOString().slice(0, 10) + ' → ' + d1.toISOString().slice(0, 10)) : '')
+        + (d0 ? (' · ' + d0.toISOString().slice(0, 10) + ' → ' + d1.toISOString().slice(0, 10)
+                 + (spanMonths ? ' (' + _researchNum(spanMonths, 1) + ' ' + t('months') + ')' : '')) : '')
         + ' · PF ' + _researchNum(base.pf, 2)
-        + ' · PnL $' + Math.round(base.pnl)
+        + ' · ' + t('PnL/mo') + ' $' + (monthly == null ? '—' : Math.round(monthly))
+        + ' (' + t('total') + ' $' + Math.round(base.pnl) + ')'
         + ' · maxDD $' + Math.round(base.maxDd);
 
     const slip = _robMeasureSlip();
@@ -8054,9 +8486,13 @@ function renderResearchRobustness(force) {
         mcHtml = '<div class="institution-status">' + t('Not enough trades (need ≥10).') + '</div>';
     } else {
         const row = (k, v, cls) => '<tr><td>' + t(k) + '</td><td class="' + (cls || '') + '">' + v + '</td></tr>';
+        const perMo = (v) => (spanMonths && spanMonths > 0)
+            ? '$' + Math.round(v / spanMonths) : '—';
         mcHtml =
-            _robHistogram(mc.totals)
-            + '<table class="institution-table"><tbody>'
+            '<table class="institution-table"><tbody>'
+            + row('PnL/mo P5 / P50 / P95',
+                perMo(mc.pnlP5) + ' / ' + perMo(mc.pnlP50) + ' / ' + perMo(mc.pnlP95),
+                _researchClass(mc.pnlP5))
             + row('Total PnL P5 / P50 / P95',
                 '$' + Math.round(mc.pnlP5) + ' / $' + Math.round(mc.pnlP50) + ' / $' + Math.round(mc.pnlP95),
                 _researchClass(mc.pnlP5))
@@ -8074,15 +8510,23 @@ function renderResearchRobustness(force) {
     if (!wf) {
         wfHtml = '<div class="institution-status">' + t('Not enough trades (need ≥6).') + '</div>';
     } else {
+        // 每段長度相同(依時間三等分),所以段月數 = 總月數 / 3
+        const segMonths = spanMonths ? spanMonths / 3 : null;
         wfHtml = '<table class="institution-table"><thead><tr><th>' + t('Segment')
-            + '</th><th>N</th><th>PnL</th><th>PF</th><th>' + t('Win%') + '</th></tr></thead><tbody>'
-            + wf.stats.map((s, i) => '<tr>'
-                + '<td>' + (i + 1) + '/3</td>'
-                + '<td>' + s.n + '</td>'
-                + '<td class="' + _researchClass(s.pnl) + '">$' + Math.round(s.pnl) + '</td>'
-                + '<td class="' + (s.pf > 1 ? 'institution-pos' : 'institution-neg') + '">' + _researchNum(s.pf, 2) + '</td>'
-                + '<td>' + _researchNum(s.win * 100, 1) + '%</td>'
-                + '</tr>').join('')
+            + '</th><th>N</th><th>' + t('PnL/mo') + '</th><th>PnL</th><th>PF</th><th>'
+            + t('Win%') + '</th></tr></thead><tbody>'
+            + wf.stats.map((s, i) => {
+                const mo = _robMonthlyOf(s.pnl, segMonths);
+                return '<tr>'
+                    + '<td>' + (i + 1) + '/3</td>'
+                    + '<td>' + s.n + '</td>'
+                    + '<td class="' + _researchClass(s.pnl) + '">'
+                    + (mo == null ? '—' : '$' + Math.round(mo)) + '</td>'
+                    + '<td class="' + _researchClass(s.pnl) + '">$' + Math.round(s.pnl) + '</td>'
+                    + '<td class="' + (s.pf > 1 ? 'institution-pos' : 'institution-neg') + '">' + _researchNum(s.pf, 2) + '</td>'
+                    + '<td>' + _researchNum(s.win * 100, 1) + '%</td>'
+                    + '</tr>';
+            }).join('')
             + '</tbody></table>';
     }
 
@@ -8101,11 +8545,7 @@ function renderResearchRobustness(force) {
         + '<td>$' + Math.round(stats.maxDd) + '</td>'
         + '</tr>';
     let slipHtml = '<div class="institution-status" style="margin-bottom:6px;">'
-        + t('Measured market-entry slip') + ': '
-        + (slip.anchor
-            ? (used + 't (' + t('anchor — documented EMAPMO fill; market-like live sample') + ' n=' + slip.n + ')')
-            : (used + 't (' + t('median of live market-like fills') + ' n=' + slip.n + ')'))
-        + ' · 1t = $' + _researchNum(tickVal, 2) + '/ct'
+        + used + 't · n=' + slip.n + ' · 1t = $' + _researchNum(tickVal, 2) + '/ct'
         + '</div>'
         + '<table class="institution-table"><thead><tr><th>' + t('RT slip')
         + '</th><th>PnL</th><th>PF</th><th>ΔPF</th><th>maxDD</th></tr></thead><tbody>'
@@ -8114,8 +8554,7 @@ function renderResearchRobustness(force) {
             lvl,
             _robSeriesStats(pnls.map((p, i) => p - lvl * tickVal * sizes[i])),
             lvl === used)).join('')
-        + '</tbody></table>'
-        + '<div class="rob-note">' + t('Market entries pay the full slip each round turn (bracket follows the fill). Limit entries skip entry slip but miss fills instead. Small-SL variants lose PF fastest — check the 8t+ rows before moving a model to market entry.') + '</div>';
+        + '</tbody></table>';   // 1.0.10: 移除長篇滑價說明,只留表格
 
     const usedStats = _robSeriesStats(pnls.map((p, i) => p - used * tickVal * sizes[i]));
     content.innerHTML =
@@ -8262,7 +8701,6 @@ async function renderCalendar(force) {
             : 'run a backtest first to populate the BT side · ' + lvN + ' live trades loaded';
     }
     renderWeeklyIncomeCurve(bt, live);
-    renderOrderComparison();
     renderResearchRobustness();   // 1.0.9: Monte Carlo / Walk-Forward / Slippage
     glassResample('#calendar-view');   // 1.0.10 #1
 }
@@ -8646,6 +9084,9 @@ const I18N_ZH = {
     'PASS': '通過', 'FAIL': '未過',
     'PF OK AFTER SLIP': '滑價後 PF 合格', 'PF DEGRADES BELOW 1.5': '滑價後 PF < 1.5',
     'Total PnL P5 / P50 / P95': '總損益 P5 / P50 / P95',
+    // 1.0.10: 月均損益 —— 不同長度的回測用總額比較沒有意義
+    'PnL/mo': '月均損益', 'PnL/mo P5 / P50 / P95': '月均損益 P5 / P50 / P95',
+    'total': '總計', 'months': '個月',
     'P(total loss)': 'P(總體虧損)', 'maxDD P50 / P95': '最大回撤 P50 / P95',
     'P(maxDD > $2k)': 'P(回撤 > $2k)', 'PF P5': 'PF P5',
     'Segment': '分段', 'Win%': '勝率', 'original': '原始',
