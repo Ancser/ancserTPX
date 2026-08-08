@@ -132,6 +132,21 @@ def _meta_path(symbol: str = "MNQ", base: int = 1) -> Path:
     return STORE_DIR / f"{symbol}_accumulated_{base}m.meta.json"
 
 
+# 1.0.10: 隨 repo 散佈的開機種子。
+#
+# 完整的 accumulated store 是 210MB/商品(含 2020 起的 Databento 補齊段),
+# 不進版控 —— 見 .gitignore。git 對二進位檔是每個版本存一份完整 blob,而
+# accumulator 每小時重寫整個檔案,追蹤它會讓 repo 無上限膨脹(實測光是先前
+# 42 個歷史版本就已經佔掉 .git 的 259MB)。
+#
+# 種子只含**自家 TopstepX 帳號抓的、2026-06-01 之後**的資料(約 6MB/商品),
+# 刻意排除 Databento 段:那是付費授權資料,不該隨 repo 散佈。
+#
+# 只有在完整 store 不存在時才會用到(全新 clone),本機有完整檔就一律優先。
+def _seed_path(symbol: str = "MNQ", base: int = 1) -> Path:
+    return STORE_DIR / "seed" / f"{symbol}_seed_{base}m.pkl"
+
+
 # ── Core: load / save / merge ─────────────────────────────────────────────
 
 # 1.0.10: 以檔案 mtime 為鍵的記憶體快取。
@@ -149,7 +164,11 @@ def load(symbol: str = "MNQ", base: int = 1, use_cache: bool = True) -> List[Can
     """Load the persistent store (sorted), or [] if none yet."""
     p = _store_path(symbol, base)
     if not p.exists():
-        return []
+        seed = _seed_path(symbol, base)
+        if not seed.exists():
+            return []
+        logger.info(f"[CandleStore] {p.name} 不存在 → 改用開機種子 {seed.name}")
+        p = seed
     key = f"{symbol}:{base}"
     try:
         mtime = p.stat().st_mtime

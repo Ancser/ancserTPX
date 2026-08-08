@@ -197,3 +197,18 @@ data/*
 # Ad-hoc research scripts / exports (may contain account data) — never upload.
 scratchpad/
 *.local.py
+
+# ── 1.0.10: 蠟燭資料庫不進版控 ────────────────────────────────────
+# 完整 store 是 210MB/商品(2020 起,含 Databento 補齊段)。git 對二進位檔
+# 是每個版本存一份完整 blob,而 accumulator 每小時重寫整個檔案 —— 追蹤它
+# 會讓 repo 無上限膨脹,而且 >100MB 直接推不上 GitHub。
+#
+# 這份資料是**可重建的**:scripts/databento_backfill.py + accumulator。
+# 完整備份在版控外的 F:/ancserQuant/ancserData/(見該處 MANIFEST.json)。
+#
+# 例外:data/store/seed/ 有進版控 —— 那是 6MB 的開機種子,只含自家 TopstepX
+# 抓的 2026-06 之後資料,給全新環境跑 warm-up / 回測用。
+data/store/*.pkl
+data/store/*.pkl.bak
+data/store/*.pkl.tmp
+!data/store/seed/*.pkl

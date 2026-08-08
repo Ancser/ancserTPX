@@ -1,0 +1,11 @@
+{
+  "symbol": "MNQ",
+  "base": 1,
+  "role": "seed",
+  "note": "隨 repo 散佈的最小資料集:僅 TopstepX 自家抓取、2026-06-01 之後。本機若存在完整 accumulated store 會優先使用,這份只是新環境的開機種子。",
+  "source": "topstepx",
+  "cutoff_utc": "2026-06-01T00:00:00+00:00",
+  "total_bars": 68399,
+  "first_ts": "2026-06-01T00:00:00+00:00",
+  "last_ts": "2026-08-07T20:59:00+00:00"
+}

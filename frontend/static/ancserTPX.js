@@ -7170,13 +7170,22 @@ function renderMetrics(m, backtestTrades) {
 
     // Primary source: full-range backend metrics when window=ALL; otherwise
     // recompute everything client-side from the windowed trade subset.
-    const total_pnl    = windowed ? backtestStats.total_pnl  : m.total_pnl;
-    const total_gain   = windowed ? backtestStats.total_gain : (m.total_gain != null ? m.total_gain : backtestStats.total_gain);
-    const total_loss   = windowed ? backtestStats.total_loss : (m.total_loss != null ? m.total_loss : backtestStats.total_loss);
-    const total_trades = windowed ? backtestStats.trades     : m.total_trades;
-    const rr_ratio     = windowed ? backtestStats.rr_ratio   : m.avg_rr_ratio;
-    const max_dd       = windowed ? backtestStats.max_dd     : m.max_drawdown;
-    const calmarPrimary = windowed ? (backtestStats.calmar || 0) : (m.calmar_ratio || 0);
+    // 1.0.10 BUG FIX:這些值全部會走 .toFixed(),而 undefined.toFixed 是
+    // TypeError —— 它在 innerHTML 組好**之前**就拋出,所以後果不是「少一張
+    // 卡」而是**整個 metrics panel 一張都不出來**,而且畫面上看不出原因。
+    //
+    // 實際踩到的是 rr_ratio:它讀的是 `m.avg_rr_ratio`(不是 m.rr_ratio),
+    // 後端只要沒送這個欄位、或改了名字,整片面板就消失。max_dd 讀
+    // `m.max_drawdown` 也是同一個形狀。與其在 28 個 .toFixed() 呼叫點各補
+    // 一次防呆,不如在來源就強制成數字 —— 下游全部自動安全。
+    const num = (v, d = 0) => Number.isFinite(Number(v)) ? Number(v) : d;
+    const total_pnl    = num(windowed ? backtestStats.total_pnl  : m.total_pnl);
+    const total_gain   = num(windowed ? backtestStats.total_gain : (m.total_gain != null ? m.total_gain : backtestStats.total_gain));
+    const total_loss   = num(windowed ? backtestStats.total_loss : (m.total_loss != null ? m.total_loss : backtestStats.total_loss));
+    const total_trades = num(windowed ? backtestStats.trades     : m.total_trades);
+    const rr_ratio     = num(windowed ? backtestStats.rr_ratio   : m.avg_rr_ratio);
+    const max_dd       = num(windowed ? backtestStats.max_dd     : m.max_drawdown);
+    const calmarPrimary = num(windowed ? backtestStats.calmar : m.calmar_ratio);
     const activeDaily  = windowed ? (backtestStats.daily_pnl || {}) : (m.daily_pnl || {});
 
     // Day span of the active window (drives the FINAL PNL card label)
@@ -7295,25 +7304,54 @@ function renderMetrics(m, backtestTrades) {
     const monthlyAvg = _monthlyRate(activeDaily, total_pnl);
     const liveMonthlyAvg = liveStats ? _monthlyRate(liveStats.daily_pnl, liveStats.total_pnl) : null;
 
+    // 1.0.10: 品質門檻警示。這幾張卡改成一律白字 —— 用綠/紅去暗示「好/壞」
+    // 在這裡是誤導:PF 1.05 是綠的,但那其實是接近噪音的策略。改成數值中性,
+    // 只有**跨過門檻**才用跟 BEST DAY 同一顆黃色 ⚠ 標出來。
+    //
+    // 門檻取值理由:
+    //   PF   < 1.2   扣掉滑價與手續費後,1.0~1.2 這段實務上等於打平
+    //   RR   < 1     賺賠比小於 1,要靠勝率硬撐
+    //   CALMAR < 1   年化報酬撐不過最大回撤
+    //   交易 < 20     樣本太小,任何統計量都不可信
+    //   WORST DAY 虧超過 $1k —— 單日損失已接近多數 Topstep 帳戶的 DLL
+    const _warn = (tip) => ' <span class="tpx-warn" title="' + _attr(tip) + '">&#9888;</span>';
+    const _nTrades = Number(total_trades || 0);
+    // 沒有交易時 PF/RR/CALMAR 沒有意義,不要掛警示(交易數本身仍會警示)
+    const _judgeable = _nTrades > 0;
+    const _pfWarn = _judgeable && Number.isFinite(pfPrimary) && pfPrimary < 1.2;
+    const _rrWarn = _judgeable && Number.isFinite(rr_ratio) && rr_ratio < 1;
+    const _calWarn = _judgeable && Number.isFinite(calmarPrimary) && calmarPrimary < 1;
+    const _cntWarn = _nTrades < 20;
+    const _worstWarn = worstDay != null && worstDay < -1000;
+    // MAX DD 兩段:$1k 是多數 Topstep $50K 帳戶單日虧損上限的量級,
+    // $2k 已經吃掉 $50K Combine 最大虧損額度的一大塊。
+    const _ddWarn = max_dd > 1000;
+    const _ddDanger = max_dd > 2000;
+    const _ddTip = _ddDanger
+        ? ('Max drawdown $' + max_dd.toFixed(0) + ' — over $2,000. On a $50K Combine this eats a large '
+           + 'share of the max loss limit; a repeat of this drawdown from a worse starting point ends the account.')
+        : ('Max drawdown $' + max_dd.toFixed(0) + ' — over $1,000, which is the order of the daily loss '
+           + 'limit on most Topstep accounts. Size down or tighten the stop.');
+
     // 1.0.8: 佈局重排 — WORST DAY 接在 TOTAL LOSS 後;WIN RATE 全寬置於
     // EXIT % 之前;CURRENT ZONE 全寬獨立一行 → ASIA..RTH 兩兩自動對齊。
     const items = [
         // 1.0.10: 版面兩兩配對(.metrics-grid 是兩欄,順序即配對):
         //   FINAL PNL | MONTHLY   ·  TOTAL GAIN | TOTAL LOSS  ·  BEST | WORST DAY
+        //   MAX DD | WEEKLY VAR   ← 風險/穩定度提前,在看品質指標之前先看風險
         //   PF | CALMAR           ·  TRADES | RR             ·  LONG | SHORT WIN
-        //   MAX DD | WEEKLY VAR   ← 風險/穩定度收在最後
         { label: totalPnlLabel,
-          value: '$' + total_pnl.toFixed(0) + paren(liveStats ? '$' + liveStats.total_pnl.toFixed(0) : ''),
+          value: '$' + total_pnl.toFixed(0) + paren(liveStats ? '$' + num(liveStats.total_pnl).toFixed(0) : ''),
           cls: total_pnl >= 0 ? 'pos' : 'neg' },
         { label: 'MONTHLY PNL',
           value: (monthlyAvg != null ? '$' + monthlyAvg.toFixed(0) : '--')
                  + paren(liveMonthlyAvg != null ? '$' + liveMonthlyAvg.toFixed(0) : ''),
           cls: (monthlyAvg != null && monthlyAvg >= 0) ? 'pos' : 'neg' },
         { label: 'TOTAL WIN',
-          value: '$' + total_gain.toFixed(0) + paren(liveStats ? '$' + liveStats.total_gain.toFixed(0) : ''),
+          value: '$' + total_gain.toFixed(0) + paren(liveStats ? '$' + num(liveStats.total_gain).toFixed(0) : ''),
           cls: total_gain > 0 ? 'pos' : '' },
         { label: 'TOTAL LOSS',
-          value: '$' + total_loss.toFixed(0) + paren(liveStats ? '$' + liveStats.total_loss.toFixed(0) : ''),
+          value: '$' + total_loss.toFixed(0) + paren(liveStats ? '$' + num(liveStats.total_loss).toFixed(0) : ''),
           cls: total_loss < 0 ? 'neg' : '' },
         // 1.0.10: BEST DAY 的數值本身是獲利,一律綠色 —— 風險只用圖示表達。
         //   >=40% 黃 ⚠ (XFA)   >=50% 紅 ▲ (Combine)
@@ -7331,22 +7369,48 @@ function renderMetrics(m, backtestTrades) {
                       + (consistPct * 100).toFixed(0) + '% consist)</span>'
                     : ''),
           cls: bestDay > 0 ? 'pos' : '' },
-        { label: 'WORST DAY',
+        { label: 'WORST DAY'
+                 + (_worstWarn ? _warn('Worst single trade-day loss exceeds $1,000 — that is close to the '
+                                       + 'daily loss limit on most Topstep accounts. One such day can end the run.') : ''),
           value: (worstDay != null ? '$' + worstDay.toFixed(0) : '--')
                  + paren(liveWorst != null ? '$' + liveWorst.toFixed(0) : ''),
           cls: (worstDay != null && worstDay < 0) ? 'neg' : '' },
-        { label: 'PROFIT FACTOR',
+        // 1.0.10: MAX DD 顯示為負數 —— 它是回撤,語意上是損失,跟 WORST DAY 一致。
+        // 後端的 max_dd 是正值幅度(這裡只改顯示不動資料),所以門檻直接比正值。
+        //   > $1k 黃 ⚠   > $2k 紅 ▲
+        { label: 'MAX DD'
+                 + (_ddDanger
+                    ? ' <span class="tpx-danger" title="' + _attr(_ddTip) + '">&#9650;</span>'
+                    : (_ddWarn
+                       ? ' <span class="tpx-warn" title="' + _attr(_ddTip) + '">&#9888;</span>'
+                       : '')),
+          value: '$' + (max_dd > 0 ? '-' + max_dd.toFixed(0) : max_dd.toFixed(0))
+                 + paren(liveStats
+                    ? '$' + (num(liveStats.max_dd) > 0 ? '-' + num(liveStats.max_dd).toFixed(0)
+                                                       : num(liveStats.max_dd).toFixed(0))
+                    : ''),
+          cls: max_dd > 0 ? 'neg' : '' },
+        weeklyVarItem,
+        { label: 'PROFIT FACTOR'
+                 + (_pfWarn ? _warn('PF below 1.2 — after slippage and commission this is effectively break-even. '
+                                    + 'Treat it as no edge, not a small edge.') : ''),
           value: fmtPF(pfPrimary) + paren(pfLive != null ? fmtPF(pfLive) : ''),
-          cls: pfPrimary >= 1 ? 'pos' : 'neg' },
-        { label: 'CALMAR',
-          value: calmarPrimary.toFixed(2) + paren(liveStats ? (liveStats.calmar != null ? liveStats.calmar : 0).toFixed(2) : ''),
-          cls: calmarPrimary >= 1 ? 'pos' : '' },
-        { label: 'TRADE COUNTS',
+          cls: '' },
+        { label: 'CALMAR'
+                 + (_calWarn ? _warn('Calmar below 1 — annualised return does not cover the max drawdown. '
+                                     + 'The equity curve is paying more in pain than it returns.') : ''),
+          value: calmarPrimary.toFixed(2) + paren(liveStats ? num(liveStats.calmar).toFixed(2) : ''),
+          cls: '' },
+        { label: 'TRADE COUNTS'
+                 + (_cntWarn ? _warn('Fewer than 20 trades — the sample is too small for PF, RR, Calmar or win '
+                                     + 'rate to mean anything. Widen the window before drawing conclusions.') : ''),
           value: String(total_trades || 0) + paren(liveStats ? String(liveStats.trades || 0) : ''),
           cls: '' },
-        { label: 'RR RATIO',
-          value: rr_ratio.toFixed(2) + paren(liveStats ? liveStats.rr_ratio.toFixed(2) : ''),
-          cls: rr_ratio > 1 ? 'pos' : 'neg' },
+        { label: 'RR RATIO'
+                 + (_rrWarn ? _warn('RR below 1 — average win is smaller than average loss, so the strategy '
+                                    + 'depends entirely on win rate holding up.') : ''),
+          value: rr_ratio.toFixed(2) + paren(liveStats ? num(liveStats.rr_ratio).toFixed(2) : ''),
+          cls: '' },
         // 1.0.9: WIN RATE 拆成 LONG / SHORT 兩卡(自動兩兩對齊)
         (function () {
             let ln = 0, lw = 0;
@@ -7356,7 +7420,7 @@ function renderMetrics(m, backtestTrades) {
             });
             return { label: 'LONG WIN RATE',
                 value: (ln ? (lw / ln * 100).toFixed(1) : '--') + '%' + paren(ln + ' tr'),
-                cls: ln && lw / ln >= 0.5 ? 'pos' : '' };
+                cls: '' };
         })(),
         (function () {
             let sn = 0, sw = 0;
@@ -7366,18 +7430,8 @@ function renderMetrics(m, backtestTrades) {
             });
             return { label: 'SHORT WIN RATE',
                 value: (sn ? (sw / sn * 100).toFixed(1) : '--') + '%' + paren(sn + ' tr'),
-                cls: sn && sw / sn >= 0.5 ? 'pos' : '' };
+                cls: '' };
         })(),
-        // 1.0.10: MAX DD 顯示為負數 —— 它是回撤,語意上是損失,跟 WORST DAY 一致。
-        // 後端的 max_dd 是正值幅度,這裡只改顯示不動資料。
-        { label: 'MAX DD',
-          value: '$' + (max_dd > 0 ? '-' + max_dd.toFixed(0) : max_dd.toFixed(0))
-                 + paren(liveStats
-                    ? '$' + (liveStats.max_dd > 0 ? '-' + liveStats.max_dd.toFixed(0)
-                                                  : liveStats.max_dd.toFixed(0))
-                    : ''),
-          cls: max_dd > 0 ? 'neg' : '' },
-        weeklyVarItem,
         { label: 'EXIT % TP/SL/TRAIL',
           value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
           cls: '' },
