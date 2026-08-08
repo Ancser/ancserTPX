@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
-import time
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -120,24 +120,71 @@ class ChartZoneCacheTests(unittest.TestCase):
 
 
 class ChartZoneRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_zone_detection_does_not_block_event_loop(self):
+    """zone 偵測必須跑在 executor 執行緒上,不能佔住 event loop。
+
+    1.0.10:這個測試原本用時間賽跑當代理 —— 讓假的 `_detect_zones_sync`
+    sleep 50ms,然後 `await asyncio.sleep(0.01)` 後斷言 task 還沒完成。
+    在負載高的 CI runner 上,那個 10ms 的 sleep 會超時到 50ms 以上,
+    工作已經做完 → `task.done()` 是 True → 紅。(1.0.10f 就是這樣掛的。)
+
+    **會偶爾紅的測試比沒有測試更糟** —— 它訓練人忽略紅燈。
+
+    現在直接驗真正的不變量:`_detect_zones_sync` 是在**哪一條執行緒**上被
+    呼叫的。用 Event 同步而不是 sleep,完全不依賴時間。
+    """
+
+    async def test_zone_detection_runs_off_the_event_loop(self):
+        loop_thread = threading.get_ident()
+        seen: dict[str, int] = {}
+        started = threading.Event()
+        release = threading.Event()
+
+        def fake_detect(*_args):
+            seen["thread"] = threading.get_ident()
+            started.set()
+            # 卡住工作執行緒。如果這段是跑在 loop 上,下面的 await 就再也
+            # 拿不回控制權 —— 而 thread id 也會相等,兩邊都會抓到。
+            release.wait(10)
+            return []
+
         original = routes._historical_candles
         routes._historical_candles = ChartZoneCacheTests()._candles(1)
         try:
-            with patch(
-                "backend.api.routes._detect_zones_sync",
-                side_effect=lambda *_args: (time.sleep(0.05), [])[1],
-            ):
+            with patch("backend.api.routes._detect_zones_sync", side_effect=fake_detect):
                 task = asyncio.create_task(
                     routes.detect_zones(DetectZonesRequest(all_timeframes=True))
                 )
-                await asyncio.sleep(0.01)
+                # 等工作真的開始 —— 不是等一段固定時間
+                for _ in range(2000):
+                    if started.is_set():
+                        break
+                    await asyncio.sleep(0.001)
+                self.assertTrue(started.is_set(), "_detect_zones_sync 沒有被呼叫")
+
+                # 工作執行緒此刻被 release 卡住。能跑到這裡就代表 loop 沒被佔住。
                 self.assertFalse(task.done())
-                result = await task
+
+                release.set()
+                result = await asyncio.wait_for(task, timeout=10)
         finally:
+            release.set()
             routes._historical_candles = original
 
+        self.assertNotEqual(
+            seen.get("thread"), loop_thread,
+            "_detect_zones_sync 跑在 event loop 的執行緒上 —— 會卡住整個伺服器")
         self.assertEqual(result["zones"], [])
+
+    async def test_route_uses_to_thread(self):
+        """結構性斷言:少了它,一個「同步呼叫但很快」的實作也會讓上面通過。
+
+        (上面那條靠 release.wait 卡住來製造差異;若有人把工作改成同步且瞬間
+        完成,thread id 會相等而被抓到 —— 這條是第二道,直接看原始碼。)
+        """
+        import inspect
+        src = inspect.getsource(routes.detect_zones)
+        self.assertIn("to_thread", src,
+                      "detect_zones 不再把工作丟到執行緒 —— zone 偵測會阻塞 event loop")
 
 
 if __name__ == "__main__":

@@ -50,6 +50,25 @@
 - 量測隱藏面板裡的 DOM 會拿到 0×0;rAF 在背景分頁不會前進。
   兩者都會製造偽陽性,先確認 `document.hidden`。
 
+### 不要用時間賽跑當斷言
+
+CI 的 runner 是共用的,`asyncio.sleep(0.01)` 可能實際睡 60ms。
+
+```python
+# 壞:「太快就失敗」—— 1.0.10f 就是這樣紅的
+await asyncio.sleep(0.01)
+assert not task.done()          # runner 一慢,工作就做完了
+
+# 好:直接驗機制
+assert worker_thread_id != loop_thread_id
+```
+
+判準:**timeout 當安全閥可以**(`wait_for(x, timeout=5)` —— 只有真的卡住才紅);
+**sleep 當斷言不行**(假設某件事「還沒做完」)。
+
+要驗「沒有阻塞 event loop」就比較 thread id;要驗「有依序發生」就用
+`threading.Event` 同步。會偶爾紅的測試比沒有測試更糟 —— 它訓練人忽略紅燈。
+
 ## 研究紀律
 
 - Sweep 網格**必須先能逐筆重現已知 preset**,對不上就不要看任何掃描結果。
