@@ -47,6 +47,11 @@ from backend.strategy.factor import (
     calculate_emapmo_snapshot,
 )
 from backend.live.warmup import signal_warmup_progress
+
+# 1.0.10: StrategyParams 的欄位預設 = 參數預設值的唯一真相。
+# routes 建 StrategyParams 時一律從這裡取 fallback,不要各自寫死
+# (見 docs/INVARIANTS.md CONFIG-002)。
+_PARAM_DEFAULTS = StrategyParams()
 # 1.0.8: 移除 ml_trend / ml_consolidation_v2 (mlc2) 相關 import
 #        (MLTrendBacktester / MLTrendBacktestConfig / precompute_vp_timeline / MLTrendConfig)
 #        mlc2 策略已整批刪除,僅保留 trend + confluence。
@@ -532,12 +537,23 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             getattr(req, "betafib_entry_start_hour", None)),
         betafib_entry_end_hour=_betafib_hour(
             getattr(req, "betafib_entry_end_hour", None)),
-        pi_long_only=bool(getattr(req, "pi_long_only", False)),
-        pi_signal_set=str(getattr(req, "pi_signal_set", "pi_only") or "pi_only").lower(),
+        # 1.0.10 BUG FIX:這裡原本自己寫死 fallback(pi_long_only=False /
+        # pi_signal_set="pi_only")。那是 StrategyParams 之外的**第三份真相** ——
+        # 改了 dataclass 預設(1.0.10:濾除開盤重播後空方轉為淨虧,預設只做多)
+        # 卻沒改這裡,任何沒帶這兩個欄位的 API 請求就還是會把做空打開。
+        # 現在一律回退到 dataclass 的預設,不再各寫一份。
+        pi_long_only=bool(getattr(req, "pi_long_only", _PARAM_DEFAULTS.pi_long_only)),
+        pi_signal_set=str(getattr(req, "pi_signal_set", None)
+                          or _PARAM_DEFAULTS.pi_signal_set).lower(),
         pi_max_signal_age_min=max(1, min(60, int(
-            getattr(req, "pi_max_signal_age_min", 5) or 5))),
-        pi_short_sl_value=max(0.1, float(getattr(req, "pi_short_sl_value", 2.5) or 2.5)),
-        pi_short_hold_min=max(0, int(getattr(req, "pi_short_hold_min", 60) or 0)),
+            getattr(req, "pi_max_signal_age_min", None)
+            or _PARAM_DEFAULTS.pi_max_signal_age_min))),
+        pi_short_sl_value=max(0.1, float(
+            getattr(req, "pi_short_sl_value", None)
+            or _PARAM_DEFAULTS.pi_short_sl_value)),
+        pi_short_hold_min=max(0, int(
+            getattr(req, "pi_short_hold_min", None)
+            or _PARAM_DEFAULTS.pi_short_hold_min or 0)),
         betafib_sl_fib=min(1.5, max(-0.5, float(
             getattr(req, "betafib_sl_fib", 0.75) or 0.75))),
         betafib_tp_fib=min(1.5, max(-0.5, float(
@@ -4329,15 +4345,11 @@ async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
     只回時間 + 標記種類/尺寸 —— 價格由前端拿當根 K 棒的高低點決定,
     因為 PI 訊號來自 SPY/QQQ,本身沒有 MNQ/MES 的價位。
     """
-    from backend.strategy.pi_signal import _HIST_PATH
-    from backend.live.pi_listener import is_pre_session
+    # 1.0.10: 走共用 loader —— 圖表必須跟回測/實盤看到同一組訊號
+    # (見 docs/INVARIANTS.md PI-006)。過濾規則只有 pi_history 那一份。
+    from backend.data.pi_history import load_rows
 
-    if not _HIST_PATH.exists():
-        return {"signals": []}
-    try:
-        rows = json.loads(_HIST_PATH.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"pi_signals.json 讀取失敗: {exc}")
+    rows = load_rows()
 
     lo, hi = _parse_iso_utc(start), _parse_iso_utc(end)
     want = (symbol or "").upper()
@@ -4349,9 +4361,6 @@ async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
         if lo and ts < lo:
             continue
         if hi and ts > hi:
-            continue
-        # 開盤前重播不畫到圖上 —— 圖表要跟回測/實盤看到的是同一組訊號
-        if r.get("pre_session") or is_pre_session(ts):
             continue
         # MNQ 跟 QQQ、MES 跟 SPY。沒指定商品就全給。
         sym = str(r.get("symbol") or "").upper()

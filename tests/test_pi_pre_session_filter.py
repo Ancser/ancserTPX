@@ -116,7 +116,10 @@ class TestBacktestPath:
         ]
         f = tmp_path / "pi_signals.json"
         f.write_text(json.dumps(rows), encoding="utf-8")
-        monkeypatch.setattr(ps, "_HIST_PATH", f)
+        # 1.0.10: 載入點搬到共用 loader(PI-006),所以要 patch 它的路徑,
+        # 不是 pi_signal 自己那個轉出來的別名。
+        from backend.data import pi_history
+        monkeypatch.setattr(pi_history, "HIST_PATH", f)
         monkeypatch.setattr(ps, "_HIST_CACHE", None)
 
         out = ps._load_history()

@@ -58,7 +58,8 @@ PI_SIGNAL_SETS: dict[str, dict[str, tuple]] = {
 # 1.0.10: 回測用歷史訊號。K 棒時間與訊號時間相差在此範圍內才視為「同一刻」。
 # 太小會因為 1m K 棒對不上秒級時間戳而漏單,太大會在 live 誤觸舊訊號。
 _HIST_TOL_MIN = 2
-_HIST_PATH = Path(__file__).resolve().parents[2] / "data" / "research" / "pi_signals.json"
+# 路徑定義在 backend/data/pi_history.py —— 這裡只是轉出去給舊呼叫端用
+from backend.data.pi_history import HIST_PATH as _HIST_PATH  # noqa: E402
 _HIST_CACHE: Optional[list] = None
 
 
@@ -72,20 +73,12 @@ def _load_history() -> list:
     if _HIST_CACHE is not None:
         return _HIST_CACHE
     out: list = []
-    try:
-        rows = json.loads(_HIST_PATH.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        logger.warning("[PI] 找不到 %s —— 回測沒有歷史訊號可用"
-                       "(先跑 scripts/pi_collect_history.py)", _HIST_PATH.name)
-        _HIST_CACHE = []
-        return _HIST_CACHE
-    except Exception as e:
-        logger.warning("[PI] 讀取歷史訊號失敗 %s: %s", type(e).__name__, e)
-        _HIST_CACHE = []
-        return _HIST_CACHE
+    # 1.0.10: 走共用 loader —— 開盤前重播的過濾規則只能有一份
+    # (見 docs/INVARIANTS.md PI-006)。讀不到檔案時 loader 回空 list。
+    from backend.data.pi_history import load_rows
+    rows = load_rows()
 
-    from backend.live.pi_listener import SYMBOL_MAP, DIRECTION, PiSignal, is_pre_session
-    _skipped = 0
+    from backend.live.pi_listener import SYMBOL_MAP, DIRECTION, PiSignal
     for r in rows:
         sym = r.get("symbol")
         if not sym:
@@ -95,11 +88,6 @@ def _load_history() -> list:
         except Exception:
             continue
         ts = ts.astimezone(timezone.utc)
-        # 1.0.10: 濾掉每日 06:33 開盤前重播 —— 那是前一交易日標記的重播,
-        # 不是即時訊號。舊檔沒有 pre_session 欄位,所以用時間再判一次。
-        if r.get("pre_session") or is_pre_session(ts):
-            _skipped += 1
-            continue
         for mk in r.get("marks", []):
             d = DIRECTION.get(mk.get("kind"), 0)
             if not d:
@@ -112,8 +100,6 @@ def _load_history() -> list:
     out.sort(key=lambda x: x[0])
     logger.info("[PI] 載入 %d 個歷史訊號(%s → %s)供回測使用", len(out),
                 out[0][0].date() if out else "-", out[-1][0].date() if out else "-")
-    if _skipped:
-        logger.info("[PI] 歷史訊號 %d 筆,另濾除 %d 筆開盤前重播", len(out), _skipped)
     _HIST_CACHE = out
     return out
 
