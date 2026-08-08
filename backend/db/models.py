@@ -461,8 +461,12 @@ class StrategyParams:
     # 等於這個模式根本沒有 TP 選項。
     # 1.0.10: π 外部訊號策略。多空可分別設定出場結構 ——
     # 實測多單抱越久越好、空單抱越久越差(見 memory project_pi_signal_source)。
-    pi_long_only: bool = False
-    pi_signal_set: str = "pi_only"        # 訊號級別組合,見 PI_SIGNAL_SETS
+    # 1.0.10: 濾除每日 06:33 開盤回顧後,PI 空方由正轉負(n=122 PnL −$948
+    # PF 0.91,空/MNQ PF 0.82),所以預設只做多。
+    # 注意 dataclass 的欄位預設會蓋過 PiSignalStrategy 裡的 getattr fallback,
+    # 兩邊必須一致 —— 只改策略端不改這裡,預設仍然會做空。
+    pi_long_only: bool = True
+    pi_signal_set: str = "long_pi_only"   # 訊號級別組合,見 PI_SIGNAL_SETS
     pi_max_signal_age_min: int = 5        # 超過即丟棄(BLOCK 不是 WARN)
     pi_short_sl_value: float = 2.5        # 空單 SL(×atr_blend)
     pi_short_hold_min: int = 60           # 空單時間出場(分鐘);0 = 不用

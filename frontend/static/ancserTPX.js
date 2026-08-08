@@ -1287,8 +1287,8 @@ function collectStrategyParams(mode) {
         betafib_risk_basis: betafibBasis,   // 1.0.10: 來自合併後的 SL ANCHOR
         betafib_min_move_pct: _float('betafib-minpct-' + mode, 0),
         // 1.0.10: PI 外部訊號
-        pi_signal_set: _mlSelectValue('pi-signal-set-' + mode, 'pi_only'),
-        pi_long_only: _mlSelectValue('pi-long-only-' + mode, '0') === '1',
+        pi_signal_set: _mlSelectValue('pi-signal-set-' + mode, 'long_pi_only'),
+        pi_long_only: _mlSelectValue('pi-long-only-' + mode, '1') === '1',
         pi_max_signal_age_min: _int('pi-max-age-' + mode, 5),
         pi_short_sl_value: _float('pi-short-sl-' + mode, 2.5),
         pi_short_hold_min: _int('pi-short-hold-' + mode, 60),
@@ -1445,8 +1445,9 @@ function applyStrategyParams(mode, params) {
     }
     _set('betafib-minpct-' + mode, String(p.betafib_min_move_pct != null ? p.betafib_min_move_pct : 0));
     // 1.0.10: PI
-    _set('pi-signal-set-' + mode, String(p.pi_signal_set || 'pi_only'));
-    _set('pi-long-only-' + mode, p.pi_long_only ? '1' : '0');
+    _set('pi-signal-set-' + mode, String(p.pi_signal_set || 'long_pi_only'));
+    // 1.0.10: 預設只做多 —— 舊 preset 沒有這個欄位時要落在 '1',不是 '0'
+    _set('pi-long-only-' + mode, (p.pi_long_only === undefined ? true : p.pi_long_only) ? '1' : '0');
     _set('pi-max-age-' + mode, String(p.pi_max_signal_age_min != null ? p.pi_max_signal_age_min : 5));
     _set('pi-short-sl-' + mode, String(p.pi_short_sl_value != null ? p.pi_short_sl_value : 2.5));
     _set('pi-short-hold-' + mode, String(p.pi_short_hold_min != null ? p.pi_short_hold_min : 60));

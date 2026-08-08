@@ -45,8 +45,13 @@ PI_SIGNAL_SETS: dict[str, dict[str, tuple]] = {
     "pi_strict": {"long": ("青π",), "short": ("粉π",)},
     # 全部藍系做多 / 全部紫系做空(原始定義,含弱訊號)
     "all": {"long": ("青π", "深蓝圈", "淡蓝圈"), "short": ("粉π", "紫圈")},
-    # 只做多側的 π 級別
+    # 只做多側的 π 級別(青π PF 5.40 + 深蓝圈 PF 6.31,但 n 只有 34)
     "long_pi_only": {"long": ("青π", "深蓝圈"), "short": ()},
+    # 1.0.10: 全部藍系做多、完全不做空。含淡蓝圈(PF 1.86,弱但為正),
+    # 換到 n=84 的樣本量。與 long_pi_only 的取捨:
+    #   long_pi_only  n=34  $7,279   每筆 $214   ← 品質高、頻率低
+    #   long_all      n=84  $10,328  每筆 $123   ← 總額高、樣本紮實
+    "long_all": {"long": ("青π", "深蓝圈", "淡蓝圈"), "short": ()},
 }
 
 
@@ -79,7 +84,8 @@ def _load_history() -> list:
         _HIST_CACHE = []
         return _HIST_CACHE
 
-    from backend.live.pi_listener import SYMBOL_MAP, DIRECTION, PiSignal
+    from backend.live.pi_listener import SYMBOL_MAP, DIRECTION, PiSignal, is_open_recap
+    _skipped = 0
     for r in rows:
         sym = r.get("symbol")
         if not sym:
@@ -89,6 +95,11 @@ def _load_history() -> list:
         except Exception:
             continue
         ts = ts.astimezone(timezone.utc)
+        # 1.0.10: 濾掉每日 06:33 開盤回顧 —— 那是前一交易日標記的重播,
+        # 不是即時訊號。舊檔沒有 open_recap 欄位,所以用時間再判一次。
+        if r.get("open_recap") or is_open_recap(ts):
+            _skipped += 1
+            continue
         for mk in r.get("marks", []):
             d = DIRECTION.get(mk.get("kind"), 0)
             if not d:
@@ -101,6 +112,8 @@ def _load_history() -> list:
     out.sort(key=lambda x: x[0])
     logger.info("[PI] 載入 %d 個歷史訊號(%s → %s)供回測使用", len(out),
                 out[0][0].date() if out else "-", out[-1][0].date() if out else "-")
+    if _skipped:
+        logger.info("[PI] 歷史訊號 %d 筆,另濾除 %d 筆開盤回顧", len(out), _skipped)
     _HIST_CACHE = out
     return out
 
@@ -113,21 +126,25 @@ class PiSignalStrategy(_ResearchBase):
     # 1.0.10: 級別過濾。實測(SL3.5/TP3R 做多、SL2.5/60m 做空,366 筆):
     #   多  青π   n=49 PF 3.05 每筆 $162   ← π 級別
     #       深蓝圈 n=13 PF 2.90 每筆 $96
-    #       淡蓝圈 n=97 PF 1.35 每筆 $32    ← 圈級別,弱 5 倍
-    #   空  粉π   n=56 PF 2.28 每筆 $62    ← π 級別
-    #       紫圈  n=151 PF 1.18 每筆 $12   ← 扣掉滑價變異後接近噪音
+    #       淡蓝圈 n=50 PF 1.86 每筆 $61    ← 圈級別,弱 4 倍
+    #   空  粉π   n=32 PF 1.92 每筆 $39
+    #       紫圈  n=90 PF 1.22 每筆 $12     ← 接近噪音
     # 依「尺寸」分組看起來小>中>大,但那是共線假象:大尺寸幾乎全是淡蓝圈,
     # 中小幾乎全是青π。真正的驅動是**標記種類**,所以只依種類過濾。
+    #
+    # 1.0.10:上面的數字是**濾除 06:33 開盤回顧後**重算的(舊數字被 44% 的
+    # 重播標記污染,見 is_open_recap)。乾淨資料下**整個空方是淨虧的**:
+    # 不對稱結構 空(紫系) n=122 PnL −$948 PF 0.91,空/MNQ 更差 PF 0.82。
+    # 所以預設不做空。
     DEFAULT_LONG_KINDS = ("青π", "深蓝圈")
-    DEFAULT_SHORT_KINDS = ("粉π",)
+    DEFAULT_SHORT_KINDS = ()
 
     def __init__(self, params):
         super().__init__(params)
         self._queue: deque = deque(maxlen=32)
-        # 1.0.10: 使用者指示啟用「粉π 做空」,所以預設不再是只做多。
-        # 被排除的是**紫圈**(151 筆、每筆 $12,扣掉滑價變異後接近噪音),
-        # 不是整個空方 —— 粉π 做空 n=56 PF 2.28 每筆 $62,值得做。
-        self.pi_long_only = bool(getattr(params, "pi_long_only", False))
+        # 1.0.10:濾除開盤回顧後空方轉為淨虧(PF 0.91),預設關閉做空。
+        # pi_long_only=True 會在下面把 short kinds 清空,不論 signal_set 選什麼。
+        self.pi_long_only = bool(getattr(params, "pi_long_only", True))
         # 允許的標記種類。優先序:明確給的 kinds > pi_signal_set > 預設
         _set = str(getattr(params, "pi_signal_set", "") or "").strip().lower()
         _preset = PI_SIGNAL_SETS.get(_set)
@@ -137,6 +154,10 @@ class PiSignalStrategy(_ResearchBase):
                               else _preset["long"] if _preset else self.DEFAULT_LONG_KINDS)
         self.pi_short_kinds = (tuple(_sk) if _sk is not None
                                else _preset["short"] if _preset else self.DEFAULT_SHORT_KINDS)
+        # long_only 是硬開關:壓過 signal_set 與明確指定的 short kinds。
+        # 沒有這一條的話,選了 pi_only 之類含空方的 set 就會繞過它。
+        if self.pi_long_only:
+            self.pi_short_kinds = ()
         # 空單專屬出場(多單沿用 factor_sl_value / rr_ratio)——
         # 多單抱越久越好、空單抱越久越差,兩邊不能共用同一組。
         self.pi_short_sl = float(getattr(params, "pi_short_sl_value", 2.5) or 2.5)

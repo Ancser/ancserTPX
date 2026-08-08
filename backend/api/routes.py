@@ -4330,6 +4330,7 @@ async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
     因為 PI 訊號來自 SPY/QQQ,本身沒有 MNQ/MES 的價位。
     """
     from backend.strategy.pi_signal import _HIST_PATH
+    from backend.live.pi_listener import is_open_recap
 
     if not _HIST_PATH.exists():
         return {"signals": []}
@@ -4348,6 +4349,9 @@ async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
         if lo and ts < lo:
             continue
         if hi and ts > hi:
+            continue
+        # 開盤回顧不畫到圖上 —— 圖表要跟回測/實盤看到的是同一組訊號
+        if r.get("open_recap") or is_open_recap(ts):
             continue
         # MNQ 跟 QQQ、MES 跟 SPY。沒指定商品就全給。
         sym = str(r.get("symbol") or "").upper()

@@ -37,6 +37,15 @@ def main():
     a = ap.parse_args()
 
     rows = json.load(open(ROOT / "data" / "research" / "pi_signals.json", encoding="utf-8"))
+    # 1.0.10: 濾掉每日 06:33 開盤回顧(前一交易日標記的重播,非即時訊號)。
+    # 不濾的話訊號數虛增 27%、標記數虛增 44%,而且方向來自已走完的行情。
+    from backend.live.pi_listener import is_open_recap as _recap
+    from datetime import datetime as _dt
+    _n0 = len(rows)
+    rows = [r for r in rows if not (
+        r.get("open_recap") or
+        _recap(_dt.fromisoformat(str(r["ts"]).replace("Z", "+00:00"))))]
+    print(f"[PI] 濾除開盤回顧 {_n0 - len(rows)} 則 → 保留 {len(rows)} 則盤中訊號")
     data = {s: build(s) for s in ("MNQ", "MES")}
 
     recs = []
