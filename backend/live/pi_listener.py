@@ -42,30 +42,39 @@ SYMBOL_MAP = {"QQQ": "MNQ", "SPY": "MES"}
 # +1 做多 / −1 做空
 DIRECTION = {"淡蓝圈": +1, "深蓝圈": +1, "青π": +1, "紫圈": -1, "粉π": -1}
 
-# ── 開盤回顧過濾(1.0.10) ────────────────────────────────────────────
-# bot 每天在美西 06:33(開盤後 3 分鐘)固定發**兩則**訊息(QQQ + SPY),
-# 間隔中位數 0.22 秒。那不是即時訊號,是**前一交易日累積標記的回顧**:
+# ── 開盤前訊號過濾(1.0.10) ──────────────────────────────────────────
+# bot 在美西開盤(06:30)後的頭半小時會重播**前一交易日**累積的標記,
+# 不是即時訊號。最集中的是 06:33 的兩則(QQQ + SPY,間隔中位數 0.22 秒):
 #
-#   每則標記數   06:33 批 = 2.64 (中位 3)   盤中 = 1.10 (中位 1)
-#   67 則之中有 63 則(94%)的標記種類完全落在「前一交易日盤中」已出現過的集合裡
-#   259 筆歷史裡有 69 筆(27%)出在 06:33 這一分鐘,而 06:30/31/32/34 是 0 筆
+#   259 筆歷史中 69 筆(27%)出在 06:33 這一分鐘,40 個交易日裡 38 天都有
+#   每則標記數:06:33 批 2.64(中位 3) vs 盤中 1.10(中位 1)
+#   67 則之中 63 則(94%)的標記種類完全落在「前一交易日盤中」已出現過的集合裡
 #
-# 拿它回測等於用今天開盤價去交易昨天的訊號 —— 訊號數虛增 27%,而且方向
-# 資訊來自已經走完的行情。實盤照它下單更糟:每天開盤必然觸發兩筆。
+# 06:39 那批(7 筆)同樣有 5/7 落在前一日集合內 —— 重播不只發生在 06:33。
+# 逐分鐘挑會挑不完(06:42 / 06:45 / 06:48 / 06:54 / 06:57 都有零星幾筆),
+# 所以使用者指示直接**整段砍掉 07:00 之前**:85/259 筆。
 #
-# 視窗取 06:30–06:35 而不是只挑 06:33:目前那 4 分鐘實際是空的(成本為零),
-# 留點餘裕以防 bot 排程漂移或日光節約時間換算差一分鐘。
+# 拿重播回測 = 用今天的價格交易昨天的訊號。實盤照它下單更糟。
 PI_TZ = ZoneInfo("America/Los_Angeles")
-OPEN_RECAP_WINDOW = ((6, 30), (6, 35))
+SESSION_START_PT = (7, 0)
 
 
-def is_open_recap(ts: datetime) -> bool:
-    """該訊息是否落在每日開盤回顧視窗內(美西時間)。"""
+def is_pre_session(ts: datetime) -> bool:
+    """該訊息是否在美西 07:00 之前(開盤後半小時的重播區)。"""
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     t = ts.astimezone(PI_TZ)
-    lo, hi = OPEN_RECAP_WINDOW
-    return lo <= (t.hour, t.minute) < hi
+    return (t.hour, t.minute) < SESSION_START_PT
+
+
+def message_is_pre_session(msg: dict) -> bool:
+    """Discord 訊息物件是否落在開盤前重播區。時戳壞掉時回 False(照常處理)。"""
+    try:
+        ts = datetime.fromisoformat(str(msg.get("timestamp", "")).replace("Z", "+00:00"))
+    except Exception:
+        return False
+    return is_pre_session(ts)
+
 
 _SYM = re.compile(r"[（(]\s*(QQQ|SPY)\s*[）)]")
 _MARK = re.compile(
@@ -241,16 +250,10 @@ class PiListener:
                         if msg["id"] in self._seen:
                             continue
                         self._seen.add(msg["id"])
-                        # 每天 06:33 的開盤回顧不是即時訊號(見 is_open_recap)。
-                        # 不擋掉的話,每天開盤必然多出兩筆假進場。
-                        try:
-                            _mts = datetime.fromisoformat(
-                                str(msg.get("timestamp", "")).replace("Z", "+00:00"))
-                        except Exception:
-                            _mts = None
-                        if _mts is not None and is_open_recap(_mts):
-                            logger.info("[PI] 略過開盤回顧訊息 %s (%s)",
-                                        msg["id"], _mts.astimezone(PI_TZ).strftime("%H:%M %Z"))
+                        # 開盤後半小時是前一交易日的重播,不是即時訊號
+                        # (見 is_pre_session)。不擋掉的話每天開盤必然多出假進場。
+                        if message_is_pre_session(msg):
+                            logger.info("[PI] 略過開盤前重播訊息 %s", msg.get("id"))
                             continue
                         for sig in parse_message(msg):
                             logger.info("[PI] 訊號 %s %s %s %s(%s)",

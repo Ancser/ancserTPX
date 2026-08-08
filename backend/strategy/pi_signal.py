@@ -84,7 +84,7 @@ def _load_history() -> list:
         _HIST_CACHE = []
         return _HIST_CACHE
 
-    from backend.live.pi_listener import SYMBOL_MAP, DIRECTION, PiSignal, is_open_recap
+    from backend.live.pi_listener import SYMBOL_MAP, DIRECTION, PiSignal, is_pre_session
     _skipped = 0
     for r in rows:
         sym = r.get("symbol")
@@ -95,9 +95,9 @@ def _load_history() -> list:
         except Exception:
             continue
         ts = ts.astimezone(timezone.utc)
-        # 1.0.10: 濾掉每日 06:33 開盤回顧 —— 那是前一交易日標記的重播,
-        # 不是即時訊號。舊檔沒有 open_recap 欄位,所以用時間再判一次。
-        if r.get("open_recap") or is_open_recap(ts):
+        # 1.0.10: 濾掉每日 06:33 開盤前重播 —— 那是前一交易日標記的重播,
+        # 不是即時訊號。舊檔沒有 pre_session 欄位,所以用時間再判一次。
+        if r.get("pre_session") or is_pre_session(ts):
             _skipped += 1
             continue
         for mk in r.get("marks", []):
@@ -113,7 +113,7 @@ def _load_history() -> list:
     logger.info("[PI] 載入 %d 個歷史訊號(%s → %s)供回測使用", len(out),
                 out[0][0].date() if out else "-", out[-1][0].date() if out else "-")
     if _skipped:
-        logger.info("[PI] 歷史訊號 %d 筆,另濾除 %d 筆開盤回顧", len(out), _skipped)
+        logger.info("[PI] 歷史訊號 %d 筆,另濾除 %d 筆開盤前重播", len(out), _skipped)
     _HIST_CACHE = out
     return out
 
@@ -132,8 +132,8 @@ class PiSignalStrategy(_ResearchBase):
     # 依「尺寸」分組看起來小>中>大,但那是共線假象:大尺寸幾乎全是淡蓝圈,
     # 中小幾乎全是青π。真正的驅動是**標記種類**,所以只依種類過濾。
     #
-    # 1.0.10:上面的數字是**濾除 06:33 開盤回顧後**重算的(舊數字被 44% 的
-    # 重播標記污染,見 is_open_recap)。乾淨資料下**整個空方是淨虧的**:
+    # 1.0.10:上面的數字是**濾除 06:33 開盤前重播後**重算的(舊數字被 44% 的
+    # 重播標記污染,見 is_pre_session)。乾淨資料下**整個空方是淨虧的**:
     # 不對稱結構 空(紫系) n=122 PnL −$948 PF 0.91,空/MNQ 更差 PF 0.82。
     # 所以預設不做空。
     DEFAULT_LONG_KINDS = ("青π", "深蓝圈")
@@ -142,7 +142,7 @@ class PiSignalStrategy(_ResearchBase):
     def __init__(self, params):
         super().__init__(params)
         self._queue: deque = deque(maxlen=32)
-        # 1.0.10:濾除開盤回顧後空方轉為淨虧(PF 0.91),預設關閉做空。
+        # 1.0.10:濾除開盤前重播後空方轉為淨虧(PF 0.91),預設關閉做空。
         # pi_long_only=True 會在下面把 short kinds 清空,不論 signal_set 選什麼。
         self.pi_long_only = bool(getattr(params, "pi_long_only", True))
         # 允許的標記種類。優先序:明確給的 kinds > pi_signal_set > 預設

@@ -37,7 +37,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from dotenv import load_dotenv  # noqa: E402
 
-from backend.live.pi_listener import is_open_recap  # noqa: E402
+from backend.live.pi_listener import is_pre_session  # noqa: E402
 load_dotenv(ROOT / ".env")
 import httpx  # noqa: E402
 
@@ -108,18 +108,18 @@ def main():
                 continue
             content = m.get("content") or ""
             p = parse(content)
-            # 1.0.10: 標記每日 06:33 開盤回顧。**不丟棄** —— 留著才能重新
+            # 1.0.10: 標記每日 06:33 開盤前重播。**不丟棄** —— 留著才能重新
             # 判定(bot 排程若改動,重跑標記即可,不必重抓)。所有消費端
-            # (回測、實盤、研究腳本)一律預設濾掉 open_recap=True。
+            # (回測、實盤、研究腳本)一律預設濾掉 pre_session=True。
             try:
                 _ts = datetime.fromisoformat(str(m["timestamp"]).replace("Z", "+00:00"))
-                _recap = is_open_recap(_ts)
+                _recap = is_pre_session(_ts)
             except Exception:
                 _recap = False
             rows.append({
                 "id": m["id"],
                 "ts": m["timestamp"],
-                "open_recap": _recap,
+                "pre_session": _recap,
                 "mention_everyone": bool(m.get("mention_everyone")),
                 "symbol": p["symbol"] if p else None,
                 "marks": p["marks"] if p else [],

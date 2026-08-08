@@ -6274,16 +6274,22 @@ function drawIndicatorSignalOverlay() {
 // PI 沒有自己的 MNQ/MES 價位(訊號源是 SPY/QQQ),所以錨在該根 K 棒的
 // 高/低點:看多錨低點下方,看空錨高點上方。
 // ════════════════════════════════════════════════════════════════════
+// 標記種類 → 顏色 / 方向 / 呈現形式。
+//
+// 1.0.10:**不再使用訊息裡的 size 欄位**。實測它零資訊:
+//   深蓝圈 13/13 都是「大」、淡蓝圈 97/97 都是「大」、紫圈 150/151 是「大」
+//   —— 圈類的 size 是常數;而 青π/粉π 的 中/小 分佈(23/25、25/31)依使用者
+//   說明是**視覺系統的多餘分類**,π 符號本身沒有大小之分。
+// 真正的強弱軸就是「種類」本身:深蓝圈 = 大威力,淡蓝圈 = 小威力。
+// 所以圈的半徑改由種類決定,π 一律同一個字級。
 const PI_MARK_STYLE = {
-    '青π':   { rgb: '34, 211, 238',  glyph: 'π', dir: 'long',  strong: true  },
-    '深蓝圈': { rgb: '37, 99, 235',   glyph: null, dir: 'long',  strong: true  },
-    '淡蓝圈': { rgb: '125, 211, 252', glyph: null, dir: 'long',  strong: false },
-    '粉π':   { rgb: '244, 114, 182', glyph: 'π', dir: 'short', strong: true  },
-    '紫圈':   { rgb: '168, 85, 247',  glyph: null, dir: 'short', strong: false },
+    '青π':   { rgb: '34, 211, 238',  glyph: 'π', dir: 'long',  r: 0  },
+    '粉π':   { rgb: '244, 114, 182', glyph: 'π', dir: 'short', r: 0  },
+    '深蓝圈': { rgb: '37, 99, 235',   glyph: null, dir: 'long',  r: 24 },  // 大威力
+    '淡蓝圈': { rgb: '125, 211, 252', glyph: null, dir: 'long',  r: 14 },  // 小威力
+    '紫圈':   { rgb: '168, 85, 247',  glyph: null, dir: 'short', r: 14 },
 };
-// 圈的半徑(MREV 泡泡是 6,這裡放大到 2.3~4 倍)/ π 的字級
-const PI_BUBBLE_R = { '大': 24, '中': 18, '小': 14 };
-const PI_GLYPH_SZ = { '大': 11, '中': 9, '小': 7.5 };
+const PI_GLYPH_SIZE = 10;      // π 一律同一個字級
 
 let _piSignalRows = [];        // [{chartTime, marks:[{kind,size}]}]
 let _piSignalsLoading = false;
@@ -6429,13 +6435,14 @@ function drawPiSignalOverlay() {
 
             if (style.glyph) {
                 // π 級:錨在 K 棒外側,和 EMAPMO 三角同一套定位
-                const sz = PI_GLYPH_SZ[m.size] || 9;
+                const sz = PI_GLYPH_SIZE;
                 const step = sz * 2.2;
                 const off = long_ ? (upN++ * step) : -(dnN++ * step);
                 _drawPiGlyph(ctx, x, yRef + off, style.dir, style.rgb, sz);
             } else {
-                // 圈級:放大的 MREV 泡泡,圓心壓在 K 棒上,像訊號源那張圖
-                const r = PI_BUBBLE_R[m.size] || 18;
+                // 圈級:放大的 MREV 泡泡。半徑由**種類**決定(深蓝=大威力 24、
+                // 淡蓝/紫=小威力 14),不再讀訊息裡那個恆為「大」的 size 欄位。
+                const r = style.r || 14;
                 const off = long_ ? (r + upN++ * 6) : -(r + dnN++ * 6);
                 const y = yRef + off;
                 if (y < -60 || y > H + 60) continue;
