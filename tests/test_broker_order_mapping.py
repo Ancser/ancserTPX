@@ -116,8 +116,22 @@ class TestPayloadShape:
         for k in ("accountId", "contractId", "type", "side", "size"):
             assert k in j, f"payload 缺 {k}"
 
-    def test_brackets_omitted_when_unset(self):
-        """帳戶端 Auto OCO 會自建括號。這裡多送一組會變成重複保護單。"""
+    def test_brackets_are_forwarded_when_the_engine_sets_them(self):
+        """引擎**會**帶 bracket(`_entry_brackets_for_signal`),adapter 必須原樣轉送。
+
+        2026-08-08 更正:這裡原本斷言「payload 不含 bracket」,但那只在
+        OrderRequest 欄位是 None 時成立 —— 恆真,而且從來沒碰到引擎的
+        實際路徑。真正的合約是「引擎給了就要送出去,而且不能變形」。
+        """
+        j = _payload_for(_order(
+            stop_loss_bracket={"ticks": -40, "type": 4},
+            take_profit_bracket={"ticks": 120, "type": 1},
+        ))["json"]
+        assert j["stopLossBracket"] == {"ticks": -40, "type": 4}
+        assert j["takeProfitBracket"] == {"ticks": 120, "type": 1}
+
+    def test_brackets_omitted_only_when_engine_leaves_them_none(self):
+        """None 才省略 —— 送 null 過去會被 API 當成明確的「無保護」。"""
         j = _payload_for(_order())["json"]
         assert "stopLossBracket" not in j
         assert "takeProfitBracket" not in j

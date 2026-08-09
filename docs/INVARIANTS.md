@@ -27,7 +27,7 @@
 | EXEC-001 | 內部 `side 1=Buy/2=Sell` → API `0=Bid/1=Ask`;兩個方向**不得映射到同一個值**。寫反不會拋例外,會用正確價格下反方向的單 | `test_broker_order_mapping.py` |
 | EXEC-002 | 內部 `type 3=Stop` → API `type 4`。API **沒有 type 3**,不得送出 | `test_broker_order_mapping.py` |
 | EXEC-003 | 非 Practice 帳戶必須拒絕;帳號查不到時**拒絕而非放行** | `test_broker_order_mapping.py` |
-| EXEC-004 | 進場單不得自帶 `stopLossBracket` / `takeProfitBracket` —— 帳戶端 Auto OCO 會自建,重送會變成重複保護單 | `test_broker_order_mapping.py` |
+| EXEC-004 | 進場單**會**自帶 `stopLossBracket` / `takeProfitBracket`,內容是 `_entry_brackets_for_signal()` 依訊號價位算出的 tick 偏移。broker adapter 只在欄位非 None 時放進 payload | `test_broker_order_mapping.py` ⚠️ **語意待釐清,見 R0** |
 | EXEC-005 | Auto OCO 括號**可以**用 `modify_order()` 改成策略價位。「不自己下 SL/TP」指的是不另開新單,不是不能改 | `test_exec_protection_invariants.py` |
 | EXEC-006 | 沒有市價參考時**必須拒絕下單**(return),不是只記 WARN | `test_exec_protection_invariants.py` |
 
@@ -118,6 +118,36 @@ INVARIANTS.md        LIVE-003 整條是幻覺 —— 見下(已改為提案)
 第二次:LIVE-003(zone 12h 過期)也是幽靈。查證後發現 0.17.0 只有
 `if zone_age > 86400: logger.warning(...)` —— **24 小時、而且只是警告**。
 兩條幽靈都來自「憑舊筆記寫不變量」。
+
+### R0 — 保護單的所有權未釐清(2026-08-08,Codex 交接審查發現)
+
+**初版的 EXEC-004 寫反了。** 它說「進場單不得自帶 bracket」,但實際上
+`engine.py:3914 / 3999` 兩條進場路徑都帶:
+
+```python
+stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
+OrderRequest(..., stop_loss_bracket=..., take_profit_bracket=...)
+```
+
+而 `_entry_brackets_for_signal()` 用的是**策略自己算的** SL/TP 價位換成
+tick 偏移,不是帳戶預設值。ProjectX API 也確實支援這兩個 optional 欄位。
+
+我當初那條測試是稻草人:它只斷言「OrderRequest 的欄位是 None 時 payload
+不含 bracket」—— 那恆真,而且從來沒碰到引擎的實際路徑。
+
+**同時**,`_scan_auto_oco_order_ids()` + `modify_order()` 那條路徑也還在
+(engine.py:878–930),而且會等 Auto OCO 子單出現、超時就報 error。
+
+所以現在有**兩套保護機制並存**,而沒有任何文件說明它們的關係:
+
+- 進場時附帶的 bracket 是主要保護,scan+modify 是校正?
+- 還是 attached bracket 是備援,Auto OCO 才是主要?
+- 兩者同時生效會不會產生重複的子單?
+
+**在釐清之前,不要依 EXEC-004 去刪任何 bracket 程式碼。** 刪掉附帶
+bracket 會讓進場後到 modify 完成之間出現一段**沒有保護的裸倉**。
+
+這需要對照實盤證據(實際的子單數量與價位)才能判定,不是讀程式碼能得出的。
 
 ### 提案(不是不變量,尚未實作)
 

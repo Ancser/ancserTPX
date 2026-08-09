@@ -89,9 +89,44 @@ class TestLivePath:
         assert len(parse_message(self.RECAP)) > 0
 
     def test_broken_timestamp_does_not_crash(self):
-        """時戳壞掉時放行而非炸掉 —— 寧可多一則訊號也不要讓 listener 掛掉。"""
+        """過濾器對壞時戳 fail-open(回 False = 不跳過)。"""
         assert message_is_pre_session({"id": "x", "timestamp": "not-a-date"}) is False
         assert message_is_pre_session({"id": "x"}) is False
+
+    @pytest.mark.parametrize("ts", ["not-a-date", "", None, 12345, "2026-13-45"])
+    def test_malformed_timestamp_does_not_kill_the_listener(self, ts):
+        """**P0 回歸測試(1.0.10j)。**
+
+        原本兩段合起來會殺掉 listener:
+          `message_is_pre_session` 對壞時戳 fail-open → 不跳過
+          → `parse_message` 直接 `fromisoformat` → ValueError
+          → 而 run() 的 try **只包 callback,不包 parse_message**
+          → 整個 listener task 死掉,之後所有訊號都收不到,且沒有任何提示。
+
+        實盤上這是最壞的失敗型態:靜默停止工作,看起來像「今天沒有訊號」。
+        """
+        msg = {"id": "x", "timestamp": ts, "author": {"id": "1514456965622005870"},
+               "content": self.INTRADAY["content"]}
+        assert parse_message(msg) == []          # 略過,不是拋例外
+
+    def test_valid_timestamp_still_parses(self):
+        """正向斷言:證明上面不是因為 parse_message 對所有輸入都回空而通過。"""
+        assert len(parse_message(self.INTRADAY)) == 1
+
+    def test_run_loop_guards_parse_message(self):
+        """結構性:run() 必須把 parse_message 包在 try 裡。
+
+        只修 parse_message 不夠 —— 未來任何未預期的訊息形狀(欄位缺失、
+        型別改變)都可能從別的地方拋出來。
+        """
+        from pathlib import Path
+        src = Path("backend/live/pi_listener.py").read_text(encoding="utf-8")
+        run = src[src.index("async def run(self)"):]
+        i_parse = run.index("sigs = parse_message(msg)")
+        before = run[max(0, i_parse - 200):i_parse]
+        assert "try:" in before, "parse_message 沒有被 try 包住"
+        i_guard = run.index("解析訊息")
+        assert i_guard > i_parse, "沒有對應的 except 分支"
 
 
 class TestBacktestPath:

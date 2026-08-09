@@ -7,8 +7,11 @@
 
 動任何重構、清理、簡化之前:
 
-1. 讀 [`docs/INVARIANTS.md`](docs/INVARIANTS.md) —— 有 33 條行為不變量,
-   其中 21 條**沒有測試保護**,只有那份文件記得
+0. 讀 [`AGENTS.md`](AGENTS.md) —— 真相排序與交接規則(給非 Claude 的 agent 也一樣)
+   與 [`docs/HANDOFF.md`](docs/HANDOFF.md) —— 目前基準與未解問題
+1. 讀 [`docs/INVARIANTS.md`](docs/INVARIANTS.md) —— 行為不變量清單。
+   每條標了「哪個測試證明它」或 `UNPROTECTED`。**數字會變,以那份文件為準**,
+   不要相信這裡寫的統計(這行本身就過期過一次)
 2. 跑 `python -m pytest tests/ -q`(約 35 秒)
 3. 看一眼要動的區域有沒有 `1.0.x:` 開頭的註解 —— 那些通常在記錄某個歷史 bug
 

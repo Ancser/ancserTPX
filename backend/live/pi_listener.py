@@ -107,7 +107,20 @@ def parse_message(msg: dict) -> list[PiSignal]:
     if not m:
         return []
     equity = m.group(1)
-    ts = datetime.fromisoformat(str(msg["timestamp"]).replace("Z", "+00:00"))
+    # 1.0.10 P0:這裡原本直接 fromisoformat,時戳壞掉就拋 ValueError。
+    # 而呼叫端 run() 的 try 只包住 callback,**不包 parse_message** ——
+    # 所以一則畸形訊息會讓整個 listener task 死掉,之後所有訊號都收不到,
+    # 而且沒有任何 log 說發生了什麼。
+    #
+    # `message_is_pre_session()` 對壞時戳是 fail-open(回 False = 不跳過),
+    # 那個設計本身沒錯(寧可多一則訊號也不要漏),但它把畸形訊息直接送進
+    # 這裡。兩邊合起來就從「放行」變成「崩潰」。
+    try:
+        ts = datetime.fromisoformat(str(msg.get("timestamp", "")).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        logger.warning("[PI] 訊息 %s 的時戳無法解析 %r —— 略過該則,listener 繼續",
+                       msg.get("id"), msg.get("timestamp"))
+        return []
     out: list[PiSignal] = []
     for mk in _MARK.finditer(content):
         kind = mk.group(1)
@@ -255,7 +268,16 @@ class PiListener:
                         if message_is_pre_session(msg):
                             logger.info("[PI] 略過開盤前重播訊息 %s", msg.get("id"))
                             continue
-                        for sig in parse_message(msg):
+                        # 第二道:解析本身也可能因為未預期的訊息形狀而爆。
+                        # 單一則訊息壞掉不該讓整條 listener 下線 —— 它一旦
+                        # 死掉就是靜默的,實盤會以為「今天沒有訊號」。
+                        try:
+                            sigs = parse_message(msg)
+                        except Exception as e:
+                            logger.exception("[PI] 解析訊息 %s 失敗 %s: %s —— 略過該則",
+                                             msg.get("id"), type(e).__name__, e)
+                            continue
+                        for sig in sigs:
                             logger.info("[PI] 訊號 %s %s %s %s(%s)",
                                         sig.equity, sig.future, sig.side, sig.kind, sig.size)
                             try:

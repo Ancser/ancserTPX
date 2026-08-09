@@ -12,11 +12,21 @@ The system is centered around **1-minute candles** and supports both backtesting
 
 The Web Backtest and Web LIVE panels provide these strategy choices:
 
-- **TREND**
-- **DAY ZONE** (`LIMIT`, `REJECTION`, `OR15`)
-- **DISTRIBUTION**
-- **PMO**
 - **FACTOR** (`EMAPMO`, `KDJMA`, `MREV`)
+- **MOMENTUM** — intraday momentum continuation
+- **BETAFIB** — fib retracement of the RTH impulse leg
+- **PI** — external Discord signal source
+- **FADE** — prior-day value-area fade (`OR15` variant available)
+- **SIGMA** — rolling sigma-band fade
+
+`CONFLUENCE` (ML) is live-only and does not go through the same dispatch.
+
+> The authoritative list is enforced by
+> `tests/test_strategy_pipeline_classification.py`, not by this README.
+> **TREND, DAY ZONE, DISTRIBUTION and standalone PMO were removed** (1.0.9/1.0.10);
+> `pmo` survives only as a FACTOR-family alias. Do not reintroduce them
+> from this document — see `docs/1.0.9_DELETE_LIST.md` and
+> `docs/1.0.10_REMOVE_PMO.md` for why they were cut.
 
 The preset selector includes **Default** and user-saved presets. Terminal-only LIVE has no separate strategy selector; it follows the saved or assigned LIVE preset.
 
