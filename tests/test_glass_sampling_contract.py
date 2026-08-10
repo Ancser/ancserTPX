@@ -1,0 +1,210 @@
+"""Static guards for the two-tier Glass sampling contract.
+
+These checks intentionally protect the small architectural seams that are easy
+to erase while tuning appearance. Real-browser coverage owns the rendered
+result; this file makes recursion, copy growth, and heartbeat regressions fail
+fast in the normal pytest suite.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+GLASS_JS = ROOT / "frontend" / "static" / "tpx-glass.js"
+GLASS_CSS = ROOT / "frontend" / "static" / "tpx-glass.css"
+
+
+def _source(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _slice(source: str, start: str, end: str) -> str:
+    begin = source.index(start)
+    return source[begin:source.index(end, begin)]
+
+
+def test_tiers_are_marked_before_stage_templates_are_cloned():
+    js = _source(GLASS_JS)
+    build = _slice(js, "function buildOpticalSurfaces()", "function alignOpticalCopy")
+    assert build.index("markGlassTiers();") < build.index(
+        'const stages = Array.from(document.querySelectorAll("[data-stage]"))'
+    )
+    assert build.index("markGlassTiers();") < build.index(
+        "stageTemplates.set(stage, cloneOpticalSource(stage))"
+    )
+
+    marker = _slice(js, "function markGlassTiers()", "function sampleInCopy")
+    assert 'element.dataset.optical === "precision"' in marker
+    assert '? "2"' in marker and ': "1"' in marker
+    # Tiering annotates existing roots; it must not create another compositor.
+    for mutation in ("cloneNode", "createElement", ".append", ".prepend"):
+        assert mutation not in marker
+
+
+def test_precision_source_role_survives_copy_replacement():
+    js = _source(GLASS_JS)
+    build = _slice(js, "function buildOpticalSurfaces()", "function alignOpticalCopy")
+    replace = _slice(
+        js, "function replaceSurfaceStageCopy", "let pendingRetargetTimer"
+    )
+    assert 'stageCopy.classList.add("optical-tier-2-source")' in build
+    assert '"optical-tier-2-source"' in replace
+    # Adding the role is metadata on the existing copy, not another stage clone.
+    assert "cloneOpticalSource" not in replace
+    assert replace.count("template.cloneNode(true)") == 1
+
+
+def test_only_tier_one_fallbacks_are_reexposed_to_precision():
+    js = _source(GLASS_JS)
+    css = _source(GLASS_CSS)
+    assert 'source.classList.contains("optical-layer")' in js
+    assert ".optical-world .optical-layer { display: none !important; }" in css
+    assert (
+        '.optical-stage-copy.optical-tier-2-source [data-glass-tier="1"]'
+        in css
+    )
+    assert (
+        '.optical-stage-copy.optical-tier-2-source [data-glass-tier="2"]'
+        in css
+    )
+    assert '.optical-stage-copy [data-glass-tier="2"]' in css
+    assert (
+        '.optical-stage-copy:not(.optical-tier-2-source) '
+        '[data-glass-tier="1"]'
+        in css
+    )
+    # No unscoped Tier-1 visibility rule may expose nested Glass elsewhere.
+    assert '\n[data-glass-tier="1"]' not in css
+
+
+def test_precision_release_has_one_shot_active_hydration():
+    js = _source(GLASS_JS)
+    bind = _slice(js, "function bindMirrors", "/* Which stages actually")
+    release = _slice(js, "function releaseMirrorBuffers", "function mirrorCanvases")
+    mirror = _slice(js, "function mirrorCanvases", "function surfaceSpringActive")
+    spring = _slice(js, "function runSpringLoop", "const surfaceFor")
+    build = _slice(js, "function buildOpticalSurfaces()", "function alignOpticalCopy")
+
+    assert 'needsActiveHydration: component === "precision"' in build
+    assert 'surface.component === "precision"' in release
+    assert "surface.needsActiveHydration = true" in release
+    assert 'component === "precision" && syncTarget?.needsActiveHydration' in spring
+    assert "const ready = mirrorCanvases(syncTarget, true)" in spring
+    assert "if (ready)" in spring
+    assert spring.index("if (ready)") < spring.index(
+        "syncTarget.needsActiveHydration = false"
+    )
+    assert "return validSources > 0" in mirror
+    assert 'surface.component === "precision"' in bind
+    assert "surface.mirrorPairs.some" in bind
+    assert "syncOpticalSurfaces(component, false, syncTarget)" in spring
+    # The forced blit exists only in the guarded one-shot spring path.
+    assert js.count("mirrorCanvases(syncTarget, true)") == 1
+
+
+def test_tier_one_animated_style_only_mirrors_to_precision_copies():
+    js = _source(GLASS_JS)
+    helper = _slice(
+        js, "function forEachMatchingPrecisionClone", "function mirrorTextMutation"
+    )
+    mutation = _slice(js, "function mirrorAttributeMutation", "function markStageDirty")
+    assert 'surface.component !== "precision"' in helper
+    assert 'classList.contains("optical-tier-2-source")' in helper
+    assert "correspondingCloneNode" in helper
+    assert "stageTemplates" not in helper
+    assert "mirroredTierOneStyle" in mutation
+    assert "forEachMatchingPrecisionClone(target" in mutation
+    assert 'target.closest("[data-optical]")' in mutation
+    assert mutation.index("forEachMatchingPrecisionClone(target") < mutation.index(
+        'target.closest("[data-optical]")'
+    )
+
+
+def test_compact_material_switch_exposes_a_proportional_shrunk_center():
+    css = _source(GLASS_CSS)
+    assert ".glass-switch.interacting .switch-thumb {" in css
+    assert "background: var(--bg);" in _slice(
+        css,
+        ".glass-switch.interacting .switch-thumb {",
+        '.glass-switch[data-glass-sampling="material-only"] .switch-thumb::after {',
+    )
+    center = _slice(
+        css,
+        '.glass-switch[data-glass-sampling="material-only"] .switch-thumb::after {',
+        '.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb {',
+    )
+    assert "background: var(--switch-track-color);" in center
+    assert "transform: scale(0.60);" in center
+    ring = _slice(
+        css,
+        '.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb {',
+        '.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb::after {',
+    )
+    assert "background: var(--bg);" in ring
+    assert "var(--glass-relief)" not in ring
+    active_center = _slice(
+        css,
+        '.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb::after {',
+        ".glass-switch.interacting .switch-thumb .optical-layer",
+    )
+    assert "opacity: 1;" in active_center
+
+
+def test_locale_uses_the_existing_tactile_switch_controller_once():
+    js = _source(GLASS_JS)
+    tactile = _slice(js, "function initTactileSwitch", "function startMirrorHeartbeat")
+    switch_init = _slice(
+        js,
+        'liveAll(".glass-switch").forEach((track) => {',
+        'const account = live(".glass-account")',
+    )
+    assert 'track.addEventListener("click", (event) => {' in tactile
+    assert "handledPointerClick" in tactile
+    assert "handledKeyboardClick" in tactile
+    assert "event.isTrusted" in tactile
+    assert "commit(committed ? 0 : 1);" in tactile
+    assert 'track.id === "lang-toggle"' in switch_init
+    assert "window.toggleLanguage?.()" in switch_init
+    assert switch_init.index('track.id === "lang-toggle"') < switch_init.index(
+        'track.id === "theme-switch"'
+    )
+
+
+def test_tier_one_controls_do_not_hide_the_pointer_lens():
+    js = _source(GLASS_JS)
+    css = _source(GLASS_CSS)
+    blocker = _slice(js, "const blocksLens = (target)", "const apply = () =>")
+    tier = "target.closest('[data-glass-tier=\"1\"]')"
+    assert tier in blocker
+    assert blocker.index(tier) < blocker.index("target.closest(interactiveSelector)")
+    assert ".chart-lens * { pointer-events: none !important; }" in css
+
+
+def test_edge_debug_is_a_root_attribute_only():
+    js = _source(GLASS_JS)
+    method = _slice(js, "setEdgeDebug(on)", "/* ── tuner surface")
+    assert 'document.documentElement.dataset.glassEdgeDebug = "on"' in method
+    assert "delete document.documentElement.dataset.glassEdgeDebug" in method
+    for side_effect in ("schedule", "rebuild", "clone", "createElement"):
+        assert side_effect not in method
+
+
+def test_diagnostics_expose_sampling_state_without_mutation():
+    js = _source(GLASS_JS)
+    diagnostics = _slice(js, "get diagnostics()", "function boot()")
+    for field in (
+        "stageCopies",
+        "dirtyStages",
+        "surfaceStates",
+        "component",
+        "tier",
+        "stage",
+        "copyStage",
+        "sourceWidth",
+        "sourceHeight",
+        "mirrorNeedsHydration",
+    ):
+        assert f"{field}:" in diagnostics
+    for side_effect in ("schedule", "rebuildStageClones", "createElement"):
+        assert side_effect not in diagnostics

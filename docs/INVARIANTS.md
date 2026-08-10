@@ -81,21 +81,28 @@
 | ID | 不變量 | Test |
 |---|---|---|
 | UI-001 | 套用任何皮膚**不得移除語言切換**。皮膚是外觀,不該拿掉功能 | `test_data_and_skin_policy.py` |
-| UI-002 | Stage 版面變動必須讓被取樣的 glass scene 一起重新布局;只更新 surface 幾何不夠 | `UNPROTECTED` |
-| UI-003 | 同一個邏輯控制項的所有呈現(來源 + 光學複本)必須顯示相同狀態 | `UNPROTECTED` |
-| UI-004 | 每個 `.optical-surface` 會建一份整頁 DOM 複本。**不要在同一個面板裡放很多個** —— 12 個開關實測直接把 renderer 卡死 | `UNPROTECTED` |
-| UI-005 | 隱藏面板中的 DOM 量測回傳 0×0。動畫依賴 rAF,在背景分頁不會前進 —— 兩者都會讓驗證出現偽陽性 | `UNPROTECTED` |
+| UI-002 | Stage 版面變動必須讓被取樣的 glass scene 一起重新布局;只更新 surface 幾何不夠 | `tests/ui/glass-ui.spec.js` |
+| UI-003 | 同一個邏輯控制項的所有呈現(來源 + 光學複本)必須顯示相同狀態 | `tests/ui/glass-ui.spec.js` |
+| UI-004 | 每個 `.optical-surface` 會建一份整頁 DOM 複本。**不要在同一個面板裡放很多個** —— 12 個開關實測直接把 renderer 卡死 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| UI-005 | 隱藏面板中的 DOM 量測回傳 0×0。動畫依賴 rAF,在背景分頁不會前進 —— 兩者都會讓驗證出現偽陽性 | `tests/ui/glass-ui.spec.js` |
+| UI-006 | Precision Lens 下方可取樣的 Tier-1 Glass(含 Chart Layers 與附近控制項)必須以已解析的材質/狀態出現在 Lens 內 | `tests/ui/glass-ui.spec.js` |
+| UI-007 | 光學輸出不得取樣自己:Tier-1 只取 Tier-0;Tier-2 可取 Tier-0 + 合格 Tier-1,但不得取 Tier-2/self | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| UI-008 | Research→Backtest/Live 在目的 workspace 可量測後,不得讓可見 Glass 留在無有效來源/1×1 canvas 的狀態 | `tests/ui/glass-ui.spec.js` |
+| UI-009 | switch/button 的本地狀態更新不得觸發無關的大型 scene 結構重建 | `tests/ui/glass-ui.spec.js` |
+| UI-010 | 策略 canonical identity 固定為 `FADE/SIGMA/FACTOR/MOMENTUM/BETAFIB/PI`;說明是分離且本地化的 presentation | `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
+| UI-011 | 語言 Glass presentation 必須沿用唯一的 `UI_LANG`/storage/event 路徑,thumb 顯示目前語言且同步 `<html lang>` | `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
+| UI-012 | 共用/分層來源不得改變各 component 原有的 shrink/refraction/motion 與本地材質所有權 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| UI-013 | 可見來源正確性有 bounded high-priority 路徑;背景結構 churn 仍走原本 deferred/batched scheduler | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| UI-014 | Chart Tools 只保留跳到最新與 Chart Layers;已退役的 auto-center provider/drag/latch 不得回流,且預設圖表 framing 必須保留 | `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
 
 ---
 
 ## 目前的覆蓋缺口(誠實版)
 
-**36 條裡有 4 條是 `UNPROTECTED`,32 條有測試。**
-
-剩下的**全部集中在 Glass/前端**(UI-002…005)。那不是再寫幾個 pytest 能解決的 ——
-`frontend/static/ancserTPX.js` 9,333 行 + `tpx-glass.js` 3,395 行目前 0 個測試,
-唯一的保護是 CI 的 `node --check`。要動它們得先引進 node 測試工具鏈,
-那是一個獨立決策。
+**45 條目前都已有自動化保護。** UI-002…014 的 paint/timing 行為由
+`tests/ui/glass-ui.spec.js` 在 Chromium 驗證;小型架構接縫另由 pytest static
+contracts 快速擋回歸。CI 的 browser job 以 `--lifespan off` 啟動 app,不得啟動
+candle accumulator / shadow replay / broker 連線。
 
 補測試的過程本身抓到五個真問題:
 

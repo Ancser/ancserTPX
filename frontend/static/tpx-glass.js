@@ -818,6 +818,18 @@
         });
     }
 
+    /* Glass surfaces are sampled before their optical layers are mounted, so
+       tier ownership must be written before the stage templates are cloned.
+       Precision is the compositor (Tier 2); every other optical root exposes
+       only its native/fallback material when a Precision source samples it. */
+    function markGlassTiers() {
+        document.querySelectorAll("[data-optical]").forEach((element) => {
+            element.dataset.glassTier = element.dataset.optical === "precision"
+                ? "2"
+                : "1";
+        });
+    }
+
     function sampleInCopy(copy, selector) {
         if (!copy) return null;
         return copy.matches(selector) ? copy : copy.querySelector(selector);
@@ -831,6 +843,7 @@
         // Keys must exist before cloning, otherwise every component glass
         // falls back to the first slider/switch in the sampled stage.
         markComponentSources();
+        markGlassTiers();
         const stages = Array.from(document.querySelectorAll("[data-stage]"));
         stages.forEach((stage) => {
             markScrollSources(stage);
@@ -906,6 +919,9 @@
             layer.setAttribute("aria-hidden", "true");
             layer.style.filter = `url(#tpx-optical-filter-${index})`;
             world.className = "optical-world";
+            if (component === "precision") {
+                stageCopy.classList.add("optical-tier-2-source");
+            }
             if (isContainerGlass) stageCopy.classList.add("container-shell-copy");
             if (needsParentPass) {
                 stageCopy.classList.add("optical-background-copy", "container-shell-copy");
@@ -943,6 +959,10 @@
                 syncSample: null,
                 lastMap: null,
                 lastSpecular: null,
+                /* Canvas templates intentionally begin dormant at 1x1. A
+                   Precision spring hydrates them once before its first paint;
+                   the normal 30fps heartbeat owns all later refreshes. */
+                needsActiveHydration: component === "precision",
             });
         });
 
@@ -1278,7 +1298,12 @@
         ensureCanvasKeys(surface.stage);
         const sources = liveCanvases(surface.stage);
         surface.mirrorPairs = [];
-        if (!sources.length) return;
+        if (!sources.length) {
+            if (surface.component === "precision") {
+                surface.needsActiveHydration = false;
+            }
+            return;
+        }
         /* Canvas pixels belong to the main stage only. A dock's content
            copy has an unrelated local source and must never receive chart
            canvases merely because one is added to that track later. */
@@ -1295,6 +1320,15 @@
             else missing += 1;
         });
         surface.mirrorSourceCount = sources.length;
+        /* A newly inserted/lazily-created canvas is paired only after the
+           structural clone catches up. Re-arm Precision here as well as on
+           idle release so an early pointer cannot consume hydration before
+           the new pair exists. */
+        if (surface.component === "precision") {
+            surface.needsActiveHydration = surface.mirrorPairs.some(([, dst]) => (
+                dst.width <= 1 || dst.height <= 1
+            ));
+        }
         /* clone 裡沒有對應者 = 那塊會是黑的。立刻排重建,不要等下一次
            MutationObserver 觸發。 */
         if (missing) scheduleStageCloneRebuild(surface.stage);
@@ -1353,6 +1387,29 @@
         });
     }
 
+    /* Animated Tier-1 fallback material is visible only inside Precision.
+       Mirror its inline state only to those one or two compositor copies;
+       the historical rule that avoids broadcasting per-frame transforms to
+       every ordinary stage clone remains unchanged. */
+    function forEachMatchingPrecisionClone(sourceNode, callback) {
+        surfaces.forEach((surface) => {
+            if (
+                surface.component !== "precision"
+                || !surface.stageCopy?.classList.contains("optical-tier-2-source")
+            ) return;
+            const sourceRoot = surface.copyStage || surface.stage;
+            if (
+                !sourceRoot
+                || !sourceRoot.contains(sourceNode)
+                || sourceNode === sourceRoot
+            ) return;
+            const copy = correspondingCloneNode(
+                sourceRoot, surface.stageCopy, sourceNode
+            );
+            if (copy) callback(copy);
+        });
+    }
+
     function mirrorTextMutation(target) {
         if (target.nodeType === Node.TEXT_NODE) {
             forEachMatchingClone(target, (copy) => { copy.data = target.data; });
@@ -1368,9 +1425,20 @@
     }
 
     const mirroredVisibility = new WeakMap();
+    const mirroredTierOneStyle = new WeakMap();
 
     function mirrorAttributeMutation(target, name) {
         if (!name || !["class", "hidden", "style"].includes(name)) return;
+        if (name === "style" && target.closest('[data-glass-tier="1"]')) {
+            const inlineStyle = target.getAttribute("style") || "";
+            if (mirroredTierOneStyle.get(target) === inlineStyle) return;
+            mirroredTierOneStyle.set(target, inlineStyle);
+            forEachMatchingPrecisionClone(target, (copy) => {
+                if (inlineStyle) copy.setAttribute("style", inlineStyle);
+                else copy.removeAttribute("style");
+            });
+            return;
+        }
         /* Animated glass controls write transform/position inline every frame.
            Their clones are engine-owned; only application UI visibility needs
            propagating from style mutations. */
@@ -1565,7 +1633,11 @@
         releaseMirrorBuffers(surface);
         const old = surface.stageCopy;
         const next = template.cloneNode(true);
-        ["optical-background-copy", "container-shell-copy"].forEach((className) => {
+        [
+            "optical-background-copy",
+            "container-shell-copy",
+            "optical-tier-2-source",
+        ].forEach((className) => {
             if (old.classList.contains(className)) next.classList.add(className);
         });
         surface.world.replaceChild(next, old);
@@ -1683,11 +1755,17 @@
             if (dst.width !== 1) dst.width = 1;
             if (dst.height !== 1) dst.height = 1;
         });
+        if (surface.component === "precision" && surface.mirrorPairs?.length) {
+            surface.needsActiveHydration = true;
+        }
     }
 
     function mirrorCanvases(surface, force = false) {
-        if (!mirror.enabled || !surface.mirrorPairs) return;
-        if (!surface.mirrorPairs.length) return;
+        /* `true` means this surface has a valid sample for the current box.
+           Mirroring disabled/no canvas pairs are explicit settled states;
+           invalid layout or an undrawable relevant pair must retry. */
+        if (!mirror.enabled || !surface.mirrorPairs) return true;
+        if (!surface.mirrorPairs.length) return true;
         const surfRect = surface.element.getBoundingClientRect();
         const elementStyle = getComputedStyle(surface.element);
         const layoutVisible = surfRect.width > 0
@@ -1709,7 +1787,7 @@
             const now = performance.now();
             if (!surface.mirrorIdleSince) surface.mirrorIdleSince = now;
             if (now - surface.mirrorIdleSince > 1200) releaseMirrorBuffers(surface);
-            return;
+            return false;
         }
         surface.mirrorIdleSince = 0;
         /* Structural stage observers rebind when canvases are inserted or
@@ -1742,10 +1820,14 @@
         const wantTop = surfRect.top - margin;
         const wantRight = surfRect.right + margin;
         const wantBottom = surfRect.bottom + margin;
+        let validSources = 0;
+        let relevantPairs = 0;
+        let copiedPairs = 0;
         surface.mirrorPairs.forEach(([src, dst]) => {
             if (!src.isConnected || !src.width || !src.height) return;
             const srcRect = src.getBoundingClientRect();
             if (!srcRect.width || !srcRect.height) return;
+            validSources += 1;
             // Clip the wanted band against this canvas; skip it entirely
             // when the surface sits nowhere near it.
             const left = Math.max(wantLeft, srcRect.left);
@@ -1758,6 +1840,7 @@
                 if (dst.height !== 1) dst.height = 1;
                 return;
             }
+            relevantPairs += 1;
             const w = Math.max(1, Math.round(src.width * sampleScale));
             const h = Math.max(1, Math.round(src.height * sampleScale));
             if (dst.width !== w || dst.height !== h) {
@@ -1787,6 +1870,7 @@
                 context.drawImage(src, sx, sy, sw, sh, dx, dy, dw, dh);
                 mirror.blits += 1;
                 mirror.pixels += dw * dh;
+                copiedPairs += 1;
             } catch (error) {
                 /* Tainted canvas (cross-origin image drawn into the
                    chart) throws on read-back. Disable rather than
@@ -1795,6 +1879,9 @@
             }
         });
         mirror.lastCost = performance.now() - started;
+        if (!mirror.enabled) return true;
+        return validSources > 0
+            && (relevantPairs === 0 || copiedPairs === relevantPairs);
     }
 
     function surfaceSpringActive(surface) {
@@ -1821,7 +1908,10 @@
             }
             if (now - (surface.lastMirrorAt || 0) < interval) return;
             surface.lastMirrorAt = now;
-            mirrorCanvases(surface);
+            const ready = mirrorCanvases(surface);
+            if (surface.component === "precision" && ready) {
+                surface.needsActiveHydration = false;
+            }
         });
     }
 
@@ -1987,6 +2077,17 @@
             const config = settings[component];
             springs.forEach((spring) => spring.update(dt, config));
             apply();
+            /* Hidden Precision surfaces release their canvas buffers to 1x1.
+               Hydrate exactly once on the first active frame, after apply()
+               gives the lens a real box but before this rAF can paint. The
+               independent heartbeat remains responsible for later pixels. */
+            if (component === "precision" && syncTarget?.needsActiveHydration) {
+                const ready = mirrorCanvases(syncTarget, true);
+                if (ready) {
+                    syncTarget.needsActiveHydration = false;
+                    syncTarget.lastMirrorAt = now;
+                }
+            }
             /* Geometry follows the spring at display refresh rate; canvas
                pixels stay on the independent 30fps heartbeat. Copying here
                duplicated every active blit during an interaction. */
@@ -2522,15 +2623,6 @@
             progress.velocity += (open ? 1 : -1) * settings.fab.stretch * 3;
             start();
         });
-        /* Actions latch instead of navigating — these are the old
-           ⌖ auto-center / ≫ jump-to-latest toggles. */
-        actions.forEach((action) => {
-            action.addEventListener("click", () => {
-                if (action.dataset.fabLatch === "1") {
-                    action.classList.toggle("latched");
-                }
-            });
-        });
         apply();
     }
 
@@ -2568,6 +2660,10 @@
 
         const blocksLens = (target) => {
             if (!(target instanceof Element)) return false;
+            /* Tier-1 Glass remains a valid Precision source. The lens itself
+               is pointer-events:none, so keeping it visible does not steal
+               clicks, drags, or focus from the control underneath. */
+            if (target.closest('[data-glass-tier="1"]')) return false;
             if (target.closest(interactiveSelector)) return true;
             let node = target;
             while (node && node !== stage) {
@@ -2885,6 +2981,8 @@
         let startClientX = 0;
         let startProgress = 0;
         let pressTime = 0;
+        let handledPointerAt = -Infinity;
+        let handledKeyboardAt = -Infinity;
         let committed = track.classList.contains("on") ? 1 : 0;
         /* Derive the thumb inset from the track/thumb height gap, NOT
            from getComputedStyle(thumb).left — apply() writes that same
@@ -3006,6 +3104,7 @@
             dragging = false;
             pointerId = null;
             releasePointer(track, event.pointerId);
+            if (!cancelled) handledPointerAt = performance.now();
             if (cancelled) commit(committed);
             else if (wasDragging) commit(progress() >= 0.5 ? 1 : 0);
             else if (elapsed <= 500 && distance <= 6) commit(committed ? 0 : 1);
@@ -3021,6 +3120,22 @@
         track.addEventListener("keydown", (event) => {
             if (event.key !== " " && event.key !== "Enter") return;
             event.preventDefault();
+            if (event.repeat) return;
+            handledKeyboardAt = performance.now();
+            commit(committed ? 0 : 1);
+        });
+        /* Pointer and keyboard paths commit early for tactile response. Native
+           buttons may emit a follow-up click for those same activations, so
+           ignore only that trusted echo. A semantic/assistive click (with no
+           matching handled input) and HTMLElement.click() remain authoritative
+           activation paths instead of silently doing nothing. */
+        track.addEventListener("click", (event) => {
+            const now = performance.now();
+            const handledPointerClick = event.isTrusted && event.detail > 0
+                && now - handledPointerAt < 1000;
+            const handledKeyboardClick = event.isTrusted && event.detail === 0
+                && now - handledKeyboardAt < 1000;
+            if (handledPointerClick || handledKeyboardClick) return;
             commit(committed ? 0 : 1);
         });
         new ResizeObserver(() => {
@@ -3130,6 +3245,10 @@
            independent spring loops to the same element. */
         liveAll(".glass-switch").forEach((track) => {
             initTactileSwitch(track, (on) => {
+                if (track.id === "lang-toggle") {
+                    window.toggleLanguage?.();
+                    return;
+                }
                 if (track.id === "theme-switch") {
                     setTheme(on ? "light" : "dark");
                     return;
@@ -3193,6 +3312,13 @@
                cost of option 2 against option 1. */
             setCanvasMirror(on) {
                 mirror.enabled = Boolean(on);
+                surfaces.forEach((surface) => {
+                    if (surface.component !== "precision") return;
+                    surface.needsActiveHydration = mirror.enabled
+                        && Boolean(surface.mirrorPairs?.some(([, dst]) => (
+                            dst.width <= 1 || dst.height <= 1
+                        )));
+                });
                 if (mirror.enabled) startMirrorHeartbeat();
                 else stopMirrorHeartbeat();
                 scheduleOpticalSync();
@@ -3200,6 +3326,10 @@
             setMirrorScale(scale) {
                 mirror.scale = clamp(Number(scale) || 0.5, 0.1, 1);
                 scheduleOpticalSync();
+            },
+            setEdgeDebug(on) {
+                if (on) document.documentElement.dataset.glassEdgeDebug = "on";
+                else delete document.documentElement.dataset.glassEdgeDebug;
             },
 
             /* ── tuner surface (tpx-glass-tuner.js) ───────────────────
@@ -3351,6 +3481,17 @@
             get diagnostics() {
                 return {
                     surfaces: surfaces.length,
+                    stageCopies: document.querySelectorAll(".optical-stage-copy").length,
+                    dirtyStages: dirtyStages.size,
+                    surfaceStates: surfaces.map((surface) => ({
+                        component: surface.component,
+                        tier: surface.element.dataset.glassTier || null,
+                        stage: surface.stage?.dataset.stage || null,
+                        copyStage: surface.copyStage?.dataset.stage || null,
+                        sourceWidth: surface.stage?.offsetWidth || 0,
+                        sourceHeight: surface.stage?.offsetHeight || 0,
+                        mirrorNeedsHydration: Boolean(surface.needsActiveHydration),
+                    })),
                     components: surfaces.reduce((acc, s) => {
                         acc[s.component] = (acc[s.component] || 0) + 1;
                         return acc;

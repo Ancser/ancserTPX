@@ -48,8 +48,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-      # 前端 9,333 行沒有任何測試。語法檢查擋不了邏輯錯誤,但擋得住
-      # 「區塊替換把括號吃掉」這類編輯事故,成本幾乎為零。
+      # UI 狀態另由下面的 Chromium job 保護；這個快速 gate 仍先擋住
+      # 「區塊替換把括號吃掉」這類編輯事故。
       # ubuntu runner 本身就帶 node,不需要 setup-node。
       - name: node --check on frontend JS
         run: |
@@ -58,3 +58,34 @@ jobs:
             echo "checking $f"
             node --check "$f"
           done
+
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: pip
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: install app and browser test dependencies
+        run: |
+          pip install -r requirements-dev.txt
+          npm ci
+          node tests/ui/playwright-cli.cjs install --with-deps chromium
+
+      # The Playwright webServer command uses --lifespan off: UI tests must
+      # never start the candle accumulator or the daily shadow-replay task.
+      - name: Chromium UI state tests
+        run: npm run test:ui
+        env:
+          TOPSTEPX_USERNAME: ''
+          TOPSTEPX_API_KEY: ''
+          DISCORD_TOKEN: ''

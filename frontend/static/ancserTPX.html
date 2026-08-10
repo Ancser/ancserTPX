@@ -13,7 +13,7 @@
   ============================================================
 -->
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -22,8 +22,8 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10y&intraarrow=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1">
-    <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10y-glass65">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10y&intraarrow=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4">
+    <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10y-glass71">
 </head>
 <body>
 <!-- SVG filter host used by the production liquid-glass engine. -->
@@ -40,8 +40,14 @@
         <div class="tab" data-tab="live">Live</div>
     </div>
     <div class="header-right">
-        <!-- 1.0.9: EN / 繁中 UI language switch -->
-        <button type="button" id="lang-toggle" class="lang-toggle" onclick="toggleLanguage()" title="Switch UI language">中</button>
+        <!-- One locale authority: toggleLanguage() owns state; this node is only its presentation. -->
+        <button type="button" id="lang-toggle" class="lang-toggle glass-switch topbar-lang" role="switch"
+                aria-checked="false" aria-label="Interface language: English. Switch to Traditional Chinese."
+                data-locale="en" data-stage="switch" title="Switch to Traditional Chinese">
+            <span class="optical-surface switch-thumb lang-thumb" data-optical="switch" aria-hidden="true">
+                <span class="surface-content switch-state-icon lang-glyph">En</span>
+            </span>
+        </button>
         <div class="account-switcher">
             <span class="account-badge" id="account-badge">--</span>
         </div>
@@ -140,15 +146,16 @@
             <div class="form-row">
                 <div class="form-group fx1">
                     <label>MODEL</label>
-                    <select id="strategy-bt" onchange="onStrategyChange('bt')">
-                                                <option value="fade" selected>DAY ZONE Prev-Day VA Revert</option><!-- 1.0.9: TREND 已移除,DAY ZONE 成為預設 -->
-                        <option value="sigma">DISTRIBUTION Rolling Fade</option>
-                        <option value="factor">FACTOR (EMAPMO / KDJMA / MREV)</option>
-                        <option value="momentum">MOMENTUM 日內動能延續</option>
-                        <option value="betafib">BETA FIB 夜盤 Fib 回撤 (觀察用)</option>
-                        <option value="pi">PI 外部訊號 (Discord)</option>
+                    <select id="strategy-bt" onchange="onStrategyChange('bt')" aria-describedby="strategy-desc-bt">
+                        <option value="fade" selected>FADE</option>
+                        <option value="sigma">SIGMA</option>
+                        <option value="factor">FACTOR</option>
+                        <option value="momentum">MOMENTUM</option>
+                        <option value="betafib">BETAFIB</option>
+                        <option value="pi">PI</option>
                         <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
+                    <div id="strategy-desc-bt" class="strategy-description" aria-live="polite">Previous-day value-area mean reversion.</div>
                 </div>
             </div>
             <div id="ml-params-bt" style="display:none;margin-top:12px;">
@@ -389,31 +396,31 @@
                          1.00 = 原始 -0.100;數值越小門檻越鬆、訊號越多。 -->
                     <div class="form-group emapmo-th-row" id="emapmo-th-row-bt">
                         <label>
-                            EMAPMO 門檻 <span class="lbl-hint">(SIG / early)</span>
+                            EMAPMO THRESHOLD <span class="lbl-hint">(SIG / early)</span>
                             <span id="emapmo-th-bt-val" class="emapmo-th-val">-0.100</span>
                         </label>
                         <input type="range" id="emapmo-th-bt" class="emapmo-th-slider"
                                min="0.50" max="1.20" step="0.01" value="1.00"
                                oninput="onEmapmoThresholdChange('bt')">
                         <div class="emapmo-th-scale">
-                            <span>-0.050 鬆</span><span>-0.100 原始</span><span>-0.120 緊</span>
+                            <span>-0.050 LOOSE</span><span>-0.100 ORIGINAL</span><span>-0.120 TIGHT</span>
                         </div>
                     </div>
                 </div>
                 <div id="momentum-params-bt" style="display:none;">
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>觀察窗 <span class="lbl-hint">(開盤後 N 分鐘)</span></label>
+                            <label>OBSERVATION WINDOW <span class="lbl-hint">(N minutes after open)</span></label>
                             <select id="momentum-first-bt">
-                                <option value="15">15 分鐘</option>
-                                <option value="30" selected>30 分鐘 (交集 22/22)</option>
-                                <option value="45">45 分鐘</option>
-                                <option value="60">60 分鐘</option>
-                                <option value="90">90 分鐘</option>
+                                <option value="15">15 minutes</option>
+                                <option value="30" selected>30 minutes (22/22 overlap)</option>
+                                <option value="45">45 minutes</option>
+                                <option value="60">60 minutes</option>
+                                <option value="90">90 minutes</option>
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>進場時 <span class="lbl-hint">(UTC · 17~20 差異極小)</span></label>
+                            <label>ENTRY HOUR <span class="lbl-hint">(UTC · negligible difference at 17–20)</span></label>
                             <select id="momentum-hour-bt">
                                 <option value="17">17:00 UTC</option>
                                 <option value="18" selected>18:00 UTC</option>
@@ -428,29 +435,29 @@
                      青π PF 3.05 $162/筆 · 深藍圈 PF 2.90 $96 · 粉π PF 2.28 $62
                      淡藍圈 PF 1.35 $32 · 紫圈 PF 1.18 $12(後兩者預設排除) -->
                 <div id="pi-params-bt" style="display:none;">
-                    <div class="lbl-hint" style="margin:2px 0 6px;">Discord 推播驅動 · QQQ→MNQ · SPY→MES · 圈圈只有大尺寸、π 只有中小</div>
+                    <div class="lbl-hint" style="margin:2px 0 6px;">Discord alerts · QQQ→MNQ · SPY→MES · circles are large-only; π is medium/small</div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>使用訊號 <span class="lbl-hint">(級別組合)</span></label>
+                            <label>SIGNAL SET <span class="lbl-hint">(level combination)</span></label>
                             <select id="pi-signal-set-bt">
-                                <option value="long_pi_only" selected>只做多 · π 級別 (推薦)</option>
-                                <option value="long_all">只做多 · 全部藍系 (含淡藍圈)</option>
-                                <option value="pi_only">π 級別 + 深藍圈 (含做空)</option>
-                                <option value="pi_strict">只做純 π (青π / 粉π)</option>
-                                <option value="all">全部藍/紫 (含弱訊號)</option>
+                                <option value="long_pi_only" selected>LONG ONLY · π LEVELS (RECOMMENDED)</option>
+                                <option value="long_all">LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)</option>
+                                <option value="pi_only">π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)</option>
+                                <option value="pi_strict">PURE π ONLY (CYAN π / PINK π)</option>
+                                <option value="all">ALL BLUE/PURPLE (INCLUDES WEAK SIGNALS)</option>
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>方向 <span class="lbl-hint">(空方實測淨虧 PF 0.91)</span></label>
+                            <label>DIRECTION <span class="lbl-hint">(tested shorts lose net · PF 0.91)</span></label>
                             <select id="pi-long-only-bt">
-                                <option value="1" selected>只做多 (推薦)</option>
-                                <option value="0">多空皆做</option>
+                                <option value="1" selected>LONG ONLY (RECOMMENDED)</option>
+                                <option value="0">LONG + SHORT</option>
                             </select>
                         </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>訊號過期上限 <span class="lbl-hint">(分鐘 · 超過丟棄)</span></label>
+                            <label>MAX SIGNAL AGE <span class="lbl-hint">(minutes · discard older)</span></label>
                             <select id="pi-max-age-bt">
                                 <option value="2">2</option>
                                 <option value="5" selected>5</option>
@@ -461,12 +468,12 @@
                     </div>
                 </div>
 <div id="betafib-params-bt" style="display:none;">
-                    <div class="lbl-hint" style="margin:2px 0 6px;">白天 RTH 06:30–13:00 PT 量推動腿 → 漲幅落在區間內 → 於進場時窗等回撤</div>
+                    <div class="lbl-hint" style="margin:2px 0 6px;">RTH 06:30–13:00 PT impulse leg → move within range → wait for a pullback during the entry window</div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>漲幅下限 <span class="lbl-hint">(% · 0 = 不篩選)</span></label>
+                            <label>MOVE MIN <span class="lbl-hint">(% · 0 = no filter)</span></label>
                             <select id="betafib-minpct-bt">
-                                <option value="0" selected>0 (不篩選)</option>
+                                <option value="0" selected>0 (NO FILTER)</option>
                                 <option value="0.4">0.4%</option>
                                 <option value="1">1.0%</option>
                                 <option value="1.5">1.5%</option>
@@ -475,9 +482,9 @@
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>漲幅上限 <span class="lbl-hint">(% · 0 = 無上限)</span></label>
+                            <label>MOVE MAX <span class="lbl-hint">(% · 0 = unlimited)</span></label>
                             <select id="betafib-maxpct-bt">
-                                <option value="0" selected>0 (無上限)</option>
+                                <option value="0" selected>0 (UNLIMITED)</option>
                                 <option value="1.5">1.5%</option>
                                 <option value="2">2.0%</option>
                                 <option value="3">3.0%</option>
@@ -488,34 +495,34 @@
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>進場 Fib <span class="lbl-hint">(1.0 = 推動腿終點)</span></label>
+                            <label>ENTRY FIB <span class="lbl-hint">(1.0 = impulse-leg endpoint)</span></label>
                             <select id="betafib-entry-bt">
-                                <option value="0.854">0.854 (極淺)</option>
-                                <option value="0.786">0.786 (94% 夜盤會觸及)</option>
+                                <option value="0.854">0.854 (VERY SHALLOW)</option>
+                                <option value="0.786">0.786 (94% OF OVERNIGHT SESSIONS TOUCH)</option>
                                 <option value="0.764">0.764</option>
                                 <option value="0.618" selected>0.618</option>
                                 <option value="0.5">0.500</option>
-                                <option value="0.382">0.382 (G5 雙商品勝出)</option>
+                                <option value="0.382">0.382 (G5 CROSS-SYMBOL WINNER)</option>
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>Fib 錨點 <span class="lbl-hint">(推動腿怎麼量)</span></label>
+                            <label>FIB ANCHOR <span class="lbl-hint">(how the impulse leg is measured)</span></label>
                             <select id="betafib-anchor-bt">
-                                <option value="hl" selected>擺動低 → 高</option>
-                                <option value="oc">RTH open → close (MES 全崩)</option>
+                                <option value="hl" selected>SWING LOW → HIGH</option>
+                                <option value="oc">RTH OPEN → CLOSE (MES FAILS)</option>
                             </select>
                         </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>進場時窗 <span class="lbl-hint">(PT · 掛單等回撤的時段)</span></label>
+                            <label>ENTRY WINDOW <span class="lbl-hint">(PT · pullback limit-order window)</span></label>
                             <select id="betafib-window-bt">
-                                <option value="" selected>整個夜盤 (1pm → 隔日 6:30am)</option>
+                                <option value="" selected>FULL OVERNIGHT (1pm → next day 6:30am)</option>
                                 <option value="22,1">3pm – 6pm</option>
                                 <option value="22,4">3pm – 9pm</option>
-                                <option value="1,7">6pm – 午夜</option>
-                                <option value="22,7">3pm – 午夜 (ASIA 全段)</option>
-                                <option value="7,13">午夜 – 6am (EURO)</option>
+                                <option value="1,7">6pm – MIDNIGHT</option>
+                                <option value="22,7">3pm – MIDNIGHT (FULL ASIA)</option>
+                                <option value="7,13">MIDNIGHT – 6am (EURO)</option>
                             </select>
                         </div>
                     </div>
@@ -607,10 +614,10 @@
                      (240m PF 2.80)、空單抱越久越差(240m PF 0.79),不能共用。
                      多單用上方的 SL ANCHOR / TP ANCHOR;空單用這裡。 -->
                 <div id="pi-exit-bt" style="display:none;">
-                    <div class="lbl-hint" style="margin:2px 0 6px;">多單沿用上方 SL/TP ANCHOR · 空單獨立設定(抱久會變差)</div>
+                    <div class="lbl-hint" style="margin:2px 0 6px;">Longs use SL/TP ANCHOR above · shorts use independent settings (longer holds perform worse)</div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>空單 SL <span class="lbl-hint">(×atr_blend)</span></label>
+                            <label>SHORT SL <span class="lbl-hint">(×atr_blend)</span></label>
                             <select id="pi-short-sl-bt">
                                 <option value="1.5">1.5</option>
                                 <option value="2">2.0</option>
@@ -619,9 +626,9 @@
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>空單時間出場 <span class="lbl-hint">(分鐘 · 0=關閉)</span></label>
+                            <label>SHORT TIME EXIT <span class="lbl-hint">(minutes · 0=OFF)</span></label>
                             <select id="pi-short-hold-bt">
-                                <option value="0">0 (關閉)</option>
+                                <option value="0">0 (OFF)</option>
                                 <option value="60" selected>60</option>
                                 <option value="120">120</option>
                                 <option value="240">240</option>
@@ -632,7 +639,7 @@
 <div id="betafib-exit-bt" style="display:none;">
                     <div class="form-row" id="betafib-fiblevels-bt" style="display:none;">
                         <div class="form-group fx1">
-                            <label>SL Fib <span class="lbl-hint">(必須 &lt; 進場 fib)</span></label>
+                            <label>SL Fib <span class="lbl-hint">(must be &lt; entry fib)</span></label>
                             <select id="betafib-slfib-bt">
                                 <option value="0.5">0.500</option>
                                 <option value="0.618">0.618</option>
@@ -640,17 +647,17 @@
                                 <option value="0.75" selected>0.750</option>
                                 <option value="0.3">0.300</option>
                                 <option value="0.2">0.200</option>
-                                <option value="0">0 (推動腿起點)</option>
+                                <option value="0">0 (IMPULSE-LEG START)</option>
                             </select>
-                            <span class="lbl-hint" style="color:var(--red);">SL &lt; 進場 &lt; TP,否則 0 筆交易</span>
+                            <span class="lbl-hint validation-hint" style="color:var(--red);">SL &lt; ENTRY &lt; TP, OR 0 TRADES</span>
                         </div>
                         <div class="form-group fx1">
-                            <label>TP Fib <span class="lbl-hint">(必須 &gt; 進場 fib)</span></label>
+                            <label>TP Fib <span class="lbl-hint">(must be &gt; entry fib)</span></label>
                             <select id="betafib-tpfib-bt">
                                 <option value="0.9" selected>0.900</option>
                                 <option value="0.95">0.950</option>
-                                <option value="1">1.000 (推動腿終點)</option>
-                                <option value="1.272">1.272 (延伸)</option>
+                                <option value="1">1.000 (IMPULSE-LEG END)</option>
+                                <option value="1.272">1.272 (EXTENSION)</option>
                             </select>
                         </div>
                     </div>
@@ -660,7 +667,7 @@
                 <div class="form-row">
                                         <div class="form-group fx1">
                         <label>MAX PROFIT
-                            <span class="lbl-hint" id="tp-cap-hint-bt">(單筆獲利上限 · 0=不限)</span>
+                            <span class="lbl-hint" id="tp-cap-hint-bt">(per-trade profit cap · 0=unlimited)</span>
                         </label>
                         <div class="pdpt-row">
                             <input type="range" id="tp-cap-usd-bt" class="cap-profit"
@@ -800,15 +807,16 @@
                 <div class="form-row">
                     <div class="form-group fx1">
                         <label>MODEL</label>
-                        <select id="strategy-live" onchange="onStrategyChange('live')">
-                                                        <option value="fade" selected>DAY ZONE Prev-Day VA Revert</option><!-- 1.0.9: TREND 已移除,DAY ZONE 成為預設 -->
-                            <option value="sigma">DISTRIBUTION Rolling Fade</option>
-                            <option value="factor">FACTOR (EMAPMO / KDJMA / MREV)</option>
-                        <option value="momentum">MOMENTUM 日內動能延續</option>
-                        <option value="betafib">BETA FIB 夜盤 Fib 回撤 (觀察用)</option>
-                        <option value="pi">PI 外部訊號 (Discord)</option>
+                        <select id="strategy-live" onchange="onStrategyChange('live')" aria-describedby="strategy-desc-live">
+                            <option value="fade" selected>FADE</option>
+                            <option value="sigma">SIGMA</option>
+                            <option value="factor">FACTOR</option>
+                            <option value="momentum">MOMENTUM</option>
+                            <option value="betafib">BETAFIB</option>
+                            <option value="pi">PI</option>
                             <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
+                        <div id="strategy-desc-live" class="strategy-description" aria-live="polite">Previous-day value-area mean reversion.</div>
                     </div>
                 </div>
                 <div id="ml-params-live" style="display:none;margin-top:12px;">
@@ -1049,31 +1057,31 @@
                          1.00 = 原始 -0.100;數值越小門檻越鬆、訊號越多。 -->
                     <div class="form-group emapmo-th-row" id="emapmo-th-row-live">
                         <label>
-                            EMAPMO 門檻 <span class="lbl-hint">(SIG / early)</span>
+                            EMAPMO THRESHOLD <span class="lbl-hint">(SIG / early)</span>
                             <span id="emapmo-th-live-val" class="emapmo-th-val">-0.100</span>
                         </label>
                         <input type="range" id="emapmo-th-live" class="emapmo-th-slider"
                                min="0.50" max="1.20" step="0.01" value="1.00"
                                oninput="onEmapmoThresholdChange('live')">
                         <div class="emapmo-th-scale">
-                            <span>-0.050 鬆</span><span>-0.100 原始</span><span>-0.120 緊</span>
+                            <span>-0.050 LOOSE</span><span>-0.100 ORIGINAL</span><span>-0.120 TIGHT</span>
                         </div>
                     </div>
                     </div>
                 <div id="momentum-params-live" style="display:none;">
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>觀察窗 <span class="lbl-hint">(開盤後 N 分鐘)</span></label>
+                            <label>OBSERVATION WINDOW <span class="lbl-hint">(N minutes after open)</span></label>
                             <select id="momentum-first-live">
-                                <option value="15">15 分鐘</option>
-                                <option value="30" selected>30 分鐘 (交集 22/22)</option>
-                                <option value="45">45 分鐘</option>
-                                <option value="60">60 分鐘</option>
-                                <option value="90">90 分鐘</option>
+                                <option value="15">15 minutes</option>
+                                <option value="30" selected>30 minutes (22/22 overlap)</option>
+                                <option value="45">45 minutes</option>
+                                <option value="60">60 minutes</option>
+                                <option value="90">90 minutes</option>
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>進場時 <span class="lbl-hint">(UTC · 17~20 差異極小)</span></label>
+                            <label>ENTRY HOUR <span class="lbl-hint">(UTC · negligible difference at 17–20)</span></label>
                             <select id="momentum-hour-live">
                                 <option value="17">17:00 UTC</option>
                                 <option value="18" selected>18:00 UTC</option>
@@ -1088,29 +1096,29 @@
                      青π PF 3.05 $162/筆 · 深藍圈 PF 2.90 $96 · 粉π PF 2.28 $62
                      淡藍圈 PF 1.35 $32 · 紫圈 PF 1.18 $12(後兩者預設排除) -->
                 <div id="pi-params-live" style="display:none;">
-                    <div class="lbl-hint" style="margin:2px 0 6px;">Discord 推播驅動 · QQQ→MNQ · SPY→MES · 圈圈只有大尺寸、π 只有中小</div>
+                    <div class="lbl-hint" style="margin:2px 0 6px;">Discord alerts · QQQ→MNQ · SPY→MES · circles are large-only; π is medium/small</div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>使用訊號 <span class="lbl-hint">(級別組合)</span></label>
+                            <label>SIGNAL SET <span class="lbl-hint">(level combination)</span></label>
                             <select id="pi-signal-set-live">
-                                <option value="long_pi_only" selected>只做多 · π 級別 (推薦)</option>
-                                <option value="long_all">只做多 · 全部藍系 (含淡藍圈)</option>
-                                <option value="pi_only">π 級別 + 深藍圈 (含做空)</option>
-                                <option value="pi_strict">只做純 π (青π / 粉π)</option>
-                                <option value="all">全部藍/紫 (含弱訊號)</option>
+                                <option value="long_pi_only" selected>LONG ONLY · π LEVELS (RECOMMENDED)</option>
+                                <option value="long_all">LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)</option>
+                                <option value="pi_only">π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)</option>
+                                <option value="pi_strict">PURE π ONLY (CYAN π / PINK π)</option>
+                                <option value="all">ALL BLUE/PURPLE (INCLUDES WEAK SIGNALS)</option>
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>方向 <span class="lbl-hint">(空方實測淨虧 PF 0.91)</span></label>
+                            <label>DIRECTION <span class="lbl-hint">(tested shorts lose net · PF 0.91)</span></label>
                             <select id="pi-long-only-live">
-                                <option value="1" selected>只做多 (推薦)</option>
-                                <option value="0">多空皆做</option>
+                                <option value="1" selected>LONG ONLY (RECOMMENDED)</option>
+                                <option value="0">LONG + SHORT</option>
                             </select>
                         </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>訊號過期上限 <span class="lbl-hint">(分鐘 · 超過丟棄)</span></label>
+                            <label>MAX SIGNAL AGE <span class="lbl-hint">(minutes · discard older)</span></label>
                             <select id="pi-max-age-live">
                                 <option value="2">2</option>
                                 <option value="5" selected>5</option>
@@ -1121,12 +1129,12 @@
                     </div>
                 </div>
 <div id="betafib-params-live" style="display:none;">
-                    <div class="lbl-hint" style="margin:2px 0 6px;">白天 RTH 06:30–13:00 PT 量推動腿 → 漲幅落在區間內 → 於進場時窗等回撤</div>
+                    <div class="lbl-hint" style="margin:2px 0 6px;">RTH 06:30–13:00 PT impulse leg → move within range → wait for a pullback during the entry window</div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>漲幅下限 <span class="lbl-hint">(% · 0 = 不篩選)</span></label>
+                            <label>MOVE MIN <span class="lbl-hint">(% · 0 = no filter)</span></label>
                             <select id="betafib-minpct-live">
-                                <option value="0" selected>0 (不篩選)</option>
+                                <option value="0" selected>0 (NO FILTER)</option>
                                 <option value="0.4">0.4%</option>
                                 <option value="1">1.0%</option>
                                 <option value="1.5">1.5%</option>
@@ -1135,9 +1143,9 @@
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>漲幅上限 <span class="lbl-hint">(% · 0 = 無上限)</span></label>
+                            <label>MOVE MAX <span class="lbl-hint">(% · 0 = unlimited)</span></label>
                             <select id="betafib-maxpct-live">
-                                <option value="0" selected>0 (無上限)</option>
+                                <option value="0" selected>0 (UNLIMITED)</option>
                                 <option value="1.5">1.5%</option>
                                 <option value="2">2.0%</option>
                                 <option value="3">3.0%</option>
@@ -1148,34 +1156,34 @@
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>進場 Fib <span class="lbl-hint">(1.0 = 推動腿終點)</span></label>
+                            <label>ENTRY FIB <span class="lbl-hint">(1.0 = impulse-leg endpoint)</span></label>
                             <select id="betafib-entry-live">
-                                <option value="0.854">0.854 (極淺)</option>
-                                <option value="0.786">0.786 (94% 夜盤會觸及)</option>
+                                <option value="0.854">0.854 (VERY SHALLOW)</option>
+                                <option value="0.786">0.786 (94% OF OVERNIGHT SESSIONS TOUCH)</option>
                                 <option value="0.764">0.764</option>
                                 <option value="0.618" selected>0.618</option>
                                 <option value="0.5">0.500</option>
-                                <option value="0.382">0.382 (G5 雙商品勝出)</option>
+                                <option value="0.382">0.382 (G5 CROSS-SYMBOL WINNER)</option>
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>Fib 錨點 <span class="lbl-hint">(推動腿怎麼量)</span></label>
+                            <label>FIB ANCHOR <span class="lbl-hint">(how the impulse leg is measured)</span></label>
                             <select id="betafib-anchor-live">
-                                <option value="hl" selected>擺動低 → 高</option>
-                                <option value="oc">RTH open → close (MES 全崩)</option>
+                                <option value="hl" selected>SWING LOW → HIGH</option>
+                                <option value="oc">RTH OPEN → CLOSE (MES FAILS)</option>
                             </select>
                         </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>進場時窗 <span class="lbl-hint">(PT · 掛單等回撤的時段)</span></label>
+                            <label>ENTRY WINDOW <span class="lbl-hint">(PT · pullback limit-order window)</span></label>
                             <select id="betafib-window-live">
-                                <option value="" selected>整個夜盤 (1pm → 隔日 6:30am)</option>
+                                <option value="" selected>FULL OVERNIGHT (1pm → next day 6:30am)</option>
                                 <option value="22,1">3pm – 6pm</option>
                                 <option value="22,4">3pm – 9pm</option>
-                                <option value="1,7">6pm – 午夜</option>
-                                <option value="22,7">3pm – 午夜 (ASIA 全段)</option>
-                                <option value="7,13">午夜 – 6am (EURO)</option>
+                                <option value="1,7">6pm – MIDNIGHT</option>
+                                <option value="22,7">3pm – MIDNIGHT (FULL ASIA)</option>
+                                <option value="7,13">MIDNIGHT – 6am (EURO)</option>
                             </select>
                         </div>
                     </div>
@@ -1267,10 +1275,10 @@
                      (240m PF 2.80)、空單抱越久越差(240m PF 0.79),不能共用。
                      多單用上方的 SL ANCHOR / TP ANCHOR;空單用這裡。 -->
                 <div id="pi-exit-live" style="display:none;">
-                    <div class="lbl-hint" style="margin:2px 0 6px;">多單沿用上方 SL/TP ANCHOR · 空單獨立設定(抱久會變差)</div>
+                    <div class="lbl-hint" style="margin:2px 0 6px;">Longs use SL/TP ANCHOR above · shorts use independent settings (longer holds perform worse)</div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>空單 SL <span class="lbl-hint">(×atr_blend)</span></label>
+                            <label>SHORT SL <span class="lbl-hint">(×atr_blend)</span></label>
                             <select id="pi-short-sl-live">
                                 <option value="1.5">1.5</option>
                                 <option value="2">2.0</option>
@@ -1279,9 +1287,9 @@
                             </select>
                         </div>
                         <div class="form-group fx1">
-                            <label>空單時間出場 <span class="lbl-hint">(分鐘 · 0=關閉)</span></label>
+                            <label>SHORT TIME EXIT <span class="lbl-hint">(minutes · 0=OFF)</span></label>
                             <select id="pi-short-hold-live">
-                                <option value="0">0 (關閉)</option>
+                                <option value="0">0 (OFF)</option>
                                 <option value="60" selected>60</option>
                                 <option value="120">120</option>
                                 <option value="240">240</option>
@@ -1292,7 +1300,7 @@
 <div id="betafib-exit-live" style="display:none;">
                     <div class="form-row" id="betafib-fiblevels-live" style="display:none;">
                         <div class="form-group fx1">
-                            <label>SL Fib <span class="lbl-hint">(必須 &lt; 進場 fib)</span></label>
+                            <label>SL Fib <span class="lbl-hint">(must be &lt; entry fib)</span></label>
                             <select id="betafib-slfib-live">
                                 <option value="0.5">0.500</option>
                                 <option value="0.618">0.618</option>
@@ -1300,17 +1308,17 @@
                                 <option value="0.75" selected>0.750</option>
                                 <option value="0.3">0.300</option>
                                 <option value="0.2">0.200</option>
-                                <option value="0">0 (推動腿起點)</option>
+                                <option value="0">0 (IMPULSE-LEG START)</option>
                             </select>
-                            <span class="lbl-hint" style="color:var(--red);">SL &lt; 進場 &lt; TP,否則 0 筆交易</span>
+                            <span class="lbl-hint validation-hint" style="color:var(--red);">SL &lt; ENTRY &lt; TP, OR 0 TRADES</span>
                         </div>
                         <div class="form-group fx1">
-                            <label>TP Fib <span class="lbl-hint">(必須 &gt; 進場 fib)</span></label>
+                            <label>TP Fib <span class="lbl-hint">(must be &gt; entry fib)</span></label>
                             <select id="betafib-tpfib-live">
                                 <option value="0.9" selected>0.900</option>
                                 <option value="0.95">0.950</option>
-                                <option value="1">1.000 (推動腿終點)</option>
-                                <option value="1.272">1.272 (延伸)</option>
+                                <option value="1">1.000 (IMPULSE-LEG END)</option>
+                                <option value="1.272">1.272 (EXTENSION)</option>
                             </select>
                         </div>
                     </div>
@@ -1320,7 +1328,7 @@
                 <div class="form-row">
                                         <div class="form-group fx1">
                         <label>MAX PROFIT
-                            <span class="lbl-hint" id="tp-cap-hint-live">(單筆獲利上限 · 0=不限)</span>
+                            <span class="lbl-hint" id="tp-cap-hint-live">(per-trade profit cap · 0=unlimited)</span>
                         </label>
                         <div class="pdpt-row">
                             <input type="range" id="tp-cap-usd-live" class="cap-profit"
@@ -1492,8 +1500,8 @@
             <div id="signal-legend" style="position:absolute;left:8px;bottom:34px;z-index:6;pointer-events:none;background:rgba(8,9,13,0.72);border:1px solid var(--border);border-radius:4px;padding:5px 9px;font-family:'IBM Plex Mono',monospace;font-size:9px;line-height:1.8;color:var(--text2);backdrop-filter:blur(4px);letter-spacing:0.3px;">
                 <div data-legend-layer="emapmo"><span style="color:rgb(56,189,248);">▲</span><span style="color:rgb(168,85,247);">▼</span> EMAPMO LONG/SHORT</div>
                 <!-- PI:π 級(青多/粉空)是策略真的在吃的訊號,圈級只是參考 -->
-                <div data-legend-layer="pi"><span style="color:rgb(34,211,238);">π</span><span style="color:rgb(244,114,182);">π</span> PI 青/粉 LONG/SHORT</div>
-                <div data-legend-layer="pi"><span style="color:rgba(37,99,235,0.95);font-size:13px;">●</span><span style="color:rgba(125,211,252,0.9);font-size:9px;">●</span> PI 深藍=大威力 / 淡藍=小威力</div>
+                <div data-legend-layer="pi"><span style="color:rgb(34,211,238);">π</span><span style="color:rgb(244,114,182);">π</span> PI CYAN/PINK LONG/SHORT</div>
+                <div data-legend-layer="pi"><span style="color:rgba(37,99,235,0.95);font-size:13px;">●</span><span style="color:rgba(125,211,252,0.9);font-size:9px;">●</span> PI DARK BLUE=HIGH POWER / LIGHT BLUE=LOW POWER</div>
                 <div data-legend-layer="mrev"><span style="color:rgba(56,189,248,0.85);">●</span><span style="color:rgba(168,85,247,0.85);">●</span> MREV LONG/SHORT</div>
                 <div data-legend-layer="kdjma"><span style="color:rgba(250,204,21,0.9);">●</span><span style="color:rgba(244,63,94,0.9);">●</span> KDJMA LONG/SHORT</div>
                 <!-- 1.0.9: INTRAMOM 用白色箭頭,與三個因子的顏色明確區隔 -->
@@ -1501,7 +1509,7 @@
                 <div data-legend-layer="trades"><span style="color:#00e5a0;">↑</span><span style="color:#ff4060;">↓</span> BACKTEST ENTRY WIN/LOSS · <span style="color:#ffa726;">↑</span> LIVE</div>
             </div>
 
-            <!-- 1.0.9: 圖表快捷鈕 — ⌖ 自動居中(鎖定縱向比例,跟隨中央 EMA200) / ≫ 跳到最新 -->
+            <!-- 1.0.9: 圖表快捷鈕 — ≫ 跳到最新;1.0.10:圖層開關。 -->
             <!-- 1.0.10: 圖層開關彈窗。開關用的是玻璃皮膚同一顆 .glass-switch
                  元件(和 light/dark 那顆同一套彈簧動畫),不是另做一個外觀相似的。
 
@@ -1509,11 +1517,13 @@
                  每個 optical-surface 會為了折射鏡建一份整頁 DOM 複本,12 顆
                  開關 = 12 份複本,實測直接把 renderer 卡死。少掉的只有拖曳
                  當下那層玻璃折射,靜止外觀、綠色軌道、彈簧滑動全部照舊。 -->
-            <div id="chart-layer-pop" class="hidden">
+            <div id="chart-layer-pop" class="chart-layer-pop hidden"
+                 data-glass-scene="chart" data-glass-tier="1" data-glass-material="popup">
                 <div class="layer-title">CHART LAYERS</div>
                 <div class="layer-row">
                     <span class="layer-name">EMAPMO ▲▼</span>
                     <button type="button" role="switch" class="glass-switch on" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-emapmo" aria-checked="true">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1521,8 +1531,9 @@
                             onclick="onLayerProxy('emapmo')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">PI π / 圈</span>
+                    <span class="layer-name">PI π / CIRCLES</span>
                     <button type="button" role="switch" class="glass-switch on" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-pi" aria-checked="true">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1530,8 +1541,9 @@
                             onclick="onLayerProxy('pi')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">交易框 SL/TP</span>
+                    <span class="layer-name">TRADE BOXES SL/TP</span>
                     <button type="button" role="switch" class="glass-switch on" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-trades" aria-checked="true">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1539,8 +1551,9 @@
                             onclick="onLayerProxy('trades')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">MREV 泡泡</span>
+                    <span class="layer-name">MREV BUBBLES</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-mrev" aria-checked="false">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1548,8 +1561,9 @@
                             onclick="onLayerProxy('mrev')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">KDJMA 圓點</span>
+                    <span class="layer-name">KDJMA DOTS</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-kdjma" aria-checked="false">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1557,8 +1571,9 @@
                             onclick="onLayerProxy('kdjma')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">INTRAMOM 箭頭</span>
+                    <span class="layer-name">INTRAMOM ARROWS</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-intramom" aria-checked="false">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1566,8 +1581,9 @@
                             onclick="onLayerProxy('intramom')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">VAH/VAL/POC 線</span>
+                    <span class="layer-name">VAH/VAL/POC LINES</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-zonelines" aria-checked="false">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1577,6 +1593,7 @@
                 <div class="layer-row">
                     <span class="layer-name">SESSION VA</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-sessva" aria-checked="false">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1584,8 +1601,9 @@
                             onclick="onLayerProxy('sessva')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">BETAFIB 水位</span>
+                    <span class="layer-name">BETAFIB LEVELS</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-fib" aria-checked="false">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1593,8 +1611,9 @@
                             onclick="onLayerProxy('fib')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">DAY ZONE 水位</span>
+                    <span class="layer-name">DAY ZONE LEVELS</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                            data-glass-material="local" data-glass-sampling="material-only"
                             data-switch-proxy="lp-dayzone" aria-checked="false">
                         <span class="switch-thumb" aria-hidden="true"></span>
                     </button>
@@ -1604,11 +1623,10 @@
             </div>
 
             <div id="chart-quick-btns">
-                <button id="btn-auto-center" class="chart-sq-btn" title="Auto-center: lock the current vertical scale and follow the center candle EMA200 while panning horizontally; drag vertically to adjust the offset (click again to disable)" onclick="toggleAutoCenter()">⌖</button>
                 <button id="btn-scroll-latest" class="chart-sq-btn" title="Jump to the latest candle" onclick="scrollToLatest()">≫</button>
                 <!-- 1.0.10: 圖層開關。放進 #chart-quick-btns 之內,skinChartButtons()
                      就會自動把它一起轉成圓形玻璃 fab-action。 -->
-                <button id="chart-layer-btn" class="chart-sq-btn" title="圖層" onclick="toggleChartLayerMenu()">⧉</button>
+                <button id="chart-layer-btn" class="chart-sq-btn" title="Layers" aria-label="Layers" onclick="toggleChartLayerMenu()">⧉</button>
             </div>
 
         </div>
@@ -1752,10 +1770,10 @@
 </div>
 
     <script src="/static/topstep-eval.js?v=1.0.9k-topstep1"></script>
-    <script src="/static/ancserTPX.js?v=1.0.10y&intraarrow=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.10y&intraarrow=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&snap1=1&regroup1=1&runlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4"></script>
     <!-- Production handlers bind first; the skin then moves those same nodes. -->
-    <script src="/static/tpx-glass-skin.js?v=1.0.9-glass65"></script>
-    <script src="/static/tpx-glass.js?v=1.0.10y-glass65"></script>
+    <script src="/static/tpx-glass-skin.js?v=1.0.9-glass67"></script>
+    <script src="/static/tpx-glass.js?v=1.0.10y-glass71"></script>
     <!-- Dev tool: optics tuner dropdown under the avatar. Safe to remove. -->
     <script src="/static/tpx-glass-tuner.js?v=1.0.9-glass65"></script>
 </body>

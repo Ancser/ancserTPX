@@ -180,6 +180,11 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Node browser-test dependencies (recreated by npm ci).
+/node_modules/
+/.playwright-browsers/
+/.playwright-output/
+
 # ─── /data retention policy (1.0.9) ──────────────────────────────────────────
 # Keep ONLY the accumulated candle store under /data; ignore everything else so
 # backtest / sweep / ML / live-state / trades / ACCOUNT data are never uploaded.

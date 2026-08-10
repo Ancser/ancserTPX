@@ -232,7 +232,23 @@
 .optical-stage-copy .chart-quick-btns-shape,
 .optical-stage-copy [data-clone-display="flex"] { display: flex !important; }
 
-.optical-stage-copy [data-optical] { visibility: hidden !important; }
+/* A normal surface never samples another Glass control. Precision is the
+   single Tier-2 compositor: its source may show Tier-1 native/fallback
+   material, but never another Precision surface. cloneSourceTree still
+   prunes every nested .optical-layer, so this cannot recurse. */
+.optical-stage-copy [data-optical],
+.optical-stage-copy [data-glass-tier="2"],
+.optical-stage-copy:not(.optical-tier-2-source) [data-glass-tier="1"] {
+    visibility: hidden !important;
+}
+
+.optical-stage-copy.optical-tier-2-source [data-glass-tier="1"] {
+    visibility: visible !important;
+}
+
+.optical-stage-copy.optical-tier-2-source [data-glass-tier="2"] {
+    visibility: hidden !important;
+}
 .optical-background-copy .control-source-content { visibility: hidden !important; }
 .optical-content-copy * { visibility: hidden !important; }
 
@@ -539,6 +555,12 @@
     pointer-events: none;               /* never eat the chart crosshair */
     will-change: transform, left, top;
 }
+
+/* Precision is visual composition only. `pointer-events:none` on the root is
+   not inherited by descendants, so interactive nodes inside its stage clone
+   could still become hit targets after the Lens appeared over Tier-1 UI. */
+.chart-lens,
+.chart-lens * { pointer-events: none !important; }
 
 /* Shared lens behaviour for the dock bubble and segment indicator.
    Idle uses backdrop-filter (cheap, and the only thing that works
@@ -867,12 +889,6 @@
     transition: transform 80ms linear;
 }
 
-/* Active state for the pinning actions, so ⌖ / ≫ can latch. */
-.fab-action.latched {
-    border-color: var(--green);
-    color: var(--green);
-}
-
 /* ── 3f. Fluid slider ─────────────────────────────────────────────
    Ideal #5. Every range input becomes this. Track/thumb proportions
    follow the demo (16px track, thumb ~1.87× track height) at TPX
@@ -1094,7 +1110,63 @@
     box-shadow: var(--glass-relief);
 }
 
+/* Compact popup switches deliberately have no nested optical surface: ten
+   full-stage clones here would overwhelm the renderer. Reproduce the standard
+   optical switch's 40% centre shrink with one local material layer instead.
+   The thumb supplies the vacated page-colour ring; ::after is the sampled
+   gray/green centre at 60% size. This stays CSS-only in Tier 1 and therefore
+   remains visible inside Precision without recursive Glass. */
+.glass-switch[data-glass-sampling="material-only"] .switch-thumb::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border-radius: inherit;
+    background: var(--switch-track-color);
+    opacity: 0;
+    transform: scale(0.60);
+    pointer-events: none;
+    transition: opacity 70ms linear, background 140ms linear;
+}
+
+.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb {
+    background: var(--bg);
+    /* Proportional compact relief: do not apply the full FAB/Lens edge to a
+       22px-high thumb, where it would swallow the visible centre. */
+    box-shadow:
+        0 1px 2px rgb(0 0 0 / 0.30),
+        inset 0 0 0 1px rgb(var(--cream-rgb) / 0.12);
+}
+
+.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb::after {
+    opacity: 1;
+}
+
 .glass-switch.interacting .switch-thumb .optical-layer { opacity: 1; }
+
+/* Language/theme state marks are presentation inside the existing thumb,
+   never another optical surface. Hide them for the full press + spring travel
+   so the refraction/shrink reads cleanly, then restore them after settle. */
+.switch-thumb > .switch-state-icon {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    opacity: 1;
+    pointer-events: none;
+    transition: opacity 70ms linear;
+}
+
+.glass-switch.interacting .switch-thumb > .switch-state-icon { opacity: 0; }
+
+.theme-state-icon {
+    color: #20242b;
+    font-family: 'Segoe UI Symbol', 'Noto Sans Symbols 2', sans-serif;
+    font-size: 0.8333rem;
+    font-weight: 700;
+    line-height: 1;
+}
 
 /* ── 3h. Skin mode ────────────────────────────────────────────────
    Applies when tpx-glass-skin.js has transformed the real ancserTPX
@@ -1326,12 +1398,16 @@
     gap: 0.625rem;                      /* 15px */
 }
 
-.topbar-theme {
+.topbar-theme,
+.glass-topbar .topbar-lang {
     width: 4.25rem;                     /* 102px */
+    min-width: 4.25rem;
     height: 1.75rem;                    /* 42px */
+    padding: 0;
 }
 
-.topbar-theme .switch-thumb {
+.topbar-theme .switch-thumb,
+.glass-topbar .topbar-lang .switch-thumb {
     left: 0.125rem;                     /* 3px */
     top: 0.125rem;
     width: 2rem;                        /* 48px */
@@ -1421,7 +1497,8 @@
     .fab-button .surface-content,
     .dock-bubble,
     .segment-indicator,
-    .switch-thumb { transition-duration: 1ms; }
+    .switch-thumb,
+    .switch-state-icon { transition-duration: 1ms; }
 }
 
 /* ── Research fog ─────────────────────────────────────────────────
@@ -1460,8 +1537,8 @@
 .glass-tuner .tuner-trigger {
     display: grid;
     place-items: center;
-    width: 1.75rem;                     /* 42px, matches .account-orb */
-    height: 1.75rem;
+    width: 2.625rem;                    /* 63px, exact .account-orb geometry */
+    height: 2.625rem;
     border: 1px solid var(--glass-rim);
     border-radius: 999px;
     background: var(--glass-tint);
@@ -1690,23 +1767,9 @@
     .sidebar-fog { display: none; }
 }
 
-/* 1.0.10: 語言切換搬進玻璃頂欄(先前被 skin 直接 remove 掉)。
-   外觀對齊旁邊的 theme switch,不搶視覺重心。 */
+/* The original locale node is now a real tactile Glass switch. Geometry and
+   material come from .glass-switch plus the shared topbar rules above; this
+   hook only preserves its place in the flex row. */
 .glass-topbar .topbar-lang {
     flex: none;
-    min-width: 2.25rem;
-    height: 1.75rem;
-    padding: 0 0.5rem;
-    border: 1px solid var(--glass-rim);
-    border-radius: 999px;
-    background: var(--glass-tint);
-    color: var(--text2);
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 0.6667rem;
-    font-weight: 600;
-    letter-spacing: 0.0417rem;
-    cursor: pointer;
-    backdrop-filter: blur(11px) saturate(1.12);
-    -webkit-backdrop-filter: blur(11px) saturate(1.12);
 }
-.glass-topbar .topbar-lang:hover { color: var(--text); border-color: var(--cyan); }

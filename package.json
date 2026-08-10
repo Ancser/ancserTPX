@@ -1,0 +1,12 @@
+{
+  "name": "ancsertpx-ui-tests",
+  "private": true,
+  "scripts": {
+    "test:ui": "node tests/ui/playwright-cli.cjs test",
+    "test:ui:install": "node tests/ui/playwright-cli.cjs install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "lightweight-charts": "4.1.3"
+  }
+}

@@ -185,10 +185,11 @@
         // Right cluster: language + theme switch sit immediately left of the orb.
         const right = el("div", "topbar-right");
 
-        // 1.0.10 BUG FIX:原本這裡是 `#lang-toggle.remove()` —— 套上玻璃皮膚
-        // 就再也切不了語言。皮膚是外觀,不該拿掉功能。
-        // 把原本那顆按鈕**搬過來**而不是複製一個:onclick="toggleLanguage()"
-        // 與 i18n 的 DOM walker 都認這個 id,複製會變成兩個真相。
+        // Keep one authoritative locale control. Move the existing
+        // #lang-toggle instead of cloning it: applyLanguage()/toggleLanguage()
+        // and the tactile Glass controller must all update this same node.
+        // The skin runs before that controller, so it initializes normally
+        // after the node reaches its final topbar location.
         const lang = byId("lang-toggle");
         if (lang) {
             lang.classList.add("topbar-lang");
@@ -199,7 +200,14 @@
         });
         themeTrack.id = "theme-switch";
         themeTrack.dataset.stage = "switch";
-        themeTrack.appendChild(opticalSpan("switch-thumb", "switch"));
+        const themeThumb = opticalSpan("switch-thumb", "switch");
+        const themeIcon = el(
+            "span", "surface-content switch-state-icon theme-state-icon"
+        );
+        themeIcon.id = "theme-icon";
+        themeIcon.textContent = "☾";
+        themeThumb.appendChild(themeIcon);
+        themeTrack.appendChild(themeThumb);
         right.appendChild(themeTrack);
         right.appendChild(account);
         topbar.appendChild(right);
@@ -431,7 +439,6 @@
             button.classList.add("optical-surface", "fab-action");
             button.dataset.optical = "fab";
             button.dataset.fabAction = String(index);
-            if (button.id === "btn-auto-center") button.dataset.fabLatch = "1";
             const content = el("span", "surface-content");
             content.textContent = button.textContent.trim();
             button.textContent = "";

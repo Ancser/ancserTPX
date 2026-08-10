@@ -524,6 +524,66 @@ function normalizeStrategyName(value) {
     return 'factor';
 }
 
+// Stable strategy identity is deliberately separate from localized explanation.
+// Values stay unchanged because they are part of preset and API compatibility.
+const STRATEGY_PRESENTATION = Object.freeze({
+    fade: {
+        displayName: 'FADE',
+        description: {
+            en: 'Previous-day value-area mean reversion.',
+            zh: '前一交易日價值區均值回歸。',
+        },
+    },
+    sigma: {
+        displayName: 'SIGMA',
+        description: {
+            en: 'Rolling-distribution resting fade.',
+            zh: '滾動分佈的靜置限價回歸。',
+        },
+    },
+    factor: {
+        displayName: 'FACTOR',
+        description: {
+            en: 'EMAPMO / KDJMA / MREV factor signals.',
+            zh: 'EMAPMO / KDJMA / MREV 因子訊號。',
+        },
+    },
+    momentum: {
+        displayName: 'MOMENTUM',
+        description: {
+            en: 'Intraday momentum continuation.',
+            zh: '日內動能延續。',
+        },
+    },
+    betafib: {
+        displayName: 'BETAFIB',
+        description: {
+            en: 'Overnight Fibonacci retracement (observation only).',
+            zh: '夜盤 Fibonacci 回撤(觀察用)。',
+        },
+    },
+    pi: {
+        displayName: 'PI',
+        description: {
+            en: 'External Discord signal routing.',
+            zh: '外部 Discord 訊號路由。',
+        },
+    },
+});
+
+function strategyPresentation(value) {
+    return STRATEGY_PRESENTATION[normalizeStrategyName(value)] || STRATEGY_PRESENTATION.factor;
+}
+
+function syncStrategyDescription(mode) {
+    const select = document.getElementById('strategy-' + mode);
+    const target = document.getElementById('strategy-desc-' + mode);
+    if (!select || !target) return;
+    const meta = strategyPresentation(select.value);
+    const lang = (typeof UI_LANG !== 'undefined' && UI_LANG === 'zh') ? 'zh' : 'en';
+    target.textContent = meta.description[lang];
+}
+
 function _setStrategySelect(mode, strategy) {
     const normalized = normalizeStrategyName(strategy);
     const el = document.getElementById('strategy-' + mode);
@@ -535,6 +595,7 @@ function _setStrategySelect(mode, strategy) {
             el.appendChild(opt);
         }
         el.value = normalized;
+        syncStrategyDescription(mode);
     }
     if (!_appliedStrategyParamsByMode[mode]) {
         _appliedStrategyParamsByMode[mode] = Object.assign({}, DEFAULT_STRATEGY_PARAMS);
@@ -575,14 +636,7 @@ function reconcilePresetStrategyForDispatch(mode, params, context) {
 }
 
 function strategyDisplayName(value) {
-    const v = normalizeStrategyName(value);
-    if (v === 'fade') return 'DAY ZONE';
-    if (v === 'pi') return 'PI';
-    if (v === 'sigma') return 'DISTRIBUTION';
-    if (v === 'factor') return 'FACTOR';
-    if (v === 'momentum') return 'MOMENTUM';
-    if (v === 'betafib') return 'BETA FIB';
-    return 'FACTOR';   // 1.0.9: TREND 已移除,未知值顯示為預設策略
+    return strategyPresentation(value).displayName;
 }
 
 function strategyIdPrefix(kind) {
@@ -793,7 +847,7 @@ function _factorRiskOptionList(rule, kind) {
     // 1.0.10: FIB LEVEL 的 SL 不是倍數,而是 fib 層級本身(由 SL fib 那個下拉決定),
     // 所以 SL INPUT 在此模式下沒有意義 —— 給一個明確的佔位而不是誤導性的 ATR 倍數。
     if (rule === 'fib') {
-        return [['0', '由 SL fib 決定']];
+        return [['0', t('Determined by SL fib')]];
     }
     // DAILY ATR 與 ATR/ATR BLEND 同樣是倍數,共用同一組
     return [['1', '1 x ATR'], ['1.5', '1.5 x ATR'], ['2', '2 x ATR'], ['2.5', '2.5 x ATR'], ['3', '3 x ATR']];
@@ -1550,15 +1604,19 @@ function isFixedPreset(name) {
     return Array.isArray(_presetsCache.fixed_presets) && _presetsCache.fixed_presets.includes(name);
 }
 
-const PRESET_MODEL_ORDER = ['TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO', 'FACTOR'];
+const PRESET_MODEL_ORDER = [
+    'FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI',
+    // Historical names remain sortable and parseable; new names never emit them.
+    'TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO', 'BETA FIB',
+];
 
 function _presetNameMeta(name) {
     const raw = String(name || '');
     const fixed = /\s+\*$/.test(raw);
     const s = raw.replace(/\s+\*$/, '').replace(/^SWEEP\s+/i, '').trim();
-    const compactDated = s.match(/^(\d{4})\s+(TREND|DAY ZONE|DISTRIBUTION|PMO|FACTOR)\s+#(\d+)\s*(.*)$/i);
-    const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(TREND|DAY ZONE|DISTRIBUTION|PMO|FACTOR)\s+#(\d+)\s*(.*)$/i);
-    const legacy = s.match(/^(TREND|DAY ZONE|DISTRIBUTION|PMO|FACTOR)\s+#(\d+)\s*(.*)$/i);
+    const compactDated = s.match(/^(\d{4})\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const legacy = s.match(/^(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
     if (compactDated) {
         return {
             fixed,
@@ -1642,16 +1700,17 @@ function _namingDatePrefix(d) {
 }
 
 function _namingModelFromParams(params) {
-    const strategy = normalizeStrategyName((params || {}).strategy);
-    if (strategy === 'fade') return 'DAY ZONE';
-    if (strategy === 'sigma') return 'DISTRIBUTION';
-    if (strategy === 'factor') return 'FACTOR';
-    return 'TREND';
+    return strategyDisplayName((params || {}).strategy);
 }
 
 function _normalizeNamingModel(model) {
     const value = String(model || '').trim().toUpperCase();
-    return ['TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO', 'FACTOR'].includes(value) ? value : 'TREND';
+    if (['FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI'].includes(value)) return value;
+    if (value === 'DAY ZONE') return 'FADE';
+    if (value === 'DISTRIBUTION') return 'SIGMA';
+    if (value === 'BETA FIB') return 'BETAFIB';
+    if (value === 'TREND' || value === 'PMO') return 'FACTOR';
+    return 'FACTOR';
 }
 
 function _sanitizePresetPurpose(value, fallback) {
@@ -2300,17 +2359,87 @@ document.addEventListener('click', (e) => {
     }
 });
 
-// -- Param help dots + hover tooltips (restored from 1.0.6, + ML) --
+// -- Compact, accessible parameter help ---------------------------------
 
-function addHelpDot(label, tip) {
-    if (!label || !tip || label.querySelector('.help-dot')) return;
-    const dot = document.createElement('span');
+let _activeHelpDot = null;
+let _inlineHelpSeq = 0;
+
+function _updateHelpDotLabel(dot) {
+    if (!dot) return;
+    dot.setAttribute('aria-label', UI_LANG === 'zh' ? '顯示參數說明' : 'Show parameter help');
+    dot.title = UI_LANG === 'zh' ? '參數說明' : 'Parameter help';
+}
+
+function _configureHelpDot(dot) {
+    if (!dot || dot.dataset.helpReady === 'true') return dot;
+    dot.dataset.helpReady = 'true';
+    dot.addEventListener('mouseenter', () => showHelpTooltip(dot));
+    dot.addEventListener('mouseleave', () => hideHelpTooltip(false));
+    dot.addEventListener('focus', () => showHelpTooltip(dot));
+    dot.addEventListener('blur', () => hideHelpTooltip(false));
+    dot.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (_activeHelpDot === dot && dot.dataset.helpPinned === 'true') {
+            closeHelpTooltip();
+            return;
+        }
+        dot.dataset.helpPinned = 'true';
+        showHelpTooltip(dot);
+    });
+    dot.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        closeHelpTooltip();
+    });
+    _updateHelpDotLabel(dot);
+    return dot;
+}
+
+function _newHelpDot() {
+    const dot = document.createElement('button');
+    dot.type = 'button';
     dot.className = 'help-dot';
     dot.textContent = '?';
-    dot.setAttribute('data-tip', tip);
-    dot.addEventListener('mouseenter', () => showHelpTooltip(dot));
-    dot.addEventListener('mouseleave', hideHelpTooltip);
-    label.appendChild(dot);
+    dot.setAttribute('aria-expanded', 'false');
+    dot.setAttribute('aria-describedby', 'global-help-tooltip');
+    return _configureHelpDot(dot);
+}
+
+function _localizedHelpTip(tip) {
+    if (tip && typeof tip === 'object') {
+        return {
+            en: String(tip.en || tip.zh || '').trim(),
+            zh: String(tip.zh || tip.en || '').trim(),
+        };
+    }
+    const value = String(tip || '').trim();
+    const splitAt = value.indexOf('\n');
+    if (splitAt < 0) return { en: value, zh: value };
+    return {
+        zh: value.slice(0, splitAt).trim(),
+        en: value.slice(splitAt + 1).trim(),
+    };
+}
+
+function addHelpDot(label, tip) {
+    if (!label || !tip) return null;
+    let dot = label.querySelector('.help-dot');
+    if (!dot) {
+        dot = _newHelpDot();
+        label.appendChild(dot);
+    }
+    const localized = _localizedHelpTip(tip);
+    ['en', 'zh'].forEach((lang) => {
+        const value = localized[lang];
+        if (!value) return;
+        const attr = 'data-tip-' + lang;
+        const existing = dot.getAttribute(attr) || '';
+        if (!existing.includes(value)) {
+            dot.setAttribute(attr, existing ? existing + '\n' + value : value);
+        }
+    });
+    return dot;
 }
 
 function getHelpTooltip() {
@@ -2319,13 +2448,27 @@ function getHelpTooltip() {
         tip = document.createElement('div');
         tip.id = 'global-help-tooltip';
         tip.className = 'help-tooltip';
+        tip.setAttribute('role', 'tooltip');
         document.body.appendChild(tip);
     }
     return tip;
 }
 
 function showHelpTooltip(dot) {
-    const text = dot ? dot.getAttribute('data-tip') : '';
+    if (_activeHelpDot && _activeHelpDot !== dot) {
+        _activeHelpDot.dataset.helpPinned = 'false';
+        _activeHelpDot.setAttribute('aria-expanded', 'false');
+    }
+    const chunks = [];
+    const registered = dot ? dot.getAttribute('data-tip-' + UI_LANG) : '';
+    if (registered) chunks.push(registered);
+    const sourceIds = dot ? String(dot.getAttribute('data-help-sources') || '').split(',').filter(Boolean) : [];
+    sourceIds.forEach((id) => {
+        const source = document.getElementById(id);
+        const value = source ? String(source.textContent || '').trim() : '';
+        if (value && !chunks.includes(value)) chunks.push(value);
+    });
+    const text = chunks.join('\n');
     if (!text) return;
     const tip = getHelpTooltip();
     tip.textContent = text;
@@ -2344,17 +2487,64 @@ function showHelpTooltip(dot) {
     tip.style.left = left + 'px';
     tip.style.top = top + 'px';
     tip.style.visibility = 'visible';
+    dot.setAttribute('aria-expanded', 'true');
+    _activeHelpDot = dot;
 }
 
-function hideHelpTooltip() {
+function hideHelpTooltip(force) {
+    if (!force && _activeHelpDot && _activeHelpDot.dataset.helpPinned === 'true') return;
     const tip = document.getElementById('global-help-tooltip');
     if (tip) tip.classList.remove('open');
+    if (_activeHelpDot) _activeHelpDot.setAttribute('aria-expanded', 'false');
+    _activeHelpDot = null;
+}
+
+function closeHelpTooltip() {
+    if (_activeHelpDot) _activeHelpDot.dataset.helpPinned = 'false';
+    hideHelpTooltip(true);
+}
+
+function _attachInlineHelpSource(dot, source) {
+    if (!dot || !source) return;
+    if (!source.id) source.id = 'inline-help-source-' + (++_inlineHelpSeq);
+    const ids = String(dot.getAttribute('data-help-sources') || '').split(',').filter(Boolean);
+    if (!ids.includes(source.id)) ids.push(source.id);
+    dot.setAttribute('data-help-sources', ids.join(','));
+    source.classList.add('inline-help-source');
+    source.setAttribute('aria-hidden', 'true');
+}
+
+function migrateInlineHelp() {
+    document.querySelectorAll('.lbl-hint:not(.validation-hint)').forEach((source) => {
+        /* Subgroup prose sits immediately before its first .form-row rather
+           than inside a label. Route that prose into the first field's one
+           inline help button; otherwise it becomes an orphan `?` on a row of
+           its own. Keep the old direct fallback for truly unmappable prose. */
+        const followingRow = source.nextElementSibling?.matches('.form-row')
+            ? source.nextElementSibling
+            : null;
+        const label = source.closest('label') || followingRow?.querySelector('label');
+        let dot = label ? label.querySelector('.help-dot') : null;
+        if (!dot) {
+            dot = _newHelpDot();
+            if (label) {
+                const inlineHint = label.querySelector(':scope > .lbl-hint:not(.validation-hint)');
+                label.insertBefore(dot, inlineHint || null);
+            } else {
+                source.parentNode.insertBefore(dot, source);
+            }
+        }
+        _attachInlineHelpSource(dot, source);
+    });
 }
 
 function decorateParamHelpDots() {
     // Applied to BOTH backtest (-bt) and live (-live) panels.
     const shared = {
-        'strategy': '策略邏輯：TREND = 區間突破趨勢單；DAY ZONE = 前日 VA 均值回歸；DISTRIBUTION = rolling distribution resting fade；PMO = 5m EMAPMO ATR market entry。\nStrategy selector for trend, day-zone, distribution, or PMO.',
+        'strategy': {
+            en: 'FADE / SIGMA / FACTOR / MOMENTUM / BETAFIB / PI.\nSelect a model; its localized description appears below the selector.',
+            zh: 'FADE / SIGMA / FACTOR / MOMENTUM / BETAFIB / PI。\n選擇模型；下方會顯示本地化說明。',
+        },
         'contract': '\u4ea4\u6613 / \u56de\u6e2c\u4f7f\u7528\u7684\u671f\u8ca8\u5408\u7d04\uff0c\u4f8b\u5982 CON.F.US.MNQ.U26\u3002\nFutures contract used for data and orders.',
         'size': '\u6bcf\u7b46\u4ea4\u6613\u7684\u5408\u7d04\u53e3\u6578\u3002\nNumber of contracts per trade.',
         'preset': '\u8f09\u5165\u6216\u4fdd\u5b58\u76ee\u524d\u6240\u6709\u53c3\u6578\u8a2d\u5b9a\u3002\nLoad or save the current parameter set.',
@@ -2399,7 +2589,13 @@ function decorateParamHelpDots() {
         apply(base + '-live', tip);
     });
     Object.entries(standalone).forEach(([id, tip]) => apply(id, tip));
+    migrateInlineHelp();
+    getHelpTooltip();
 }
+
+document.addEventListener('click', (event) => {
+    if (!event.target.closest || !event.target.closest('.help-dot')) closeHelpTooltip();
+});
 
 // -- Init ------------------------------------------
 
@@ -3708,8 +3904,6 @@ function initChart() {
         borderUpColor: '#888888',
         wickDownColor: '#555555',
         wickUpColor: '#888888',
-        // 1.0.9: 自動居中(⌖ 鈕)— 開啟時鎖定縱向比例,中心跟隨中央 K 線 EMA200
-        autoscaleInfoProvider: (original) => _autoCenterProvider(original),
     });
 
     new ResizeObserver(() => {
@@ -4634,140 +4828,6 @@ function drawFadeDailyLevels(zones) {
 
 // -- Decision-zone overlay --
 // Draw only the primary VAH/VAL range used by each trade decision.
-
-// ── 1.0.9: 自動居中(EMA200 錨定)+ 一鍵到最新 ──────────────────
-// ⌖ 開啟時:縱向比例(價格/像素)鎖定在開啟當下的值;左右拖拽瀏覽歷史時
-// 視窗中心自動平滑跟隨「畫面中央 K 線的 EMA200」,不需要手動上下拉。
-// 縱向並沒有鎖死:拖拽的上下分量會即時調整相對 EMA 的偏移(_acOffset),
-// 之後繼續左右平移時偏移保留;candle ratio 不會被 autoscale 改變。
-let _autoCenterOn = false;
-let _acSpan = null;    // 鎖定的可視價格跨度(= 開啟當下的縱向比例)
-let _acMid = null;     // 平滑後的中心價
-let _acOffset = 0;     // 手動上下拖拽的偏移(相對 EMA200 錨點)
-let _acKickRAF = null;
-let _acEma = { src: null, n: 0, arr: null };   // EMA200 快取(資料變更時重算)
-
-function _acEmaArr() {
-    const cd = window._lastChartData || [];
-    if (!cd.length) return null;
-    if (_acEma.src === cd && _acEma.n === cd.length) return _acEma.arr;
-    const k = 2 / (200 + 1);
-    const arr = new Float64Array(cd.length);
-    let prev = cd[0].close;
-    for (let i = 0; i < cd.length; i++) {
-        prev = cd[i].close * k + prev * (1 - k);
-        arr[i] = prev;
-    }
-    _acEma = { src: cd, n: cd.length, arr };
-    return arr;
-}
-
-function _centerEmaPrice() {
-    try {
-        const vr = chart.timeScale().getVisibleRange();
-        const ema = _acEmaArr();
-        if (!vr || !ema) return null;
-        const i0 = _nearestBarIndex(vr.from);
-        const i1 = _nearestBarIndex(vr.to);
-        if (i0 === null || i1 === null) return null;
-        const mid = Math.min(ema.length - 1, Math.max(0, Math.round((i0 + i1) / 2)));
-        const v = ema[mid];
-        return Number.isFinite(v) ? v : null;
-    } catch (_) { return null; }
-}
-
-function _autoCenterProvider(original) {
-    const base = original();
-    if (!_autoCenterOn || !_acSpan) return base;
-    const anchor = _centerEmaPrice();
-    if (anchor === null) return base;
-    const target = anchor + _acOffset;
-    // 平滑滑動:每次重算向目標移動 35% — 拖拽時有緩動的「slide」感
-    _acMid = (_acMid === null) ? target : _acMid + (target - _acMid) * 0.35;
-    // 尚未收斂 → 排一次重算,放開拖拽後會自己滑到定位
-    if (Math.abs(target - _acMid) > _acSpan * 0.002) _acScheduleKick();
-    const half = _acSpan / 2;
-    return { priceRange: { minValue: _acMid - half, maxValue: _acMid + half } };
-}
-
-// 縱向手動偏移:拖拽的上下分量調整 _acOffset(橫向平移仍由圖表庫處理)。
-// 只攔 pane 區域 — 價格軸/時間軸上的拖拽(縮放)不干預。
-let _acDragBound = false;
-let _acDrag = null;   // { y0, off0 }
-
-function _acBindDrag() {
-    if (_acDragBound) return;
-    const el = document.getElementById('chart-container');
-    if (!el) return;
-    _acDragBound = true;
-    el.addEventListener('pointerdown', (e) => {
-        if (!_autoCenterOn || e.button !== 0) return;
-        const r = el.getBoundingClientRect();
-        let axW = 0;
-        try { axW = chart.priceScale('right').width() || 0; } catch (_) {}
-        if (e.clientX > r.right - axW) return;
-        if (e.clientY > r.bottom - _timeAxisHeight()) return;
-        _acDrag = { y0: e.clientY, off0: _acOffset };
-    });
-    window.addEventListener('pointermove', (e) => {
-        if (!_autoCenterOn || !_acDrag || !_acSpan) return;
-        const paneH = el.clientHeight - _timeAxisHeight();
-        if (paneH <= 0) return;
-        _acOffset = _acDrag.off0 + (e.clientY - _acDrag.y0) * (_acSpan / paneH);
-        _acScheduleKick();
-    });
-    const end = () => { _acDrag = null; };
-    window.addEventListener('pointerup', end);
-    window.addEventListener('pointercancel', end);
-}
-
-function _acScheduleKick() {
-    if (_acKickRAF) return;
-    _acKickRAF = requestAnimationFrame(() => {
-        _acKickRAF = null;
-        // 重套 autoScale 觸發重算(provider 會再被呼叫一次)
-        try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
-        try { chart.timeScale().applyOptions({}); } catch (_) {}
-        requestAnimationFrame(() => {
-            drawIndicatorSignalOverlay();
-            window.TpxGlass?.sync?.();
-        });
-    });
-}
-
-function toggleAutoCenter() {
-    _autoCenterOn = !_autoCenterOn;
-    const btn = document.getElementById('btn-auto-center');
-    if (_autoCenterOn) {
-        // 鎖定當下的縱向比例:用座標反推目前可視價格跨度
-        _acSpan = null;
-        try {
-            const container = document.getElementById('chart-container');
-            const paneH = container.clientHeight - _timeAxisHeight();
-            const pTop = candleSeries.coordinateToPrice(0);
-            const pBot = candleSeries.coordinateToPrice(paneH);
-            if (pTop != null && pBot != null && Number.isFinite(pTop) && Number.isFinite(pBot)) {
-                _acSpan = Math.abs(pTop - pBot);
-            }
-        } catch (_) {}
-        _acMid = null;
-        _acOffset = 0;
-        if (!_acSpan) {
-            _autoCenterOn = false;
-            log('Auto-center could not start (current vertical scale unavailable)', 'warn');
-        } else {
-            _acBindDrag();
-            try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
-            log('Auto-center ON — following the center candle EMA200; drag vertically to adjust offset', 'info');
-        }
-    } else {
-        // 回復預設 autoscale(範圍重新由資料決定)
-        try { candleSeries.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
-        log('Auto-center OFF — default autoscale restored', 'info');
-    }
-    if (btn) btn.classList.toggle('active', _autoCenterOn);
-    _acScheduleKick();
-}
 
 function scrollToLatest() {
     try { chart.timeScale().scrollToRealTime(); } catch (_) {}
@@ -7093,8 +7153,10 @@ function renderCapUi(mode) {
     }
     if (hint) {
         hint.textContent = usd > 0
-            ? ('(價距 ' + ticks + 't · ' + c.size + ' 口 → $' + c.tv.toFixed(2) + '/tick)')
-            : '(單筆獲利上限 · 0=不限)';
+            ? (UI_LANG === 'zh'
+                ? ('(價距 ' + ticks + 't · ' + c.size + ' 口 → $' + c.tv.toFixed(2) + '/tick)')
+                : ('(price distance ' + ticks + 't · ' + c.size + ' contracts → $' + c.tv.toFixed(2) + '/tick)'))
+            : t('(per-trade profit cap · 0=unlimited)');
     }
 }
 
@@ -9008,7 +9070,7 @@ function _liveSlotRenderStatus(slot, statusMap, sess) {
         if (dot) { dot.style.background = 'var(--green)'; dot.style.boxShadow = '0 0 6px var(--green)'; }
         set('live-slot-phase', st.phase || '--', 'var(--text2)');
         const activeModeName = st.active_mode ? strategyDisplayName(st.active_mode) : '';
-        const strategyModeName = st.strategy_mode ? strategyDisplayName(st.strategy_mode) : 'TREND';
+        const strategyModeName = st.strategy_mode ? strategyDisplayName(st.strategy_mode) : 'FACTOR';
         const mode = st.confluence_shadow ? 'SHADOW (NO ORDERS)'
             : ((activeModeName && activeModeName !== strategyModeName) ? activeModeName : 'LIVE');
         set('live-slot-mode', mode, 'var(--green)');
@@ -9091,6 +9153,61 @@ const I18N_ZH = {
     'TP ANCHOR': 'TP 錨點', 'FIXED RATIO': '固定比例', 'LADDER RATIO': '階梯比例',
     'TP INPUT': 'TP 參數', 'LADDER INPUT': '階梯參數', '(engine fixed)': '(引擎固定)',
     'TRAIL SL': '移動停損',
+    // Canonical-English strategy controls (BT and Live share these keys).
+    'EMAPMO THRESHOLD': 'EMAPMO 門檻',
+    '-0.050 LOOSE': '-0.050 鬆', '-0.100 ORIGINAL': '-0.100 原始', '-0.120 TIGHT': '-0.120 緊',
+    'OBSERVATION WINDOW': '觀察窗', '(N minutes after open)': '(開盤後 N 分鐘)',
+    '15 minutes': '15 分鐘', '30 minutes (22/22 overlap)': '30 分鐘 (交集 22/22)',
+    '45 minutes': '45 分鐘', '60 minutes': '60 分鐘', '90 minutes': '90 分鐘',
+    'ENTRY HOUR': '進場時',
+    '(UTC · negligible difference at 17–20)': '(UTC · 17~20 差異極小)',
+    'Discord alerts · QQQ→MNQ · SPY→MES · circles are large-only; π is medium/small':
+        'Discord 推播驅動 · QQQ→MNQ · SPY→MES · 圈圈只有大尺寸、π 只有中小',
+    'SIGNAL SET': '使用訊號', '(level combination)': '(級別組合)',
+    'LONG ONLY · π LEVELS (RECOMMENDED)': '只做多 · π 級別 (推薦)',
+    'LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)': '只做多 · 全部藍系 (含淡藍圈)',
+    'π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)': 'π 級別 + 深藍圈 (含做空)',
+    'PURE π ONLY (CYAN π / PINK π)': '只做純 π (青π / 粉π)',
+    'ALL BLUE/PURPLE (INCLUDES WEAK SIGNALS)': '全部藍/紫 (含弱訊號)',
+    'DIRECTION': '方向', '(tested shorts lose net · PF 0.91)': '(空方實測淨虧 PF 0.91)',
+    'LONG ONLY (RECOMMENDED)': '只做多 (推薦)', 'LONG + SHORT': '多空皆做',
+    'MAX SIGNAL AGE': '訊號過期上限', '(minutes · discard older)': '(分鐘 · 超過丟棄)',
+    'RTH 06:30–13:00 PT impulse leg → move within range → wait for a pullback during the entry window':
+        '白天 RTH 06:30–13:00 PT 量推動腿 → 漲幅落在區間內 → 於進場時窗等回撤',
+    'MOVE MIN': '漲幅下限', '(% · 0 = no filter)': '(% · 0 = 不篩選)',
+    '0 (NO FILTER)': '0 (不篩選)',
+    'MOVE MAX': '漲幅上限', '(% · 0 = unlimited)': '(% · 0 = 無上限)',
+    '0 (UNLIMITED)': '0 (無上限)',
+    'ENTRY FIB': '進場 Fib', '(1.0 = impulse-leg endpoint)': '(1.0 = 推動腿終點)',
+    '0.854 (VERY SHALLOW)': '0.854 (極淺)',
+    '0.786 (94% OF OVERNIGHT SESSIONS TOUCH)': '0.786 (94% 夜盤會觸及)',
+    '0.382 (G5 CROSS-SYMBOL WINNER)': '0.382 (G5 雙商品勝出)',
+    'FIB ANCHOR': 'Fib 錨點', '(how the impulse leg is measured)': '(推動腿怎麼量)',
+    'SWING LOW → HIGH': '擺動低 → 高', 'RTH OPEN → CLOSE (MES FAILS)': 'RTH open → close (MES 全崩)',
+    'ENTRY WINDOW': '進場時窗', '(PT · pullback limit-order window)': '(PT · 掛單等回撤的時段)',
+    'FULL OVERNIGHT (1pm → next day 6:30am)': '整個夜盤 (1pm → 隔日 6:30am)',
+    '6pm – MIDNIGHT': '6pm – 午夜',
+    '3pm – MIDNIGHT (FULL ASIA)': '3pm – 午夜 (ASIA 全段)',
+    'MIDNIGHT – 6am (EURO)': '午夜 – 6am (EURO)',
+    'Longs use SL/TP ANCHOR above · shorts use independent settings (longer holds perform worse)':
+        '多單沿用上方 SL/TP ANCHOR · 空單獨立設定(抱久會變差)',
+    'SHORT SL': '空單 SL', 'SHORT TIME EXIT': '空單時間出場',
+    '(minutes · 0=OFF)': '(分鐘 · 0=關閉)', '0 (OFF)': '0 (關閉)',
+    '(must be < entry fib)': '(必須 < 進場 fib)',
+    '0 (IMPULSE-LEG START)': '0 (推動腿起點)',
+    'SL < ENTRY < TP, OR 0 TRADES': 'SL < 進場 < TP,否則 0 筆交易',
+    '(must be > entry fib)': '(必須 > 進場 fib)',
+    '1.000 (IMPULSE-LEG END)': '1.000 (推動腿終點)',
+    '1.272 (EXTENSION)': '1.272 (延伸)',
+    '(per-trade profit cap · 0=unlimited)': '(單筆獲利上限 · 0=不限)',
+    'Determined by SL fib': '由 SL fib 決定',
+    // Chart-side labels use the same canonical-English source convention.
+    'PI π / CIRCLES': 'PI π / 圈', 'TRADE BOXES SL/TP': '交易框 SL/TP',
+    'MREV BUBBLES': 'MREV 泡泡', 'KDJMA DOTS': 'KDJMA 圓點',
+    'INTRAMOM ARROWS': 'INTRAMOM 箭頭', 'VAH/VAL/POC LINES': 'VAH/VAL/POC 線',
+    'BETAFIB LEVELS': 'BETAFIB 水位', 'DAY ZONE LEVELS': 'DAY ZONE 水位',
+    'PI CYAN/PINK LONG/SHORT': 'PI 青/粉 LONG/SHORT',
+    'PI DARK BLUE=HIGH POWER / LIGHT BLUE=LOW POWER': 'PI 深藍=大威力 / 淡藍=小威力',
     'DAILY MAX TRADE LIMIT': '每日最大交易數',
     'FULL LOSS LOCK': '日虧鎖單',
     '(bot only · N daily losses stop new orders, 0=OFF)': '(僅程序交易;當日虧 N 單停新單,0=OFF)',
@@ -9200,13 +9317,43 @@ function _i18nTranslateTree(root) {
 }
 
 function applyLanguage() {
+    document.documentElement.lang = UI_LANG === 'zh' ? 'zh-TW' : 'en';
     _i18nTranslateTree(document.body);
     const btn = document.getElementById('lang-toggle');
     if (btn) {
-        btn.textContent = UI_LANG === 'zh' ? 'EN' : '中';
-        btn.title = UI_LANG === 'zh' ? 'Switch to English' : '切換為繁體中文';
+        const isZh = UI_LANG === 'zh';
+        /* The optical layer is prepended inside the live thumb and contains a
+           stage clone with its own glyph. Stay on the direct live path. */
+        const glyph = btn.querySelector(':scope > .lang-thumb > .lang-glyph');
+        btn.dataset.locale = UI_LANG;
+        /* Before Glass boots, .on seeds the tactile controller. Afterwards
+           its public setter keeps the spring position and UI_LANG aligned
+           without re-entering the controller callback. */
+        if (btn.tpxSetState) btn.tpxSetState(isZh);
+        else btn.classList.toggle('on', isZh);
+        btn.setAttribute('aria-checked', isZh ? 'true' : 'false');
+        btn.setAttribute('aria-label', isZh
+            ? '介面語言：繁體中文。切換為英文。'
+            : 'Interface language: English. Switch to Traditional Chinese.');
+        btn.title = isZh ? '切換為英文' : 'Switch to Traditional Chinese';
+        if (glyph) glyph.textContent = isZh ? '中' : 'En';
     }
-    document.documentElement.lang = UI_LANG === 'zh' ? 'zh-TW' : 'en';
+    const layerButton = document.getElementById('chart-layer-btn');
+    if (layerButton) {
+        const label = UI_LANG === 'zh' ? '圖層' : 'Layers';
+        layerButton.title = label;
+        layerButton.setAttribute('aria-label', label);
+    }
+    ['bt', 'live'].forEach((mode) => {
+        syncStrategyDescription(mode);
+        renderCapUi(mode);
+        ['sl', 'tp'].forEach((kind) => {
+            const rule = document.getElementById('factor-' + kind + '-rule-' + mode);
+            if (rule && rule.value === 'fib') onFactorRiskAnchorChange(mode, kind);
+        });
+    });
+    document.querySelectorAll('.help-dot').forEach(_updateHelpDotLabel);
+    if (_activeHelpDot) showHelpTooltip(_activeHelpDot);
 }
 
 function toggleLanguage() {
