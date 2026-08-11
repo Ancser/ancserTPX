@@ -79,6 +79,26 @@ ML_TRAIL_PCT_CHOICES = (
     0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
 )
 
+# PI matrix kinds accepted from the browser.  Keep this allowlist adjacent to
+# request normalization so arbitrary Discord text cannot become strategy
+# configuration.  None means "use the legacy pi_signal_set"; [] is an
+# intentional no-signal selection.
+_PI_LONG_KINDS = frozenset(("青π", "深蓝圈", "淡蓝圈"))
+_PI_SHORT_KINDS = frozenset(("粉π", "紫圈"))
+
+
+def _normalize_pi_kinds(value, allowed) -> Optional[List[str]]:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple, set)):
+        return None
+    out = []
+    for item in value:
+        kind = str(item or "").strip()
+        if kind in allowed and kind not in out:
+            out.append(kind)
+    return out
+
 
 def _normalize_contract_size(contract_id: str, requested) -> int:
     """Enforce the UI/API size contract: MNQ=1/3/5/10, NQ=1."""
@@ -553,6 +573,8 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         pi_long_only=bool(getattr(req, "pi_long_only", _PARAM_DEFAULTS.pi_long_only)),
         pi_signal_set=str(getattr(req, "pi_signal_set", None)
                           or _PARAM_DEFAULTS.pi_signal_set).lower(),
+        pi_long_kinds=_normalize_pi_kinds(getattr(req, "pi_long_kinds", None), _PI_LONG_KINDS),
+        pi_short_kinds=_normalize_pi_kinds(getattr(req, "pi_short_kinds", None), _PI_SHORT_KINDS),
         pi_max_signal_age_min=max(1, min(60, int(
             getattr(req, "pi_max_signal_age_min", None)
             or _PARAM_DEFAULTS.pi_max_signal_age_min))),
@@ -1484,6 +1506,8 @@ class BacktestRequest(BaseModel):
     # 1.0.10: π 外部訊號策略
     pi_long_only: bool = False
     pi_signal_set: str = "pi_only"
+    pi_long_kinds: Optional[List[str]] = None
+    pi_short_kinds: Optional[List[str]] = None
     pi_max_signal_age_min: int = 5
     pi_short_sl_value: float = 2.5
     pi_short_hold_min: int = 60
@@ -3830,6 +3854,13 @@ def _sync_primary_engine():
 
 class LiveStartRequest(BaseModel):
     account_id: int
+    pi_long_only: bool = True
+    pi_signal_set: str = "long_pi_only"
+    pi_long_kinds: Optional[List[str]] = None
+    pi_short_kinds: Optional[List[str]] = None
+    pi_max_signal_age_min: int = 5
+    pi_short_sl_value: float = 2.5
+    pi_short_hold_min: int = 60
     contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     contract_size: int = 3
     value_area_pct: float = 0.80
@@ -4121,6 +4152,14 @@ async def _live_start_impl(req: LiveStartRequest, live_client: Any):
         logger.warning("[LIVE START] NO warmup candles!")
     try:
         await engine.start(live_warmup_candles)
+        # The process-level recorder keeps chart/audit capture alive when no
+        # Live engine exists.  Once a PI engine is running, release its
+        # record-only worker so there is one real-time Discord poller and no
+        # duplicate API traffic; the engine listener still audits every mark
+        # before applying the saved preset.
+        if str(getattr(live_strategy_params, "strategy", "")).lower() == "pi":
+            from backend.live.pi_recorder import pause_pi_recorder
+            await pause_pi_recorder()
         logger.info(f"[LIVE START] Engine started successfully (account {req.account_id})")
     except Exception as e:
         logger.error(f"[LIVE START] Engine start failed: {e}")
@@ -4136,8 +4175,19 @@ async def live_stop(account_id: int = 0):
     """停止即時交易引擎(account_id 指定某 leader;0=primary)"""
     eng = _resolve_live_engine(account_id or None)
     if not eng or not eng.is_running:
+        if eng and str(getattr(eng, "strategy_mode", "")).lower() == "pi":
+            # A crashed/finished engine can leave the process-level recorder
+            # paused even though the explicit stop request sees no running
+            # engine. Releasing the lease makes audit/chart capture recover.
+            from backend.live.pi_recorder import resume_pi_recorder
+            await resume_pi_recorder()
         return {"success": True, "message": "Not running"}
-    await eng.stop()
+    try:
+        await eng.stop()
+    finally:
+        if str(getattr(eng, "strategy_mode", "")).lower() == "pi":
+            from backend.live.pi_recorder import resume_pi_recorder
+            await resume_pi_recorder()
     return {"success": True, "message": "Live engine stopped", "account_id": getattr(eng, "account_id", account_id)}
 
 
@@ -5047,3 +5097,24 @@ async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
                        "count": m.get("count", 1)} for m in (r.get("marks") or [])],
         })
     return {"signals": out, "total": len(out)}
+
+
+@router.get("/pi/signals/audit")
+async def pi_signal_audit(limit: int = 200):
+    """Return recent local live-PI reception/callback audit events.
+
+    This is deliberately separate from ``/pi/signals``: that route serves the
+    immutable historical file used by backtest/chart parity, while live audit
+    rows include both Discord ``ts`` and local ``received_at`` timestamps.
+    """
+    from backend.data.pi_live_audit import load_recent_events
+
+    return {"events": load_recent_events(limit)}
+
+
+@router.get("/pi/recorder/status")
+async def pi_recorder_status():
+    """Return non-sensitive health for the independent record-only listener."""
+    from backend.live.pi_recorder import pi_recorder_health
+
+    return pi_recorder_health()

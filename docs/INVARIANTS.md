@@ -56,6 +56,8 @@
 | PI-005 | 時戳無法解析時**放行**而非崩潰 —— 寧可多一則訊號也不要 listener 掛掉 | `test_pi_pre_session_filter.py` |
 | PI-006 | 回測、實盤、圖表、研究腳本必須看到**同一組**訊號。共用 `backend/data/pi_history.load_rows()` | `test_pi_single_source.py` |
 | PI-007 | 重複的外部事件不得產生重複的策略動作 | `test_pi_single_source.py` |
+| PI-008 | Short circle bubbles (LEVEL 1/2) are parser/audit record-only and never enter the strategy queue; `size` remains non-decisional | `test_pi_pre_session_filter.py` |
+| PI-009 | Web/terminal startup may backfill today/yesterday into the separate audit stream, but every parsed mark is record-only (no strategy callback); pre-session rows stay diagnostic-only and chart visibility ignores preset acceptance | `test_live_status_health.py` |
 
 ## DATA — 蠟燭庫
 

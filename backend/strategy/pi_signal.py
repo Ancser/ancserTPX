@@ -140,6 +140,14 @@ class PiSignalStrategy(_ResearchBase):
                               else _preset["long"] if _preset else self.DEFAULT_LONG_KINDS)
         self.pi_short_kinds = (tuple(_sk) if _sk is not None
                                else _preset["short"] if _preset else self.DEFAULT_SHORT_KINDS)
+        # User-approved policy (record-only): the parser/audit retains every
+        # short bubble, but visual size/level classification is too unreliable
+        # to trade.  Filter by kind, never by ``size`` (PI-004).
+        from backend.live.pi_listener import SHORT_BUBBLE_KINDS
+        self.pi_short_kinds = tuple(
+            kind for kind in self.pi_short_kinds
+            if kind not in SHORT_BUBBLE_KINDS
+        )
         # long_only 是硬開關:壓過 signal_set 與明確指定的 short kinds。
         # 沒有這一條的話,選了 pi_only 之類含空方的 set 就會繞過它。
         if self.pi_long_only:
@@ -187,8 +195,20 @@ class PiSignalStrategy(_ResearchBase):
         if self.pi_long_only and d <= 0:
             logger.info("[PI] 略過空單訊號 %s(只做多)", kind)
             return False
+        # Short circles (Level 1/2 bubbles) remain in listener/audit records,
+        # but are never allowed to enter the strategy queue.  This guard is
+        # independent of saved presets so a legacy configuration cannot
+        # re-enable them.
+        from backend.live.pi_listener import SHORT_BUBBLE_KINDS
+        if d < 0 and kind in SHORT_BUBBLE_KINDS:
+            logger.info("[PI] skip short bubble %s (record-only)", kind)
+            return False
         allow = self.pi_long_kinds if d > 0 else self.pi_short_kinds
-        if allow and kind not in allow:
+        # An empty explicit/legacy kind set means that side is disabled.  Do
+        # not treat it as "no filter": the matrix uses [] to represent an
+        # intentionally cleared side, and the long-only presets use an empty
+        # short tuple for the same reason.
+        if kind not in allow:
             logger.info("[PI] 略過 %s(不在允許級別 %s)", kind, "/".join(allow))
             return False
         self._seen.add(key)
@@ -234,6 +254,9 @@ class PiSignalStrategy(_ResearchBase):
             sig = self._queue.popleft()
             ts = getattr(sig, "ts", None)
             if ts is not None:
+                # ``sig.ts`` is Discord's message/source timestamp.  The
+                # listener's local ``received_at`` is diagnostic only and is
+                # deliberately not used for the trading-age gate.
                 age = (now - _utc(ts)).total_seconds() / 60.0
                 if age > self.pi_max_age_min:
                     # BLOCK,不是 WARN —— 過期訊號的進場理由已經不成立

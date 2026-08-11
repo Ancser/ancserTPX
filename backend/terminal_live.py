@@ -711,6 +711,7 @@ async def run_terminal_live() -> int:
 
     client = TopstepXClient(username=username, api_key=api_key, use_demo=use_demo)
     engine: Optional[LiveTradingEngine] = None
+    recorder_paused = False
     stop_event = asyncio.Event()
 
     def _stop(*_: object) -> None:
@@ -727,6 +728,12 @@ async def run_terminal_live() -> int:
     try:
         logger.info("ancserTPX terminal starting")
         logger.info("API: %s | user=%s", "demo" if use_demo else "production", username)
+
+        # Start PI audit/chart capture independently of Live.  If this
+        # terminal later owns a PI engine, the record-only worker is paused
+        # after the engine listener is ready to avoid duplicate Discord polls.
+        from backend.live.pi_recorder import pause_pi_recorder, resume_pi_recorder, start_pi_recorder
+        await start_pi_recorder()
 
         await client.authenticate()
         accounts = await client.get_accounts()
@@ -800,6 +807,8 @@ async def run_terminal_live() -> int:
             strategy_params=params,
         )
         await engine.start(candles)
+        if str(getattr(params, "strategy", "")).lower() == "pi":
+            recorder_paused = await pause_pi_recorder()
         _set_sleep_inhibit(True)
         logger.info("LIVE started. Press Ctrl+C to stop.")
 
@@ -839,6 +848,12 @@ async def run_terminal_live() -> int:
         logger.error("Terminal live failed: %s", exc, exc_info=True)
         return 1
     finally:
+        if recorder_paused:
+            try:
+                from backend.live.pi_recorder import resume_pi_recorder
+                await resume_pi_recorder()
+            except Exception as exc:
+                logger.warning("PI record-only listener resume failed: %s", exc)
         _set_sleep_inhibit(False)
         if engine and engine.is_running:
             try:

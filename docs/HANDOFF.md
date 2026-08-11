@@ -50,9 +50,11 @@ opens a naked-position window between fill and the modify step.
 
 ### R1 — PI restart dedup
 
-`PiListener._seen` is memory-only. After a restart it is empty. Replay is
-currently prevented *indirectly* by resetting the Discord cursor to the newest
-message when the trading window opens. Do not assume restart-safe dedup exists.
+The trading `PiListener._seen` remains memory-only; its Live-window cursor is
+still seeded to the newest message and then advanced with `after`. The
+independent record-only listener now has a bounded today/yesterday catch-up and
+uses durable audit message ids as its stop boundary, so web/terminal restarts
+repair missing audit/chart rows without replaying the strategy.
 
 ### R2 — Zone-age gate
 

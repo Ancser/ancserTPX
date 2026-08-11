@@ -712,7 +712,11 @@ function updateStrategyParamVisibility(mode) {
     // 1.0.10: PI 沿用 FACTOR 區塊的 SL/TP/方向控制項(多單用),
     // 但 EMAPMO 專屬的族/訊號模式/VA 濾網對它無意義。
     const isPi = strategy === 'pi';
-    show('factor-params-' + mode, isFactor || isIntramom || isSessfib || isPi);
+    // PI has its own directional signal matrix.  The FACTOR entry controls
+    // (SIDE / SIGNAL MODE / VA FILTER) used to remain visible here as well,
+    // which made PI show two overlapping direction controls.  PI still uses
+    // the shared FACTOR exit/risk block below, but not its entry block.
+    show('factor-params-' + mode, isFactor || isIntramom || isSessfib);
     show('momentum-params-' + mode, isIntramom);
     show('betafib-params-' + mode, isSessfib);
     // 1.0.10: MODEL SETTINGS 已拆成 ENTRY / EXIT 兩段。
@@ -1277,6 +1281,9 @@ function collectStrategyParams(mode) {
     // for every current and future preset. Pinned 0 regardless of any stored value.
     const factorHoldBars = 0;
     const dailyMaxTrades = Math.max(0, _paramInt('factor-max-trades', 'factor_max_trades_per_day', 3));
+    const piMatrix = strategy === 'pi'
+        ? _piMatrixPayload(mode)
+        : { pi_long_kinds: null, pi_short_kinds: null };
     const params = {
         strategy: strategy,
         method: method,
@@ -1343,6 +1350,8 @@ function collectStrategyParams(mode) {
         // 1.0.10: PI 外部訊號
         pi_signal_set: _mlSelectValue('pi-signal-set-' + mode, 'long_pi_only'),
         pi_long_only: _mlSelectValue('pi-long-only-' + mode, '1') === '1',
+        pi_long_kinds: piMatrix.pi_long_kinds,
+        pi_short_kinds: piMatrix.pi_short_kinds,
         pi_max_signal_age_min: _int('pi-max-age-' + mode, 5),
         pi_short_sl_value: _float('pi-short-sl-' + mode, 2.5),
         pi_short_hold_min: _int('pi-short-hold-' + mode, 60),
@@ -1502,6 +1511,23 @@ function applyStrategyParams(mode, params) {
     _set('pi-signal-set-' + mode, String(p.pi_signal_set || 'long_pi_only'));
     // 1.0.10: 預設只做多 —— 舊 preset 沒有這個欄位時要落在 '1',不是 '0'
     _set('pi-long-only-' + mode, (p.pi_long_only === undefined ? true : p.pi_long_only) ? '1' : '0');
+    // Render the new matrix from either explicit kind arrays or the legacy
+    // signal-set fields.  Old presets therefore keep their exact behavior.
+    if (Array.isArray(p.pi_long_kinds) || Array.isArray(p.pi_short_kinds)) {
+        const state = _piMatrixStateEmpty();
+        const longKinds = new Set(Array.isArray(p.pi_long_kinds) ? p.pi_long_kinds : []);
+        const shortKinds = new Set(Array.isArray(p.pi_short_kinds) ? p.pi_short_kinds : []);
+        ['long', 'short'].forEach((side) => {
+            ['pi', 'level2', 'level1'].forEach((level) => {
+                const kind = PI_MATRIX_KIND_BY_SIDE_LEVEL[side][level];
+                state[side][level] = Boolean(kind && (side === 'long' ? longKinds : shortKinds).has(kind));
+            });
+        });
+        if (p.pi_long_only) state.short = { pi: false, level2: false, level1: false };
+        _piMatrixWriteState(mode, state);
+    } else {
+        _piMatrixSyncFromLegacy(mode);
+    }
     _set('pi-max-age-' + mode, String(p.pi_max_signal_age_min != null ? p.pi_max_signal_age_min : 5));
     _set('pi-short-sl-' + mode, String(p.pi_short_sl_value != null ? p.pi_short_sl_value : 2.5));
     _set('pi-short-hold-' + mode, String(p.pi_short_hold_min != null ? p.pi_short_hold_min : 60));
@@ -1701,6 +1727,185 @@ function _namingDatePrefix(d) {
 
 function _namingModelFromParams(params) {
     return strategyDisplayName((params || {}).strategy);
+}
+
+/* PI entry controls -------------------------------------------------------
+ *
+ * The engine historically exposed the five named `pi_signal_set` presets
+ * plus `pi_long_only`.  Keep those fields as the compatibility wire format,
+ * but let the UI present the actual signal kinds as a small LONG/SHORT
+ * matrix.  The optional kind arrays are understood by PiSignalStrategy and
+ * leave old presets untouched when they are absent.
+ */
+const PI_MATRIX_KIND_BY_SIDE_LEVEL = Object.freeze({
+    long: Object.freeze({ pi: '青π', level2: '深蓝圈', level1: '淡蓝圈' }),
+    // Discord does not publish a distinct short Level 2 bubble.  紫圈 is the
+    // sole short-side circle and is therefore represented by Level 1; the
+    // Level 2 cell remains a real (disabled) glass switch for alignment.
+    short: Object.freeze({ pi: '粉π', level2: null, level1: '紫圈' }),
+});
+
+const PI_MATRIX_SET_STATE = Object.freeze({
+    long_pi_only: Object.freeze({ long: Object.freeze({ pi: true, level2: true, level1: false }), short: Object.freeze({ pi: false, level2: false, level1: false }) }),
+    long_all: Object.freeze({ long: Object.freeze({ pi: true, level2: true, level1: true }), short: Object.freeze({ pi: false, level2: false, level1: false }) }),
+    pi_only: Object.freeze({ long: Object.freeze({ pi: true, level2: true, level1: false }), short: Object.freeze({ pi: true, level2: false, level1: false }) }),
+    pi_strict: Object.freeze({ long: Object.freeze({ pi: true, level2: false, level1: false }), short: Object.freeze({ pi: true, level2: false, level1: false }) }),
+    // Short bubbles remain visible in the matrix for source/audit
+    // transparency, but both circle levels are record-only and never
+    // selectable for trading.  SHORT PI remains a separate option.
+    all: Object.freeze({ long: Object.freeze({ pi: true, level2: true, level1: true }), short: Object.freeze({ pi: true, level2: false, level1: false }) }),
+});
+
+const PI_MATRIX_SET_ORDER = Object.freeze(['long_pi_only', 'long_all', 'pi_only', 'pi_strict', 'all']);
+
+function _piMatrixSwitchId(mode, side, level) {
+    return 'pi-matrix-' + mode + '-' + side + '-' + level;
+}
+
+function _piMatrixStateEmpty() {
+    return {
+        long: { pi: false, level2: false, level1: false },
+        short: { pi: false, level2: false, level1: false },
+    };
+}
+
+function _piMatrixCloneState(state) {
+    const out = _piMatrixStateEmpty();
+    ['long', 'short'].forEach((side) => {
+        ['pi', 'level2', 'level1'].forEach((level) => {
+            out[side][level] = Boolean(state && state[side] && state[side][level]);
+        });
+    });
+    return out;
+}
+
+function _piMatrixStateForSet(signalSet, longOnly) {
+    const set = PI_MATRIX_SET_STATE[String(signalSet || 'long_pi_only').toLowerCase()]
+        || PI_MATRIX_SET_STATE.long_pi_only;
+    const state = _piMatrixCloneState(set);
+    if (longOnly) {
+        state.short = { pi: false, level2: false, level1: false };
+    }
+    return state;
+}
+
+function _piMatrixStateDistance(a, b) {
+    let distance = 0;
+    ['long', 'short'].forEach((side) => {
+        ['pi', 'level2', 'level1'].forEach((level) => {
+            if (Boolean(a?.[side]?.[level]) !== Boolean(b?.[side]?.[level])) distance += 1;
+        });
+    });
+    return distance;
+}
+
+function _piMatrixNearestSet(state) {
+    let best = 'long_pi_only';
+    let bestDistance = Infinity;
+    PI_MATRIX_SET_ORDER.forEach((name) => {
+        const distance = _piMatrixStateDistance(state, PI_MATRIX_SET_STATE[name]);
+        if (distance < bestDistance) {
+            best = name;
+            bestDistance = distance;
+        }
+    });
+    return best;
+}
+
+function _piMatrixStateKinds(state, side) {
+    const kinds = PI_MATRIX_KIND_BY_SIDE_LEVEL[side];
+    if (!kinds) return [];
+    return ['pi', 'level2', 'level1']
+        .filter((level) => state?.[side]?.[level] && kinds[level])
+        .map((level) => kinds[level]);
+}
+
+function _piMatrixReadState(mode) {
+    const state = _piMatrixStateEmpty();
+    let found = false;
+    ['long', 'short'].forEach((side) => {
+        ['pi', 'level2', 'level1'].forEach((level) => {
+            const el = document.getElementById(_piMatrixSwitchId(mode, side, level));
+            if (!el) return;
+            found = true;
+            state[side][level] = el.classList.contains('on') || el.getAttribute('aria-checked') === 'true';
+        });
+    });
+    return found ? state : null;
+}
+
+function _piMatrixWriteState(mode, state) {
+    ['long', 'short'].forEach((side) => {
+        ['pi', 'level2', 'level1'].forEach((level) => {
+            const el = document.getElementById(_piMatrixSwitchId(mode, side, level));
+            if (!el) return;
+            const shortBubble = side === 'short' && (level === 'level2' || level === 'level1');
+            const on = !shortBubble && Boolean(state?.[side]?.[level]);
+            if (el.tpxSetState) el.tpxSetState(on);
+            else {
+                el.classList.toggle('on', on);
+                el.setAttribute('aria-checked', String(on));
+            }
+        });
+    });
+}
+
+function _piMatrixDispatchChange(el) {
+    if (!el) return;
+    try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+}
+
+function _piMatrixSyncLegacy(mode, state) {
+    const next = _piMatrixCloneState(state);
+    const setName = _piMatrixNearestSet(next);
+    const signalSet = document.getElementById('pi-signal-set-' + mode);
+    const longOnly = document.getElementById('pi-long-only-' + mode);
+    if (signalSet && signalSet.value !== setName) {
+        signalSet.value = setName;
+        _piMatrixDispatchChange(signalSet);
+    }
+    // The explicit kinds are authoritative; this flag keeps old consumers
+    // and status/preset displays semantically aligned with the matrix.
+    const hasShort = _piMatrixStateKinds(next, 'short').length > 0;
+    if (longOnly) {
+        const nextValue = hasShort ? '0' : '1';
+        if (longOnly.value !== nextValue) {
+            longOnly.value = nextValue;
+            _piMatrixDispatchChange(longOnly);
+        }
+    }
+    return { setName, state: next };
+}
+
+function _piMatrixSyncFromLegacy(mode) {
+    const signalSet = document.getElementById('pi-signal-set-' + mode);
+    const longOnly = document.getElementById('pi-long-only-' + mode);
+    const state = _piMatrixStateForSet(
+        signalSet ? signalSet.value : 'long_pi_only',
+        longOnly ? longOnly.value === '1' : true,
+    );
+    _piMatrixWriteState(mode, state);
+    return state;
+}
+
+function onPiMatrixProxy(mode, side, level) {
+    const state = _piMatrixReadState(mode);
+    if (!state) return;
+    // A short Level 2 cell has no corresponding Discord kind.  It is kept in
+    // the grid for column alignment but cannot be enabled.
+    if (!PI_MATRIX_KIND_BY_SIDE_LEVEL?.[side]?.[level]) return;
+    if (side === 'short' && (level === 'level2' || level === 'level1')) return;
+    _piMatrixSyncLegacy(mode, state);
+}
+
+function _piMatrixPayload(mode) {
+    const state = _piMatrixReadState(mode);
+    if (!state) return { pi_long_kinds: null, pi_short_kinds: null };
+    _piMatrixSyncLegacy(mode, state);
+    return {
+        pi_long_kinds: _piMatrixStateKinds(state, 'long'),
+        pi_short_kinds: _piMatrixStateKinds(state, 'short'),
+    };
 }
 
 function _normalizeNamingModel(model) {
@@ -2675,6 +2880,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (metricsPanel.style.display === 'block') metricsPanel.classList.remove('hidden');
                 livePanel.classList.add('hidden');
                 liveTopBar.style.display = 'none';
+                refreshPiSignalMarkers();
             } else if (tab === 'live') {
                 backtestPanels.classList.add('hidden');
                 try { refreshCapsForContract('live'); } catch (e) {}
@@ -2690,6 +2896,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 1.0.9: 兩帳號槽 —— 填入 + 每 2s 更新各槽狀態
                 try { initLiveSlots(); } catch (e) {}
                 if (!_liveSlotInterval) _liveSlotInterval = setInterval(pollLiveSlots, 2000);
+                // Live PI audit rows are separate from the immutable history
+                // used by backtest.  Refresh them when this tab becomes visible.
+                refreshPiSignalMarkers();
             }
         };
     });
@@ -2711,6 +2920,9 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) return;
         const active = document.querySelector('.tab.active');
+        if (active && (active.dataset.tab === 'live' || active.dataset.tab === 'backtest')) {
+            refreshPiSignalMarkers();
+        }
         if (active && active.dataset.tab === 'live') {
             pollLiveStatus({ restart: true });
             pollLiveSlots({ restart: true });
@@ -6572,8 +6784,47 @@ const PI_GLYPH_SIZE = 10;      // π 一律同一個字級
 
 let _piSignalRows = [];        // [{chartTime, marks:[{kind,size}]}]
 let _piSignalsLoading = false;
+let _piSignalRefreshTimer = null;
+
+function _ensurePiSignalRefreshTimer() {
+    if (_piSignalRefreshTimer !== null) return;
+    // Backfill runs independently of candle polling. Refresh the audit feed
+    // periodically so repaired signals appear without a new candle.
+    _piSignalRefreshTimer = setInterval(() => {
+        if (document.hidden) return;
+        const activeTab = document.querySelector('.tab.active')?.dataset?.tab;
+        // The record-only audit feed is overlaid on both destinations. Keep
+        // Backtest live as well as Live so a Discord catch-up appears without
+        // waiting for a new candle or a tab switch.
+        if ((activeTab === 'live' || activeTab === 'backtest') && layerOn('pi')) {
+            refreshPiSignalMarkers();
+        }
+    }, 5000);
+}
+
+function _piChartSourceAllowed(ts) {
+    // PI-001 is a source-time rule, not a browser-local clock rule.  Format
+    // in the exchange's America/Los_Angeles zone so PDT/PST both keep the
+    // 07:00 boundary and replay rows can never become chart marks.
+    try {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit',
+            hour12: false, hourCycle: 'h23',
+        }).formatToParts(new Date(ts));
+        const hour = Number(parts.find(p => p.type === 'hour')?.value);
+        const minute = Number(parts.find(p => p.type === 'minute')?.value);
+        return Number.isFinite(hour) && Number.isFinite(minute)
+            ? (hour > 7 || (hour === 7 && minute >= 0))
+            : false;
+    } catch (_) {
+        // Keep the existing fail-open behavior for an unsupported runtime;
+        // malformed timestamps still fail the Date.parse/snap checks below.
+        return true;
+    }
+}
 
 async function refreshPiSignalMarkers() {
+    _ensurePiSignalRefreshTimer();
     if (_piSignalsLoading) return;   // 進行中就跳過;呼叫端每次圖表同步都會再叫一次
     if (!layerOn('pi')) { _piSignalRows = []; return; }
     const rows = window._lastChartData;
@@ -6595,7 +6846,49 @@ async function refreshPiSignalMarkers() {
         _piSignalRows = (data.signals || []).map(sig => ({
             chartTime: _snapToBarTime(utcMsToChartTime(Date.parse(sig.ts))),
             marks: sig.marks || [],
-        })).filter(r => Number.isFinite(r.chartTime));
+            sourceTs: sig.ts,
+        })).filter(r => Number.isFinite(r.chartTime) && _piChartSourceAllowed(r.sourceTs));
+
+        // Live reception is intentionally not appended to the shared history
+        // file: doing that would change backtest calculations.  The separate
+        // record-only ``recorded`` stream is safe to overlay on both Backtest
+        // and Live charts, while engine ``received`` rows stay Live-only.
+        const activeTab = document.querySelector('.tab.active')?.dataset?.tab;
+        if (activeTab === 'live' || activeTab === 'backtest') {
+            try {
+                const auditResp = await fetch(API + '/pi/signals/audit?limit=2000');
+                if (auditResp.ok) {
+                    const audit = await auditResp.json();
+                    const seen = new Set();
+                    for (const event of (audit.events || [])) {
+                        // ``recorded`` is the independent record-only
+                        // listener; ``received`` is the Live engine listener.
+                        // Preset acceptance never controls chart visibility.
+                        if (!event || event.event !== 'received' && event.event !== 'recorded' || !event.ts || !event.kind) continue;
+                        if (event.event === 'received' && activeTab !== 'live') continue;
+                        if (sym.startsWith('MNQ') && event.future !== 'MNQ') continue;
+                        if (sym.startsWith('MES') && event.future !== 'MES') continue;
+                        if (!_piChartSourceAllowed(event.ts)) continue;
+                        const chartTime = _snapToBarTime(utcMsToChartTime(Date.parse(event.ts)));
+                        if (!Number.isFinite(chartTime)) continue;
+                        const key = [event.message_id || '', event.kind, chartTime].join('|');
+                        if (seen.has(key)) continue;
+                        seen.add(key);
+                        let row = _piSignalRows.find(item => item.chartTime === chartTime);
+                        if (!row) {
+                            row = { chartTime, marks: [] };
+                            _piSignalRows.push(row);
+                        }
+                        row.marks.push({ kind: event.kind, size: event.size || '?', count: 1 });
+                    }
+                    _piSignalRows.sort((a, b) => a.chartTime - b.chartTime);
+                }
+            } catch (auditError) {
+                // The historical overlay remains useful if an older server has
+                // not deployed the optional live-audit endpoint yet.
+                console.warn('[PI] live audit load failed:', auditError);
+            }
+        }
     } catch (e) {
         _piSignalRows = [];
         // 吞掉例外正是上面那個 bug 難找的原因 —— 至少要留下痕跡
@@ -7604,6 +7897,11 @@ function renderMetrics(m, backtestTrades) {
     //   交易 < 20     樣本太小,任何統計量都不可信
     //   WORST DAY 虧超過 $1k —— 單日損失已接近多數 Topstep 帳戶的 DLL
     const _warn = (tip) => ' <span class="tpx-warn" title="' + _attr(tip) + '">&#9888;</span>';
+    // Keep the red threshold mark triangular, but make the severity explicit
+    // instead of showing the same solid triangle used by the old card.
+    const _dangerMark = '<span class="tpx-danger-mark" aria-hidden="true">'
+                      + '<span class="tpx-danger-triangle"></span>'
+                      + '<span class="tpx-danger-exclamation">!</span></span>';
     const _nTrades = Number(total_trades || 0);
     // 沒有交易時 PF/RR/CALMAR 沒有意義,不要掛警示(交易數本身仍會警示)
     const _judgeable = _nTrades > 0;
@@ -7646,7 +7944,7 @@ function renderMetrics(m, backtestTrades) {
         //   >=40% 黃 ⚠ (XFA)   >=50% 紅 ▲ (Combine)
         { label: 'BEST DAY'
                  + (consistDanger
-                    ? ' <span class="tpx-danger" title="' + _attr(consistTip) + '">&#9650;</span>'
+                    ? ' <span class="tpx-danger" title="' + _attr(consistTip) + '">' + _dangerMark + '</span>'
                     : (consistWarn
                        ? ' <span class="tpx-warn" title="' + _attr(consistTip) + '">&#9888;</span>'
                        : '')),
@@ -7669,7 +7967,7 @@ function renderMetrics(m, backtestTrades) {
         //   > $1k 黃 ⚠   > $2k 紅 ▲
         { label: 'MAX DD'
                  + (_ddDanger
-                    ? ' <span class="tpx-danger" title="' + _attr(_ddTip) + '">&#9650;</span>'
+                    ? ' <span class="tpx-danger" title="' + _attr(_ddTip) + '">' + _dangerMark + '</span>'
                     : (_ddWarn
                        ? ' <span class="tpx-warn" title="' + _attr(_ddTip) + '">&#9888;</span>'
                        : '')),
@@ -9412,6 +9710,10 @@ const I18N_ZH = {
     'Discord alerts · QQQ→MNQ · SPY→MES · circles are large-only; π is medium/small':
         'Discord 推播驅動 · QQQ→MNQ · SPY→MES · 圈圈只有大尺寸、π 只有中小',
     'SIGNAL SET': '使用訊號', '(level combination)': '(級別組合)',
+    'PI SIGNAL LEVELS': 'PI 訊號級別', 'PI SIGNAL LEVELS (SIGNAL SET)': '使用訊號 · PI 級別',
+    'LONG': '做多', 'SHORT': '做空',
+    'PI': 'π', 'LEVEL 2': '級別 2', 'LEVEL 1': '級別 1',
+    'SHORT LEVEL 2 is not published by the Discord source.': 'Discord 訊號沒有空方級別 2 泡泡。',
     'LONG ONLY · π LEVELS (RECOMMENDED)': '只做多 · π 級別 (推薦)',
     'LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)': '只做多 · 全部藍系 (含淡藍圈)',
     'π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)': 'π 級別 + 深藍圈 (含做空)',
@@ -9419,7 +9721,8 @@ const I18N_ZH = {
     'ALL BLUE/PURPLE (INCLUDES WEAK SIGNALS)': '全部藍/紫 (含弱訊號)',
     'DIRECTION': '方向', '(tested shorts lose net · PF 0.91)': '(空方實測淨虧 PF 0.91)',
     'LONG ONLY (RECOMMENDED)': '只做多 (推薦)', 'LONG + SHORT': '多空皆做',
-    'MAX SIGNAL AGE': '訊號過期上限', '(minutes · discard older)': '(分鐘 · 超過丟棄)',
+    'MAX SIGNAL AGE': '訊號過期上限',
+    '(Discord source timestamp · discard older)': '(Discord 發文時間 · 超過丟棄)',
     'RTH 06:30–13:00 PT impulse leg → move within range → wait for a pullback during the entry window':
         '白天 RTH 06:30–13:00 PT 量推動腿 → 漲幅落在區間內 → 於進場時窗等回撤',
     'MOVE MIN': '漲幅下限', '(% · 0 = no filter)': '(% · 0 = 不篩選)',

@@ -467,6 +467,11 @@ class StrategyParams:
     # 兩邊必須一致 —— 只改策略端不改這裡,預設仍然會做空。
     pi_long_only: bool = True
     pi_signal_set: str = "long_pi_only"   # 訊號級別組合,見 PI_SIGNAL_SETS
+    # Optional explicit signal kinds supplied by the PI matrix UI.  None keeps
+    # the legacy pi_signal_set behavior; an empty list deliberately disables
+    # that side.  PiSignalStrategy already gives these fields precedence.
+    pi_long_kinds: Optional[List[str]] = None
+    pi_short_kinds: Optional[List[str]] = None
     pi_max_signal_age_min: int = 5        # 超過即丟棄(BLOCK 不是 WARN)
     pi_short_sl_value: float = 2.5        # 空單 SL(×atr_blend)
     pi_short_hold_min: int = 60           # 空單時間出場(分鐘);0 = 不用

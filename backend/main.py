@@ -63,7 +63,14 @@ async def lifespan(app: FastAPI):
     # 這個背景任務與 UI 完全解耦:伺服器活著就累積 MNQ + MES。
     from backend.data.accumulator import accumulator_task
     _accum_task = _asyncio.create_task(accumulator_task(interval_s=3600))
+    # Record-only PI listener: starts with the backend (no Live engine or
+    # browser action required), catches up today/yesterday, then follows new
+    # eligible messages for the chart/audit stream.  A PI Live engine pauses
+    # this worker while it owns the trading callback.
+    from backend.live.pi_recorder import start_pi_recorder, stop_pi_recorder
+    await start_pi_recorder()
     yield
+    await stop_pi_recorder()
     _accum_task.cancel()    # 1.0.9
     _shadow_task.cancel()   # 1.0.9
     logger.info("ancserTPX backend stopped")

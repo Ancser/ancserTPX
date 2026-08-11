@@ -409,6 +409,52 @@
         }
         .toggle-field:hover { border-color: var(--border-h); }
         .toggle-field.on { color: var(--cyan); border-color: rgba(100, 220, 255, 0.3); }
+
+        /* PI entry matrix -------------------------------------------------
+           Keep one compact, aligned control for each side/level.  The
+           controls themselves are the same .glass-switch used by the theme
+           and layer toggles; only the surrounding grid is PI-specific. */
+        .pi-signal-matrix {
+            margin: 8px 0 10px;
+            padding: 8px 9px 7px;
+            border: 1px solid var(--border);
+            background: rgba(8, 10, 16, 0.34);
+        }
+        .pi-matrix-grid {
+            display: grid;
+            grid-template-columns: minmax(5.2rem, 1fr) minmax(4.5rem, auto) minmax(4.5rem, auto);
+            align-items: center;
+            gap: 5px 8px;
+        }
+        .pi-matrix-corner { min-height: 1px; }
+        .pi-matrix-column,
+        .pi-matrix-row-label {
+            color: var(--text2);
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.625rem;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        .pi-matrix-column { text-align: center; color: var(--cyan); }
+        .pi-matrix-row-label { color: var(--text); }
+        .pi-matrix-cell {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 1.35rem;
+        }
+        .pi-matrix-switch { margin: 0 auto; }
+        .pi-matrix-switch-disabled { opacity: 0.32; filter: saturate(0.45); cursor: not-allowed; }
+        .pi-matrix-source { display: none !important; }
+        .pi-matrix-note {
+            margin-top: 6px;
+            color: var(--text3);
+            font-family: 'IBM Plex Mono', monospace;
+            font-size: 0.5rem;
+            letter-spacing: 0.2px;
+            text-transform: none;
+        }
+        .pi-legacy-controls { display: none !important; }
         /* ── Buttons ── */
         .btn {
             padding: 10px 16px;
@@ -1841,6 +1887,32 @@
    BEST DAY 的數值本身保持綠色,風險只用圖示表達。 */
 .tpx-danger { color: var(--red); cursor: help; }
 .metric-card .label .tpx-danger { margin-left: 4px; font-size: 1.1em; }
+.tpx-danger-mark {
+    position: relative;
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.14em;
+    color: var(--red);
+}
+.tpx-danger-triangle {
+    position: absolute;
+    inset: 0;
+    display: block;
+    background: currentColor;
+    clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.tpx-danger-exclamation {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding-top: 0.24em;
+    color: var(--bg);
+    font-size: 0.58em;
+    font-weight: 900;
+    line-height: 1;
+}
 
 /* 1.0.9: 風險上限=紅、獲利上限=綠。兩條滑桿長得一樣時很容易設錯邊,
    而設錯邊的後果不對稱:誤把風險當獲利壓,會直接放大回撤。 */

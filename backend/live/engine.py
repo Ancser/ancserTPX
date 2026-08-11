@@ -2801,11 +2801,33 @@ class LiveTradingEngine:
                     # 只入列,不直接下單 —— 下單走主迴圈的正常路徑
                     if not hasattr(self.trend_follow, "push"):
                         self._log_event("[PI] 策略不支援 push(),訊號丟棄", "error")
-                        return
-                    if self.trend_follow.push(sig):
+                        return False
+                    try:
+                        accepted = bool(self.trend_follow.push(sig))
+                    except Exception as exc:
+                        # Let PiListener contain the callback failure, but
+                        # leave an engine-visible reason as well.
                         self._log_event(
-                            f"[PI] 訊號入列 {sig.equity}→{sig.future} "
-                            f"{sig.side} {sig.kind}/{sig.size}")
+                            f"[PI] 訊號處理失敗 {sig.equity}→{sig.future} "
+                            f"{sig.side} {sig.kind}/{sig.size}: "
+                            f"{type(exc).__name__}: {exc}",
+                            "error",
+                        )
+                        raise
+                    source_ts = sig.ts.isoformat() if getattr(sig, "ts", None) else "?"
+                    received_at = (
+                        sig.received_at.isoformat()
+                        if getattr(sig, "received_at", None)
+                        else "?"
+                    )
+                    outcome = "入列" if accepted else "已接收但未入列"
+                    self._log_event(
+                        f"[PI] 訊號{outcome} {sig.equity}→{sig.future} "
+                        f"{sig.side} {sig.kind}/{sig.size} "
+                        f"source_ts={source_ts} received_at={received_at}",
+                        "info" if accepted else "warn",
+                    )
+                    return accepted
 
                 self._pi_listener = PiListener.from_env(
                     _on_pi, poll_seconds=30.0, rate_limit_per_min=30)

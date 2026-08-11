@@ -7,11 +7,12 @@ and that malformed Discord transport data cannot terminate the PI feed.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.db.models import StrategyParams
 from backend.live.engine import LiveTradingEngine
-from backend.live.pi_listener import BOT_ID, PiListener
+from backend.live.pi_listener import BOT_ID, PiSignal, PiListener
 
 
 CONTRACT = "CON.F.US.MNQ.U26"
@@ -304,8 +305,123 @@ def test_pi_fetch_contains_bad_json_and_payload_shapes():
     assert health["last_success_age_seconds"] is not None
 
 
-def test_pi_dispatch_skips_bad_messages_and_delivers_later_valid_signal():
+def test_pi_window_entry_seeds_latest_then_polls_after_cursor(monkeypatch):
+    """The listener does not replay unbounded Discord history on startup."""
+    listener = PiListener("token", lambda _sig: None)
+    seed = {
+        "id": "900",
+        "timestamp": "2026-08-10T13:33:00+00:00",  # 06:33 PT replay
+        "author": {"id": BOT_ID},
+        "content": "@everyone (QQQ)\n• 淡蓝圈 ×1（大）",
+    }
+    fetch = AsyncMock(side_effect=[[seed], []])
+    listener._fetch = fetch
+    monkeypatch.setattr(listener, "in_window", lambda: True)
+
+    asyncio.run(listener._poll_once(MagicMock()))
+
+    assert [call.args[1] for call in fetch.await_args_list] == [
+        {"limit": 1},
+        {"limit": 50, "after": "900"},
+    ]
+    assert listener.get_health()["history_fetch_mode"] == "seed_latest_then_after_cursor"
+
+
+def test_record_only_backfill_walks_history_until_durable_duplicate(monkeypatch):
+    """Catch-up records every mark and never invokes a trading callback."""
     delivered = []
+    audited = []
+    messages = []
+    monkeypatch.setattr("backend.live.pi_listener.load_message_ids", lambda: {"298"})
+    monkeypatch.setattr("backend.live.pi_listener.load_message_timestamps", lambda: set())
+    monkeypatch.setattr(
+        "backend.live.pi_listener.append_signal_event",
+        lambda sig, **kwargs: audited.append((sig, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        "backend.live.pi_listener.append_message_event",
+        lambda msg, **kwargs: messages.append((msg, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        "backend.live.pi_listener.parse_message",
+        lambda msg: [PiSignal(
+            message_id=str(msg["id"]),
+            ts=datetime.fromisoformat(msg["timestamp"]),
+            equity="QQQ",
+            future="MNQ",
+            direction=1,
+            kind="青π",
+            size="中",
+            pos=None,
+            raw=msg.get("content", ""),
+        )],
+    )
+    listener = PiListener("token", delivered.append, record_only=True)
+    page_one = [
+        {"id": "300", "timestamp": "2026-08-11T16:00:00+00:00", "author": {"id": BOT_ID}},
+        {"id": "299", "timestamp": "2026-08-11T15:00:00+00:00", "author": {"id": BOT_ID}},
+    ]
+    page_two = [
+        # The durable duplicate is the stopping boundary; older pages are not
+        # requested, while all newer records in page one are retained.
+        {"id": "298", "timestamp": "2026-08-10T16:00:00+00:00", "author": {"id": BOT_ID}},
+        {"id": "297", "timestamp": "2026-08-10T15:00:00+00:00", "author": {"id": BOT_ID}},
+    ]
+    fetch = AsyncMock(side_effect=[page_one, page_two])
+    listener._fetch = fetch
+
+    result = asyncio.run(listener.backfill_recent(
+        now=datetime(2026, 8, 11, 17, 0, tzinfo=timezone.utc),
+    ))
+
+    assert result["duplicate_boundary"] is True
+    assert result["new_messages"] == 2
+    assert [call.args[1] for call in fetch.await_args_list] == [
+        {"limit": 100},
+        {"limit": 100, "before": "299"},
+    ]
+    assert delivered == []
+    assert [kwargs["event"] for _, kwargs in audited] == ["recorded", "recorded"]
+
+
+def test_record_only_backfill_keeps_pre_session_out_of_signal_audit(monkeypatch):
+    """06:33 replay is retained as a diagnostic message, never a chart mark."""
+    audited = []
+    messages = []
+    monkeypatch.setattr("backend.live.pi_listener.load_message_ids", lambda: set())
+    monkeypatch.setattr("backend.live.pi_listener.load_message_timestamps", lambda: set())
+    monkeypatch.setattr(
+        "backend.live.pi_listener.append_signal_event",
+        lambda sig, **kwargs: audited.append((sig, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        "backend.live.pi_listener.append_message_event",
+        lambda msg, **kwargs: messages.append((msg, kwargs)) or True,
+    )
+    listener = PiListener("token", lambda _sig: (_ for _ in ()).throw(AssertionError()), record_only=True)
+    replay = {
+        "id": "301",
+        "timestamp": "2026-08-11T13:33:00+00:00",  # 06:33 PT
+        "author": {"id": BOT_ID},
+        "content": "@everyone (QQQ)",
+    }
+    listener._fetch = AsyncMock(side_effect=[[replay], []])
+    result = asyncio.run(listener.backfill_recent(
+        now=datetime(2026, 8, 11, 17, 0, tzinfo=timezone.utc),
+    ))
+
+    assert result["cutoff_reached"] is False
+    assert audited == []
+    assert messages and messages[0][1]["event"] == "pre_session_skip"
+
+
+def test_pi_dispatch_skips_bad_messages_and_delivers_later_valid_signal(monkeypatch):
+    delivered = []
+    audited = []
+    monkeypatch.setattr(
+        "backend.live.pi_listener.append_signal_event",
+        lambda sig, **kwargs: audited.append((sig, kwargs)) or True,
+    )
     listener = PiListener("token", delivered.append)
     valid = {
         "id": "123456789",
@@ -322,6 +438,8 @@ def test_pi_dispatch_skips_bad_messages_and_delivers_later_valid_signal():
     assert len(delivered) == 1
     assert delivered[0].message_id == "123456789"
     assert delivered[0].future == "MNQ"
+    assert delivered[0].received_at is not None
+    assert [event[1]["event"] for event in audited] == ["received", "callback"]
     assert listener._last_id == "123456789"
 
 

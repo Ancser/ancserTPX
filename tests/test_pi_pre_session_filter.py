@@ -196,3 +196,54 @@ class TestSizeIsNotUsedForFiltering:
         for st in ("pi_only", "all", "pi_strict"):
             s = PiSignalStrategy(StrategyParams(pi_signal_set=st, pi_long_only=True))
             assert s.pi_short_kinds == (), f"{st} 洩漏了空方"
+
+    def test_explicit_matrix_kinds_override_legacy_signal_set(self):
+        """The PI matrix can select exact kinds without changing old presets."""
+        from backend.db.models import StrategyParams
+        from backend.strategy.pi_signal import PiSignalStrategy
+
+        s = PiSignalStrategy(StrategyParams(
+            pi_signal_set="all",
+            pi_long_only=False,
+            pi_long_kinds=["青π"],
+            pi_short_kinds=["粉π"],
+        ))
+        assert s.pi_long_kinds == ("青π",)
+        assert s.pi_short_kinds == ("粉π",)
+
+    def test_short_bubbles_are_record_only_even_when_explicitly_selected(self):
+        """Circle level/size confusion must not re-enable short entries."""
+        from types import SimpleNamespace
+
+        from backend.db.models import StrategyParams
+        from backend.strategy.pi_signal import PiSignalStrategy
+
+        s = PiSignalStrategy(StrategyParams(
+            pi_long_only=False,
+            pi_long_kinds=["青π"],
+            pi_short_kinds=["粉π", "紫圈"],
+        ))
+        assert s.pi_short_kinds == ("粉π",)
+        base = dict(message_id="short-bubble", future="MNQ", equity="QQQ", size="中",
+                    pos=None, raw="")
+        assert not s.push(SimpleNamespace(direction=-1, kind="紫圈", **base))
+        assert s.push(SimpleNamespace(direction=-1, kind="粉π", **{
+            **base, "message_id": "short-pi",
+        }))
+
+    def test_empty_matrix_side_is_disabled(self):
+        """Turning every switch off must not silently mean "allow all"."""
+        from types import SimpleNamespace
+
+        from backend.db.models import StrategyParams
+        from backend.strategy.pi_signal import PiSignalStrategy
+
+        s = PiSignalStrategy(StrategyParams(
+            pi_long_only=False,
+            pi_long_kinds=[],
+            pi_short_kinds=[],
+        ))
+        base = dict(message_id="matrix", future="", equity="QQQ", size="",
+                    pos=None, raw="")
+        assert not s.push(SimpleNamespace(direction=1, kind="青π", **base))
+        assert not s.push(SimpleNamespace(direction=-1, kind="粉π", **base))

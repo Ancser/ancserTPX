@@ -171,6 +171,35 @@ def test_language_and_theme_marks_share_the_existing_thumb_and_hide_while_moving
     assert 'icon.textContent = light ? "☀" : "☾"' in GLASS_JS
 
 
+def test_pi_matrix_switches_use_the_real_optical_thumb_surface():
+    """The PI matrix must not fall back to a plain, unpositioned thumb span."""
+    for mode in ("bt", "live"):
+        start = HTML.index(f'id="pi-params-{mode}"')
+        end = HTML.index('class="pi-legacy-controls"', start)
+        matrix = HTML[start:end]
+        assert matrix.count('class="optical-surface switch-thumb"') == 6
+        assert matrix.count('data-optical="switch"') == 6
+
+
+def test_red_performance_threshold_mark_has_an_exclamation():
+    assert "tpx-danger-mark" in JS
+    assert "tpx-danger-triangle" in JS
+    assert "tpx-danger-exclamation" in JS
+    assert ".tpx-danger-mark" in CSS
+    assert ".tpx-danger-exclamation" in CSS
+
+
+def test_live_pi_audit_overlay_does_not_change_backtest_history_source():
+    refresh = _function_source("refreshPiSignalMarkers")
+    assert "API + '/pi/signals?'" in refresh
+    assert "API + '/pi/signals/audit?limit=2000'" in refresh
+    assert "event.event !== 'received'" in refresh
+    assert "event.event !== 'recorded'" in refresh
+    assert "Preset acceptance never controls chart visibility." in refresh
+    assert "activeTab === 'live'" in refresh
+    assert "activeTab === 'backtest'" in refresh
+
+
 def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
     sidebar_start = HTML.index('<div class="sidebar">')
     sidebar_end = HTML.index('<!-- Main Content -->', sidebar_start)
@@ -207,6 +236,28 @@ def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
         "BETAFIB LEVELS",
     ):
         assert f"'{english}':" in JS
+
+
+def test_pi_matrix_is_two_column_glass_switch_ui_and_keeps_legacy_wire_fields():
+    for mode in ("bt", "live"):
+        matrix = HTML[HTML.index(f'data-pi-matrix="{mode}"'):]
+        matrix = matrix[:matrix.index("</div>", matrix.index("pi-matrix-note"))]
+        assert f'id="pi-matrix-{mode}-long-pi"' in matrix
+        assert f'id="pi-matrix-{mode}-short-pi"' in matrix
+        assert f'id="pi-matrix-{mode}-long-level2"' in matrix
+        assert f'id="pi-matrix-{mode}-long-level1"' in matrix
+        assert f'id="pi-matrix-{mode}-short-level1"' in matrix
+        assert f'id="pi-matrix-{mode}-short-level1" data-stage="switch" disabled' in matrix
+        assert "class=\"glass-switch pi-matrix-switch" in matrix
+        assert "LONG" in matrix and "SHORT" in matrix
+        assert "LEVEL 2" in matrix and "LEVEL 1" in matrix
+        assert "SHORT LEVEL 1/2 bubbles are recorded only" in matrix
+        assert f'id="pi-signal-set-{mode}"' in HTML
+        assert f'id="pi-long-only-{mode}"' in HTML
+
+    assert "show('factor-params-' + mode, isFactor || isIntramom || isSessfib);" in JS
+    assert "pi_long_kinds: piMatrix.pi_long_kinds" in JS
+    assert "pi_short_kinds: piMatrix.pi_short_kinds" in JS
 
 
 def test_requested_control_geometry_is_explicit_and_consistent():

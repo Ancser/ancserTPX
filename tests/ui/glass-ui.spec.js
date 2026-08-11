@@ -426,6 +426,56 @@ test("English parameter chrome is canonical and round-trips to Chinese", async (
   );
 });
 
+test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset payloads", async ({ page }) => {
+  await page.evaluate(() => {
+    const strategy = document.querySelector("#strategy-bt");
+    strategy.value = "pi";
+    strategy.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  const matrix = page.locator('#pi-params-bt [data-pi-matrix="bt"]').first();
+  await expect(matrix).toBeVisible();
+  await expect(matrix.locator(".pi-matrix-column")).toHaveText(["LONG", "SHORT"]);
+  await expect(matrix.locator(".pi-matrix-row-label")).toHaveText(["PI", "LEVEL 2", "LEVEL 1"]);
+  await expect(matrix.locator('.pi-matrix-grid > .pi-matrix-cell > .glass-switch')).toHaveCount(6);
+  await expect(matrix.locator('.pi-matrix-grid > .pi-matrix-cell > .glass-switch > .switch-thumb.optical-surface[data-optical="switch"]')).toHaveCount(6);
+  const thumbStyles = await matrix.locator('.pi-matrix-grid > .pi-matrix-cell > .glass-switch > .switch-thumb').evaluateAll((nodes) => nodes.map((node) => {
+    const style = getComputedStyle(node);
+    const rect = node.getBoundingClientRect();
+    return { position: style.position, width: rect.width, height: rect.height, opacity: Number(style.opacity) };
+  }));
+  expect(thumbStyles.every((thumb) => thumb.position === "absolute" && thumb.width > 0 && thumb.height > 0 && thumb.opacity > 0)).toBe(true);
+  await expect(page.locator("#factor-params-bt")).toBeHidden();
+
+  let payload = await page.evaluate(() => collectStrategyParams("bt"));
+  expect(payload.pi_signal_set).toBe("long_pi_only");
+  expect(payload.pi_long_only).toBe(true);
+  expect(payload.pi_long_kinds).toEqual(["青π", "深蓝圈"]);
+  expect(payload.pi_short_kinds).toEqual([]);
+
+  await page.locator("#pi-params-bt #pi-matrix-bt-long-level1").click();
+  payload = await page.evaluate(() => collectStrategyParams("bt"));
+  expect(payload.pi_signal_set).toBe("long_all");
+  expect(payload.pi_long_kinds).toEqual(["青π", "深蓝圈", "淡蓝圈"]);
+
+  await page.locator("#pi-params-bt #pi-matrix-bt-short-pi").click();
+  payload = await page.evaluate(() => collectStrategyParams("bt"));
+  expect(payload.pi_long_only).toBe(false);
+  expect(payload.pi_short_kinds).toEqual(["粉π"]);
+
+  await page.evaluate(() => applyStrategyParams("bt", {
+    strategy: "pi",
+    pi_signal_set: "all",
+    pi_long_only: false,
+  }));
+  await expect(page.locator("#pi-params-bt #pi-matrix-bt-long-level1")).toHaveClass(/on/);
+  await expect(page.locator("#pi-params-bt #pi-matrix-bt-short-level1")).not.toHaveClass(/on/);
+  await expect(page.locator("#pi-params-bt #pi-matrix-bt-short-level1")).toBeDisabled();
+  payload = await page.evaluate(() => collectStrategyParams("bt"));
+  expect(payload.pi_signal_set).toBe("all");
+  expect(payload.pi_short_kinds).toEqual(["粉π"]);
+});
+
 test("parameter help tooltip follows the single UI locale", async ({ page }) => {
   const help = page.locator(
     ".form-group:has(> #preset-bt) > label .help-dot",

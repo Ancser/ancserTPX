@@ -435,29 +435,106 @@
                      青π PF 3.05 $162/筆 · 深藍圈 PF 2.90 $96 · 粉π PF 2.28 $62
                      淡藍圈 PF 1.35 $32 · 紫圈 PF 1.18 $12(後兩者預設排除) -->
                 <div id="pi-params-bt" style="display:none;">
-                    <div class="lbl-hint" style="margin:2px 0 6px;">Discord alerts · QQQ→MNQ · SPY→MES · circles are large-only; π is medium/small</div>
-                    <div class="form-row">
-                        <div class="form-group fx1">
-                            <label>SIGNAL SET <span class="lbl-hint">(level combination)</span></label>
-                            <select id="pi-signal-set-bt">
-                                <option value="long_pi_only" selected>LONG ONLY · π LEVELS (RECOMMENDED)</option>
-                                <option value="long_all">LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)</option>
-                                <option value="pi_only">π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)</option>
-                                <option value="pi_strict">PURE π ONLY (CYAN π / PINK π)</option>
-                                <option value="all">ALL BLUE/PURPLE (INCLUDES WEAK SIGNALS)</option>
-                            </select>
+                    <div class="form-row pi-matrix-shell">
+                        <div class="form-group fx1 pi-matrix-form-group">
+                            <label>PI SIGNAL LEVELS (SIGNAL SET)
+                                <span class="lbl-hint">(level combination)</span>
+                                <span class="lbl-hint">Discord alerts · QQQ→MNQ · SPY→MES · circles are large-only; π is medium/small</span>
+                            </label>
+                    <div class="pi-signal-matrix" data-pi-matrix="bt">
+                        <div class="pi-matrix-grid" role="group" aria-label="PI signal levels">
+                            <div class="pi-matrix-corner" aria-hidden="true"></div>
+                            <div class="pi-matrix-column">LONG</div>
+                            <div class="pi-matrix-column">SHORT</div>
+
+                            <div class="pi-matrix-row-label">PI</div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch on"
+                                        id="pi-matrix-bt-long-pi" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-bt-long-pi" aria-checked="true" aria-label="LONG PI">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-bt-long-pi"
+                                        onclick="onPiMatrixProxy('bt','long','pi')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch"
+                                        id="pi-matrix-bt-short-pi" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-bt-short-pi" aria-checked="false" aria-label="SHORT PI">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-bt-short-pi"
+                                        onclick="onPiMatrixProxy('bt','short','pi')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+
+                            <div class="pi-matrix-row-label">LEVEL 2</div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch on"
+                                        id="pi-matrix-bt-long-level2" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-bt-long-level2" aria-checked="true" aria-label="LONG LEVEL 2">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-bt-long-level2"
+                                        onclick="onPiMatrixProxy('bt','long','level2')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch pi-matrix-switch-disabled"
+                                        id="pi-matrix-bt-short-level2" data-stage="switch" disabled
+                                        data-switch-proxy="pi-matrix-source-bt-short-level2" aria-checked="false" aria-label="SHORT LEVEL 2 (UNAVAILABLE)">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-bt-short-level2"
+                                        onclick="onPiMatrixProxy('bt','short','level2')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+
+                            <div class="pi-matrix-row-label">LEVEL 1</div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch"
+                                        id="pi-matrix-bt-long-level1" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-bt-long-level1" aria-checked="false" aria-label="LONG LEVEL 1">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-bt-long-level1"
+                                        onclick="onPiMatrixProxy('bt','long','level1')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch pi-matrix-switch-disabled"
+                                        id="pi-matrix-bt-short-level1" data-stage="switch" disabled
+                                        data-switch-proxy="pi-matrix-source-bt-short-level1" aria-checked="false" aria-label="SHORT LEVEL 1 (RECORD ONLY)">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-bt-short-level1"
+                                        onclick="onPiMatrixProxy('bt','short','level1')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
                         </div>
-                        <div class="form-group fx1">
-                            <label>DIRECTION <span class="lbl-hint">(tested shorts lose net · PF 0.91)</span></label>
-                            <select id="pi-long-only-bt">
-                                <option value="1" selected>LONG ONLY (RECOMMENDED)</option>
-                                <option value="0">LONG + SHORT</option>
-                            </select>
+                        <div class="pi-matrix-note">SHORT LEVEL 1/2 bubbles are recorded only; they are disabled for trading. SHORT LEVEL 2 is not published by the Discord source.</div>
+                    </div>
+                        </div>
+                    </div>
+                    <div class="pi-legacy-controls" aria-hidden="true">
+                        <div class="form-row">
+                            <div class="form-group fx1">
+                                <span class="pi-legacy-label" aria-hidden="true">SIGNAL SET (level combination)</span>
+                                <select id="pi-signal-set-bt">
+                                    <option value="long_pi_only" selected>LONG ONLY · π LEVELS (RECOMMENDED)</option>
+                                    <option value="long_all">LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)</option>
+                                    <option value="pi_only">π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)</option>
+                                    <option value="pi_strict">PURE π ONLY (CYAN π / PINK π)</option>
+                                    <option value="all">ALL BLUE/PURPLE (INCLUDES WEAK SIGNALS)</option>
+                                </select>
+                            </div>
+                            <div class="form-group fx1">
+                                <span class="pi-legacy-label" aria-hidden="true">LEGACY PI DIRECTION</span>
+                                <select id="pi-long-only-bt">
+                                    <option value="1" selected>LONG ONLY (RECOMMENDED)</option>
+                                    <option value="0">LONG + SHORT</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>MAX SIGNAL AGE <span class="lbl-hint">(minutes · discard older)</span></label>
+                            <label>MAX SIGNAL AGE <span class="lbl-hint">(Discord source timestamp · discard older)</span></label>
                             <select id="pi-max-age-bt">
                                 <option value="2">2</option>
                                 <option value="5" selected>5</option>
@@ -1096,29 +1173,106 @@
                      青π PF 3.05 $162/筆 · 深藍圈 PF 2.90 $96 · 粉π PF 2.28 $62
                      淡藍圈 PF 1.35 $32 · 紫圈 PF 1.18 $12(後兩者預設排除) -->
                 <div id="pi-params-live" style="display:none;">
-                    <div class="lbl-hint" style="margin:2px 0 6px;">Discord alerts · QQQ→MNQ · SPY→MES · circles are large-only; π is medium/small</div>
-                    <div class="form-row">
-                        <div class="form-group fx1">
-                            <label>SIGNAL SET <span class="lbl-hint">(level combination)</span></label>
-                            <select id="pi-signal-set-live">
-                                <option value="long_pi_only" selected>LONG ONLY · π LEVELS (RECOMMENDED)</option>
-                                <option value="long_all">LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)</option>
-                                <option value="pi_only">π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)</option>
-                                <option value="pi_strict">PURE π ONLY (CYAN π / PINK π)</option>
-                                <option value="all">ALL BLUE/PURPLE (INCLUDES WEAK SIGNALS)</option>
-                            </select>
+                    <div class="form-row pi-matrix-shell">
+                        <div class="form-group fx1 pi-matrix-form-group">
+                            <label>PI SIGNAL LEVELS (SIGNAL SET)
+                                <span class="lbl-hint">(level combination)</span>
+                                <span class="lbl-hint">Discord alerts · QQQ→MNQ · SPY→MES · circles are large-only; π is medium/small</span>
+                            </label>
+                    <div class="pi-signal-matrix" data-pi-matrix="live">
+                        <div class="pi-matrix-grid" role="group" aria-label="PI signal levels">
+                            <div class="pi-matrix-corner" aria-hidden="true"></div>
+                            <div class="pi-matrix-column">LONG</div>
+                            <div class="pi-matrix-column">SHORT</div>
+
+                            <div class="pi-matrix-row-label">PI</div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch on"
+                                        id="pi-matrix-live-long-pi" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-live-long-pi" aria-checked="true" aria-label="LONG PI">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-live-long-pi"
+                                        onclick="onPiMatrixProxy('live','long','pi')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch"
+                                        id="pi-matrix-live-short-pi" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-live-short-pi" aria-checked="false" aria-label="SHORT PI">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-live-short-pi"
+                                        onclick="onPiMatrixProxy('live','short','pi')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+
+                            <div class="pi-matrix-row-label">LEVEL 2</div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch on"
+                                        id="pi-matrix-live-long-level2" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-live-long-level2" aria-checked="true" aria-label="LONG LEVEL 2">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-live-long-level2"
+                                        onclick="onPiMatrixProxy('live','long','level2')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch pi-matrix-switch-disabled"
+                                        id="pi-matrix-live-short-level2" data-stage="switch" disabled
+                                        data-switch-proxy="pi-matrix-source-live-short-level2" aria-checked="false" aria-label="SHORT LEVEL 2 (UNAVAILABLE)">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-live-short-level2"
+                                        onclick="onPiMatrixProxy('live','short','level2')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+
+                            <div class="pi-matrix-row-label">LEVEL 1</div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch"
+                                        id="pi-matrix-live-long-level1" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-live-long-level1" aria-checked="false" aria-label="LONG LEVEL 1">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-live-long-level1"
+                                        onclick="onPiMatrixProxy('live','long','level1')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
+                            <div class="pi-matrix-cell">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch pi-matrix-switch-disabled"
+                                        id="pi-matrix-live-short-level1" data-stage="switch" disabled
+                                        data-switch-proxy="pi-matrix-source-live-short-level1" aria-checked="false" aria-label="SHORT LEVEL 1 (RECORD ONLY)">
+                                    <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                                </button>
+                                <button type="button" class="pi-matrix-source" id="pi-matrix-source-live-short-level1"
+                                        onclick="onPiMatrixProxy('live','short','level1')" tabindex="-1" aria-hidden="true"></button>
+                            </div>
                         </div>
-                        <div class="form-group fx1">
-                            <label>DIRECTION <span class="lbl-hint">(tested shorts lose net · PF 0.91)</span></label>
-                            <select id="pi-long-only-live">
-                                <option value="1" selected>LONG ONLY (RECOMMENDED)</option>
-                                <option value="0">LONG + SHORT</option>
-                            </select>
+                        <div class="pi-matrix-note">SHORT LEVEL 1/2 bubbles are recorded only; they are disabled for trading. SHORT LEVEL 2 is not published by the Discord source.</div>
+                    </div>
+                        </div>
+                    </div>
+                    <div class="pi-legacy-controls" aria-hidden="true">
+                        <div class="form-row">
+                            <div class="form-group fx1">
+                                <span class="pi-legacy-label" aria-hidden="true">SIGNAL SET (level combination)</span>
+                                <select id="pi-signal-set-live">
+                                    <option value="long_pi_only" selected>LONG ONLY · π LEVELS (RECOMMENDED)</option>
+                                    <option value="long_all">LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)</option>
+                                    <option value="pi_only">π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)</option>
+                                    <option value="pi_strict">PURE π ONLY (CYAN π / PINK π)</option>
+                                    <option value="all">ALL BLUE/PURPLE (INCLUDES WEAK SIGNALS)</option>
+                                </select>
+                            </div>
+                            <div class="form-group fx1">
+                                <span class="pi-legacy-label" aria-hidden="true">LEGACY PI DIRECTION</span>
+                                <select id="pi-long-only-live">
+                                    <option value="1" selected>LONG ONLY (RECOMMENDED)</option>
+                                    <option value="0">LONG + SHORT</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
                     <div class="form-row">
                         <div class="form-group fx1">
-                            <label>MAX SIGNAL AGE <span class="lbl-hint">(minutes · discard older)</span></label>
+                            <label>MAX SIGNAL AGE <span class="lbl-hint">(Discord source timestamp · discard older)</span></label>
                             <select id="pi-max-age-live">
                                 <option value="2">2</option>
                                 <option value="5" selected>5</option>
