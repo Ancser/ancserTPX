@@ -60,6 +60,27 @@ class TestAutoOcoOverride:
         assert "OCO" in src[i - 600:i + 400]
 
 
+class TestEntryUsesTopstepAutoOco:
+    """EXEC-004: entries are plain orders; Auto OCO owns the child pair."""
+
+    def test_limit_entry_does_not_attach_a_second_protection_pair(self):
+        src = inspect.getsource(LiveTradingEngine._place_order)
+        assert "stop_loss_bracket" not in src
+        assert "take_profit_bracket" not in src
+        assert "_entry_brackets_for_signal" not in src
+
+    def test_market_entry_does_not_attach_a_second_protection_pair(self):
+        src = inspect.getsource(LiveTradingEngine._place_market_entry)
+        assert "stop_loss_bracket" not in src
+        assert "take_profit_bracket" not in src
+        assert "_entry_brackets_for_signal" not in src
+
+    def test_existing_auto_oco_children_are_modified(self):
+        src = ENGINE.read_text(encoding="utf-8")
+        assert "_scan_auto_oco_order_ids" in src
+        assert "modify_order" in src
+
+
 class TestMarketPriceGuard:
     """EXEC-006:沒有可信市價就不得建立新的保護單。
 

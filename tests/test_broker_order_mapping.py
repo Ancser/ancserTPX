@@ -116,8 +116,12 @@ class TestPayloadShape:
         for k in ("accountId", "contractId", "type", "side", "size"):
             assert k in j, f"payload 缺 {k}"
 
-    def test_brackets_are_forwarded_when_the_engine_sets_them(self):
-        """引擎**會**帶 bracket(`_entry_brackets_for_signal`),adapter 必須原樣轉送。
+    def test_explicit_brackets_are_forwarded_for_non_engine_callers(self):
+        """Adapter 仍須原樣轉送外部 caller 明確提供的 bracket。
+
+        LiveTradingEngine intentionally omits these fields because Topstep Auto
+        OCO is the sole protection owner; this test covers adapter compatibility
+        for other explicit callers.
 
         2026-08-08 更正:這裡原本斷言「payload 不含 bracket」,但那只在
         OrderRequest 欄位是 None 時成立 —— 恆真,而且從來沒碰到引擎的

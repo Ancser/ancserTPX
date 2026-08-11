@@ -28,6 +28,7 @@ from backend.db.models import (
 )
 from backend.live.account_roles import load_roles  # 1.0.9: main account + 每帳號 preset
 from backend.live.engine import LiveTradingEngine
+from backend.live.engine_lease import LiveEngineLease
 from backend.live.warmup import signal_warmup_progress
 from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, normalize_allowed_sessions
 
@@ -711,6 +712,7 @@ async def run_terminal_live() -> int:
 
     client = TopstepXClient(username=username, api_key=api_key, use_demo=use_demo)
     engine: Optional[LiveTradingEngine] = None
+    owner_lease: Optional[LiveEngineLease] = None
     recorder_paused = False
     stop_event = asyncio.Event()
 
@@ -740,6 +742,13 @@ async def run_terminal_live() -> int:
         account = _select_account(accounts)
         if not account:
             raise RuntimeError("No active tradable account found")
+        account_id = int(account["id"])
+        owner_lease = LiveEngineLease(account_id)
+        if not owner_lease.acquire():
+            raise RuntimeError(
+                f"Account {account_id} is already owned by another live engine "
+                "(web or terminal)"
+            )
 
         # 1.0.9: 先選帳號,preset 才能按「每帳號指定」優先(account_roles.json),
         # 其次 last_used_live → last_used_bt → default。
@@ -770,7 +779,6 @@ async def run_terminal_live() -> int:
             raise RuntimeError("No warmup candles returned from TopstepX")
 
         account_name = account.get("name", "")
-        account_id = int(account["id"])
         value_area_pct = _normalize_value_area_pct(
             preset.get("value_area_pct", DEFAULT_PRESET_PARAMS["value_area_pct"])
         )
@@ -805,6 +813,7 @@ async def run_terminal_live() -> int:
             contract_size=params.contract_size,
             value_area_pct=value_area_pct,
             strategy_params=params,
+            owner_lease=owner_lease,
         )
         await engine.start(candles)
         if str(getattr(params, "strategy", "")).lower() == "pi":
@@ -855,7 +864,7 @@ async def run_terminal_live() -> int:
             except Exception as exc:
                 logger.warning("PI record-only listener resume failed: %s", exc)
         _set_sleep_inhibit(False)
-        if engine and engine.is_running:
+        if engine:
             try:
                 await engine.stop()
             except Exception as exc:
@@ -864,6 +873,8 @@ async def run_terminal_live() -> int:
             await client.disconnect()
         except Exception:
             pass
+        if owner_lease is not None:
+            owner_lease.release()
         logger.info("ancserTPX terminal stopped")
 
 

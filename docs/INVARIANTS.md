@@ -27,7 +27,7 @@
 | EXEC-001 | 內部 `side 1=Buy/2=Sell` → API `0=Bid/1=Ask`;兩個方向**不得映射到同一個值**。寫反不會拋例外,會用正確價格下反方向的單 | `test_broker_order_mapping.py` |
 | EXEC-002 | 內部 `type 3=Stop` → API `type 4`。API **沒有 type 3**,不得送出 | `test_broker_order_mapping.py` |
 | EXEC-003 | 非 Practice 帳戶必須拒絕;帳號查不到時**拒絕而非放行** | `test_broker_order_mapping.py` |
-| EXEC-004 | 進場單**會**自帶 `stopLossBracket` / `takeProfitBracket`,內容是 `_entry_brackets_for_signal()` 依訊號價位算出的 tick 偏移。broker adapter 只在欄位非 None 時放進 payload | `test_broker_order_mapping.py` ⚠️ **語意待釐清,見 R0** |
+| EXEC-004 | 進場單**不附帶** `stopLossBracket` / `takeProfitBracket`;TopstepX 帳戶的 Auto OCO 建立唯一 SL/TP 子單,引擎只掃描並以 `modify_order()` 套用策略價位。broker adapter 仍可轉送其他 caller 明確提供的 optional bracket | `test_exec_protection_invariants.py` |
 | EXEC-005 | Auto OCO 括號**可以**用 `modify_order()` 改成策略價位。「不自己下 SL/TP」指的是不另開新單,不是不能改 | `test_exec_protection_invariants.py` |
 | EXEC-006 | 沒有市價參考時**必須拒絕下單**(return),不是只記 WARN | `test_exec_protection_invariants.py` |
 
@@ -44,6 +44,7 @@
 | LIVE-006 | 每日虧損鎖觸發後不得再開新倉 | `test_live_daily_locks.py` |
 | LIVE-008 | `/live/stop` 未確認成功時不得顯示 STOPPED 或清除 live loop;舊 RUNNING response 不得越過 stop generation,失敗必須標示 STATUS STALE 並恢復 bounded polling | `test_live_status_frontend_contract.py` |
 | LIVE-009 | 歷史資料 fetch 不得 disconnect/replace 已被 running 或 starting live engine 擁有的 client/contract;每個 start reservation 必須 ref-counted,history-only client 必須關閉 | `test_historical_range_cache.py` |
+| LIVE-010 | 同一帳號跨 web/terminal 只能有一個 live engine；啟動競態必須在產生第二個 PI callback 前拒絕 | `test_engine_lease.py` + `test_historical_range_cache.py` |
 
 ## PI — 外部訊號
 
@@ -138,35 +139,17 @@ INVARIANTS.md        LIVE-003 整條是幻覺 —— 見下(已改為提案)
 `if zone_age > 86400: logger.warning(...)` —— **24 小時、而且只是警告**。
 兩條幽靈都來自「憑舊筆記寫不變量」。
 
-### R0 — 保護單的所有權未釐清(2026-08-08,Codex 交接審查發現)
+### R0 — 保護單所有權已釐清(2026-08-11)
 
-**初版的 EXEC-004 寫反了。** 它說「進場單不得自帶 bracket」,但實際上
-`engine.py:3914 / 3999` 兩條進場路徑都帶:
+實盤事件確認重構後同一筆 entry 同時產生 attached bracket 與 TopstepX
+Auto OCO 子單,造成重複保護、殘留遠端 SL/TP,並在短距離策略訊號上快速出場。
+使用者確認 Auto OCO 是帳戶端唯一保護來源。因此兩條進場路徑現在只送純
+entry;成交後由 `_scan_auto_oco_order_ids()` 找到既有子單,再以
+`modify_order()` 套用策略 SL/TP。adapter 對其他明確 caller 的 optional
+bracket 轉送能力保留,但 live engine 不再使用它。
 
-```python
-stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
-OrderRequest(..., stop_loss_bracket=..., take_profit_bracket=...)
-```
-
-而 `_entry_brackets_for_signal()` 用的是**策略自己算的** SL/TP 價位換成
-tick 偏移,不是帳戶預設值。ProjectX API 也確實支援這兩個 optional 欄位。
-
-我當初那條測試是稻草人:它只斷言「OrderRequest 的欄位是 None 時 payload
-不含 bracket」—— 那恆真,而且從來沒碰到引擎的實際路徑。
-
-**同時**,`_scan_auto_oco_order_ids()` + `modify_order()` 那條路徑也還在
-(engine.py:878–930),而且會等 Auto OCO 子單出現、超時就報 error。
-
-所以現在有**兩套保護機制並存**,而沒有任何文件說明它們的關係:
-
-- 進場時附帶的 bracket 是主要保護,scan+modify 是校正?
-- 還是 attached bracket 是備援,Auto OCO 才是主要?
-- 兩者同時生效會不會產生重複的子單?
-
-**在釐清之前,不要依 EXEC-004 去刪任何 bracket 程式碼。** 刪掉附帶
-bracket 會讓進場後到 modify 完成之間出現一段**沒有保護的裸倉**。
-
-這需要對照實盤證據(實際的子單數量與價位)才能判定,不是讀程式碼能得出的。
+`test_exec_protection_invariants.py` 會鎖住「entry 不帶 bracket」與
+「Auto OCO 只走 scan → modify」兩個契約。
 
 ### 提案(不是不變量,尚未實作)
 

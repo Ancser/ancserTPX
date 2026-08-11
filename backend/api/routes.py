@@ -55,6 +55,7 @@ from backend.strategy.factor import (
     calculate_emapmo_snapshot,
 )
 from backend.live.warmup import signal_warmup_progress
+from backend.live.engine_lease import LiveEngineLease
 
 # 1.0.10: StrategyParams 的欄位預設 = 參數預設值的唯一真相。
 # routes 建 StrategyParams 時一律從這裡取 fallback,不要各自寫死
@@ -629,6 +630,9 @@ class _HistoricalWorkingSnapshot:
 _historical_working_snapshot: Optional[_HistoricalWorkingSnapshot] = None
 _topstepx_client = None  # TopstepXClient instance (set after connect)
 _live_start_client_refs: Dict[int, int] = {}
+# Per-account reservation closes the race between two concurrent /live/start
+# requests before either request has registered its engine in _live_engines.
+_live_start_locks: Dict[int, asyncio.Lock] = {}
 _live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
 _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
 ML_DISPLAY_LIMIT = 200
@@ -3963,14 +3967,20 @@ class LiveStartRequest(BaseModel):
 
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
-    """Reserve one client identity for the entire asynchronous start sequence."""
+    """Reserve the client and account for the entire asynchronous start sequence."""
     live_client = _topstepx_client
     if live_client is None:
         raise HTTPException(400, "TopstepX client not initialized — connect first")
+
+    account_id = int(req.account_id)
+    account_lock = _live_start_locks.setdefault(account_id, asyncio.Lock())
+    if account_lock.locked():
+        raise HTTPException(409, f"Account {account_id} live engine start already in progress")
     client_id = id(live_client)
     _live_start_client_refs[client_id] = _live_start_client_refs.get(client_id, 0) + 1
     try:
-        return await _live_start_impl(req, live_client)
+        async with account_lock:
+            return await _live_start_impl(req, live_client)
     finally:
         remaining = _live_start_client_refs.get(client_id, 1) - 1
         if remaining > 0:
@@ -4128,14 +4138,31 @@ async def _live_start_impl(req: LiveStartRequest, live_client: Any):
     except Exception as e:
         logger.error(f"[LIVE START] Failed to fetch fresh candles: {e} — using existing data")
 
-    engine = LiveTradingEngine(
-        client=live_client,
-        account_id=req.account_id,
-        contract_id=req.contract_id,
-        contract_size=live_strategy_params.contract_size,
-        value_area_pct=value_area_pct,
-        strategy_params=live_strategy_params,
-    )
+    # The in-process lock above does not cover terminal_live.py or another web
+    # worker.  Claim the account immediately before engine construction so the
+    # lease is never leaked by an earlier warm-up/fetch failure.
+    owner_lease = LiveEngineLease(int(req.account_id))
+    if not owner_lease.acquire():
+        raise HTTPException(
+            409,
+            f"Account {req.account_id} is already owned by another live engine "
+            "(web or terminal)",
+        )
+
+    engine = None
+    try:
+        engine = LiveTradingEngine(
+            client=live_client,
+            account_id=req.account_id,
+            contract_id=req.contract_id,
+            contract_size=live_strategy_params.contract_size,
+            value_area_pct=value_area_pct,
+            strategy_params=live_strategy_params,
+            owner_lease=owner_lease,
+        )
+    except Exception:
+        owner_lease.release()
+        raise
     # 1.0.9: 註冊進多帳號表;_live_engine 對齊 primary(既有引用零改動)。
     _live_engines[int(req.account_id)] = engine
     _sync_primary_engine()
@@ -4165,6 +4192,9 @@ async def _live_start_impl(req: LiveStartRequest, live_client: Any):
         logger.error(f"[LIVE START] Engine start failed: {e}")
         _live_engines.pop(int(req.account_id), None)
         _sync_primary_engine()
+        # Engine.start() normally releases this during rollback; the explicit
+        # call also covers constructor/start failures before ownership moved.
+        owner_lease.release()
         raise HTTPException(500, f"Engine start failed: {e}")
 
     return {"success": True, "message": "Live engine started", "account_id": req.account_id}
@@ -4175,6 +4205,11 @@ async def live_stop(account_id: int = 0):
     """停止即時交易引擎(account_id 指定某 leader;0=primary)"""
     eng = _resolve_live_engine(account_id or None)
     if not eng or not eng.is_running:
+        if eng and callable(getattr(eng, "stop", None)):
+            # A fail-safe pause sets is_running=False from inside the main
+            # loop.  Still run full engine cleanup here so its PI listener and
+            # cross-process ownership lease cannot outlive the paused engine.
+            await eng.stop()
         if eng and str(getattr(eng, "strategy_mode", "")).lower() == "pi":
             # A crashed/finished engine can leave the process-level recorder
             # paused even though the explicit stop request sees no running

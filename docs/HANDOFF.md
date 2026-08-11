@@ -28,25 +28,24 @@ only as a FACTOR-family alias.
 
 ## Open questions — resolve before touching the related code
 
-### R0 — Who owns the protective orders? *(highest risk)*
+### R0 — Protective-order ownership resolved (2026-08-11)
 
-Two mechanisms coexist and nothing documents their relationship:
+The live incident showed that attached entry brackets and Topstep Auto OCO
+children were both created. That produced duplicate protection pairs and the
+far-away residual orders visible in TopstepX. The approved behavior is now:
 
-1. `_entry_brackets_for_signal()` attaches `stopLossBracket` / `takeProfitBracket`
-   to the entry order, computed from the **strategy's own** SL/TP prices
-   (`engine.py:3914`, `:3999`)
-2. `_scan_auto_oco_order_ids()` + `modify_order()` waits for TopstepX Auto OCO
-   children and rewrites them (`engine.py:878–930`), erroring on timeout
+1. Live entries are plain limit/market orders with no bracket payload.
+2. TopstepX Auto OCO creates the only SL/TP child pair.
+3. The engine scans for those existing child IDs and uses `modify_order()` to
+   apply the strategy prices; it never creates a second pair.
 
-Unknown: is (1) primary and (2) a correction? Is (2) primary and (1) a
-belt-and-braces? **Do both fire, producing duplicate children?**
+The broker adapter still forwards explicit bracket fields for non-engine
+callers. `tests/test_exec_protection_invariants.py` protects both the plain
+entry contract and the scan → modify path.
 
-`docs/INVARIANTS.md::EXEC-004` originally asserted the opposite of (1) and was
-wrong — corrected 2026-08-08. Answering this needs **live evidence** (actual
-child-order count and prices on a real fill), not code reading.
-
-**Do not delete bracket code on the strength of any document.** Removing (1)
-opens a naked-position window between fill and the modify step.
+The same incident also proved that two concurrent web/terminal starts could
+run two PI listeners for one account. `LiveEngineLease` and the per-account
+web start lock now make account ownership single-instance across processes.
 
 ### R1 — PI restart dedup
 
