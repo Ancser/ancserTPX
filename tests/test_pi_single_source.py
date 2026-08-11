@@ -133,6 +133,7 @@ class TestDuplicateSuppression:
         這裡會提醒你去重也一起失效了。
         """
         src = (ROOT / "backend" / "live" / "pi_listener.py").read_text(encoding="utf-8")
-        assert "self._last_id = seed[0][\"id\"]" in src, (
+        assert "seed_id = self._message_id(seed[0])" in src
+        assert "self._last_id = seed_id" in src, (
             "進入時段時的游標重設不見了。`_seen` 不持久化,少了游標重設之後,"
             "重啟就可能重放整夜的訊息。")

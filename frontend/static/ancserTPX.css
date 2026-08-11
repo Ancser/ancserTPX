@@ -1606,9 +1606,15 @@
         }
         .cal-cell {
             background: var(--bg2);
-            border: 1px solid rgba(247, 239, 224, 0.22);
+            /* Draw each shared grid line once.  A full border on every cell
+               plus the old negative margin made adjacent cells paint over one
+               another, producing visibly thicker white seams. */
+            border: 0;
+            border-top: 1px solid rgba(247, 239, 224, 0.22);
+            border-left: 1px solid rgba(247, 239, 224, 0.22);
             border-radius: 0;
-            margin: -0.5px;          /* overlap borders so cells merge (no double lines) */
+            margin: 0;
+            box-sizing: border-box;
             padding: 4px clamp(2px, 0.7vw, 7px);  /* 1.0.9: 小屏收窄左右內距 */
             /* 1.0.9: 移除 aspect-ratio 固定高 — 內容(BT+LIVE 兩行)比格子高時
                會蓋到下一行、行列錯位、LIVE 被裁掉。改 min-height:行高由內容
@@ -1622,8 +1628,25 @@
             overflow: hidden;
             position: relative;
         }
-        .cal-cell.cal-empty { background: transparent; border-color: transparent; }
-        .cal-cell.cal-today { border-color: var(--cyan); box-shadow: 0 0 0 1px var(--cyan2); }
+        .cal-cell:nth-child(7n) { border-right: 1px solid rgba(247, 239, 224, 0.22); }
+        .cal-cell:nth-last-child(-n + 7) { border-bottom: 1px solid rgba(247, 239, 224, 0.22); }
+        /* Keep empty slots transparent, but retain their single-owner edges.
+           Otherwise the final row loses its bottom rule after the last date
+           (for example, the blank cells after day 31). */
+        .cal-cell.cal-empty { background: transparent; }
+        .cal-cell.cal-today {
+            /* Keep the highlight above neighboring cells so all four sides
+               remain visible, including when today is on an inner grid edge. */
+            z-index: 2;
+        }
+        .cal-cell.cal-today::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border: 1px solid var(--cyan);
+            box-shadow: inset 0 0 0 1px var(--cyan2);
+            pointer-events: none;
+        }
         /* 1.0.9: 數字字級用 clamp() 隨視窗寬度按比例縮放 — 約 1300px 就開始縮,
            80% 視窗寬已生效(使用者回報 2.1vw 版本縮得太晚,LIVE 數字被裁)。 */
         .cal-daynum {

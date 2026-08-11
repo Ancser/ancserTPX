@@ -51,7 +51,7 @@ from backend.live.manual_guardian_launcher import (
 
 logger = logging.getLogger(__name__)
 
-ENGINE_VERSION = "1.0.6"
+ENGINE_VERSION = "1.0.10"
 # Default fallbacks for legacy paths — actual values come from contract on init.
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
@@ -84,6 +84,7 @@ class LiveTradingEngine:
     MANUAL_GUARDIAN_RETRY_SECONDS = 15.0
     MANUAL_GUARDIAN_BUSY_TIMEOUT_SECONDS = 15.0
     MANUAL_GUARDIAN_RECOVERY_SCAN_SECONDS = 15.0
+    LIVE_TICK_OVERDUE_SECONDS = 45.0
     AUTO_OCO_SETTINGS_URL = "https://topstepx.com/settings?tab=risk-settings"
     FLATTEN_TIME_UTC = time(19, 45)     # UTC 19:45 = PT 12:45 flatten
     PRE_FLATTEN_UTC = time(19, 30)      # UTC 19:30 = PT 12:30 cancel pending
@@ -244,7 +245,14 @@ class LiveTradingEngine:
 
         # Live state
         self._running = False
+        self._starting = False
         self._task: Optional[asyncio.Task] = None
+        # Main-loop heartbeat.  Task.done() cannot distinguish a healthy task
+        # from one alive but suspended indefinitely inside an awaited _tick().
+        self._tick_in_progress = False
+        self._tick_started_monotonic: Optional[float] = None
+        self._last_tick_completed_monotonic: Optional[float] = None
+        self._tick_sequence = 0
         # 1.0.10: PI 外部訊號監聽 —— 只有 strategy_mode == "pi" 才會在 start() 建立
         self._pi_listener = None
         self._pi_task: Optional[asyncio.Task] = None
@@ -2107,9 +2115,83 @@ class LiveTradingEngine:
             or self._active_conf_payload
             or {}
         )
+        task_alive = bool(self._task is not None and not self._task.done())
+        heartbeat_now = time_mod.monotonic()
+        tick_in_progress = bool(self._tick_in_progress)
+        tick_started_age = (
+            max(0.0, heartbeat_now - self._tick_started_monotonic)
+            if tick_in_progress and self._tick_started_monotonic is not None else None
+        )
+        last_tick_completed_age = (
+            max(0.0, heartbeat_now - self._last_tick_completed_monotonic)
+            if self._last_tick_completed_monotonic is not None else None
+        )
+        tick_overdue = bool(
+            self._running
+            and task_alive
+            and tick_in_progress
+            and tick_started_age is not None
+            and tick_started_age >= self.LIVE_TICK_OVERDUE_SECONDS
+        )
+        pi_expected = self.strategy_mode == "pi"
+        pi_listener_alive = (
+            bool(self._pi_listener is not None
+                 and self._pi_task is not None
+                 and not self._pi_task.done())
+            if pi_expected else None
+        )
+        pi_listener_health = None
+        if self._pi_listener is not None and hasattr(self._pi_listener, "get_health"):
+            try:
+                pi_listener_health = self._pi_listener.get_health()
+            except Exception as exc:
+                pi_listener_health = {
+                    "consecutive_errors": 1,
+                    "last_error": f"health_{type(exc).__name__}",
+                }
+
+        starting = bool(self._running and self._starting)
+        health_reasons = []
+        if self._running and not starting:
+            if not task_alive:
+                health_reasons.append("engine_task_not_running")
+            if tick_overdue:
+                health_reasons.append("engine_tick_overdue")
+            if self._disconnected:
+                health_reasons.append("broker_disconnected")
+            if pi_expected and not pi_listener_alive:
+                health_reasons.append("pi_listener_not_running")
+            if (pi_expected and pi_listener_health
+                    and bool(pi_listener_health.get("in_window"))
+                    and int(pi_listener_health.get("consecutive_errors", 0) or 0) > 0):
+                health_reasons.append("pi_listener_poll_errors")
+        health = (
+            "stopped" if not self._running
+            else ("starting" if starting
+                  else ("degraded" if health_reasons else "ok"))
+        )
         return {
             "engine_version": ENGINE_VERSION,
             "running": self._running,
+            # `running` remains the backward-compatible intent flag.  These
+            # additive fields expose whether the tasks implementing that intent
+            # are actually alive, so callers do not report false healthy RUNNING.
+            "health": health,
+            "health_reasons": health_reasons,
+            "starting": starting,
+            "task_alive": task_alive,
+            "tick_in_progress": tick_in_progress,
+            "tick_started_age_seconds": (
+                round(tick_started_age, 3) if tick_started_age is not None else None
+            ),
+            "last_tick_completed_age_seconds": (
+                round(last_tick_completed_age, 3)
+                if last_tick_completed_age is not None else None
+            ),
+            "tick_sequence": self._tick_sequence,
+            "tick_overdue_threshold_seconds": self.LIVE_TICK_OVERDUE_SECONDS,
+            "pi_listener_alive": pi_listener_alive,
+            "pi_listener": pi_listener_health,
             "account_id": self.account_id,
             "contract_id": self.contract_id,
             "position": self._open_position,
@@ -2429,9 +2511,9 @@ class LiveTradingEngine:
         """
         if self.strategy_mode == "confluence":
             return self._get_confluence_phase()
-        # 1.0.9: 信號型策略(factor/sigma/fade)顯示各自的信號狀態
+        # 信號型策略(factor/sigma/fade/pi)顯示各自的信號狀態
         # (上次信號、ATR、指標值…),而不是套用只對 trend 有意義的「突破階段」。
-        if self.strategy_mode in ("factor", "sigma", "fade"):
+        if self.strategy_mode in ("factor", "sigma", "fade", "pi"):
             try:
                 label = self.trend_follow.get_phase_label()
                 if label:
@@ -2490,7 +2572,72 @@ class LiveTradingEngine:
         if self._running:
             return
 
+        self._starting = True
         self._running = True
+        self._tick_in_progress = False
+        self._tick_started_monotonic = None
+        self._last_tick_completed_monotonic = None
+        self._tick_sequence = 0
+        try:
+            await self._start_impl(historical_candles)
+        except asyncio.CancelledError:
+            await self._rollback_failed_start()
+            raise
+        except Exception:
+            await self._rollback_failed_start()
+            raise
+
+        # stop() is allowed to run while warm-up awaits broker state.  If that
+        # happened, tear down anything start() created after stop() inspected
+        # the old task references instead of leaving a late PI/main task alive.
+        if not self._running:
+            await self._rollback_failed_start()
+            return
+        self._starting = False
+
+    async def _rollback_failed_start(self) -> None:
+        """Return a failed/interrupted startup to a clean, retryable state."""
+        self._running = False
+        self._starting = False
+
+        listener = self._pi_listener
+        pi_task = self._pi_task
+        main_task = self._task
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+
+        # Cancel first, then await, so both workers are guaranteed to receive
+        # cancellation even if one worker's cleanup takes an event-loop turn.
+        tasks = [task for task in (pi_task, main_task) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                # A startup worker may already have failed. Retrieving its
+                # exception here prevents an unobserved-task warning while the
+                # original startup exception remains authoritative.
+                pass
+
+        self._pi_listener = None
+        self._pi_task = None
+        self._task = None
+        try:
+            await self._emapmo_messenger.stop()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+    async def _start_impl(self, historical_candles: List[Candle]) -> None:
+        """Initialize live state and create workers after start() owns lifecycle."""
         self._today = self._get_topstep_trade_date()
         self._daily_pnl = 0.0
         self._trades = []
@@ -2676,6 +2823,7 @@ class LiveTradingEngine:
     async def stop(self):
         """Stop the engine. Cancel pending orders. Save zones to disk."""
         self._save_zones()  # persist zones before shutdown
+        self._starting = False
         self._running = False
         # 1.0.10: 先停 PI 監聽,避免關閉過程中還有新訊號入列
         if getattr(self, "_pi_listener", None):
@@ -3266,6 +3414,8 @@ class LiveTradingEngine:
         self._log_event(f"Main loop started; polling every {interval} seconds")
 
         while self._running:
+            self._tick_in_progress = True
+            self._tick_started_monotonic = time_mod.monotonic()
             try:
                 await self._tick()
                 # Reconnected after disconnect
@@ -3283,6 +3433,10 @@ class LiveTradingEngine:
                         f"Still disconnected ({self._consecutive_errors} failures): {e}",
                         "error"
                     )
+            finally:
+                self._tick_in_progress = False
+                self._last_tick_completed_monotonic = time_mod.monotonic()
+                self._tick_sequence += 1
 
             for _ in range(interval):
                 if not self._running:

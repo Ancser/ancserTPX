@@ -42,6 +42,8 @@
 | LIVE-004 | 每日風控休息(虧損單數 / 贏單數 / PDPT)= **只停開新單**。既有部位由 SL/TP/trail 自然了結,**不得強制平倉**。閘門是 `>=`,0 代表停用 | `test_live_daily_rest.py` |
 | LIVE-005 | 交易日邊界走 `zoneinfo` 的真實 CME 日曆(週日 18:00 ET → 週五 17:00 ET,每日 17:00–18:00 維護),不是寫死的 UTC 22:00 | `test_live_daily_locks.py` |
 | LIVE-006 | 每日虧損鎖觸發後不得再開新倉 | `test_live_daily_locks.py` |
+| LIVE-008 | `/live/stop` 未確認成功時不得顯示 STOPPED 或清除 live loop;舊 RUNNING response 不得越過 stop generation,失敗必須標示 STATUS STALE 並恢復 bounded polling | `test_live_status_frontend_contract.py` |
+| LIVE-009 | 歷史資料 fetch 不得 disconnect/replace 已被 running 或 starting live engine 擁有的 client/contract;每個 start reservation 必須 ref-counted,history-only client 必須關閉 | `test_historical_range_cache.py` |
 
 ## PI — 外部訊號
 
@@ -65,6 +67,14 @@
 | DATA-004 | `load()` **兩條路徑**(快取命中與未命中)都要回傳淺拷貝。呼叫端會就地 `sort()`,共用 list 會污染快取 | `test_candle_store_anchor.py`(2026-08-08 修復:未命中路徑原本直接回傳快取本體) |
 | DATA-005 | 缺口偵測不得把常態休市誤報:16:15–16:30 ET 收盤休止、盤外極短破洞、假日 | `test_candle_store.py` |
 | DATA-006 | 完整 store(210MB/商品)不進版控;`data/store/seed/` 的開機種子只含自家 TopstepX 抓的資料,不含 Databento(授權) | `test_data_and_skin_policy.py` |
+| DATA-007 | API 載入/寫入 store、缺口掃描、frozen 推進、百萬根 merge/sort、workset slice/copy/publish **不得阻塞 asyncio event loop**;券商 I/O 維持 async,CPU/磁碟工作走 worker thread | `test_historical_range_cache.py` + `test_backtest_data_lifecycle.py` |
+| DATA-008 | 回測資料由 backend token 綁定單一 immutable workset 與 resolved contract economics。Live tail 不得改寫已解析的回測輸入;新選擇必須釋放舊的大型 generation;range cache 只能使用 observed/validated coverage,且 store/seed generation 變更後不得命中舊快取 | `test_historical_range_cache.py` + `test_backtest_data_lifecycle.py` |
+
+## BACKTEST — 回測生命週期
+
+| ID | 不變量 | Test |
+|---|---|---|
+| BT-001 | 單次與 sweep 無論成功或失敗都必須發布 terminal `done`/`error`;歷史結果只保留 bounded scalar summary,不得常駐完整 trades/zones/equity;equity response 最多 5000 點且保留首尾 | `test_backtest_data_lifecycle.py` |
 
 ## CONFIG — 策略設定
 

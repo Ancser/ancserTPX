@@ -1302,7 +1302,7 @@
             if (surface.component === "precision") {
                 surface.needsActiveHydration = false;
             }
-            return;
+            return true;
         }
         /* Canvas pixels belong to the main stage only. A dock's content
            copy has an unrelated local source and must never receive chart
@@ -1314,8 +1314,14 @@
            索引當後備,行為與 1.0.9 相同。 */
         const positional = [...surface.stageCopy.querySelectorAll("canvas")];
         let missing = 0;
+        let exactTopology = positional.length === sources.length;
         sources.forEach((src, i) => {
-            const target = byKey.get(src.dataset.glassCanvasKey) || positional[i];
+            const exact = byKey.get(src.dataset.glassCanvasKey);
+            const target = exact || positional[i];
+            /* Positional pairing is only a legacy visual fallback. A keyed
+               source without the same keyed destination means the structural
+               clone is stale even when both sides happen to have equal counts. */
+            if (!exact) exactTopology = false;
             if (target) surface.mirrorPairs.push([src, target]);
             else missing += 1;
         });
@@ -1331,7 +1337,8 @@
         }
         /* clone 裡沒有對應者 = 那塊會是黑的。立刻排重建,不要等下一次
            MutationObserver 觸發。 */
-        if (missing) scheduleStageCloneRebuild(surface.stage);
+        if (missing || !exactTopology) scheduleStageCloneRebuild(surface.stage);
+        return missing === 0 && exactTopology;
     }
 
     /* Which stages actually need re-cloning. A workspace switch used to
@@ -1647,6 +1654,57 @@
         bindCloneState(surface);
     }
 
+    /* Workspace recovery is latency-sensitive in a way ordinary stage
+       maintenance is not. While Research is visible, chart libraries may add
+       or replace a canvas in the hidden Backtest/Live stage. The normal dirty
+       stage path deliberately waits for every spring to settle before doing a
+       deep clone; activating Precision on the way back therefore used to keep
+       the missing canvas queued for roughly six seconds.
+
+       Re-bind only the visible Precision surface after the workspace click.
+       Existing topology costs no clone at all. If a live canvas has no mate,
+       replace that one stage copy immediately, in place, then let the existing
+       one-shot active hydration provide pixels on Precision's first frame. */
+    function repairVisiblePrecisionCopies() {
+        const repairedTemplates = new Map();
+        surfaces.forEach((surface) => {
+            if (
+                surface.component !== "precision"
+                || !surface.stage
+                || surface.stage.offsetWidth <= 0
+                || surface.stage.offsetHeight <= 0
+            ) return;
+
+            /* Returning from Research first has to clear the layer-level
+               display:none latched by syncOpticalSurfaces. Only then can a
+               zero stageCopy box distinguish a genuinely stale hidden clone
+               from an otherwise healthy copy inside a hidden layer. */
+            syncOpticalSurfaces("precision", false, surface);
+            const topologyComplete = bindMirrors(surface);
+            const copyLaidOut = Boolean(
+                surface.stageCopy
+                && surface.stageCopy.offsetWidth > 0
+                && surface.stageCopy.offsetHeight > 0
+            );
+            if (!topologyComplete || !copyLaidOut) {
+                let template = repairedTemplates.get(surface.stage);
+                if (!template) {
+                    ensureCanvasKeys(surface.stage);
+                    template = cloneOpticalSource(surface.stage);
+                    stageTemplates.set(surface.stage, template);
+                    repairedTemplates.set(surface.stage, template);
+                }
+                replaceSurfaceStageCopy(surface, template);
+            }
+            syncOpticalSurfaces("precision", false, surface);
+            const ready = mirrorCanvases(surface, true);
+            if (ready) {
+                surface.needsActiveHydration = false;
+                surface.lastMirrorAt = performance.now();
+            }
+        });
+    }
+
     let pendingRetargetTimer = 0;
     let retargetGeneration = 0;
 
@@ -1667,6 +1725,16 @@
             ).map(([surface]) => surface);
             moved.forEach((surface) => {
                 if (surface.layer) surface.layer.style.visibility = "hidden";
+            });
+            repairVisiblePrecisionCopies();
+            /* Chart libraries commonly commit their resize canvas in the next
+               frame after .main becomes measurable. One bounded retry catches
+               that topology without turning ordinary mutations into a hot
+               deep-clone loop. */
+            requestAnimationFrame(() => {
+                if (generation === retargetGeneration) {
+                    repairVisiblePrecisionCopies();
+                }
             });
             /* A workspace switch can move four top-bar surfaces at once.
                Stagger their deep clones so one release task never allocates

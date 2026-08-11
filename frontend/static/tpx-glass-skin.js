@@ -89,7 +89,7 @@
         // Brand, minus the version chip's inline styling.
         const h1 = header.querySelector("h1");
         const brand = el("div", "topbar-brand");
-        brand.innerHTML = '<b>ancser</b>TPX <span class="ver">1.0.9</span>';
+        brand.innerHTML = '<b>ancser</b>TPX <span class="ver">1.0.10</span>';
         if (h1) h1.remove();
         topbar.appendChild(brand);
 
@@ -241,7 +241,7 @@
             sidebar.prepend(el("div", "chart-fog sidebar-fog", { "aria-hidden": "true" }));
         }
         const watermark = el("div", "chart-watermark");
-        watermark.innerHTML = "<b>ancser</b>TPX <small>1.0.9</small>";
+        watermark.innerHTML = "<b>ancser</b>TPX";
         chart.prepend(watermark);
         chart.dataset.stage = "chart";
 

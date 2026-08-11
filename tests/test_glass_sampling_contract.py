@@ -46,7 +46,7 @@ def test_precision_source_role_survives_copy_replacement():
     js = _source(GLASS_JS)
     build = _slice(js, "function buildOpticalSurfaces()", "function alignOpticalCopy")
     replace = _slice(
-        js, "function replaceSurfaceStageCopy", "let pendingRetargetTimer"
+        js, "function replaceSurfaceStageCopy", "function repairVisiblePrecisionCopies"
     )
     assert 'stageCopy.classList.add("optical-tier-2-source")' in build
     assert '"optical-tier-2-source"' in replace
@@ -101,6 +101,31 @@ def test_precision_release_has_one_shot_active_hydration():
     assert "syncOpticalSurfaces(component, false, syncTarget)" in spring
     # The forced blit exists only in the guarded one-shot spring path.
     assert js.count("mirrorCanvases(syncTarget, true)") == 1
+
+
+def test_workspace_recovery_repairs_only_missing_visible_precision_topology():
+    js = _source(GLASS_JS)
+    repair = _slice(
+        js, "function repairVisiblePrecisionCopies", "let pendingRetargetTimer"
+    )
+    retarget = _slice(js, "function scheduleStageRetarget", "function rebuildStageClones")
+
+    assert 'surface.component !== "precision"' in repair
+    assert "const topologyComplete = bindMirrors(surface)" in repair
+    assert "surface.stageCopy.offsetWidth > 0" in repair
+    assert "surface.stageCopy.offsetHeight > 0" in repair
+    assert "if (!topologyComplete || !copyLaidOut)" in repair
+    assert repair.count("cloneOpticalSource(surface.stage)") == 1
+    assert "replaceSurfaceStageCopy(surface, template)" in repair
+    assert 'syncOpticalSurfaces("precision", false, surface)' in repair
+    assert "repairVisiblePrecisionCopies();" in retarget
+    assert "requestAnimationFrame(() =>" in retarget
+    assert retarget.count("repairVisiblePrecisionCopies();") == 2
+    assert "rebuildStageClones" not in repair
+    # Ordinary workspace switches with complete topology must not deep-clone.
+    assert repair.index("if (!topologyComplete || !copyLaidOut)") < repair.index(
+        "cloneOpticalSource(surface.stage)"
+    )
 
 
 def test_tier_one_animated_style_only_mirrors_to_precision_copies():

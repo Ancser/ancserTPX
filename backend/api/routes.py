@@ -18,6 +18,10 @@ import logging
 import math
 import asyncio
 import threading
+import uuid
+from collections import deque
+from bisect import bisect_left, bisect_right
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -33,9 +37,13 @@ from backend.db.models import (
 )
 from backend.backtest.engine import BacktestEngine
 from backend.data.candle_store import (
-    load as _store_load, save as _store_save, merge as _store_merge,
+    save as _store_save, merge as _store_merge,
+    load_snapshot as _store_load_snapshot,
+    select_range as _store_select_range,
+    snapshot_contains as _store_snapshot_contains,
     detect_gaps as _store_detect_gaps, advance_frozen as _store_advance_frozen,
     last_complete_day_end as _store_last_complete_day_end,
+    _store_path as _store_file_path,
     _as_utc as _store_utc,
 )
 from backend.strategy.volume_profile import VolumeProfileCalculator
@@ -569,9 +577,36 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
     )
 
 # ── 臨時存儲（後續改用 SQLite）──────────────────────────
-_backtest_results = []
+_BACKTEST_SUMMARY_LIMIT = 20
+_backtest_results = deque(maxlen=_BACKTEST_SUMMARY_LIMIT)
 _historical_candles: List[Candle] = []
+
+
+@dataclass(frozen=True)
+class _HistoricalWorkingSnapshot:
+    """One immutable, token-addressed backtest input generation."""
+
+    token: str
+    source_key: str
+    requested_start: Optional[datetime]
+    requested_end: Optional[datetime]
+    validated_start: Optional[datetime]
+    validated_end: Optional[datetime]
+    observed_start: Optional[datetime]
+    observed_end: Optional[datetime]
+    contract_id: str
+    contracts: Tuple[str, ...]
+    continuous_meta: Tuple[Tuple[str, Any], ...]
+    from_store: bool
+    store_symbol: Optional[str]
+    store_path: Optional[str]
+    store_version: Optional[Tuple[int, int]]
+    candles: Tuple[Candle, ...]
+
+
+_historical_working_snapshot: Optional[_HistoricalWorkingSnapshot] = None
 _topstepx_client = None  # TopstepXClient instance (set after connect)
+_live_start_client_refs: Dict[int, int] = {}
 _live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
 _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
 ML_DISPLAY_LIMIT = 200
@@ -585,6 +620,185 @@ def _candle_time(c: Candle) -> datetime:
 
 def _candle_key(c: Candle) -> str:
     return _candle_time(c).isoformat()
+
+
+def _historical_source_key(contract_id: str, unit: int, unit_number: int,
+                           continuous_contract: bool,
+                           store_only: bool = False) -> str:
+    return (
+        f"{contract_id}|{unit}:{unit_number}"
+        f"|continuous={int(continuous_contract)}|store_only={int(store_only)}"
+    )
+
+
+def _observed_bounds(
+    candles: Tuple[Candle, ...],
+) -> Tuple[Optional[datetime], Optional[datetime]]:
+    if not candles:
+        return None, None
+    return _candle_time(candles[0]), _candle_time(candles[-1])
+
+
+def _prepare_historical_publication(
+    candles: List[Candle],
+) -> Tuple[List[Candle], Tuple[Candle, ...], Optional[datetime], Optional[datetime]]:
+    """Copy collection ownership off-loop before the atomic pointer swap."""
+    published = list(candles)
+    immutable = tuple(published)
+    observed_start, observed_end = _observed_bounds(immutable)
+    return published, immutable, observed_start, observed_end
+
+
+def _store_generation_is_current(snapshot: _HistoricalWorkingSnapshot) -> bool:
+    """Reject fetch reuse after another writer publishes a store generation."""
+    if not snapshot.from_store or not snapshot.store_path:
+        return True
+    source_path = Path(snapshot.store_path)
+    if snapshot.store_symbol:
+        canonical_path = _store_file_path(snapshot.store_symbol, 1)
+        # A seed-backed snapshot is superseded as soon as the canonical store
+        # appears, even though the seed file itself has not changed.
+        if canonical_path != source_path and canonical_path.exists():
+            return False
+    try:
+        stat = source_path.stat()
+    except OSError:
+        return snapshot.store_version is None
+    return snapshot.store_version == (stat.st_mtime_ns, stat.st_size)
+
+
+def _publish_historical_candles(
+    candles: List[Candle], *, source_key: str,
+    requested_start: Optional[datetime], requested_end: Optional[datetime],
+    contract_id: str, contracts: List[str], continuous_meta: Dict[str, Any],
+    from_store: bool, validated_start: Optional[datetime] = None,
+    validated_end: Optional[datetime] = None,
+    store_symbol: Optional[str] = None,
+    store_path: Optional[Path] = None,
+    store_version: Optional[Tuple[int, int]] = None,
+    prepared: Optional[
+        Tuple[List[Candle], Tuple[Candle, ...], Optional[datetime], Optional[datetime]]
+    ] = None,
+) -> _HistoricalWorkingSnapshot:
+    """Publish the chart list and a separate immutable backtest workset.
+
+    Only the current token is retained, so selecting a small child range drops
+    ownership of its superseded large parent generation.
+    """
+    global _historical_candles, _historical_working_snapshot
+    if prepared is None:
+        prepared = _prepare_historical_publication(candles)
+    published, immutable, observed_start, observed_end = prepared
+    _historical_candles = published
+    _historical_working_snapshot = _HistoricalWorkingSnapshot(
+        token=uuid.uuid4().hex,
+        source_key=source_key,
+        requested_start=requested_start,
+        requested_end=requested_end,
+        validated_start=(validated_start if validated_start is not None else observed_start),
+        validated_end=(validated_end if validated_end is not None else observed_end),
+        observed_start=observed_start,
+        observed_end=observed_end,
+        contract_id=contract_id,
+        contracts=tuple(contracts),
+        continuous_meta=tuple(dict(continuous_meta).items()),
+        from_store=from_store,
+        store_symbol=store_symbol,
+        store_path=str(store_path) if store_path is not None else None,
+        store_version=store_version,
+        candles=immutable,
+    )
+    return _historical_working_snapshot
+
+
+async def _publish_historical_candles_async(
+    candles: List[Candle], **kwargs: Any,
+) -> _HistoricalWorkingSnapshot:
+    prepared = await asyncio.to_thread(_prepare_historical_publication, candles)
+    return _publish_historical_candles(candles, prepared=prepared, **kwargs)
+
+
+def _select_working_historical_range(
+    source_key: str, start: Optional[datetime], end: Optional[datetime],
+    workset_token: str = "",
+) -> Optional[Tuple[List[Candle], _HistoricalWorkingSnapshot]]:
+    """Select only from validated bounds of the current immutable generation."""
+    snapshot = _historical_working_snapshot
+    if snapshot is None or snapshot.source_key != source_key:
+        return None
+    if workset_token and snapshot.token != workset_token:
+        return None
+    if not _store_generation_is_current(snapshot):
+        return None
+    if start is None or snapshot.validated_start is None:
+        return None
+    if end is None or snapshot.validated_end is None:
+        return None
+    if start < snapshot.validated_start:
+        return None
+    if end > snapshot.validated_end:
+        return None
+
+    # Select from the immutable tuple, not the mutable chart/live-tail list.
+    # This keeps an already-resolved backtest input stable across tail updates.
+    # A later range selection publishes a new token and drops the old owner.
+    # subsequent superset → PI fast path.
+    bars = snapshot.candles
+    lo = 0
+    hi = len(bars)
+    if start is not None:
+        lo = bisect_left(bars, start, key=_candle_time)
+    if end is not None:
+        hi = bisect_right(bars, end, lo=lo, key=_candle_time)
+    return list(bars[lo:hi]), snapshot
+
+
+async def _select_working_historical_range_async(
+    source_key: str, start: Optional[datetime], end: Optional[datetime],
+    workset_token: str = "",
+) -> Optional[Tuple[List[Candle], _HistoricalWorkingSnapshot]]:
+    return await asyncio.to_thread(
+        _select_working_historical_range,
+        source_key, start, end, workset_token,
+    )
+
+
+def _resolve_backtest_workset(workset_token: str = "") -> Tuple[Candle, ...]:
+    """Resolve once so later live-tail/chart mutations cannot affect a run."""
+    snapshot = _historical_working_snapshot
+    if workset_token:
+        if snapshot is None or snapshot.token != workset_token:
+            raise HTTPException(
+                status_code=409,
+                detail="Historical workset expired; reselect the backtest range",
+            )
+        return snapshot.candles
+    if snapshot is not None:
+        return snapshot.candles
+    return tuple(_historical_candles)
+
+
+def _normalized_contract_root(contract_id: str) -> str:
+    if not contract_id:
+        return ""
+    root = str(_extract_symbol(contract_id) or "").upper()
+    return "NQ" if root == "ENQ" else root
+
+
+def _bind_backtest_request_to_workset(req: Any, snapshot: Optional[_HistoricalWorkingSnapshot]) -> Any:
+    """Bind fees/sizing/preset economics to the candles' resolved contract."""
+    if snapshot is None:
+        return req
+    requested_root = _normalized_contract_root(str(getattr(req, "contract_id", "") or ""))
+    snapshot_root = _normalized_contract_root(snapshot.contract_id)
+    if requested_root and snapshot_root and requested_root != snapshot_root:
+        raise HTTPException(
+            status_code=409,
+            detail="Backtest contract changed; reselect the historical range",
+        )
+    if hasattr(req, "model_copy"):
+        return req.model_copy(update={"contract_id": snapshot.contract_id})
+    return req.copy(update={"contract_id": snapshot.contract_id})
 
 
 def _dedupe_candles(candles: List[Candle]) -> List[Candle]:
@@ -676,15 +890,144 @@ def _build_continuous_candles(
     return _dedupe_candles(adjusted_prev + current_after_roll), meta
 
 
-def _upsert_historical_candles(candles: List[Candle]) -> None:
-    """Merge candles by timestamp so forming-bar snapshots get replaced."""
-    global _historical_candles
-    if not candles:
-        return
+def _merge_store_and_fresh(
+    stored: List[Candle], fresh: List[Candle],
+) -> Tuple[List[Candle], bool]:
+    """CPU-heavy full-store comparison/merge; call through ``to_thread``."""
+    by_ts: Dict[str, Candle] = {_candle_key(c): c for c in stored}
+    dirty = False
+    for candle in fresh:
+        key = _candle_key(candle)
+        old = by_ts.get(key)
+        if old is None or (old.open, old.high, old.low, old.close, old.volume) != (
+                candle.open, candle.high, candle.low, candle.close, candle.volume):
+            by_ts[key] = candle
+            dirty = True
+    return sorted(by_ts.values(), key=_candle_time), dirty
+
+
+def _merge_candle_lists(base: List[Candle], additions: List[Candle]) -> List[Candle]:
+    """CPU-heavy recovery merge; call through ``to_thread``."""
+    by_ts = {_candle_key(c): c for c in base}
+    for candle in additions:
+        by_ts[_candle_key(candle)] = candle
+    return sorted(by_ts.values(), key=_candle_time)
+
+
+def _merge_refresh_into_workset(
+    base: Tuple[Candle, ...], refreshed: List[Candle],
+    start: Optional[datetime], end: Optional[datetime],
+) -> List[Candle]:
+    """Apply final-OHLC revisions without admitting bars outside the request."""
+    bounded = [
+        candle for candle in refreshed
+        if (start is None or _candle_time(candle) >= start)
+        and (end is None or _candle_time(candle) <= end)
+    ]
+    if not bounded:
+        return list(base)
+    return _merge_candle_lists(list(base), bounded)
+
+
+def _sort_and_select_candles(
+    candles: List[Candle], start: Optional[datetime], end: Optional[datetime],
+) -> List[Candle]:
+    """Sort/dedupe once and bisect the requested inclusive workset."""
+    ordered = _dedupe_candles(candles)
+    lo = bisect_left(ordered, start, key=_candle_time) if start is not None else 0
+    hi = (
+        bisect_right(ordered, end, lo=lo, key=_candle_time)
+        if end is not None else len(ordered)
+    )
+    return ordered[lo:hi]
+
+
+def _path_generation(path: Optional[Path]) -> Optional[Tuple[int, int]]:
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
+
+
+def _has_running_live_engine() -> bool:
+    if _live_start_client_refs:
+        return True
+    engines = globals().get("_live_engines", {}) or {}
+    if any(getattr(engine, "is_running", False) for engine in engines.values()):
+        return True
+    return bool(getattr(globals().get("_live_engine"), "is_running", False))
+
+
+def _historical_response(
+    snapshot: _HistoricalWorkingSnapshot, req: Any, *,
+    contract_counts: Optional[Dict[str, int]] = None,
+    fetched_count: int = 0,
+    range_cache_hit: bool,
+    cache_kind: str,
+) -> Dict[str, Any]:
+    bars = snapshot.candles
+    return {
+        "success": True,
+        "contract_id": snapshot.contract_id,
+        "contracts": list(snapshot.contracts),
+        "contract_counts": contract_counts or {},
+        "continuous": dict(snapshot.continuous_meta),
+        "candles_count": len(bars),
+        "fetched_count": int(fetched_count),
+        "from_store": snapshot.from_store,
+        "range_cache_hit": bool(range_cache_hit),
+        "cache_kind": cache_kind,
+        "workset_token": snapshot.token,
+        "interval": f"{req.unit_number}{'m' if req.unit == 2 else 's'}",
+        "first": bars[0].timestamp.isoformat() if bars else None,
+        "last": bars[-1].timestamp.isoformat() if bars else None,
+    }
+
+
+def _rebuild_historical_candles(candles: List[Candle]) -> List[Candle]:
+    """Compatibility fallback for a genuinely non-tail historical revision."""
     by_ts = {_candle_key(c): c for c in _historical_candles}
     for c in candles:
         by_ts[_candle_key(c)] = c
-    _historical_candles = sorted(by_ts.values(), key=_candle_time)
+    return sorted(by_ts.values(), key=_candle_time)
+
+
+_HISTORICAL_TAIL_UPSERT_LIMIT = 4096
+
+
+def _upsert_historical_candles(candles: List[Candle]) -> None:
+    """Upsert the normal live tail without rebuilding/sorting the full range."""
+    global _historical_candles
+    if not candles:
+        return
+
+    incoming_by_ts: Dict[str, Candle] = {}
+    for c in candles:
+        incoming_by_ts[_candle_key(c)] = c
+    incoming = sorted(incoming_by_ts.values(), key=_candle_time)
+
+    if not _historical_candles:
+        _historical_candles = incoming
+        return
+
+    first_incoming = _candle_time(incoming[0])
+    lo = bisect_left(_historical_candles, first_incoming, key=_candle_time)
+    tail_size = len(_historical_candles) - lo
+    if tail_size <= _HISTORICAL_TAIL_UPSERT_LIMIT:
+        # Slice assignment touches only the bounded tail. This is the live path:
+        # replace a forming bar and/or append newly closed bars.
+        tail_by_ts = {
+            _candle_key(c): c for c in _historical_candles[lo:]
+        }
+        tail_by_ts.update(incoming_by_ts)
+        _historical_candles[lo:] = sorted(
+            tail_by_ts.values(), key=_candle_time
+        )
+    else:
+        _historical_candles = _rebuild_historical_candles(incoming)
 
 
 def _ema_series(values: List[Optional[float]], span: int) -> List[Optional[float]]:
@@ -1045,10 +1388,12 @@ def _mnq_signal_scope_allowed(candles: List[Candle]) -> Tuple[bool, str]:
         return False, f"Skipped non-MNQ scope: live={live_sym or '-'} candles={','.join(sorted(candle_syms)) or '-'}"
     return True, live_sym or (",".join(sorted(candle_syms)) or "MNQ")
 
-async def _refresh_recent_historical_candles(contract_id: str, limit: int = 240) -> None:
+async def _refresh_recent_historical_candles(
+    contract_id: str, limit: int = 240,
+) -> List[Candle]:
     """Refresh recent 1m bars before simulation so backtest uses final OHLC."""
     if not _topstepx_client:
-        return
+        return []
     try:
         candles = await _topstepx_client.get_historical_bars(
             contract_id=contract_id,
@@ -1057,14 +1402,17 @@ async def _refresh_recent_historical_candles(contract_id: str, limit: int = 240)
             limit=limit,
         )
         _upsert_historical_candles(candles)
+        return list(candles)
     except Exception as e:
         logger.warning(f"Recent candle refresh skipped: {e}")
+        return []
 
 
 # ── Pydantic 請求/回應模型 ────────────────────────────
 
 class BacktestRequest(BaseModel):
     initial_capital: float = 50000.0
+    workset_token: str = ""
     # Strategy params
     strategy: str = "factor"
     tp_ticks: int = 200
@@ -1181,6 +1529,7 @@ class BacktestRequest(BaseModel):
 
 
 class FetchHistoricalRequest(BaseModel):
+    workset_token: str = ""         # backend-issued immutable range token
     username: str = ""             # 空 = 從 .env 讀取
     api_key: str = ""              # 空 = 從 .env 讀取
     contract_id: str = ""          # 空 = 自動找 NQ
@@ -1823,14 +2172,68 @@ async def fetch_historical(req: FetchHistoricalRequest):
 
     優先使用請求中的值，空則從 .env 讀取
     """
-    global _historical_candles
+    global _historical_candles, _topstepx_client, _live_contract_id
 
     from backend.broker.topstepx import TopstepXClient, contract_roll_start
+
+    requested_start = _parse_iso_utc(req.start_time) if req.start_time else None
+    requested_end = _parse_iso_utc(req.end_time) if req.end_time else None
+    contract_hint = req.contract_id or _env("TOPSTEPX_CONTRACT_ID")
+
+    # A backend token already binds the exact resolved contract and immutable
+    # candle generation. It can therefore serve a contained selection before
+    # credentials, broker construction, or persistent-store preparation.
+    current_snapshot = _historical_working_snapshot
+    if req.workset_token and not req.force_full:
+        if current_snapshot is None or current_snapshot.token != req.workset_token:
+            raise HTTPException(
+                status_code=409,
+                detail="Historical workset expired; reselect the backtest range",
+            )
+        cache_contract = current_snapshot.contract_id
+    elif current_snapshot is not None and contract_hint == current_snapshot.contract_id:
+        cache_contract = current_snapshot.contract_id
+    else:
+        cache_contract = ""
+
+    if cache_contract and not req.force_full and not req.append:
+        cache_source_key = _historical_source_key(
+            cache_contract, req.unit, req.unit_number,
+            req.continuous_contract, req.store_only,
+        )
+        cached = await _select_working_historical_range_async(
+            cache_source_key, requested_start, requested_end, req.workset_token,
+        )
+        if cached is not None:
+            cached_bars, cached_snapshot = cached
+            published = await _publish_historical_candles_async(
+                cached_bars,
+                source_key=cache_source_key,
+                requested_start=requested_start,
+                requested_end=requested_end,
+                validated_start=requested_start,
+                validated_end=requested_end,
+                contract_id=cached_snapshot.contract_id,
+                contracts=list(cached_snapshot.contracts),
+                continuous_meta=dict(cached_snapshot.continuous_meta),
+                from_store=cached_snapshot.from_store,
+                store_symbol=cached_snapshot.store_symbol,
+                store_path=(Path(cached_snapshot.store_path)
+                            if cached_snapshot.store_path else None),
+                store_version=cached_snapshot.store_version,
+            )
+            logger.info(
+                "[Store] pre-auth workset range cache: %d bars (%s to %s)",
+                len(cached_bars), req.start_time or "-", req.end_time or "-",
+            )
+            return _historical_response(
+                published, req, range_cache_hit=True, cache_kind="working_set",
+            )
 
     # .env fallback
     username = req.username or _env("TOPSTEPX_USERNAME")
     api_key = req.api_key or _env("TOPSTEPX_API_KEY")
-    contract_id = req.contract_id or _env("TOPSTEPX_CONTRACT_ID")
+    contract_id = contract_hint
     use_demo = req.use_demo if req.use_demo is not None else (
         _env("TOPSTEPX_USE_DEMO", "false").lower() == "true"
     )
@@ -1843,39 +2246,106 @@ async def fetch_historical(req: FetchHistoricalRequest):
 
     logger.info(f"Connecting as '{username}', demo={use_demo}, contract='{contract_id or 'auto'}'")
 
-    client = TopstepXClient(
-        username=username,
-        api_key=api_key,
-        use_demo=use_demo,
-    )
-
+    client = None
+    client_handed_off = False
     try:
+        client = TopstepXClient(
+            username=username,
+            api_key=api_key,
+            use_demo=use_demo,
+        )
         await client.authenticate()
         logger.info("Auth OK")
 
-        # Store client globally for live trading
-        global _topstepx_client, _live_contract_id
-        if _topstepx_client:
+        # A token is already bound to an exact resolved contract. New requests
+        # still resolve the selected root to the current tradable front month.
+        if req.workset_token and current_snapshot is not None:
+            contract_id = current_snapshot.contract_id
+        else:
             try:
-                await _topstepx_client.disconnect()
-            except Exception:
-                pass
-        _topstepx_client = client
+                resolved = await client.get_front_month_contract_id(contract_id or "MNQ")
+                if resolved:
+                    if resolved != contract_id:
+                        logger.info(
+                            "Auto front-month: %s -> %s",
+                            contract_id or "(auto)", resolved,
+                        )
+                    contract_id = resolved
+            except Exception as e:
+                logger.warning(f"Front-month resolve failed: {e}")
+                if not contract_id:
+                    contract_id = await client.get_nq_contract_id()
 
-        # Auto front-month rollover: resolve to the CURRENT tradable contract so
-        # an expired month (e.g. MNQM26 after June) never gets used. Defaults to
-        # MNQ when nothing was specified.
-        try:
-            resolved = await client.get_front_month_contract_id(contract_id or "MNQ")
-            if resolved:
-                if resolved != contract_id:
-                    logger.info(f"Auto front-month: {contract_id or '(auto)'} -> {resolved}")
-                contract_id = resolved
-        except Exception as e:
-            logger.warning(f"Front-month resolve failed: {e}")
-            if not contract_id:
-                contract_id = await client.get_nq_contract_id()
-        _live_contract_id = contract_id
+        # Never disconnect or replace a client already owned by a running live
+        # engine. Such fetches use this history-only client and close it below.
+        if not _has_running_live_engine():
+            previous_client = _topstepx_client
+            # Publish the new owner before awaiting old-client cleanup. A
+            # concurrent /live/start can now reserve only the new client, never
+            # the one being disconnected.
+            _topstepx_client = client
+            _live_contract_id = contract_id
+            client_handed_off = True
+            if previous_client is not None and previous_client is not client:
+                try:
+                    await previous_client.disconnect()
+                except Exception:
+                    pass
+
+        requested_start = _parse_iso_utc(req.start_time) if req.start_time else None
+        requested_end = _parse_iso_utc(req.end_time) if req.end_time else None
+        source_key = _historical_source_key(
+            contract_id, req.unit, req.unit_number,
+            req.continuous_contract, req.store_only,
+        )
+
+        # A prior superset fetch is authoritative for a contained follow-up in
+        # the same backend generation. Select the short window with bisect
+        # before touching the multi-million-row persistent store.
+        if not req.force_full and not req.append:
+            cached = await _select_working_historical_range_async(
+                source_key, requested_start, requested_end, req.workset_token
+            )
+            if cached is not None:
+                cached_bars, cached_snapshot = cached
+                cached_contracts = list(cached_snapshot.contracts)
+                cached_meta = dict(cached_snapshot.continuous_meta)
+                await _publish_historical_candles_async(
+                    cached_bars,
+                    source_key=source_key,
+                    requested_start=requested_start,
+                    requested_end=requested_end,
+                    validated_start=requested_start,
+                    validated_end=requested_end,
+                    contract_id=contract_id,
+                    contracts=cached_contracts,
+                    continuous_meta=cached_meta,
+                    from_store=cached_snapshot.from_store,
+                    store_symbol=cached_snapshot.store_symbol,
+                    store_path=(Path(cached_snapshot.store_path)
+                                if cached_snapshot.store_path else None),
+                    store_version=cached_snapshot.store_version,
+                )
+                logger.info(
+                    "[Store] working-set range cache: %d bars (%s → %s)",
+                    len(cached_bars), req.start_time or "-", req.end_time or "-",
+                )
+                return {
+                    "success": True,
+                    "contract_id": contract_id,
+                    "contracts": cached_contracts,
+                    "contract_counts": {},
+                    "continuous": cached_meta,
+                    "candles_count": len(cached_bars),
+                    "fetched_count": 0,
+                    "from_store": cached_snapshot.from_store,
+                    "range_cache_hit": True,
+                    "cache_kind": "working_set",
+                    "workset_token": _historical_working_snapshot.token,
+                    "interval": f"{req.unit_number}{'m' if req.unit == 2 else 's'}",
+                    "first": cached_bars[0].timestamp.isoformat() if cached_bars else None,
+                    "last": cached_bars[-1].timestamp.isoformat() if cached_bars else None,
+                }
 
         fetch_contracts: List[str] = [contract_id]
         if req.continuous_contract:
@@ -1890,12 +2360,67 @@ async def fetch_historical(req: FetchHistoricalRequest):
         # ── Local store: load cached bars, narrow the API fetch ──
         symbol = _extract_symbol(contract_id)
         store_bars: List[Candle] = []
+        store_snapshot = None
         fetch_start = req.start_time
         from_store = False
         if not req.force_full and not req.append and req.unit_number == 1:
-            store_bars = _store_load(symbol)
-            if store_bars:
+            store_snapshot = await asyncio.to_thread(_store_load_snapshot, symbol)
+            if store_snapshot.bars:
                 from_store = True
+                # Strict historical containment can be served directly from
+                # the immutable persistent snapshot. ``store_only`` preserves
+                # its existing intersection semantics even at an open tail.
+                contained = (
+                    requested_start is not None
+                    and requested_end is not None
+                    and _store_snapshot_contains(
+                        store_snapshot, requested_start, requested_end
+                    )
+                )
+                if contained or req.store_only:
+                    selected = await asyncio.to_thread(
+                        _store_select_range,
+                        store_snapshot, requested_start, requested_end,
+                    )
+                    await _publish_historical_candles_async(
+                        selected,
+                        source_key=source_key,
+                        requested_start=requested_start,
+                        requested_end=requested_end,
+                        validated_start=(requested_start if contained else None),
+                        validated_end=(requested_end if contained else None),
+                        contract_id=contract_id,
+                        contracts=fetch_contracts,
+                        continuous_meta={},
+                        from_store=True,
+                        store_symbol=symbol,
+                        store_path=store_snapshot.source_path,
+                        store_version=store_snapshot.version,
+                    )
+                    logger.info(
+                        "[Store] immutable range snapshot: %d/%d bars (%s → %s)",
+                        len(selected), len(store_snapshot.bars),
+                        req.start_time or "-", req.end_time or "-",
+                    )
+                    return {
+                        "success": True,
+                        "contract_id": contract_id,
+                        "contracts": fetch_contracts,
+                        "contract_counts": {},
+                        "continuous": {},
+                        "candles_count": len(selected),
+                        "fetched_count": 0,
+                        "from_store": True,
+                        "range_cache_hit": True,
+                        "cache_kind": "store_snapshot",
+                        "workset_token": _historical_working_snapshot.token,
+                        "interval": f"{req.unit_number}{'m' if req.unit == 2 else 's'}",
+                        "first": selected[0].timestamp.isoformat() if selected else None,
+                        "last": selected[-1].timestamp.isoformat() if selected else None,
+                    }
+
+                # Fallback path needs an owned full list for incremental merge.
+                store_bars = await asyncio.to_thread(list, store_snapshot.bars)
                 # Only fetch the tail: from 2h before the last stored bar (overlap
                 # for dedup safety) to now. This turns a 60k-bar full pull into
                 # a few-hundred-bar incremental pull.
@@ -1924,7 +2449,9 @@ async def fetch_historical(req: FetchHistoricalRequest):
             contract_counts[cid] = len(batch)
 
         roll_at = contract_roll_start(fetch_contracts[0]) if len(fetch_contracts) > 1 else None
-        candles, continuous_meta = _build_continuous_candles(contract_batches, fetch_contracts, roll_at)
+        candles, continuous_meta = await asyncio.to_thread(
+            _build_continuous_candles, contract_batches, fetch_contracts, roll_at,
+        )
         if len(fetch_contracts) > 1:
             logger.info(
                 "Continuous contract adjusted: %s -> %s roll_at=%s anchor=%s offset=%.2f",
@@ -1937,32 +2464,38 @@ async def fetch_historical(req: FetchHistoricalRequest):
 
         # ── Merge store + fresh fetch ──
         _store_dirty = False
-        if from_store:
-            # Upsert fresh API bars into the stored set (newer wins on clash)
-            by_ts: Dict[str, Candle] = {_candle_key(c): c for c in store_bars}
-            for c in candles:
-                k = _candle_key(c)
-                old = by_ts.get(k)
-                # 1.0.10: 逐根比對,只有真的新增或修訂才算「有變更」。
-                # 實測連線後常見 `2331102 stored + 121 fetched → 2331102 unique`
-                # —— 那 121 根本來就在 store 裡、內容也一樣,卻仍觸發整份重寫。
-                if old is None or (old.open, old.high, old.low, old.close, old.volume) != \
-                        (c.open, c.high, c.low, c.close, c.volume):
-                    by_ts[k] = c
-                    _store_dirty = True
-            candles = sorted(by_ts.values(), key=_candle_time)
+        if from_store and candles:
+            candles, _store_dirty = await asyncio.to_thread(
+                _merge_store_and_fresh, store_bars, candles,
+            )
             logger.info(
                 f"[Store] merged: {len(store_bars)} stored + "
                 f"{sum(contract_counts.values())} fetched → {len(candles)} unique"
                 f"{'' if _store_dirty else ' (無變更,略過寫盤)'}")
+        elif from_store:
+            # No broker delta: the snapshot is already sorted and unique. Do
+            # not rebuild a full timestamp dict merely to rediscover that fact.
+            candles = store_bars
 
         # ── Persist to local store (1m bars only) ──
         # 1.0.10: 只有真的變更才寫盤。233 萬根整份重寫要 14–17 秒,而一次連線
         # 流程會觸發多次 fetch —— 實測啟動時寫了三遍、合計約 48 秒,前端就卡在
         # LOADING DATA。沒有 store 基底時(首次抓取)一律寫。
-        if req.unit_number == 1 and candles and not _skip_api and (_store_dirty or not from_store):
+        store_persisted = False
+        if req.unit_number == 1 and candles and not _skip_api and req.append:
+            # Append requests carry only the requested delta. A full save here
+            # would truncate the accumulator to that delta; merge preserves the
+            # persistent store's only-grows invariant (DATA-001).
             try:
-                _store_save(candles, symbol)
+                await asyncio.to_thread(_store_merge, candles, symbol)
+                store_persisted = True
+            except Exception as e:
+                logger.warning(f"[Store] append merge failed (non-fatal): {e}")
+        elif (req.unit_number == 1 and candles and not _skip_api
+              and (_store_dirty or not from_store)):
+            try:
+                await asyncio.to_thread(_store_save, candles, symbol)
+                store_persisted = True
             except Exception as e:
                 logger.warning(f"[Store] save failed (non-fatal): {e}")
 
@@ -1971,7 +2504,7 @@ async def fetch_historical(req: FetchHistoricalRequest):
         if (req.unit_number == 1 and candles and not req.append and not _skip_api
                 and (_store_dirty or not from_store)):
             try:
-                gaps = _store_detect_gaps(candles)
+                gaps = await asyncio.to_thread(_store_detect_gaps, candles)
                 if gaps:
                     logger.info(f"[Store] detected {len(gaps)} unexpected gap(s), attempting recovery...")
                     # 1.0.10 BUG FIX:原本是 `gaps[:5]`,而 gaps 依時間排序 ——
@@ -1986,7 +2519,7 @@ async def fetch_historical(req: FetchHistoricalRequest):
                         logger.info(
                             "[Store] %d 個破洞早於券商保留期(%d 天),不嘗試回補 —— "
                             "那段是 Databento 補的歷史,券商沒有", _old, BROKER_HISTORY_DAYS)
-                    recovered = 0
+                    recovered_bars: List[Candle] = []
                     for gap_start, gap_end, dur in _fixable[-5:]:  # 取**最新**的 5 個
                         pad = timedelta(minutes=5)
                         gs = (gap_start - pad).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -2000,46 +2533,94 @@ async def fetch_historical(req: FetchHistoricalRequest):
                             start_time=gs, end_time=ge,
                         )
                         if gap_bars:
-                            by_ts2: Dict[str, Candle] = {_candle_key(c): c for c in candles}
-                            for c in gap_bars:
-                                by_ts2[_candle_key(c)] = c
-                            candles = sorted(by_ts2.values(), key=_candle_time)
-                            recovered += len(gap_bars)
-                    if recovered:
-                        logger.info(f"[Store] recovered {recovered} bars; re-saving store")
+                            recovered_bars.extend(gap_bars)
+                    if recovered_bars:
+                        candles = await asyncio.to_thread(
+                            _merge_candle_lists, candles, recovered_bars,
+                        )
+                        logger.info(
+                            f"[Store] recovered {len(recovered_bars)} bars; re-saving store"
+                        )
                         try:
-                            _store_save(candles, symbol)
+                            await asyncio.to_thread(_store_save, candles, symbol)
+                            store_persisted = True
                         except Exception:
                             pass
                     # Re-check remaining gaps
-                    remaining = _store_detect_gaps(candles)
+                    remaining = await asyncio.to_thread(_store_detect_gaps, candles)
                     if remaining:
                         logger.warning(f"[Store] {len(remaining)} gap(s) remain after recovery (may be real market closures)")
                 # Advance frozen boundary if tail is clean
-                _store_advance_frozen(candles, symbol)
+                await asyncio.to_thread(_store_advance_frozen, candles, symbol)
             except Exception as e:
                 logger.warning(f"[Store] gap detection failed (non-fatal): {e}")
 
         if req.append:
+            parent = (
+                current_snapshot
+                if current_snapshot is not None
+                and current_snapshot.source_key == source_key
+                else None
+            )
+            append_workset = await asyncio.to_thread(
+                _merge_candle_lists,
+                parent.candles if parent is not None else [],
+                candles,
+            )
             _upsert_historical_candles(candles)
+            parent_path = (
+                _store_file_path(symbol, 1)
+                if store_persisted else (
+                    Path(parent.store_path)
+                    if parent is not None and parent.store_path else None
+                )
+            )
+            await _publish_historical_candles_async(
+                append_workset,
+                source_key=source_key,
+                requested_start=(parent.requested_start if parent else requested_start),
+                requested_end=requested_end,
+                validated_start=(parent.validated_start if parent else None),
+                contract_id=contract_id,
+                contracts=fetch_contracts,
+                continuous_meta=continuous_meta,
+                from_store=bool(parent and parent.from_store),
+                store_symbol=(parent.store_symbol if parent else None),
+                store_path=parent_path,
+                store_version=_path_generation(parent_path),
+            )
         else:
             # 1.0.10: store 是累積器(保留全部),但**記憶體工作集只放要求的範圍**。
             # 先前不管請求什麼日期,_historical_candles 一律是整份 233 萬根 ——
             # 回測就在這上面跑,單次約 219 秒(3.7 分鐘),使用者只看到畫面不動。
             # PI 只需要 2026-06 起的 6.8 萬根,縮到範圍內約 7 秒。
-            _win = sorted(candles, key=_candle_time)
-            _lo = _parse_iso_utc(req.start_time) if req.start_time else None
-            _hi = _parse_iso_utc(req.end_time) if req.end_time else None
-            if _lo or _hi:
-                _before = len(_win)
-                _win = [c for c in _win
-                        if (_lo is None or _store_utc(c.timestamp) >= _lo)
-                        and (_hi is None or _store_utc(c.timestamp) <= _hi)]
-                if len(_win) != _before:
-                    logger.info(
-                        "[Store] 工作集裁到請求範圍: %d → %d 根 (%s → %s)",
-                        _before, len(_win), req.start_time or "-", req.end_time or "-")
-            _historical_candles = _win
+            _before = len(candles)
+            _win = await asyncio.to_thread(
+                _sort_and_select_candles, candles, requested_start, requested_end,
+            )
+            if len(_win) != _before:
+                logger.info(
+                    "[Store] 工作集裁到請求範圍: %d → %d 根 (%s → %s)",
+                    _before, len(_win), req.start_time or "-", req.end_time or "-")
+            snapshot_path = (
+                _store_file_path(symbol, 1)
+                if store_persisted else (
+                    store_snapshot.source_path if store_snapshot is not None else None
+                )
+            )
+            await _publish_historical_candles_async(
+                _win,
+                source_key=source_key,
+                requested_start=requested_start,
+                requested_end=requested_end,
+                contract_id=contract_id,
+                contracts=fetch_contracts,
+                continuous_meta=continuous_meta,
+                from_store=from_store,
+                store_symbol=(symbol if from_store else None),
+                store_path=snapshot_path,
+                store_version=_path_generation(snapshot_path),
+            )
 
         stored = _historical_candles
 
@@ -2052,14 +2633,25 @@ async def fetch_historical(req: FetchHistoricalRequest):
             "candles_count": len(stored),
             "fetched_count": sum(contract_counts.values()),
             "from_store": from_store,
+            "range_cache_hit": False,
+            "cache_kind": "fallback",
+            "workset_token": _historical_working_snapshot.token,
             "interval": f"{req.unit_number}{'m' if req.unit == 2 else 's'}",
             "first": stored[0].timestamp.isoformat() if stored else None,
             "last": stored[-1].timestamp.isoformat() if stored else None,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Fetch failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if client is not None and not client_handed_off:
+            try:
+                await client.disconnect()
+            except Exception as e:
+                logger.warning("History client disconnect failed: %s", e)
 
 
 @router.post("/data/aggregate")
@@ -2115,6 +2707,35 @@ def _update_bt_progress(stage: str, current: int = 0, total: int = 0,
         pass
 
 
+def _update_bt_error(exc: BaseException) -> None:
+    detail = getattr(exc, "detail", None) or str(exc) or type(exc).__name__
+    _update_bt_progress("error", 0, 0, str(detail), status="error")
+
+
+def _remember_backtest_summary(result: Any) -> None:
+    """Retain bounded scalar summaries, never full trades/zones/equity graphs."""
+    metrics = result.metrics
+    _backtest_results.append({
+        "total_trades": metrics.total_trades,
+        "win_rate": metrics.win_rate,
+        "total_pnl": metrics.total_pnl,
+        "max_drawdown": metrics.max_drawdown,
+    })
+
+
+def _compact_equity_curve(
+    curve: List[Tuple[datetime, float]], limit: int = 5000,
+) -> List[Tuple[datetime, float]]:
+    """Bound response size while preserving deterministic first/last points."""
+    count = len(curve)
+    limit = max(2, int(limit))
+    if count <= limit:
+        return list(curve)
+    scale = (count - 1) / float(limit - 1)
+    indices = [int(i * scale) for i in range(limit - 1)] + [count - 1]
+    return [curve[index] for index in indices]
+
+
 def _bt_candle_key(candles):
     return (len(candles),
             candles[0].timestamp.isoformat() if candles else None,
@@ -2140,36 +2761,52 @@ async def run_backtest(req: BacktestRequest):
     2. 餵入回測引擎
     3. 返回績效、交易列表、盤整區間、equity curve
     """
-    global _historical_candles, _backtest_results
-
-    _strat = str(req.strategy or "").strip().lower()
-    _sess = getattr(req, "tr_allowed_sessions", None) or getattr(req, "conf_allowed_sessions", None)
-    logger.info(
-        "[BACKTEST] strategy=%s  session=%s  TF=%s  RR=%s  SL=%s  confirm=%s",
-        _strat,
-        _sess,
-        getattr(req, "area_timeframe", "?"),
-        getattr(req, "rr_ratio", "?"),
-        getattr(req, "sl_ticks", "?"),
-        getattr(req, "breakout_confirm_bars", "?"),
-    )
-
-    if not _historical_candles:
-        raise HTTPException(
-            status_code=400,
-            detail="Fetch data through /api/data/fetch-historical first"
+    try:
+        _strat = str(req.strategy or "").strip().lower()
+        _sess = getattr(req, "tr_allowed_sessions", None) or getattr(req, "conf_allowed_sessions", None)
+        logger.info(
+            "[BACKTEST] strategy=%s  session=%s  TF=%s  RR=%s  SL=%s  confirm=%s",
+            _strat,
+            _sess,
+            getattr(req, "area_timeframe", "?"),
+            getattr(req, "rr_ratio", "?"),
+            getattr(req, "sl_ticks", "?"),
+            getattr(req, "breakout_confirm_bars", "?"),
         )
 
+        if not _resolve_backtest_workset(req.workset_token):
+            raise HTTPException(
+                status_code=400,
+                detail="Fetch data through /api/data/fetch-historical first"
+            )
 
-    # 1.0.9: confluence/ML removed wholesale (docs/1.0.9_DELETE_LIST.md)
-    return await _run_trend_backtest(req)
+        # 1.0.9: confluence/ML removed wholesale (docs/1.0.9_DELETE_LIST.md)
+        return await _run_trend_backtest(req)
+    except BaseException as exc:
+        _update_bt_error(exc)
+        raise
 
 
 async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     """Run the trend backtest path and always return BacktestResponse."""
-    global _historical_candles, _backtest_results
-
-    await _refresh_recent_historical_candles(req.contract_id)
+    workset_snapshot = _historical_working_snapshot
+    immutable_candles = _resolve_backtest_workset(req.workset_token)
+    req = _bind_backtest_request_to_workset(req, workset_snapshot)
+    refresh_contract = (
+        workset_snapshot.contract_id
+        if workset_snapshot is not None else req.contract_id
+    )
+    refreshed = await _refresh_recent_historical_candles(refresh_contract)
+    requested_start = (
+        workset_snapshot.requested_start if workset_snapshot is not None else None
+    )
+    requested_end = (
+        workset_snapshot.requested_end if workset_snapshot is not None else None
+    )
+    workset_candles = await asyncio.to_thread(
+        _merge_refresh_into_workset,
+        immutable_candles, refreshed, requested_start, requested_end,
+    )
 
     # v1.0.6: derive symbol + per-contract fees from the chosen contract_id so
     # the trade journal shows /MNQ when MNQ is selected and 10xMNQ doesn't get
@@ -2210,7 +2847,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     zone_timeline = None
     if overlap_mode and needs_zone_timeline:
         ordered = [tf for tf in ML_TIMEFRAMES if tf in tf_combo]
-        ov_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+        ov_candles = sorted(workset_candles, key=lambda c: c.timestamp)
         _update_bt_progress(
             "building zone timeline", 0, len(ov_candles),
             f"{len(ordered)} timeframe(s) over {len(ov_candles)} candles",
@@ -2224,7 +2861,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         zone_timeline = await asyncio.to_thread(_build_overlap_timeline)
     elif (needs_zone_timeline
           and str(getattr(strategy_params, "area_timeframe", "15m") or "15m").lower() != "session"):
-        sg_candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+        sg_candles = sorted(workset_candles, key=lambda c: c.timestamp)
         _update_bt_progress(
             "building zone timeline", 0, len(sg_candles),
             f"single {strategy_params.area_timeframe} over {len(sg_candles)} candles",
@@ -2241,9 +2878,9 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     )
 
     candles = (
-        sorted(_historical_candles, key=lambda c: c.timestamp)
+        sorted(workset_candles, key=lambda c: c.timestamp)
         if zone_timeline is not None
-        else list(_historical_candles)
+        else list(workset_candles)
     )
 
     _update_bt_progress("running", 0, len(candles), "Backtest in progress...")
@@ -2252,8 +2889,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         _update_bt_progress("running", current, total, detail)
 
     result = await asyncio.to_thread(engine.run, candles, _trend_progress)
-    _update_bt_progress("done", len(candles), len(candles), "Complete", status="done")
-    _backtest_results.append(result)
+    _remember_backtest_summary(result)
 
     trades_resp = []
     symbol_label = "/" + config.symbol
@@ -2400,7 +3036,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
 
     equity = [
         [ts.timestamp() * 1000, val]
-        for ts, val in result.equity_curve
+        for ts, val in _compact_equity_curve(result.equity_curve)
     ]
 
     try:
@@ -2409,12 +3045,14 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     except Exception as exc:
         logger.warning("Backtest CSV export failed: %s", exc)
 
-    return BacktestResponse(
+    response = BacktestResponse(
         metrics=metrics_resp,
         trades=trades_resp,
         zones=zones_resp,
         equity_curve=equity,
     )
+    _update_bt_progress("done", len(candles), len(candles), "Complete", status="done")
+    return response
 
 
 # ── 1.0.8: 高效參數掃描(0.15.0 sweep 回歸版,timeline 快路徑)────────
@@ -2525,17 +3163,33 @@ async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
     global _sweep_running
     if _sweep_running:
         raise HTTPException(400, "A sweep is already running")
-    if not _historical_candles:
-        raise HTTPException(400, "No historical data — connect and load data first")
 
     from backend.backtest.sweep import run_model_sweep
 
     _sweep_running = True
     try:
-        await _refresh_recent_historical_candles(req.contract_id)
+        workset_snapshot = _historical_working_snapshot
+        immutable_candles = _resolve_backtest_workset(req.workset_token)
+        req = _bind_backtest_request_to_workset(req, workset_snapshot)
+        if not immutable_candles:
+            raise HTTPException(400, "No historical data — connect and load data first")
+        refresh_contract = (
+            workset_snapshot.contract_id
+            if workset_snapshot is not None else req.contract_id
+        )
+        refreshed = await _refresh_recent_historical_candles(refresh_contract)
+        candles = await asyncio.to_thread(
+            _merge_refresh_into_workset,
+            immutable_candles,
+            refreshed,
+            workset_snapshot.requested_start if workset_snapshot else None,
+            workset_snapshot.requested_end if workset_snapshot else None,
+        )
         contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
         base = _build_strategy_params_from_request(req, contract_size)
-        candles = sorted(_historical_candles, key=lambda c: c.timestamp)
+        candles = await asyncio.to_thread(
+            sorted, candles, key=lambda c: c.timestamp,
+        )
         _update_bt_progress("sweeping", 0, 1, "preparing")
 
         def _progress(cur, total, detail):
@@ -2592,6 +3246,9 @@ async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
             logger.warning(f"sweep archive failed: {e}")
         _update_bt_progress("done", 1, 1, "Sweep complete", status="done")
         return payload
+    except BaseException as exc:
+        _update_bt_error(exc)
+        raise
     finally:
         _sweep_running = False
 
@@ -2801,12 +3458,9 @@ async def list_backtests():
     return [
         {
             "index": i,
-            "total_trades": r.metrics.total_trades,
-            "win_rate": r.metrics.win_rate,
-            "total_pnl": r.metrics.total_pnl,
-            "max_drawdown": r.metrics.max_drawdown,
+            **summary,
         }
-        for i, r in enumerate(_backtest_results)
+        for i, summary in enumerate(_backtest_results)
     ]
 
 
@@ -3278,6 +3932,23 @@ class LiveStartRequest(BaseModel):
 
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
+    """Reserve one client identity for the entire asynchronous start sequence."""
+    live_client = _topstepx_client
+    if live_client is None:
+        raise HTTPException(400, "TopstepX client not initialized — connect first")
+    client_id = id(live_client)
+    _live_start_client_refs[client_id] = _live_start_client_refs.get(client_id, 0) + 1
+    try:
+        return await _live_start_impl(req, live_client)
+    finally:
+        remaining = _live_start_client_refs.get(client_id, 1) - 1
+        if remaining > 0:
+            _live_start_client_refs[client_id] = remaining
+        else:
+            _live_start_client_refs.pop(client_id, None)
+
+
+async def _live_start_impl(req: LiveStartRequest, live_client: Any):
     """啟動即時交易引擎"""
     global _live_engine, _live_engines
 
@@ -3293,12 +3964,12 @@ async def live_start(req: LiveStartRequest):
     if not _historical_candles:
         raise HTTPException(400, "No candles loaded — connect first")
 
-    if not _topstepx_client:
+    if not live_client:
         raise HTTPException(400, "TopstepX client not initialized — connect first")
 
     # Safety: verify account is practice
     try:
-        accounts = await _topstepx_client.get_accounts()
+        accounts = await live_client.get_accounts()
         logger.info(f"[LIVE START] accounts found: {[{a.get('id'): a.get('name')} for a in accounts]}")
         logger.info(f"[LIVE START] requested account_id={req.account_id}")
         target = None
@@ -3324,7 +3995,7 @@ async def live_start(req: LiveStartRequest):
     # expired/stale contract (e.g. MNQM26 after June expiry) doesn't get orders
     # rejected with code=9 ContractNotActive. Everything below uses the resolved id.
     try:
-        resolved_cid = await _topstepx_client.get_front_month_contract_id(req.contract_id)
+        resolved_cid = await live_client.get_front_month_contract_id(req.contract_id)
         if resolved_cid and resolved_cid != req.contract_id:
             logger.info(f"[LIVE START] Auto-roll contract {req.contract_id} -> {resolved_cid}")
             req.contract_id = resolved_cid
@@ -3373,7 +4044,7 @@ async def live_start(req: LiveStartRequest):
         for days in (2, 7, 14):
             fresh_start = (_now - _td2(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
             logger.info(f"[LIVE START] Fetching fresh 1m candles ({days}d): {fresh_start} ~ {fresh_end}")
-            fresh_candles = await _topstepx_client.get_historical_bars_paginated(
+            fresh_candles = await live_client.get_historical_bars_paginated(
                 contract_id=req.contract_id,
                 unit=BarUnit.MINUTE,   # 1m — no settle delay (30s has ~6h lag)
                 unit_number=1,
@@ -3427,7 +4098,7 @@ async def live_start(req: LiveStartRequest):
         logger.error(f"[LIVE START] Failed to fetch fresh candles: {e} — using existing data")
 
     engine = LiveTradingEngine(
-        client=_topstepx_client,
+        client=live_client,
         account_id=req.account_id,
         contract_id=req.contract_id,
         contract_size=live_strategy_params.contract_size,

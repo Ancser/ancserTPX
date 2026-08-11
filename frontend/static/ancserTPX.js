@@ -2655,6 +2655,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 1.0.9: 切到非 account 分頁 → 停掉帳號頁狀態輪詢
             // 1.0.9: 切到非 live 分頁 → 停掉兩帳號槽輪詢
             if (tab !== 'live' && _liveSlotInterval) { clearInterval(_liveSlotInterval); _liveSlotInterval = null; }
+            if (tab !== 'live') _cancelLivePoll(_liveSlotsPollState);
             // Calendar / Account are full-page overlays; any other tab restores .main.
             if (tab === 'calendar') {
                 if (mainEl) mainEl.style.display = 'none';
@@ -2681,6 +2682,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 livePanel.classList.remove('hidden');
                 if (_liveInterval || _liveStatusInterval) liveTopBar.style.display = 'block';
                 updateLiveTopBar();
+                // Browser timers/fetches may have been throttled while Research,
+                // Backtest, or a hidden tab was active.  Cancel the old generation
+                // and query the now-visible Live destination immediately.
+                pollLiveStatus({ restart: true });
+                pollLiveSlots({ restart: true });
                 // 1.0.9: 兩帳號槽 —— 填入 + 每 2s 更新各槽狀態
                 try { initLiveSlots(); } catch (e) {}
                 if (!_liveSlotInterval) _liveSlotInterval = setInterval(pollLiveSlots, 2000);
@@ -2701,6 +2707,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (tab === 'pnl') renderPnlCurve();
             glassResample();   // 1.0.10 #1:面板剛換,取樣還是舊分頁的內容
         };
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) return;
+        const active = document.querySelector('.tab.active');
+        if (active && active.dataset.tab === 'live') {
+            pollLiveStatus({ restart: true });
+            pollLiveSlots({ restart: true });
+        }
     });
 });
 
@@ -2856,6 +2870,68 @@ function onLiveAccountSwitch() {
 let _liveInterval = null;
 let _liveStatusInterval = null;
 let _liveStartInProgress = false;
+const LIVE_STATUS_TIMEOUT_MS = 3000;
+const _liveStatusPollState = {
+    generation: 0,
+    inFlight: null,
+    controller: null,
+    lastGood: null,
+    lastGoodAccountId: null,
+};
+const _liveSlotsPollState = {
+    generation: 0,
+    inFlight: null,
+    controller: null,
+    lastGood: null,
+};
+
+function _cancelLivePoll(state) {
+    state.generation += 1;
+    if (state.controller) state.controller.abort();
+    state.controller = null;
+    state.inFlight = null;
+}
+
+async function _fetchJsonWithTimeout(url, controller) {
+    const timer = setTimeout(() => controller.abort(), LIVE_STATUS_TIMEOUT_MS);
+    try {
+        const response = await fetch(url, { signal: controller.signal, cache: 'no-store' });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return await response.json();
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function _runBoundedLivePoll(state, url, options, onSuccess, onFailure) {
+    const restart = !!(options && options.restart);
+    if (restart) _cancelLivePoll(state);
+    if (state.inFlight) return state.inFlight;
+
+    const generation = ++state.generation;
+    const controller = new AbortController();
+    state.controller = controller;
+    let task = null;
+    task = (async () => {
+        try {
+            const payload = await _fetchJsonWithTimeout(url, controller);
+            if (generation !== state.generation) return;
+            await onSuccess(payload);
+        } catch (error) {
+            // A restarted/aborted older request must never overwrite the newer
+            // account or workspace.  A timeout on the current request is real
+            // uncertainty and is rendered as STATUS STALE below.
+            if (generation === state.generation) onFailure(error);
+        } finally {
+            if (state.inFlight === task) {
+                state.inFlight = null;
+                state.controller = null;
+            }
+        }
+    })();
+    state.inFlight = task;
+    return task;
+}
 
 function getMarketSession() {
     // NQ CME Globex — all times converted to ET (New York)
@@ -3034,7 +3110,7 @@ async function goLive() {
 
     if (_liveStatusInterval) clearInterval(_liveStatusInterval);
     _liveStatusInterval = setInterval(pollLiveStatus, 1000); // every 1s
-    pollLiveStatus();
+    pollLiveStatus({ restart: true });
 
     // Update top bar session info
     updateLiveTopBar();
@@ -3102,25 +3178,54 @@ async function goLive() {
 }
 
 async function stopLive() {
-    const statusEl = document.getElementById('live-status-text');
+    const statusEl = document.getElementById('live-status-text')
+        || document.getElementById('lv-status-label');
     _liveStartInProgress = false;
+    // Stop the scheduler before POST and invalidate any pre-stop response.
+    // A failed stop restarts bounded polling below without claiming STOPPED.
+    if (_liveStatusInterval) {
+        clearInterval(_liveStatusInterval);
+        _liveStatusInterval = null;
+    }
+    _cancelLivePoll(_liveStatusPollState);
     try {
         const resp = await fetch(API + '/live/stop', { method: 'POST' });
-        const data = await resp.json();
+        let data = {};
+        try { data = await resp.json(); } catch (e) {}
+        if (!resp.ok) {
+            throw new Error(data.detail || ('HTTP ' + resp.status));
+        }
+        // Invalidate again: a poll could have been started by a visibility/tab
+        // event while the stop POST was in flight.
+        _cancelLivePoll(_liveStatusPollState);
+        _liveStatusPollState.lastGood = null;
+        _liveStatusPollState.lastGoodAccountId = null;
         log('Trading engine stopped', 'info');
     } catch(e) {
         log('Stop error: ' + e.message, 'error');
+        _cancelLivePoll(_liveStatusPollState);
+        const statusAccount = _focusMainLiveAccount() || liveAccount;
+        const accountId = statusAccount && statusAccount.id ? String(statusAccount.id) : '';
+        _markLiveStatusStale(accountId);
+        _liveStatusInterval = setInterval(pollLiveStatus, 1000);
+        pollLiveStatus({ restart: true });
+        return;
     }
 
     if (_liveInterval) { clearInterval(_liveInterval); _liveInterval = null; }
-    if (_liveStatusInterval) { clearInterval(_liveStatusInterval); _liveStatusInterval = null; }
 
-    document.getElementById('btn-go-live').disabled = false;
-    document.getElementById('btn-stop-live').disabled = true;
-    document.getElementById('btn-flatten').disabled = true;
+    const goBtn = document.getElementById('btn-go-live');
+    const stopBtn = document.getElementById('btn-stop-live');
+    const flattenBtn = document.getElementById('btn-flatten');
+    if (goBtn) goBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
+    if (flattenBtn) flattenBtn.disabled = true;
 
-    statusEl.style.color = 'var(--text3)';
-    statusEl.textContent = 'STOPPED';
+    if (statusEl) {
+        statusEl.style.color = 'var(--text3)';
+        statusEl.textContent = 'STOPPED';
+        statusEl.title = '';
+    }
     const dot = document.getElementById('live-status-dot');
     if (dot) { dot.style.background = 'var(--text3)'; dot.style.boxShadow = 'none'; }
 
@@ -3314,8 +3419,63 @@ function renderLiveRiskGates(st) {
     if (rvPanel) { rvPanel.textContent = rvText.replace(/^VOLATILITY /, ''); rvPanel.style.color = rvColor; }
 }
 
-async function pollLiveStatus() {
+function _markLiveStatusStale(accountId) {
+    const last = _liveStatusPollState.lastGoodAccountId === accountId
+        ? _liveStatusPollState.lastGood
+        : null;
+    const statusEl = document.getElementById('live-status-text')
+        || document.getElementById('lv-status-label');
+    const dot = document.getElementById('live-status-dot');
+    if (statusEl) {
+        statusEl.style.color = 'var(--amber)';
+        statusEl.textContent = _liveStartInProgress
+            ? 'STARTING · STATUS STALE'
+            : (last && last.running ? 'RUNNING · STATUS STALE' : 'STATUS STALE');
+        statusEl.title = 'The last live status request did not complete; showing the last known state.';
+    }
+    if (dot) {
+        dot.style.background = 'var(--amber)';
+        dot.style.boxShadow = '0 0 6px var(--amber)';
+    }
+}
+
+function pollLiveStatus(options) {
     const statusAccount = _focusMainLiveAccount() || liveAccount;
+    const accountId = statusAccount && statusAccount.id ? String(statusAccount.id) : '';
+    const url = API + '/live/status' + (accountId ? ('?account_id=' + accountId) : '');
+
+    if (_liveStatusPollState.lastGoodAccountId !== accountId) {
+        // Never let account B inherit account A's last-known RUNNING when B's
+        // first status request times out or fails.
+        _liveStatusPollState.lastGood = null;
+        _liveStatusPollState.lastGoodAccountId = accountId;
+    }
+
+    // Market-session badges are clock state, not server state; keep them live
+    // even while a bounded status request is pending.
+    const session = getMarketSession();
+    const elSession = document.getElementById('lv-session');
+    if (elSession) { elSession.textContent = session.label; elSession.style.color = session.color; }
+    const elMarket = document.getElementById('lv-market-session');
+    if (elMarket) { elMarket.textContent = session.label; elMarket.style.color = session.color; }
+
+    return _runBoundedLivePoll(
+        _liveStatusPollState,
+        url,
+        options,
+        (st) => {
+            const current = _focusMainLiveAccount() || liveAccount;
+            const currentId = current && current.id ? String(current.id) : '';
+            if (currentId !== accountId) return;
+            _liveStatusPollState.lastGood = st;
+            _liveStatusPollState.lastGoodAccountId = accountId;
+            _renderLiveStatus(st);
+        },
+        () => _markLiveStatusStale(accountId),
+    );
+}
+
+function _renderLiveStatus(st) {
     // Always update market session (even without engine)
     const session = getMarketSession();
     const elSession = document.getElementById('lv-session');
@@ -3324,17 +3484,15 @@ async function pollLiveStatus() {
     if (elMarket) { elMarket.textContent = session.label; elMarket.style.color = session.color; }
 
     try {
-        // 1.0.9: 頂欄/圖表跟隨目前聚焦的帳號(liveAccount);未設則走 primary 引擎
-        const resp = await fetch(API + '/live/status' + (statusAccount && statusAccount.id ? ('?account_id=' + statusAccount.id) : ''));
-        if (!resp.ok) return;
-        const st = await resp.json();
         renderLiveRiskGates(st);   // 1.0.9: 風控閘狀態列(running / stopped 皆更新)
         if (!st.running) {
             if (_liveStartInProgress) {
-                const statusEl = document.getElementById('live-status-text');
+                const statusEl = document.getElementById('live-status-text')
+                    || document.getElementById('lv-status-label');
                 if (statusEl) {
                     statusEl.style.color = 'var(--amber)';
                     statusEl.textContent = 'STARTING...';
+                    statusEl.title = '';
                 }
                 const dot = document.getElementById('live-status-dot');
                 if (dot) {
@@ -3357,10 +3515,12 @@ async function pollLiveStatus() {
                 if (flattenBtn) flattenBtn.disabled = true;
                 return;
             }
-            const statusEl = document.getElementById('live-status-text');
+            const statusEl = document.getElementById('live-status-text')
+                || document.getElementById('lv-status-label');
             if (statusEl) {
                 statusEl.style.color = 'var(--text3)';
                 statusEl.textContent = 'STOPPED';
+                statusEl.title = '';
             }
             const dot = document.getElementById('live-status-dot');
             if (dot) {
@@ -3413,21 +3573,34 @@ async function pollLiveStatus() {
             return;
         }
 
-        _liveStartInProgress = false;
-        const statusEl = document.getElementById('live-status-text');
+        const isStarting = st.health === 'starting' || st.starting === true;
+        if (!isStarting) _liveStartInProgress = false;
+        const isDegraded = !isStarting && (st.health === 'degraded'
+            || st.disconnected
+            || st.task_alive === false
+            || (st.strategy_mode === 'pi' && st.pi_listener_alive === false));
+        const statusEl = document.getElementById('live-status-text')
+            || document.getElementById('lv-status-label');
         if (statusEl) {
-            statusEl.style.color = 'var(--green)';
-            statusEl.textContent = 'RUNNING';
+            statusEl.style.color = (isStarting || isDegraded) ? 'var(--amber)' : 'var(--green)';
+            statusEl.textContent = isStarting
+                ? 'STARTING...'
+                : (isDegraded ? 'RUNNING · DEGRADED' : 'RUNNING');
+            statusEl.title = isDegraded
+                ? ((st.health_reasons || []).join(', ') || 'Live engine health is degraded')
+                : '';
         }
         const dot = document.getElementById('live-status-dot');
         if (dot) {
-            dot.style.background = 'var(--green)';
-            dot.style.boxShadow = '0 0 6px var(--green)';
+            dot.style.background = (isStarting || isDegraded) ? 'var(--amber)' : 'var(--green)';
+            dot.style.boxShadow = (isStarting || isDegraded)
+                ? '0 0 6px var(--amber)'
+                : '0 0 6px var(--green)';
         }
         const stopBtn = document.getElementById('btn-stop-live');
-        if (stopBtn) stopBtn.disabled = false;
+        if (stopBtn) stopBtn.disabled = isStarting;
         const flattenBtn = document.getElementById('btn-flatten');
-        if (flattenBtn) flattenBtn.disabled = false;
+        if (flattenBtn) flattenBtn.disabled = isStarting;
 
         // Show engine version in console for debugging
         if (st.engine_version && !window._loggedVersion) {
@@ -3582,9 +3755,16 @@ async function pollLiveStatus() {
         // Status-line label adapts to the active strategy (ML 狀態 / TREND 狀態)
         const statusLabelEl = document.getElementById('lv-status-label');
         if (statusLabelEl) {
-            statusLabelEl.textContent = isMLStatus
+            const strategyStatusLabel = isMLStatus
                 ? 'ML STATUS'
                 : (strategyDisplayName(st.strategy_mode || collectStrategyParams('live').strategy) + ' STATUS');
+            statusLabelEl.textContent = isStarting
+                ? strategyStatusLabel + ' · STARTING'
+                : (isDegraded ? strategyStatusLabel + ' · DEGRADED' : strategyStatusLabel);
+            statusLabelEl.style.color = (isStarting || isDegraded) ? 'var(--amber)' : '';
+            statusLabelEl.title = isDegraded
+                ? ((st.health_reasons || []).join(', ') || 'Live engine health is degraded')
+                : '';
         }
         const phaseTopEl = document.getElementById('lv-phase-top');
         if (phaseTopEl) {
@@ -5327,7 +5507,13 @@ async function connectAPI() {
         _updateDataInfo(data.first, data.last, 'conn', data.candles_count);
         // CONNECT only loaded the recent warm-up window → record it so the first
         // backtest / ML / LEARN sees the range mismatch and pulls the full history.
-        _btDataRange = { start: startDate, end: endDate, contract: resolvedContract || '' };
+        _btDataRange = {
+            start: startDate,
+            end: endDate,
+            contract: resolvedContract || '',
+            resolvedContract: data.contract_id || '',
+            worksetToken: data.workset_token || '',
+        };
 
         // Auto-save credentials to .env if user typed them
         if (username || apikey) {
@@ -5493,6 +5679,7 @@ function buildBacktestBody() {
     return {
         initial_capital: 50000,
         ...params,
+        workset_token: (_btDataRange && _btDataRange.worksetToken) || '',
     };
 }
 
@@ -5516,7 +5703,7 @@ function _updateDataInfo(first, last, source, barCount) {
 // ── Backtest data lazy-loader ──────────────────────
 // Tracks which date range is currently loaded in the backend.
 // CONNECT only loads 14 days (fast); full range is fetched on first backtest or Machine Learning click.
-let _btDataRange = null;  // { start, end, contract } once loaded for backtest
+let _btDataRange = null;  // { start, end, contract, resolvedContract, worksetToken }
 
 function _profitLockBoundaryISO(dateStr) {
     const parts = String(dateStr || '').split('-').map(Number);
@@ -5543,11 +5730,6 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
         || (_presetSel && _presetSel.value) || '';
     const sameContract = _btDataRange && (_btDataRange.contract || '') === (contractId || '');
 
-    // Already loaded for this exact range → skip fetch
-    if (sameContract && _btDataRange.start === startDate && _btDataRange.end === endDate) {
-        return true;
-    }
-
     let fetchStartTime = startDate + 'T00:00:00Z';
     let fetchLabel = startDate;
     let appendFetch = false;
@@ -5568,20 +5750,41 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
         force_full: !!force,
         // 1.0.10: OFFLINE MODE → 後端完全跳過券商,只用本機 store
         store_only: isOffline() };
+    if (sameContract && _btDataRange.worksetToken) {
+        body.workset_token = _btDataRange.worksetToken;
+    }
     if (username)    body.username    = username;
     if (apikey)      body.api_key     = apikey;
     if (contractId)  body.contract_id = contractId;
 
     try {
-        const resp = await fetch(API + '/data/fetch-historical', {
+        let resp = await fetch(API + '/data/fetch-historical', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
+        // Only the current backend workset is retained. If another selection
+        // superseded this token, reselect the full requested range once.
+        if (resp.status === 409 && body.workset_token) {
+            delete body.workset_token;
+            body.append = false;
+            body.start_time = startDate + 'T00:00:00Z';
+            resp = await fetch(API + '/data/fetch-historical', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+        }
         if (!resp.ok) { const e = await resp.json(); throw new Error(e.detail || resp.statusText); }
         const data = await resp.json();
         document.getElementById('data-count').value = data.candles_count + ' bars';
-        _btDataRange = { start: startDate, end: endDate, contract: contractId || '' };
+        _btDataRange = {
+            start: startDate,
+            end: endDate,
+            contract: contractId || '',
+            resolvedContract: data.contract_id || '',
+            worksetToken: data.workset_token || '',
+        };
         _updateDataInfo(data.first, data.last, 'bt', data.candles_count);
         if (data.contracts && data.contracts.length > 1) {
             log('Continuous contract: ' + data.contracts.map(contractLabelFromId).join(' + '), 'info');
@@ -5604,6 +5807,24 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
 // FETCH FULL DATA button — force a complete re-pull of the whole range. Use
 // this when a wifi drop left holes in the data (incremental sync only adds the
 // tail, so it never backfills an interior gap; a full re-pull does).
+async function _postBacktestWithWorksetRetry(url, body, btn) {
+    const send = () => fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    let resp = await send();
+    if (resp.status !== 409 || !body.workset_token) return resp;
+
+    log('Backtest data selection changed; reselecting once before retry...', 'warn');
+    const ready = await _ensureBacktestData(btn);
+    if (!ready) return resp;
+    const sweepModels = body.sweep_models;
+    Object.assign(body, buildBacktestBody());
+    if (sweepModels) body.sweep_models = sweepModels;
+    return await send();
+}
+
 async function fetchFullData() {
     const btn = document.getElementById('btn-fetch-full');
     if (!btn || btn.disabled) return;
@@ -5831,9 +6052,9 @@ async function runBacktestSweep() {
 
     let ok = false;
     try {
-        const resp = await fetch(API + '/backtest/sweep', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
+        const resp = await _postBacktestWithWorksetRetry(
+            API + '/backtest/sweep', body, sweepBtn || btBtn,
+        );
         if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || resp.statusText); }
         await resp.json();                 // sweep 已持久化結果
         await loadSweepResults();
@@ -5921,11 +6142,9 @@ async function runBacktest() {
         _startBacktestProgress();
         progressStarted = true;
 
-        const resp = await fetch(API + '/backtest/run', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(btBody)
-        });
+        const resp = await _postBacktestWithWorksetRetry(
+            API + '/backtest/run', btBody, btn,
+        );
 
         if (!resp.ok) {
             const err = await resp.json();
@@ -8944,7 +9163,8 @@ function onLiveSlotChange(slot) {
         _focusMainLiveAccount();
         syncMainAccountPresetToPanels(false);
     }
-    pollLiveSlots();
+    pollLiveSlots({ restart: true });
+    pollLiveStatus({ restart: true });
 }
 
 // 1.0.9: GO LIVE 成功後把槽位指派寫進 data/account_roles.json —
@@ -9006,7 +9226,7 @@ async function liveSlotGoLive(slot) {
         }
     } catch (e) { log('ACCOUNT ' + slot + ' start connection failed: ' + e.message, 'warn'); }
     _saveLiveSlots();
-    setTimeout(pollLiveSlots, 400);
+    setTimeout(() => pollLiveSlots({ restart: true }), 400);
 }
 
 async function liveSlotStop(slot) {
@@ -9015,7 +9235,7 @@ async function liveSlotStop(slot) {
     if (!accId) return;
     try { const r = await fetch(API + '/live/stop?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' STOP:' + _acctEsc(d.message || ''), 'info'); }
     catch (e) { log('ACCOUNT ' + slot + ' STOP failed: ' + e.message, 'warn'); }
-    setTimeout(pollLiveSlots, 300);
+    setTimeout(() => pollLiveSlots({ restart: true }), 300);
 }
 
 async function liveSlotFlatten(slot) {
@@ -9025,7 +9245,7 @@ async function liveSlotFlatten(slot) {
     if (!confirm('Emergency flatten ACCOUNT ' + slot + ' (' + accId + ')?')) return;
     try { const r = await fetch(API + '/live/flatten?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' FLATTEN:' + _acctEsc(d.message || ''), 'warn'); }
     catch (e) { log('ACCOUNT ' + slot + ' FLATTEN failed: ' + e.message, 'warn'); }
-    setTimeout(pollLiveSlots, 300);
+    setTimeout(() => pollLiveSlots({ restart: true }), 300);
 }
 
 // 帶動圖表/頂欄跟隨指定帳號(沿用既有 live chart machinery)
@@ -9048,12 +9268,12 @@ function _startLiveChartForAccount(acc, stratParams) {
     if (_liveInterval) clearInterval(_liveInterval);
     _liveInterval = setInterval(pollLiveCandle, 1000); pollLiveCandle();
     if (_liveStatusInterval) clearInterval(_liveStatusInterval);
-    _liveStatusInterval = setInterval(pollLiveStatus, 1000); pollLiveStatus();
+    _liveStatusInterval = setInterval(pollLiveStatus, 1000); pollLiveStatus({ restart: true });
     try { refreshTfZones(true); } catch (e) {}
     setTimeout(() => { try { refreshLiveZoneOverlay(stratParams); } catch (e) {} }, 0);
 }
 
-function _liveSlotRenderStatus(slot, statusMap, sess) {
+function _liveSlotRenderStatus(slot, statusMap, sess, pollStale) {
     const accId = String((document.getElementById('live-acct-select-' + slot) || {}).value || '');
     const st = statusMap[accId];
     const dot = document.getElementById('live-slot-dot-' + slot);
@@ -9066,8 +9286,22 @@ function _liveSlotRenderStatus(slot, statusMap, sess) {
         return;
     }
     if (st && st.running) {
-        set('live-slot-status', 'RUNNING', 'var(--green)');
-        if (dot) { dot.style.background = 'var(--green)'; dot.style.boxShadow = '0 0 6px var(--green)'; }
+        const starting = st.health === 'starting' || st.starting === true;
+        const degraded = !starting && (st.health === 'degraded'
+            || st.disconnected
+            || st.task_alive === false
+            || (st.strategy_mode === 'pi' && st.pi_listener_alive === false));
+        const uncertain = !!pollStale || starting || degraded;
+        set('live-slot-status', pollStale
+            ? 'RUNNING · STATUS STALE'
+            : (starting ? 'STARTING' : (degraded ? 'RUNNING · DEGRADED' : 'RUNNING')),
+            uncertain ? 'var(--amber)' : 'var(--green)');
+        if (dot) {
+            dot.style.background = uncertain ? 'var(--amber)' : 'var(--green)';
+            dot.style.boxShadow = uncertain
+                ? '0 0 6px var(--amber)'
+                : '0 0 6px var(--green)';
+        }
         set('live-slot-phase', st.phase || '--', 'var(--text2)');
         const activeModeName = st.active_mode ? strategyDisplayName(st.active_mode) : '';
         const strategyModeName = st.strategy_mode ? strategyDisplayName(st.strategy_mode) : 'FACTOR';
@@ -9079,6 +9313,9 @@ function _liveSlotRenderStatus(slot, statusMap, sess) {
         const g = st.risk_gates || {}, dl = g.daily_loss || {}, rv = g.prev_rv || {};
         set('live-slot-dl', dl.limit ? (dl.resting ? ('LOCKED ' + (dl.count || 0) + '/' + dl.limit) : ((dl.count || 0) + '/' + dl.limit)) : 'OFF', dl.resting ? 'var(--red)' : 'var(--text2)');
         set('live-slot-rv', rv.lookback ? (rv.blocking ? 'BLOCKED' : rv.lookback + 'D PASS') : 'OFF', rv.blocking ? 'var(--red)' : 'var(--text2)');
+    } else if (pollStale) {
+        set('live-slot-status', 'STATUS STALE', 'var(--amber)');
+        if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
     } else {
         set('live-slot-status', st ? 'STOPPED' : 'NOT STARTED', 'var(--text3)');
         if (dot) { dot.style.background = 'var(--text3)'; dot.style.boxShadow = 'none'; }
@@ -9086,16 +9323,27 @@ function _liveSlotRenderStatus(slot, statusMap, sess) {
     }
 }
 
-async function pollLiveSlots() {
+function pollLiveSlots(options) {
     const lp = document.getElementById('live-panel');
     if (!lp || lp.classList.contains('hidden')) return;   // 只在 Live 分頁輪詢
     const sess = getMarketSession();
-    let statusMap = {};
-    try {
-        const r = await fetch(API + '/live/status-all');
-        if (r.ok) { const d = await r.json(); (d.engines || []).forEach(e => { statusMap[String(e.account_id)] = e.status || {}; }); }
-    } catch (e) {}
-    [1, 2].forEach(slot => _liveSlotRenderStatus(slot, statusMap, sess));
+    return _runBoundedLivePoll(
+        _liveSlotsPollState,
+        API + '/live/status-all',
+        options,
+        (data) => {
+            const statusMap = {};
+            (data.engines || []).forEach(e => { statusMap[String(e.account_id)] = e.status || {}; });
+            _liveSlotsPollState.lastGood = statusMap;
+            [1, 2].forEach(slot => _liveSlotRenderStatus(slot, statusMap, sess, false));
+        },
+        () => {
+            // Never turn a temporary request failure into NOT STARTED.  Keep the
+            // last truthful engine state and make its uncertainty explicit.
+            const statusMap = _liveSlotsPollState.lastGood || {};
+            [1, 2].forEach(slot => _liveSlotRenderStatus(slot, statusMap, sess, true));
+        },
+    );
 }
 
 

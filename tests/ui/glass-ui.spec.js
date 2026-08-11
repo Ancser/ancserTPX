@@ -122,6 +122,18 @@ async function openLayerPopup(page) {
   await expect(page.locator("#chart-layer-pop")).toBeVisible();
 }
 
+test("release label is 1.0.10 and chart watermark has no version chip", async ({ page }) => {
+  await openApp(page);
+
+  await expect(page).toHaveTitle("ancserTPX · 1.0.10");
+  await expect(page.locator("body > .glass-topbar > .topbar-brand > .ver"))
+    .toHaveText("1.0.10");
+  const watermark = page.locator("#chart-container > .chart-watermark");
+  await expect(watermark).toHaveCount(1);
+  await expect(watermark.locator("small")).toHaveCount(0);
+  await expect(watermark).toHaveText("ancserTPX");
+});
+
 async function expectMainLensAt(page, target) {
   const box = await target.boundingBox();
   expect(box).not.toBeNull();
@@ -205,6 +217,10 @@ async function canvasMirrorState(page, key) {
     return {
       found: mirrors.length > 0,
       hydrated: mirrors.some((canvas) => canvas.width > 1 && canvas.height > 1),
+      laidOut: mirrors.some((canvas) => (
+        canvas.getBoundingClientRect().width > 1
+        && canvas.getBoundingClientRect().height > 1
+      )),
       dormant: mirrors.length > 0
         && mirrors.every((canvas) => canvas.width <= 1 && canvas.height <= 1),
     };
@@ -794,10 +810,12 @@ test("dense parameter hints remain available on demand", async ({ page }) => {
 
 for (const target of ["backtest", "live"]) {
   test(`dormant Precision canvas hydrates on Research to ${target}`, async ({ page }) => {
-    const key = await installCanvasCanary(page);
+    const copiesBefore = await stageCopyCount(page);
     const tab = (name) => page.locator(
       `body > .glass-topbar > .glass-dock > .tab[data-tab="${name}"]`,
     );
+
+    const key = await installCanvasCanary(page);
 
     await tab("calendar").click();
     await expect(tab("calendar")).toHaveClass(/\bactive\b/);
@@ -807,19 +825,149 @@ for (const target of ["backtest", "live"]) {
       { timeout: 5_000 },
     ).toMatchObject({ found: true, dormant: true });
 
+    // Deterministic stale-root case: a maintenance rebuild while Research has
+    // .main hidden captures display:none even when canvas topology is unchanged.
+    await page.evaluate(() => window.TpxGlass.resample(
+      document.querySelector("body > .main"),
+    ));
+    await expect.poll(() => page.evaluate(() => {
+      const copy = document.querySelector(
+        'body > .main > .chart-lens[data-optical="precision"] '
+        + '> .optical-layer > .optical-world > .optical-stage-copy',
+      );
+      return copy ? getComputedStyle(copy).display : null;
+    })).toBe("none");
+
     await tab(target).click();
     await expect(tab(target)).toHaveClass(/\bactive\b/);
     await expect(page.locator("body > .main")).toBeVisible();
-    const chart = await page.locator("#chart-container").boundingBox();
+    let chart = await page.locator("#chart-container").boundingBox();
+    expect(chart).not.toBeNull();
+    await page.mouse.move(
+      chart.x + chart.width * 0.55,
+      chart.y + chart.height * 0.45,
+    );
+    await settleTwoFrames(page);
+    expect(await canvasMirrorState(page, key)).toMatchObject({
+      found: true,
+      hydrated: true,
+      laidOut: true,
+    });
+
+    // A canvas inserted while the destination is hidden used to wait behind
+    // Precision's active spring for about six seconds.
+    await tab("calendar").click();
+    await expect(page.locator("body > .main")).toBeHidden();
+
+    const lateKey = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.dataset.uiTestCanvas = "late-workspace-canvas";
+      canvas.dataset.glassCanvasKey = "gc-ui-late-workspace";
+      canvas.width = 48;
+      canvas.height = 24;
+      Object.assign(canvas.style, {
+        position: "absolute",
+        left: "430px",
+        top: "300px",
+        width: "48px",
+        height: "24px",
+        opacity: "0.01",
+        pointerEvents: "none",
+      });
+      const context = canvas.getContext("2d");
+      context.fillStyle = "#00e5a0";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      document.querySelector("#chart-container").appendChild(canvas);
+      return canvas.dataset.glassCanvasKey;
+    });
+
+    await tab(target).click();
+    await expect(tab(target)).toHaveClass(/\bactive\b/);
+    await expect(page.locator("body > .main")).toBeVisible();
+    chart = await page.locator("#chart-container").boundingBox();
     expect(chart).not.toBeNull();
     await page.mouse.move(
       chart.x + chart.width * 0.55,
       chart.y + chart.height * 0.45,
     );
 
-    await expect.poll(
-      () => canvasMirrorState(page, key),
-      { timeout: 2_000 },
-    ).toMatchObject({ found: true, hydrated: true });
+    await settleTwoFrames(page);
+    expect(await canvasMirrorState(page, key)).toMatchObject({
+      found: true,
+      hydrated: true,
+      laidOut: true,
+    });
+    expect(await canvasMirrorState(page, lateKey)).toMatchObject({
+      found: true,
+      hydrated: true,
+      laidOut: true,
+    });
+    expect(await stageCopyCount(page)).toBe(copiesBefore);
   });
 }
+
+test("calendar grid owns each shared edge once and draws a complete today frame", async ({ page }) => {
+  await openApp(page);
+  await page.locator(
+    'body > .glass-topbar > .glass-dock > .tab[data-tab="calendar"]',
+  ).click();
+  await expect(page.locator("#calendar-view")).toBeVisible();
+  await expect.poll(() => page.locator("#cal-grid > .cal-cell").count())
+    .toBeGreaterThan(0);
+
+  const geometry = await page.evaluate(() => {
+    const grid = document.querySelector("#cal-grid");
+    const cells = [...(grid?.children || [])];
+    const today = grid?.querySelector(".cal-cell.cal-today");
+    const style = (node, pseudo) => node
+      ? getComputedStyle(node, pseudo)
+      : null;
+    const first = style(cells[0]);
+    const second = style(cells[1]);
+    const firstBelow = style(cells[7]);
+    const last = style(cells[cells.length - 1]);
+    const lastRow = cells.slice(-7);
+    const lastRowEmpty = lastRow.filter((cell) => cell.classList.contains("cal-empty"));
+    const todayAfter = style(today, "::after");
+    return {
+      cellCount: cells.length,
+      margin: today ? style(today).margin : null,
+      todayZ: today ? style(today).zIndex : null,
+      todayAfterBorder: todayAfter ? [
+        todayAfter.borderTopWidth,
+        todayAfter.borderRightWidth,
+        todayAfter.borderBottomWidth,
+        todayAfter.borderLeftWidth,
+      ] : null,
+      sharedVertical: first && second ? [
+        first.borderRightWidth,
+        second.borderLeftWidth,
+      ] : null,
+      sharedHorizontal: first && firstBelow ? [
+        first.borderBottomWidth,
+        firstBelow.borderTopWidth,
+      ] : null,
+      outerRight: last ? last.borderRightWidth : null,
+      outerBottom: last ? last.borderBottomWidth : null,
+      emptyBottom: lastRowEmpty.map((cell) => {
+        const emptyStyle = style(cell);
+        return {
+          width: emptyStyle.borderBottomWidth,
+          color: emptyStyle.borderBottomColor,
+        };
+      }),
+    };
+  });
+
+  expect(geometry.cellCount % 7).toBe(0);
+  expect(geometry.margin).toBe("0px");
+  expect(Number(geometry.todayZ)).toBeGreaterThanOrEqual(2);
+  expect(geometry.todayAfterBorder).toEqual(["1px", "1px", "1px", "1px"]);
+  expect(geometry.sharedVertical).toEqual(["0px", "1px"]);
+  expect(geometry.sharedHorizontal).toEqual(["0px", "1px"]);
+  expect(geometry.outerRight).toBe("1px");
+  expect(geometry.outerBottom).toBe("1px");
+  expect(geometry.emptyBottom.every(({ width, color }) => (
+    width === "1px" && color !== "rgba(0, 0, 0, 0)"
+  ))).toBe(true);
+});

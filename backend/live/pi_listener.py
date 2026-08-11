@@ -186,6 +186,13 @@ class PiListener:
         self._win_end = window_end
         self._tz = ZoneInfo(tz_name)
         self._in_window = False
+        # Observable listener health.  The engine exposes this snapshot through
+        # /live/status so a live UI never has to infer listener liveness from the
+        # unchanged "running" intent flag.
+        self._last_poll_monotonic: Optional[float] = None
+        self._last_success_monotonic: Optional[float] = None
+        self._last_error: Optional[str] = None
+        self._consecutive_errors = 0
 
     def in_window(self, now: Optional[datetime] = None) -> bool:
         t = (now or datetime.now(timezone.utc)).astimezone(self._tz)
@@ -202,25 +209,71 @@ class PiListener:
     def stop(self) -> None:
         self._stop.set()
 
+    def _record_error(self, reason: str) -> None:
+        self._last_error = str(reason)
+        self._consecutive_errors += 1
+
+    def _record_success(self) -> None:
+        self._last_success_monotonic = time.monotonic()
+        self._last_error = None
+        self._consecutive_errors = 0
+
+    def get_health(self) -> dict:
+        """Return a non-sensitive, JSON-safe listener health snapshot."""
+        now = time.monotonic()
+
+        def age(stamp: Optional[float]) -> Optional[float]:
+            return round(max(0.0, now - stamp), 1) if stamp is not None else None
+
+        return {
+            "in_window": self._in_window,
+            "last_poll_age_seconds": age(self._last_poll_monotonic),
+            "last_success_age_seconds": age(self._last_success_monotonic),
+            "consecutive_errors": self._consecutive_errors,
+            "last_error": self._last_error,
+        }
+
     async def _fetch(self, client, params) -> Optional[list]:
         await self._bucket.take()
+        self._last_poll_monotonic = time.monotonic()
         try:
             r = await client.get(f"{API}/channels/{self._channel}/messages",
                                  params=params,
                                  headers={"Authorization": self._token},
                                  timeout=20)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.warning("[PI] 取訊息失敗 %s: %s", type(e).__name__, e)
+            self._record_error(f"request_{type(e).__name__}")
             return None
         if r.status_code == 429:
-            wait = float((r.json() or {}).get("retry_after", 2.0))
+            try:
+                payload = r.json()
+                wait = float(payload.get("retry_after", 2.0)) if isinstance(payload, dict) else 2.0
+            except (TypeError, ValueError, AttributeError):
+                wait = 2.0
+            wait = min(300.0, max(0.0, wait))
             logger.warning("[PI] 429 rate limited,等 %.1fs", wait)
+            self._record_error("http_429")
             await asyncio.sleep(wait + 0.5)
             return None
         if r.status_code != 200:
             logger.warning("[PI] HTTP %s: %s", r.status_code, str(r.text)[:160])
+            self._record_error(f"http_{r.status_code}")
             return None
-        return r.json()
+        try:
+            payload = r.json()
+        except Exception as e:
+            logger.warning("[PI] JSON 解析失敗 %s: %s", type(e).__name__, e)
+            self._record_error("invalid_json")
+            return None
+        if not isinstance(payload, list):
+            logger.warning("[PI] Discord 回應格式錯誤: %s", type(payload).__name__)
+            self._record_error("invalid_payload")
+            return None
+        self._record_success()
+        return payload
 
     async def run(self) -> None:
         import httpx
@@ -229,67 +282,96 @@ class PiListener:
                         *self._win_start, *self._win_end, self._tz.key, self._poll)
 
             while not self._stop.is_set():
-                now_in = self.in_window()
-                if now_in and not self._in_window:
-                    # 進入時段:把游標重設到最新一則,跳過整夜累積的圖片訊息。
-                    # 訊號只在時段內出現,所以略過場外 backlog 是正確的 ——
-                    # 若沿用舊游標,`after` 會從最舊的那批開始回傳,要翻很多頁。
-                    seed = await self._fetch(client, {"limit": 1})
-                    if seed:
-                        self._last_id = seed[0]["id"]
-                        logger.info("[PI] 進入交易時段,游標重設為 %s", self._last_id)
-                    else:
-                        logger.warning("[PI] 進入時段但取訊息失敗,仍繼續")
-                elif not now_in and self._in_window:
-                    logger.info("[PI] 離開交易時段,暫停輪詢")
-                self._in_window = now_in
-
-                if not now_in:
-                    # 場外不打 API —— 省請求也避免無謂的速率消耗
-                    try:
-                        await asyncio.wait_for(self._stop.wait(), timeout=min(60.0, self._poll * 2))
-                    except asyncio.TimeoutError:
-                        pass
-                    continue
-
-                params = {"limit": 50}
-                if self._last_id:
-                    params["after"] = self._last_id
-                msgs = await self._fetch(client, params)
-                if msgs:
-                    # after 回傳由新到舊 → 反轉成時間順序處理
-                    for msg in reversed(msgs):
-                        self._last_id = max(self._last_id or "0", msg["id"], key=int)
-                        if msg["id"] in self._seen:
-                            continue
-                        self._seen.add(msg["id"])
-                        # 開盤後半小時是前一交易日的重播,不是即時訊號
-                        # (見 is_pre_session)。不擋掉的話每天開盤必然多出假進場。
-                        if message_is_pre_session(msg):
-                            logger.info("[PI] 略過開盤前重播訊息 %s", msg.get("id"))
-                            continue
-                        # 第二道:解析本身也可能因為未預期的訊息形狀而爆。
-                        # 單一則訊息壞掉不該讓整條 listener 下線 —— 它一旦
-                        # 死掉就是靜默的,實盤會以為「今天沒有訊號」。
-                        try:
-                            sigs = parse_message(msg)
-                        except Exception as e:
-                            logger.exception("[PI] 解析訊息 %s 失敗 %s: %s —— 略過該則",
-                                             msg.get("id"), type(e).__name__, e)
-                            continue
-                        for sig in sigs:
-                            logger.info("[PI] 訊號 %s %s %s %s(%s)",
-                                        sig.equity, sig.future, sig.side, sig.kind, sig.size)
-                            try:
-                                res = self._cb(sig)
-                                if asyncio.iscoroutine(res):
-                                    await res
-                            except Exception as e:
-                                logger.exception("[PI] on_signal 例外 %s: %s",
-                                                 type(e).__name__, e)
-                    if len(self._seen) > 5000:
-                        self._seen = set(list(self._seen)[-2000:])
+                delay = self._poll
                 try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=self._poll)
+                    delay = await self._poll_once(client)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # Last-resort containment: a future response/message shape
+                    # must be visible in health, but must not silently kill the
+                    # task that feeds live PI signals.
+                    self._record_error(f"loop_{type(e).__name__}")
+                    logger.exception("[PI] 輪詢迴圈例外 %s: %s —— listener 繼續",
+                                     type(e).__name__, e)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=delay)
                 except asyncio.TimeoutError:
                     pass
+
+    async def _poll_once(self, client) -> float:
+        """Run one bounded poll cycle and return the delay before the next."""
+        now_in = self.in_window()
+        if now_in and not self._in_window:
+            # 進入時段:把游標重設到最新一則,跳過整夜累積的圖片訊息。
+            seed = await self._fetch(client, {"limit": 1})
+            seed_id = self._message_id(seed[0]) if seed else None
+            if seed_id:
+                self._last_id = seed_id
+                logger.info("[PI] 進入交易時段,游標重設為 %s", self._last_id)
+            else:
+                if seed:
+                    self._record_error("invalid_seed_message")
+                logger.warning("[PI] 進入時段但取訊息失敗,仍繼續")
+        elif not now_in and self._in_window:
+            logger.info("[PI] 離開交易時段,暫停輪詢")
+        self._in_window = now_in
+
+        if not now_in:
+            # 場外不打 API —— 省請求也避免無謂的速率消耗
+            return min(60.0, self._poll * 2)
+
+        params = {"limit": 50}
+        if self._last_id:
+            params["after"] = self._last_id
+        msgs = await self._fetch(client, params)
+        if msgs:
+            await self._dispatch_messages(msgs)
+        return self._poll
+
+    @staticmethod
+    def _message_id(msg) -> Optional[str]:
+        if not isinstance(msg, dict):
+            return None
+        msg_id = str(msg.get("id") or "")
+        return msg_id if msg_id.isdigit() else None
+
+    async def _dispatch_messages(self, msgs: list) -> None:
+        """Validate and dispatch one Discord batch without leaking bad messages."""
+        # after 回傳由新到舊 → 反轉成時間順序處理
+        for msg in reversed(msgs):
+            msg_id = self._message_id(msg)
+            if not msg_id:
+                logger.warning("[PI] 略過格式錯誤的 Discord 訊息")
+                self._record_error("invalid_message")
+                continue
+            self._last_id = max(self._last_id or "0", msg_id, key=int)
+            if msg_id in self._seen:
+                continue
+            self._seen.add(msg_id)
+            # 開盤後半小時是前一交易日的重播,不是即時訊號。
+            if message_is_pre_session(msg):
+                logger.info("[PI] 略過開盤前重播訊息 %s", msg_id)
+                continue
+            try:
+                sigs = parse_message(msg)
+            except Exception as e:
+                self._record_error(f"parse_{type(e).__name__}")
+                logger.exception("[PI] 解析訊息 %s 失敗 %s: %s —— 略過該則",
+                                 msg_id, type(e).__name__, e)
+                continue
+            for sig in sigs:
+                logger.info("[PI] 訊號 %s %s %s %s(%s)",
+                            sig.equity, sig.future, sig.side, sig.kind, sig.size)
+                try:
+                    res = self._cb(sig)
+                    if asyncio.iscoroutine(res):
+                        await res
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self._record_error(f"callback_{type(e).__name__}")
+                    logger.exception("[PI] on_signal 例外 %s: %s",
+                                     type(e).__name__, e)
+        if len(self._seen) > 5000:
+            self._seen = set(list(self._seen)[-2000:])

@@ -1329,7 +1329,8 @@
 
 :root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-cell.cal-empty {
     background: transparent;
-    border-color: transparent;
+    /* Empty slots keep the grid edge so the final row remains closed. */
+    border-color: var(--border);
 }
 
 :root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-cell.cal-today {

@@ -21,6 +21,7 @@ current_quarterly_contract_id() 用日曆判定(季月第 3 個週五 − 8 天)
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -72,16 +73,16 @@ def prev_contract_id(symbol: str, now: datetime) -> str:
 
 
 def store_status(symbol: str) -> dict:
-    bars = candle_store.load(symbol, 1)
+    snapshot = candle_store.load_snapshot(symbol, 1)
     now = datetime.now(timezone.utc)
-    if not bars:
+    if not snapshot.bars:
         return {"symbol": symbol, "bars": 0, "first": None, "last": None,
                 "age_days": None, "state": "EMPTY"}
-    # 1.0.10: candle_store.load() 已保證排序 —— 這裡的 sort 是多餘的 233 萬筆
-    # 運算,而且是就地修改(load 現在回傳淺拷貝所以不會污染快取,但仍沒必要)。
-    lo, hi = _utc(bars[0].timestamp), _utc(bars[-1].timestamp)
+    # The immutable snapshot already owns sorted bounds. Do not materialize a
+    # multi-million-pointer list merely to inspect count/first/last.
+    lo, hi = snapshot.first_time, snapshot.last_time
     age = (now - hi).days
-    return {"symbol": symbol, "bars": len(bars), "first": lo, "last": hi,
+    return {"symbol": symbol, "bars": len(snapshot.bars), "first": lo, "last": hi,
             "age_days": age,
             "state": "FRESH" if age <= 3 else ("STALE" if age < RETENTION_DAYS else "HOLE")}
 
@@ -155,7 +156,9 @@ async def accumulate_once(symbols: Optional[Iterable[str]] = None,
     out: dict = {}
     try:
         for s in symbols:
-            st = store_status(s)
+            # A cold snapshot may decode/sort millions of rows. Keep even that
+            # first inspection off the FastAPI event loop.
+            st = await asyncio.to_thread(store_status, s)
             floor = now - timedelta(days=RETENTION_DAYS - 1)
             if st["last"]:
                 since = st["last"] - timedelta(hours=OVERLAP_HOURS)
@@ -169,8 +172,11 @@ async def accumulate_once(symbols: Optional[Iterable[str]] = None,
             if not bars:
                 out[s] = {"added": 0, "total": st["bars"], "last": st["last"]}
                 continue
-            total, added = candle_store.merge(bars, s, 1)
-            after = store_status(s)
+            # merge() intentionally remains synchronous for CLI callers; the
+            # server accumulator runs its full dict/sort/pickle transaction in
+            # a worker. candle_store serializes transactions per symbol/base.
+            total, added = await asyncio.to_thread(candle_store.merge, bars, s, 1)
+            after = await asyncio.to_thread(store_status, s)
             out[s] = {"added": added, "total": total, "last": after["last"]}
             if added:
                 log(f"[accumulate] {s} +{added} 根 → {total:,} 根,"
@@ -191,7 +197,6 @@ async def accumulator_task(interval_s: int = 3600,
     與 UI 操作完全解耦 —— 只要伺服器活著就會累積,不管你在看哪個商品、
     有沒有跑回測、有沒有開實盤。
     """
-    import asyncio
     await asyncio.sleep(30)          # 讓啟動流程先完成
     while True:
         try:

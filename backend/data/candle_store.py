@@ -35,7 +35,9 @@ import logging
 import pickle
 import time as _time
 import calendar
-from dataclasses import replace
+import threading
+from bisect import bisect_left, bisect_right
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -157,47 +159,125 @@ def _seed_path(symbol: str = "MNQ", base: int = 1) -> Path:
 # ⚠️ 記憶體代價:每根 Candle 約 576 bytes → 233 萬根約 1.25GB/商品。
 # 這是 web server 程序常駐的量。sweep 是另開子程序,不共用這份快取
 # (見 memory project_sweep_memory_limit)。
-_CACHE: Dict[str, Tuple[float, List[Candle]]] = {}
+@dataclass(frozen=True)
+class CandleSnapshot:
+    """Immutable index over one sorted persistent-store generation.
+
+    The tuple owns the collection structure while the ``Candle`` objects remain
+    shared and read-only, matching ``load()``'s long-standing shallow-copy
+    contract. Range reads use ``bisect`` directly over the tuple, so a short
+    request does not copy or scan the multi-million-bar store first.
+    """
+
+    symbol: str
+    base: int
+    source_path: Path
+    version: Optional[Tuple[int, int]]
+    bars: Tuple[Candle, ...]
+
+    @property
+    def first_time(self) -> Optional[datetime]:
+        return _as_utc(self.bars[0].timestamp) if self.bars else None
+
+    @property
+    def last_time(self) -> Optional[datetime]:
+        return _as_utc(self.bars[-1].timestamp) if self.bars else None
 
 
-def load(symbol: str = "MNQ", base: int = 1, use_cache: bool = True) -> List[Candle]:
-    """Load the persistent store (sorted), or [] if none yet."""
+_CACHE: Dict[str, CandleSnapshot] = {}
+_STORE_LOCKS: Dict[str, threading.RLock] = {}
+_STORE_LOCKS_GUARD = threading.Lock()
+
+
+def _store_lock(symbol: str = "MNQ", base: int = 1) -> threading.RLock:
+    """Return the process-local transaction lock for one persistent store."""
+    key = f"{str(symbol).upper()}:{int(base)}"
+    with _STORE_LOCKS_GUARD:
+        lock = _STORE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _STORE_LOCKS[key] = lock
+        return lock
+
+
+def _path_version(path: Path) -> Optional[Tuple[int, int]]:
+    try:
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def _empty_snapshot(symbol: str, base: int, path: Path) -> CandleSnapshot:
+    return CandleSnapshot(symbol, base, path, None, ())
+
+
+def load_snapshot(symbol: str = "MNQ", base: int = 1,
+                  use_cache: bool = True) -> CandleSnapshot:
+    """Return the immutable sorted snapshot for the current store generation."""
     p = _store_path(symbol, base)
     if not p.exists():
         seed = _seed_path(symbol, base)
         if not seed.exists():
-            return []
+            return _empty_snapshot(symbol, base, p)
         logger.info(f"[CandleStore] {p.name} 不存在 → 改用開機種子 {seed.name}")
         p = seed
+
     key = f"{symbol}:{base}"
-    try:
-        mtime = p.stat().st_mtime
-    except OSError:
-        mtime = None
-    if use_cache and mtime is not None:
+    version = _path_version(p)
+    if use_cache and version is not None:
         hit = _CACHE.get(key)
-        if hit and hit[0] == mtime:
-            # 回傳**淺拷貝**:Candle 物件共用(唯讀),但 list 本身獨立。
-            # 實測 accumulator.store_status() 會對結果做 bars.sort() ——
-            # 那是就地修改共享 list。內容上雖是 no-op(load 已排序),
-            # 但呼叫端有 30 多處,無法逐一稽核。複製 233 萬個指標約 20ms,
-            # 相對於重讀 10 秒是極便宜的保險。
-            return list(hit[1])
+        if (hit is not None and hit.version == version
+                and hit.source_path == p):
+            return hit
+
     try:
-        bars = pickle.load(open(p, "rb"))
-        bars = sorted(bars, key=lambda c: c.timestamp)
+        with p.open("rb") as fh:
+            bars = pickle.load(fh)
+        bars = sorted(bars, key=lambda c: _as_utc(c.timestamp))
     except Exception as e:
         logger.warning(f"[CandleStore] failed to load {p}: {e}")
-        return []
-    if use_cache and mtime is not None:
-        _CACHE[key] = (mtime, bars)
-        # 1.0.10 BUG FIX:這裡原本 `return bars` —— 那是**快取裡的那個 list
-        # 本身**。快取命中的路徑有做淺拷貝,但未命中(第一次載入)的路徑沒有,
-        # 所以「第一個」呼叫端拿到的是共用 list。accumulator.store_status()
-        # 會對結果做 bars.sort(),於是第一次載入之後快取就被就地改過了。
-        # 不會拋例外,只是之後每個人拿到的順序都可能不對。
-        return list(bars)
-    return bars
+        return _empty_snapshot(symbol, base, p)
+
+    snapshot = CandleSnapshot(symbol, base, p, version, tuple(bars))
+    if use_cache and version is not None:
+        _CACHE[key] = snapshot
+    return snapshot
+
+
+def select_range(snapshot: CandleSnapshot,
+                 start: Optional[datetime] = None,
+                 end: Optional[datetime] = None) -> List[Candle]:
+    """Return an owned list for the inclusive ``start``/``end`` subrange."""
+    bars = snapshot.bars
+    lo = 0
+    hi = len(bars)
+    if start is not None:
+        lo = bisect_left(bars, _as_utc(start), key=lambda c: _as_utc(c.timestamp))
+    if end is not None:
+        hi = bisect_right(
+            bars, _as_utc(end), lo=lo, key=lambda c: _as_utc(c.timestamp)
+        )
+    return list(bars[lo:hi])
+
+
+def snapshot_contains(snapshot: CandleSnapshot,
+                      start: Optional[datetime],
+                      end: Optional[datetime]) -> bool:
+    """Whether the snapshot's observed bounds enclose both requested bounds."""
+    if not snapshot.bars:
+        return False
+    first = snapshot.first_time
+    last = snapshot.last_time
+    return ((start is None or (first is not None and first <= _as_utc(start)))
+            and (end is None or (last is not None and last >= _as_utc(end))))
+
+
+def load(symbol: str = "MNQ", base: int = 1, use_cache: bool = True) -> List[Candle]:
+    """Load the persistent store (sorted), or [] if none yet."""
+    # Always return an owned list. The immutable cached tuple remains private,
+    # so callers that sort/pop in place cannot corrupt later reads (DATA-004).
+    return list(load_snapshot(symbol, base, use_cache).bars)
 
 
 def invalidate_cache(symbol: Optional[str] = None, base: int = 1) -> None:
@@ -210,12 +290,24 @@ def invalidate_cache(symbol: Optional[str] = None, base: int = 1) -> None:
 
 def save(bars: List[Candle], symbol: str = "MNQ", base: int = 1) -> None:
     """Write the full bar list to disk (atomic via tmp+rename)."""
+    with _store_lock(symbol, base):
+        _save_locked(bars, symbol, base)
+
+
+def _save_locked(bars: List[Candle], symbol: str, base: int) -> None:
+    """Write while the caller owns the per-store re-entrant lock."""
     STORE_DIR.mkdir(parents=True, exist_ok=True)
     p = _store_path(symbol, base)
     tmp = p.with_suffix(".pkl.tmp")
+    ordered = sorted(bars, key=lambda c: _as_utc(c.timestamp))
     with tmp.open("wb") as fh:
-        pickle.dump(sorted(bars, key=lambda c: c.timestamp), fh)
+        pickle.dump(ordered, fh)
     tmp.replace(p)
+    # Publish the exact generation just written. This avoids an immediate
+    # multi-million-row disk reload and does not depend only on mtime precision.
+    _CACHE[f"{symbol}:{base}"] = CandleSnapshot(
+        symbol, base, p, _path_version(p), tuple(ordered)
+    )
     logger.info(f"[CandleStore] saved {len(bars)} bars → {p.name}")
 
 
@@ -274,6 +366,13 @@ def merge(new_bars: List[Candle], symbol: str = "MNQ",
     1.0.10: 併入前先做換錨偵測。store 的價格錨點是權威,incoming 若換了錨
     就先平移回來 —— 否則換月時會在 store 內部長出假跳空。
     """
+    with _store_lock(symbol, base):
+        return _merge_locked(new_bars, symbol, base)
+
+
+def _merge_locked(new_bars: List[Candle], symbol: str,
+                  base: int) -> Tuple[int, int]:
+    """Merge while holding the per-store transaction lock."""
     existing = load(symbol, base)
     by_ts: Dict[datetime, Candle] = {
         _as_utc(b.timestamp): b for b in existing
