@@ -134,6 +134,101 @@ test("release label is 1.0.10 and chart watermark has no version chip", async ({
   await expect(watermark).toHaveText("ancserTPX");
 });
 
+/* 1.0.10p. Every static guard around the popup switches passed while the
+   control was visibly broken, because they all measured the RESTING state.
+   These three drive the switch and read what is actually on screen. */
+test("a popup switch keeps its own lens while it is being dragged", async ({ page }) => {
+  await openApp(page);
+  await page.evaluate(() => window.toggleChartLayerMenu(true));
+  await page.waitForSelector("#chart-layer-pop:not(.hidden)");
+  await settleTwoFrames(page);
+
+  const track = page.locator("#chart-layer-pop > .layer-row > .glass-switch").first();
+  const box = await track.boundingBox();
+  await page.mouse.move(box.x + 8, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 8, box.y + box.height / 2, { steps: 8 });
+
+  const live = await page.evaluate(() => {
+    const sw = document.querySelector("#chart-layer-pop > .layer-row > .glass-switch");
+    const thumb = sw.querySelector(":scope > .switch-thumb");
+    const layer = thumb.querySelector(":scope > .optical-layer");
+    const layerStyle = getComputedStyle(layer);
+    return {
+      interacting: sw.classList.contains("interacting"),
+      // The positive half: the drag really did raise this switch's glass.
+      glass: Number.parseFloat(sw.style.getPropertyValue("--switch-glass")),
+      thumbVisibility: getComputedStyle(thumb).visibility,
+      layerVisibility: layerStyle.visibility,
+      layerOpacity: Number.parseFloat(layerStyle.opacity),
+      // A clone carries no optical layer, so it must never paint the dark
+      // lens backdrop: that is what drew a black pill over the live thumb.
+      cloneBackdrops: [...document.querySelectorAll(
+        ".optical-stage-copy .glass-switch, .optical-stage-copy.glass-switch",
+      )].filter((clone) => {
+        const kid = clone.querySelector(":scope > .switch-thumb");
+        return kid && Number.parseFloat(
+          getComputedStyle(kid, "::before").opacity || "0") > 0.01;
+      }).length,
+    };
+  });
+  await page.mouse.up();
+
+  expect(live.interacting).toBe(true);
+  expect(live.glass).toBeGreaterThan(0.5);
+  expect(live.thumbVisibility).toBe("visible");
+  expect(live.layerVisibility).toBe("visible");
+  expect(live.layerOpacity).toBeGreaterThan(0.5);
+  expect(live.cloneBackdrops).toBe(0);
+});
+
+test("releasing a switch never repaints the thumb solid --bg", async ({ page }) => {
+  await openApp(page);
+  const track = page.locator("#pi-matrix-bt-long-pi");
+  const restingFace = await page.evaluate(() => getComputedStyle(
+    document.querySelector("#pi-matrix-bt-long-pi > .switch-thumb"),
+  ).backgroundColor);
+  const box = await track.boundingBox();
+  await page.mouse.move(box.x + 8, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 8, box.y + box.height / 2, { steps: 8 });
+
+  // Sample every frame across the release, where the lens-up material used to
+  // outlive the lens itself and blink black.
+  await page.evaluate(() => {
+    const sw = document.querySelector("#pi-matrix-bt-long-pi");
+    const thumb = sw.querySelector(":scope > .switch-thumb");
+    window.__release = [];
+    const t0 = performance.now();
+    const tick = () => {
+      const before = getComputedStyle(thumb, "::before");
+      window.__release.push({
+        face: getComputedStyle(thumb).backgroundColor,
+        glass: Number.parseFloat(sw.style.getPropertyValue("--switch-glass") || "0"),
+        backdrop: Number.parseFloat(before.opacity || "0"),
+      });
+      if (performance.now() - t0 < 500) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await page.mouse.up();
+  await page.waitForTimeout(700);
+
+  const frames = await page.evaluate(() => window.__release);
+  expect(frames.length).toBeGreaterThan(3);
+  // The thumb's own face is the resting colour on every single frame; only the
+  // ::before backdrop moves, and it moves with --switch-glass, not on a
+  // separate class-triggered transition.
+  const faces = new Set(frames.map((f) => f.face));
+  expect([...faces]).toEqual([restingFace]);
+  // ...and the glass really was up at some point, or the loop above proves
+  // nothing about a release it never saw.
+  expect(Math.max(...frames.map((f) => f.glass))).toBeGreaterThan(0.1);
+  for (const f of frames) {
+    expect(Math.abs(f.backdrop - f.glass)).toBeLessThan(0.02);
+  }
+});
+
 test("sweep model scope opens as a glass-switch dropdown", async ({ page }) => {
   await openApp(page);
 
@@ -666,9 +761,11 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
   await expect(popup.locator(
     '.layer-row > .glass-switch > .switch-thumb.optical-surface[data-optical="switch"]',
   )).toHaveCount(10);
+  // 1.0.10p: no per-popup optics override — these sample exactly like the
+  // parameter switches do.
   await expect(popup.locator(
-    '.layer-row > .glass-switch > .switch-thumb[data-glass-shrink="0.20"]',
-  )).toHaveCount(10);
+    ".layer-row > .glass-switch > .switch-thumb[data-glass-shrink]",
+  )).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => (
     [...document.querySelectorAll("#chart-layer-pop > .layer-row > .glass-switch")]
       .slice(0, 3)
@@ -820,11 +917,15 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
   await expect.poll(() => page.evaluate(() => (
     window.__tpxPopupPointerMaterial?.interacting || false
   ))).toBe(true);
+  // 1.0.10p: the lens-up --bg material lives on .switch-thumb::before and is
+  // driven by --switch-glass. The thumb's own face stays the resting colour
+  // throughout, so read the backdrop, not the face.
   await expect.poll(() => page.evaluate(() => {
     const track = document.querySelector("#chart-layer-pop > .layer-row > .glass-switch");
-    return Boolean(track?.classList.contains("interacting"))
-      && getComputedStyle(track.querySelector(".switch-thumb")).backgroundColor
-        === "rgb(8, 9, 13)";
+    if (!track?.classList.contains("interacting")) return false;
+    const thumb = track.querySelector(".switch-thumb");
+    return getComputedStyle(thumb, "::before").backgroundColor === "rgb(8, 9, 13)"
+      && Number.parseFloat(getComputedStyle(thumb, "::before").opacity) > 0.5;
   })).toBe(true);
   const localMaterial = await page.evaluate(() => {
     const track = document.querySelector("#chart-layer-pop > .layer-row > .glass-switch");
@@ -832,7 +933,7 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
     return {
       ...window.__tpxPopupPointerMaterial,
       track: getComputedStyle(track).backgroundColor,
-      thumb: getComputedStyle(thumb).backgroundColor,
+      thumb: getComputedStyle(thumb, "::before").backgroundColor,
       center: getComputedStyle(thumb, "::after").backgroundColor,
       centerContent: getComputedStyle(thumb, "::after").content,
     };

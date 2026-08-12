@@ -7,6 +7,7 @@ fast in the normal pytest suite.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -18,6 +19,18 @@ APP_CSS = ROOT / "frontend" / "static" / "ancserTPX.css"
 
 def _source(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _code(path: Path) -> str:
+    """Source with /* block comments */ removed.
+
+    This file is full of "X must not exist" guards, and this codebase
+    deliberately keeps a comment naming X wherever X was deleted, so the next
+    person does not reintroduce it.  Matching those guards against raw text
+    makes the explanation itself trip the assertion, which pushes people to
+    delete the explanation.  Negative assertions read this instead.
+    """
+    return re.sub(r"/\*.*?\*/", "", _source(path), flags=re.DOTALL)
 
 
 def _slice(source: str, start: str, end: str) -> str:
@@ -166,18 +179,35 @@ def test_popup_switches_use_shared_geometry_without_compact_shrink():
     ):]
 
 
-def test_switch_sampling_copy_excludes_the_thumb_paint():
+def test_switch_sampling_copy_keeps_the_thumb_but_never_its_lens_state():
+    """1.0.10p: a copy shows the control AS DRAWN, at rest.
+
+    Two opposite mistakes are covered here.  Blanking the thumb inside every
+    stage copy deletes it from Precision's magnified image, where the copy is
+    the only thing being shown.  Letting the copy inherit the lens-up state is
+    worse: clones are built before optical layers are mounted, so `interacting`
+    plus a mirrored --switch-glass paints the dark backdrop with no lens behind
+    it -- a solid --bg pill drawn over the live thumb.
+    """
     css = _source(GLASS_CSS)
+    assert ('.optical-stage-copy > .switch-thumb[data-optical="switch"]'
+            not in _code(GLASS_CSS))
+
     selector = (
-        '.optical-stage-copy > .switch-thumb[data-optical="switch"],'
-        '\n.optical-stage-copy .glass-switch > '
-        '.switch-thumb[data-optical="switch"]'
+        ".optical-stage-copy .glass-switch,"
+        "\n.optical-stage-copy.glass-switch {"
     )
     assert selector in css
     rule = css[css.index(selector):css.index("}", css.index(selector))]
-    assert "visibility: hidden !important;" in rule
-    assert "opacity: 0 !important;" in rule
-    assert "background: transparent !important;" in rule
+    assert "--switch-glass: 0 !important;" in rule
+
+    resting = (
+        ".optical-stage-copy .glass-switch.interacting > .switch-thumb,"
+        "\n.optical-stage-copy.glass-switch.interacting > .switch-thumb {"
+    )
+    assert resting in css
+    resting_rule = css[css.index(resting):css.index("}", css.index(resting))]
+    assert "background: var(--switch-thumb-color);" in resting_rule
 
 
 def test_silent_same_state_switch_sync_cannot_leave_dark_interaction_stuck():
@@ -215,13 +245,23 @@ def test_tier_one_controls_do_not_hide_the_pointer_lens():
     tier = "target.closest('[data-glass-tier=\"1\"]')"
     assert tier in blocker
     assert blocker.index(tier) < blocker.index("target.closest(interactiveSelector)")
-    lens = _slice(js, "const lensSwitchSelector =", "const scale =")
-    assert 'const lensSwitchSelector =' in lens
-    assert 'target.closest(lensSwitchSelector)' in blocker
-    assert 'syncLensCoveredSwitch(event.target)' in js
-    assert 'precision-under-lens' in js
-    assert '.chart-layer-pop .glass-switch.precision-under-lens' in css
     assert ".chart-lens * { pointer-events: none !important; }" in css
+
+    # 1.0.10p: ...but a control raising its OWN lens is the exception, and it
+    # has to be tested before the tier-1 bypass or the popup's tier mark wins.
+    # Precision would otherwise paint a still clone of the switch on top of
+    # the live refraction.  The occlusion machinery that used to paper over
+    # this (hiding the live thumb under the lens) is gone: `visibility`
+    # inherits, so it took the thumb's own .optical-layer with it.
+    interacting = 'target.closest(".glass-switch.interacting")'
+    assert interacting in blocker
+    assert blocker.index(interacting) < blocker.index(tier)
+    js_code = _code(GLASS_JS)
+    css_code = _code(GLASS_CSS)
+    assert "lensSwitchSelector" not in js_code
+    assert "syncLensCoveredSwitch" not in js_code
+    assert "precision-under-lens" not in js_code
+    assert "precision-under-lens" not in css_code
 
 
 def test_edge_debug_is_a_root_attribute_only():

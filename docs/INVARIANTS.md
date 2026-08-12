@@ -98,7 +98,7 @@
 | UI-001 | 套用任何皮膚**不得移除語言切換**。皮膚是外觀,不該拿掉功能 | `test_data_and_skin_policy.py` |
 | UI-002 | Stage 版面變動必須讓被取樣的 glass scene 一起重新布局;只更新 surface 幾何不夠 | `tests/ui/glass-ui.spec.js` |
 | UI-003 | 同一個邏輯控制項的所有呈現(來源 + 光學複本)必須顯示相同狀態 | `tests/ui/glass-ui.spec.js` |
-| UI-004 | 每個 `.optical-surface` 會建一份整頁 DOM 複本。**不要在同一個面板裡放很多個** —— 12 個開關實測直接把 renderer 卡死 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| UI-004 | 每個 `.optical-surface` 複製的是**最近的 `[data-stage]`**,不是整頁。switch 的 `data-stage="switch"` 就在按鈕上,所以一顆開關的取樣複本只有那顆開關(實測 66×28、0 個巢狀 optical layer)。放多個開關的代價是 SVG filter 數量,不是頁面複本數 —— 但仍要確認 stage 標在控制項本身,標到面板上就真的會複製整個面板 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 | UI-005 | 隱藏面板中的 DOM 量測回傳 0×0。動畫依賴 rAF,在背景分頁不會前進 —— 兩者都會讓驗證出現偽陽性 | `tests/ui/glass-ui.spec.js` |
 | UI-006 | Precision Lens 下方可取樣的 Tier-1 Glass(含 Chart Layers 與附近控制項)必須以已解析的材質/狀態出現在 Lens 內 | `tests/ui/glass-ui.spec.js` |
 | UI-007 | 光學輸出不得取樣自己:Tier-1 只取 Tier-0;Tier-2 可取 Tier-0 + 合格 Tier-1,但不得取 Tier-2/self | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
@@ -109,12 +109,15 @@
 | UI-012 | 共用/分層來源不得改變各 component 原有的 shrink/refraction/motion 與本地材質所有權 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 | UI-013 | 可見來源正確性有 bounded high-priority 路徑;背景結構 churn 仍走原本 deferred/batched scheduler | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 | UI-014 | Chart Tools 只保留跳到最新與 Chart Layers;已退役的 auto-center provider/drag/latch 不得回流,且預設圖表 framing 必須保留 | `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
+| UI-015 | **拇指就是鏡片,任何情況都不可以被遮蔽。** `visibility` 會繼承,遮住 `.switch-thumb` 等於一起關掉裡面那層 `.optical-layer` —— 開關照樣能拖能點,但 active 狀態整個消失(只剩一顆綠藥丸) | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| UI-016 | Stage 複本沒有 `.optical-layer`(複本在 `buildOpticalSurfaces()` 掛 layer **之前**就做好了),但 class 與 inline style 會被原樣鏡射進去。所以複本**永遠只能畫靜止材質**,不得繼承 lens-up 狀態,否則 Precision 會在活的拇指上蓋一顆純 `--bg` 藥丸。同理,控制項自己舉起鏡片時 Precision 必須讓開 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| UI-017 | lens-up 材質是一組**成對**的東西(`--bg` 底 + `.optical-layer`),兩半都必須由 `--switch-glass` 驅動。綁到 `.interacting` class 上就會變成兩個時鐘:`apply()` 在拇指停止移動那一幀就拿掉 class,彈簧卻還要再跑 ~70ms,結果鏡片已經淡出、底色還停在 `--bg` —— 每次放手都閃一下黑 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 
 ---
 
 ## 目前的覆蓋缺口(誠實版)
 
-**45 條目前都已有自動化保護。** UI-002…014 的 paint/timing 行為由
+**48 條目前都已有自動化保護。** UI-002…017 的 paint/timing 行為由
 `tests/ui/glass-ui.spec.js` 在 Chromium 驗證;小型架構接縫另由 pytest static
 contracts 快速擋回歸。CI 的 browser job 以 `--lifespan off` 啟動 app,不得啟動
 candle accumulator / shadow replay / broker 連線。

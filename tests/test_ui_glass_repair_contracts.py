@@ -20,6 +20,15 @@ GLASS_CSS = (STATIC / "tpx-glass.css").read_text(encoding="utf-8")
 GLASS_JS = (STATIC / "tpx-glass.js").read_text(encoding="utf-8")
 SKIN_JS = (STATIC / "tpx-glass-skin.js").read_text(encoding="utf-8")
 
+
+def _code(source: str) -> str:
+    """Source with /* block comments */ removed.
+
+    "X must not exist" guards have to ignore the comment that explains why X
+    was removed, or keeping that explanation would fail the test.
+    """
+    return re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+
 CANONICAL = [
     ("fade", "FADE"),
     ("sigma", "SIGMA"),
@@ -320,11 +329,16 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     assert 'data-glass-tier="1"' in popup
     assert 'data-glass-material="popup"' in popup
     assert popup.count('data-glass-material="local"') == 10
-    # Repeated rows use the PI matrix's real optical thumb path.  They keep
-    # the ordinary switch geometry but opt into the gentler 20% center shrink.
+    # Repeated rows use the PI matrix's real optical thumb path, with the
+    # ordinary switch geometry AND the ordinary switch optics.  1.0.10p: a
+    # per-surface data-glass-shrink="0.20" override made these the only
+    # switches on the page with their own sampling; the brief was parity with
+    # the parameter switches, so shrink comes from settings.switch alone.
     assert 'data-glass-sampling="material-only"' not in popup
     assert popup.count('data-optical="switch"') == 10
-    assert popup.count('data-glass-shrink="0.20"') == 10
+    assert "data-glass-shrink" not in popup
+    assert "dataset.glassShrink" not in _code(GLASS_JS)
+    assert "const config = settings[surface.component];" in GLASS_JS
 
     assert "#chart-layer-pop" not in CSS
     assert ".chart-layer-pop {" in CSS
@@ -337,14 +351,70 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     assert ".chart-layer-pop::after" not in CSS
     assert ".chart-layer-pop .glass-switch," in CSS
     assert ".sweep-model-pop .glass-switch" in CSS
-    assert '.optical-stage-copy > .switch-thumb[data-optical="switch"],' in GLASS_CSS
-    assert "opacity: 0 !important;" in GLASS_CSS
-    assert "background: transparent !important;" in GLASS_CSS
+    # 1.0.10p: a thumb is the lens, never something to occlude.  Two rules
+    # that hid it are gone for good -- one blanked the thumb inside every
+    # stage copy, the other hid the LIVE thumb whenever Precision passed over
+    # it.  `visibility` inherits, so the second also killed the .optical-layer
+    # nested in the thumb: pressing a popup switch left a bare green pill.
+    assert ('.optical-stage-copy > .switch-thumb[data-optical="switch"]'
+            not in _code(GLASS_CSS))
+    assert "precision-under-lens" not in _code(GLASS_JS)
+    assert "precision-under-lens" not in _code(GLASS_CSS)
     assert "width: 2.8333rem;" in CSS
     assert "height: 1.1667rem;" in CSS
     layer_sync = _function_source("buildChartLayerMenu")
     assert "const current = tr.getAttribute('aria-checked') === 'true';" in layer_sync
     assert layer_sync.index("if (current === on) return;") < layer_sync.index("tr.tpxSetState(on)")
+
+
+def test_switch_lens_material_and_backdrop_share_one_clock():
+    """1.0.10p: the lens-up thumb is a PAIR (dark backdrop + optical layer).
+
+    Both halves must be driven by --switch-glass, which apply() eases out on
+    the spring.  Binding either half to the .interacting class instead splits
+    them across two clocks: apply() drops the class the frame the thumb stops
+    moving while the spring keeps running for ~70ms, so a class-triggered
+    `background` transition repainted the thumb solid --bg after the lens had
+    already faded -- a black blink on every release.
+    """
+    backdrop = GLASS_CSS[
+        GLASS_CSS.index(".switch-thumb::before {"):
+        GLASS_CSS.index(".glass-switch.interacting .switch-thumb {")
+    ]
+    assert "background: var(--bg);" in backdrop
+    assert "opacity: var(--switch-glass, 0);" in backdrop
+
+    # The class must no longer own the backdrop colour...
+    interacting = GLASS_CSS[
+        GLASS_CSS.index(".glass-switch.interacting .switch-thumb {"):
+        GLASS_CSS.index(".glass-switch.interacting .switch-thumb .optical-layer")
+    ]
+    assert "background:" not in interacting
+    # ...and the lens it pairs with reads the same variable.
+    assert ".switch-thumb .optical-layer { opacity: var(--switch-glass, 0); }" in GLASS_CSS
+
+
+def test_stage_clones_never_paint_the_lens_up_switch_material():
+    """A clone has no .optical-layer, so it must never show the lens state.
+
+    Stage copies are cloned in buildOpticalSurfaces() BEFORE optical layers
+    are mounted, but mirrorAttributeMutation copies `class` and the inline
+    --switch-glass into them verbatim.  Without this reset the Precision copy
+    painted a solid --bg pill over the live, correctly-refracting thumb --
+    which is what turned the CHART LAYERS switches black mid-drag.
+    """
+    assert ".optical-stage-copy .glass-switch,\n.optical-stage-copy.glass-switch {" in GLASS_CSS
+    reset = GLASS_CSS[GLASS_CSS.index(".optical-stage-copy .glass-switch,"):]
+    # !important is load-bearing: it has to beat the mirrored inline style.
+    assert "--switch-glass: 0 !important;" in reset[:reset.index("}")]
+
+    # Precision must also step aside while a switch is raising its own lens,
+    # and that test has to precede the tier-1 bypass or the popup's own tier
+    # mark wins and the clone is drawn on top anyway.
+    start = GLASS_JS.index("const blocksLens = (target) => {")
+    blocks = GLASS_JS[start:GLASS_JS.index("const apply = () => {", start)]
+    assert 'if (target.closest(".glass-switch.interacting")) return true;' in blocks
+    assert blocks.index(".glass-switch.interacting") < blocks.index('data-glass-tier="1"')
 
 
 def test_sweep_model_dropdown_contract_uses_glass_switches_and_preserves_scope_names():

@@ -1120,30 +1120,56 @@
    shrinks along with everything else. The vacated ring can only be
    coloured from underneath, which is exactly this declaration. --bg is
    the page's own colour and follows the theme, so the gap now reads as
-   background rather than as part of the control. */
+   background rather than as part of the control.
+
+   1.0.10p: that backdrop lives on ::before and is driven by --switch-glass,
+   NOT by the .interacting class, because the two run on different clocks.
+   apply() drops `interacting` the frame the thumb stops moving, while
+   --switch-glass keeps easing out on the spring for ~70ms more. With the
+   backdrop on a class-triggered `background` transition the thumb was
+   repainted solid --bg while the lens had already faded — a black blink on
+   every release (measured: t+73ms lens at 0.14, background still
+   rgb(8,9,13)). Same variable as the lens = same clock = no blink. */
+.switch-thumb::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    background: var(--bg);
+    opacity: var(--switch-glass, 0);
+    pointer-events: none;
+}
+
 .glass-switch.interacting .switch-thumb {
     border-color: var(--glass-rim);
-    background: var(--bg);
     box-shadow: var(--glass-relief);
 }
 
 .glass-switch.interacting .switch-thumb .optical-layer { opacity: 1; }
 
-/* 1.0.10p: the rule above is a PAIR — `background: var(--bg)` only reads as
-   glass because the .optical-layer directly under it fades in at the same
+/* 1.0.10p: the lens-up material above is a PAIR — the --bg backdrop only
+   reads as glass because the .optical-layer above it comes up at the same
    time. Stage clones are built in buildOpticalSurfaces() BEFORE any optical
-   layer is mounted, so a clone's thumb has no lens inside it. But class
-   mutations are mirrored into clones verbatim (see mirrorAttributeMutation),
-   so `interacting` lands on the clone too and paints half the pair: a solid
-   --bg pill with nothing behind it.
+   layer is mounted, so a clone's thumb has no lens inside it. But class and
+   inline-style mutations are mirrored into clones verbatim (see
+   mirrorAttributeMutation), so both `interacting` and --switch-glass land on
+   the clone, which then paints half the pair: a solid --bg pill with nothing
+   behind it.
 
    That is only visible where a clone is actually painted — Precision's
    tier-2 copy, which is why it hit CHART LAYERS (inside the chart stage the
    Precision lens samples) and not SWEEP MODEL (sidebar). Dragging a layer
    switch drew a black pill over the correctly-rendered live thumb.
 
-   A clone is a still frame of the material, never the lens: keep it at the
-   resting thumb regardless of what the live control is doing. */
+   A clone is a still frame of the material, never the lens. Zeroing the
+   variable is what makes that true, and it has to beat the mirrored inline
+   style, hence !important. */
+.optical-stage-copy .glass-switch,
+.optical-stage-copy.glass-switch {
+    --switch-glass: 0 !important;
+}
+
 .optical-stage-copy .glass-switch.interacting > .switch-thumb,
 .optical-stage-copy.glass-switch.interacting > .switch-thumb {
     border-color: transparent;
