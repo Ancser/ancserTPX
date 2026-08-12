@@ -22,8 +22,8 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z&intraarrow=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&sweepglass=7">
-    <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10y-glass80">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z&intraarrow=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&sweepglass=8">
+    <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10p-glass82">
 </head>
 <body>
 <!-- SVG filter host used by the production liquid-glass engine. -->
@@ -1702,9 +1702,16 @@
             </div>
 
             <!-- 1.0.9: 圖表快捷鈕 — ≫ 跳到最新;1.0.10:圖層開關。 -->
-            <!-- 1.0.10: 圖層開關沿用玻璃皮膚的 .glass-switch。每顆拇指
-                 都是獨立 optical-surface；縮放由 data-glass-shrink 控制，
-                 以保留取樣折射並避免把整個彈窗當成開關表面。 -->
+            <!-- 1.0.10: 圖層開關沿用玻璃皮膚的 .glass-switch,和 PI 訊號等級、
+                 語言/主題那幾顆是同一套元件、同一組彈簧、同一份 switch 光學設定
+                 (shrink 0.40)。每顆拇指是自己的 optical-surface —— 因為
+                 data-stage="switch" 就在按鈕上,取樣複本只有這顆開關,不是整頁。
+
+                 1.0.10p:拇指是鏡片,任何情況都不可以被遮蔽。曾經有一條
+                 `.precision-under-lens > .switch-thumb { visibility:hidden }`
+                 想讓 Precision 只放大軌道,結果 visibility 會繼承,連拇指裡
+                 那層 .optical-layer 一起關掉 —— 按下去只剩一顆綠藥丸,開關
+                 有動但看不到 active 狀態。細節見 tpx-glass.css 同名註解。 -->
             <div id="chart-layer-pop" class="chart-layer-pop hidden"
                  data-glass-scene="chart" data-glass-tier="1" data-glass-material="popup">
                 <div class="layer-title">CHART LAYERS</div>
@@ -1713,7 +1720,7 @@
                     <button type="button" role="switch" class="glass-switch on" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-emapmo" aria-checked="true">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-emapmo" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('emapmo')"></button>
@@ -1723,7 +1730,7 @@
                     <button type="button" role="switch" class="glass-switch on" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-pi" aria-checked="true">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-pi" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('pi')"></button>
@@ -1733,7 +1740,7 @@
                     <button type="button" role="switch" class="glass-switch on" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-trades" aria-checked="true">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-trades" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('trades')"></button>
@@ -1743,7 +1750,7 @@
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-mrev" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-mrev" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('mrev')"></button>
@@ -1753,7 +1760,7 @@
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-kdjma" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-kdjma" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('kdjma')"></button>
@@ -1763,7 +1770,7 @@
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-intramom" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-intramom" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('intramom')"></button>
@@ -1773,7 +1780,7 @@
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-zonelines" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-zonelines" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('zonelines')"></button>
@@ -1783,7 +1790,7 @@
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-sessva" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-sessva" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('sessva')"></button>
@@ -1793,7 +1800,7 @@
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-fib" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-fib" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('fib')"></button>
@@ -1803,7 +1810,7 @@
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-dayzone" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" data-glass-shrink="0.20" aria-hidden="true"></span>
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                     </button>
                     <button type="button" id="lp-dayzone" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('dayzone')"></button>
@@ -1958,10 +1965,10 @@
 </div>
 
     <script src="/static/topstep-eval.js?v=1.0.9k-topstep1"></script>
-    <script src="/static/ancserTPX.js?v=1.0.10z&intraarrow=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&sweepglass=6&statushealth=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.10z&intraarrow=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&sweepglass=8&statushealth=1"></script>
     <!-- Production handlers bind first; the skin then moves those same nodes. -->
     <script src="/static/tpx-glass-skin.js?v=1.0.10-glass69"></script>
-    <script src="/static/tpx-glass.js?v=1.0.10y-glass77"></script>
+    <script src="/static/tpx-glass.js?v=1.0.10p-glass82"></script>
     <!-- Dev tool: optics tuner dropdown under the avatar. Safe to remove. -->
     <script src="/static/tpx-glass-tuner.js?v=1.0.9-glass65"></script>
 </body>

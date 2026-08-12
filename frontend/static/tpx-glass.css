@@ -242,17 +242,14 @@
     visibility: hidden !important;
 }
 
-/* A switch thumb is the lens, not part of the material it samples.  The
-   cloned switch track must therefore contribute only its green/grey track;
-   leaving the cream thumb in the SVG input turns an active popup switch into
-   an all-white lens.  Keep the geometry for alignment, but remove every paint
-   path from the sampling copy. */
-.optical-stage-copy > .switch-thumb[data-optical="switch"],
-.optical-stage-copy .glass-switch > .switch-thumb[data-optical="switch"] {
-    visibility: hidden !important;
-    opacity: 0 !important;
-    background: transparent !important;
-}
+/* 1.0.10p: a global "hide every cloned switch thumb" rule used to live here.
+   In a switch's OWN stage copy the thumb is already hidden by the tier-1 rule
+   above, so the only thing it actually changed was Precision (the tier-2
+   source), where it deleted the cream thumb from the magnified image of every
+   switch on the page. Precision is supposed to magnify the control as drawn.
+   The "all-white lens" it claimed to fix was the Precision lens correctly
+   magnifying a thumb; the real bug was .precision-under-lens hiding the live
+   thumb — see the note further down. */
 
 .optical-stage-copy.optical-tier-2-source [data-glass-tier="1"] {
     visibility: visible !important;
@@ -574,14 +571,13 @@
 .chart-lens,
 .chart-lens * { pointer-events: none !important; }
 
-/* Precision renders the popup switch's track, not the live cream thumb
-   underneath the lens.  Without this small occlusion the filtered layer has
-   transparent pixels around its sampled track and the real thumb shines
-   through, making an active switch look white or unsampled. */
-.chart-layer-pop .glass-switch.precision-under-lens > .switch-thumb,
-.sweep-model-pop .glass-switch.precision-under-lens > .switch-thumb {
-    visibility: hidden !important;
-}
+/* 1.0.10p: `.precision-under-lens > .switch-thumb { visibility: hidden }` used
+   to live here, stamped on whichever popup switch the Precision cursor was
+   over. `visibility` INHERITS, so it took the .optical-layer nested inside the
+   thumb down with it: press or drag a CHART LAYERS / SWEEP MODEL switch and
+   both the cream thumb and its glass lens vanished, leaving a bare green pill.
+   The switch still toggled, which is why it read as "works but has no active
+   state". A thumb is never occluded — it is the lens. Do not re-add this. */
 
 /* Shared lens behaviour for the dock bubble and segment indicator.
    Idle uses backdrop-filter (cheap, and the only thing that works
@@ -1132,6 +1128,33 @@
 }
 
 .glass-switch.interacting .switch-thumb .optical-layer { opacity: 1; }
+
+/* 1.0.10p: the rule above is a PAIR — `background: var(--bg)` only reads as
+   glass because the .optical-layer directly under it fades in at the same
+   time. Stage clones are built in buildOpticalSurfaces() BEFORE any optical
+   layer is mounted, so a clone's thumb has no lens inside it. But class
+   mutations are mirrored into clones verbatim (see mirrorAttributeMutation),
+   so `interacting` lands on the clone too and paints half the pair: a solid
+   --bg pill with nothing behind it.
+
+   That is only visible where a clone is actually painted — Precision's
+   tier-2 copy, which is why it hit CHART LAYERS (inside the chart stage the
+   Precision lens samples) and not SWEEP MODEL (sidebar). Dragging a layer
+   switch drew a black pill over the correctly-rendered live thumb.
+
+   A clone is a still frame of the material, never the lens: keep it at the
+   resting thumb regardless of what the live control is doing. */
+.optical-stage-copy .glass-switch.interacting > .switch-thumb,
+.optical-stage-copy.glass-switch.interacting > .switch-thumb {
+    border-color: transparent;
+    background: var(--switch-thumb-color);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+}
+
+.optical-stage-copy .glass-switch.interacting > .switch-thumb > .switch-state-icon,
+.optical-stage-copy.glass-switch.interacting > .switch-thumb > .switch-state-icon {
+    opacity: 1;
+}
 
 /* Language/theme state marks are presentation inside the existing thumb,
    never another optical surface. Hide them for the full press + spring travel

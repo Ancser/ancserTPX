@@ -1,5 +1,6 @@
 /* TEMPORARY diagnostic probe — delete after investigation. */
 const path = require("node:path");
+const fs = require("node:fs");
 const { test } = require("@playwright/test");
 
 const chartBundle = path.resolve(
@@ -26,92 +27,56 @@ async function openApp(page) {
   await page.waitForTimeout(1500);
 }
 
-async function dragShot(page, locator, file) {
-  const box = await locator.boundingBox();
-  if (!box) return { missing: true };
-  await page.mouse.move(box.x + 10, box.y + box.height / 2);
+const out = [];
+async function realDrag(page, sel, name) {
+  const box = await page.locator(sel).first().boundingBox();
+  await page.mouse.move(box.x + 8, box.y + box.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width - 10, box.y + box.height / 2, { steps: 8 });
-  await page.waitForTimeout(140);
-  const state = await locator.evaluate((sw) => {
+  await page.mouse.move(box.x + box.width / 2 + 4, box.y + box.height / 2, { steps: 10 });
+  await page.waitForTimeout(180);
+  const state = await page.evaluate((s) => {
+    const sw = document.querySelector(s);
     const thumb = sw.querySelector(':scope > .switch-thumb');
-    const layer = thumb && thumb.querySelector(':scope > .optical-layer');
-    const cs = thumb && getComputedStyle(thumb);
+    const layer = thumb.querySelector(':scope > .optical-layer');
+    const clone = [...document.querySelectorAll(
+      '.optical-stage-copy.optical-tier-2-source .glass-switch.interacting > .switch-thumb')][0];
     return {
       cls: sw.className,
-      thumbVisibility: cs && cs.visibility,
-      thumbBg: cs && cs.backgroundColor,
-      layerOpacity: layer && getComputedStyle(layer).opacity,
-      layerVisibility: layer && getComputedStyle(layer).visibility,
+      liveThumbVis: getComputedStyle(thumb).visibility,
+      liveThumbBg: getComputedStyle(thumb).backgroundColor,
+      liveLayerVis: getComputedStyle(layer).visibility,
+      liveLayerOpacity: getComputedStyle(layer).opacity,
+      clonedInteractingThumbBg: clone ? getComputedStyle(clone).backgroundColor : 'none',
     };
-  });
-  await page.screenshot({ path: `.playwright-output/${file}`, clip: {
-    x: Math.max(0, box.x - 90), y: Math.max(0, box.y - 26),
-    width: box.width + 180, height: box.height + 52,
-  }});
+  }, sel);
+  await page.screenshot({ path: `.playwright-output/f-${name}.png`, timeout: 25000 });
+  out.push({ name, box, state });
   await page.mouse.up();
-  await page.waitForTimeout(350);
-  return state;
+  await page.waitForTimeout(450);
 }
 
-test("probe", async ({ page }) => {
-  const out = {};
+test("verify fix", async ({ page }) => {
+  test.setTimeout(180000);
   await openApp(page);
 
-  out.diagnostics = await page.evaluate(() => ({
-    surfaces: window.TpxGlass?.diagnostics?.surfaces,
-    stageCopies: document.querySelectorAll('.optical-stage-copy').length,
-    biggestCopyNodes: Math.max(...[...document.querySelectorAll('.optical-stage-copy')]
-      .map(c => c.querySelectorAll('*').length)),
-    totalCopyNodes: [...document.querySelectorAll('.optical-stage-copy')]
-      .reduce((n, c) => n + c.querySelectorAll('*').length, 0),
-  }));
+  await realDrag(page, '#pi-matrix-bt-long-pi', 'param');
 
-  // ---- reference: a PI signal-level switch (user says these work) ----
-  const pi = page.locator('.glass-switch').filter({ hasNot: page.locator('x') })
-    .nth(0);
-  out.piSwitchSel = await page.evaluate(() => {
-    const n = [...document.querySelectorAll('.glass-switch')]
-      .filter(x => !x.closest('.optical-stage-copy') && !x.closest('#chart-layer-pop')
-                && !x.closest('#sweep-model-pop') && !x.closest('.glass-topbar'))[0];
-    if (n && !n.id) n.id = 'zz-ref-switch';
-    return n ? { id: n.id, cls: n.className, parent: n.parentElement.className } : null;
-  });
-  out.REF_pi_drag = await dragShot(page, page.locator('#zz-ref-switch'), 'ref-pi-drag.png');
-
-  // ---- broken: chart layer switch ----
-  await page.evaluate(() => window.toggleChartLayerMenu(true));
+  await page.locator('#sweep-model-btn').click();
+  await page.waitForSelector('#sweep-model-pop:not(.hidden)');
   await page.waitForTimeout(500);
-  out.LAYER_drag_before = await dragShot(
-    page, page.locator('#chart-layer-pop .glass-switch').first(), 'layer-drag-before.png');
-  await page.locator('#chart-layer-pop').screenshot({ path: '.playwright-output/layer-pop-before.png' });
+  await realDrag(page, '#sweep-model-pop > .sweep-model-row > .glass-switch', 'sweep');
+  await page.locator('#sweep-model-btn').click();
+  await page.waitForTimeout(300);
 
-  // ---- experiment: neutralise codex's precision-under-lens occlusion ----
-  await page.evaluate(() => {
-    const s = document.createElement('style');
-    s.id = 'zz-fix';
-    s.textContent = `.chart-layer-pop .glass-switch.precision-under-lens > .switch-thumb,
-      .sweep-model-pop .glass-switch.precision-under-lens > .switch-thumb {
-        visibility: visible !important; }`;
-    document.head.appendChild(s);
-  });
-  out.LAYER_drag_after = await dragShot(
-    page, page.locator('#chart-layer-pop .glass-switch').nth(3), 'layer-drag-after.png');
-  await page.locator('#chart-layer-pop').screenshot({ path: '.playwright-output/layer-pop-after.png' });
+  await page.evaluate(() => window.toggleChartLayerMenu(true));
+  await page.waitForSelector('#chart-layer-pop:not(.hidden)');
+  await page.waitForTimeout(600);
+  await realDrag(page, '#chart-layer-pop > .layer-row > .glass-switch', 'layer');
+  // second row too, so we see one ON and one OFF switch behave
+  await realDrag(page, '#chart-layer-pop > .layer-row:nth-child(5) > .glass-switch', 'layer-off');
+  await page.locator('#chart-layer-pop').screenshot({
+    path: '.playwright-output/f-popup.png', timeout: 25000 });
 
-  // ---- sweep popup ----
-  await page.evaluate(() => window.toggleChartLayerMenu(false));
-  const sweepBtn = page.locator('#sweep-model-btn');
-  out.sweepBtnVisible = await sweepBtn.isVisible().catch(() => false);
-  if (out.sweepBtnVisible) {
-    await sweepBtn.scrollIntoViewIfNeeded();
-    await sweepBtn.click();
-    await page.waitForTimeout(500);
-    await page.locator('#sweep-model-pop').screenshot({ path: '.playwright-output/sweep-pop.png' });
-    out.SWEEP_drag = await dragShot(
-      page, page.locator('#sweep-model-pop .glass-switch').nth(1), 'sweep-drag.png');
-    await page.locator('#sweep-action-row').screenshot({ path: '.playwright-output/sweep-row.png' });
-  }
-
-  console.log("PROBE " + JSON.stringify(out, null, 1));
+  fs.writeFileSync('.playwright-output/zz-boxes.json', JSON.stringify(out, null, 1));
+  console.log("VERIFY " + JSON.stringify(out, null, 1));
 });

@@ -1974,8 +1974,8 @@
 .sweep-model-row:hover .sweep-model-name { color: var(--text); }
 
 /* Shared switch geometry: popup switches keep the same track/thumb ratio as
-   the PI controls. Their thumb is a real optical surface; chart-layer thumbs
-   use the per-surface 20% shrink override in the markup. */
+   the PI controls, and their thumb is a real optical surface sampling the
+   same `switch` settings. No per-popup shrink override — same switch. */
 .chart-layer-pop .glass-switch,
 .sweep-model-pop .glass-switch {
     width: 2.8333rem;
@@ -2079,8 +2079,9 @@
 }
 .chart-layer-pop .layer-row:hover .layer-name { color: var(--text); }
 
-/* The popup thumbs intentionally have no optical-surface clone, but retain
-   the same explicit geometry as every ordinary parameter switch. */
+/* The popup thumbs carry their own optical-surface clone (data-stage="switch"
+   sits on the button, so the clone is just this switch, not the page) and
+   retain the same explicit geometry as every ordinary parameter switch. */
 .chart-layer-pop .switch-thumb {
     position: absolute;
     z-index: 5;

@@ -1983,20 +1983,13 @@
         });
     }
 
-    function configForSurface(surface) {
-        const base = settings[surface.component];
-        if (!base) return null;
-        const rawShrink = Number.parseFloat(surface.element.dataset.glassShrink || "");
-        if (!Number.isFinite(rawShrink)) return base;
-        /* A repeated popup may use the same tactile switch controller as PI,
-           but its optical center is intentionally gentler. Keep the shared
-           spring/material contract and override only this surface's baked
-           shrink map. */
-        return { ...base, shrink: clamp(rawShrink, -0.8, 0.8) };
-    }
-
+    /* 1.0.10p: a per-surface `data-glass-shrink` override briefly lived here so
+       the popup switches could sample at 0.20 instead of the switch default
+       0.40. It made them the one control on the page with its own optics; the
+       brief was the opposite — every switch is the same switch. Component
+       settings above are the single source for shrink. */
     function rebuildSurface(surface) {
-        const config = configForSurface(surface);
+        const config = settings[surface.component];
         if (!config) return;
         const width = Math.max(2, Math.round(surface.element.offsetWidth));
         const height = Math.max(2, Math.round(surface.element.offsetHeight));
@@ -2727,14 +2720,6 @@
             ".glass-slider", ".glass-dock", ".glass-segment", ".glass-fab",
             ".tf-chk", ".help-dot", "#bottom-drag-handle",
         ].join(",");
-        /* Popup switches are deliberately allowed under Precision.  Their
-           track is the material we want to magnify; the live cream thumb is
-           hidden while the lens covers it so it cannot bleed through the
-           transparent parts of the filtered copy and mask the green/grey
-           track.  Other controls keep the historical click-safe blocker. */
-        const lensSwitchSelector =
-            ".chart-layer-pop .glass-switch, .sweep-model-pop .glass-switch";
-        let lensCoveredSwitch = null;
         const scale = new Spring(0);
         const stretchX = new Spring(1);
         const stretchY = new Spring(1);
@@ -2746,23 +2731,23 @@
         let active = false;
         let pointerInside = false;
 
-        const syncLensCoveredSwitch = (target) => {
-            const next = target instanceof Element
-                ? target.closest(lensSwitchSelector)
-                : null;
-            if (next === lensCoveredSwitch) return;
-            lensCoveredSwitch?.classList.remove("precision-under-lens");
-            lensCoveredSwitch = next;
-            lensCoveredSwitch?.classList.add("precision-under-lens");
-        };
-
         const blocksLens = (target) => {
             if (!(target instanceof Element)) return false;
+            /* 1.0.10p: ...but only while that Glass is at rest. Once a switch
+               raises its own lens, Precision would paint a still frame of the
+               same switch (clones carry no .optical-layer) directly over the
+               live refraction — the CHART LAYERS thumb went black, then cream,
+               depending on what the clone happened to be painted with. Every
+               other switch on the page already loses the lens on hover via
+               interactiveSelector below; this keeps the popup's magnifiable
+               material while giving the control back its own glass. Must be
+               tested BEFORE the tier-1 bypass, which would otherwise let the
+               popup's own tier mark win. */
+            if (target.closest(".glass-switch.interacting")) return true;
             /* Tier-1 Glass remains a valid Precision source. The lens itself
                is pointer-events:none, so keeping it visible does not steal
                clicks, drags, or focus from the control underneath. */
             if (target.closest('[data-glass-tier="1"]')) return false;
-            if (target.closest(lensSwitchSelector)) return false;
             if (target.closest(interactiveSelector)) return true;
             let node = target;
             while (node && node !== stage) {
@@ -2794,7 +2779,6 @@
         const hide = (immediate = false) => {
             active = false;
             lastTime = 0;
-            syncLensCoveredSwitch(null);
             if (immediate) {
                 scale.value = scale.target = 0;
                 scale.velocity = 0;
@@ -2822,7 +2806,6 @@
             const vy = lastTime ? (event.clientY - lastY) / dt : 0;
             lastX = event.clientX;
             lastY = event.clientY;
-            syncLensCoveredSwitch(event.target);
             if (blocksLens(event.target)) {
                 hide(true);
                 return;
@@ -2857,7 +2840,6 @@
                 return;
             }
             const target = document.elementFromPoint(lastX, lastY);
-            syncLensCoveredSwitch(target);
             if (blocksLens(target)) {
                 hide(true);
                 return;
