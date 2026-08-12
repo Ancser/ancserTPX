@@ -134,6 +134,69 @@ test("release label is 1.0.10 and chart watermark has no version chip", async ({
   await expect(watermark).toHaveText("ancserTPX");
 });
 
+test("sweep model scope opens as a glass-switch dropdown", async ({ page }) => {
+  await openApp(page);
+
+  const trigger = page.locator("#sweep-model-btn");
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toHaveText("…");
+  await trigger.click();
+
+  const popup = page.locator("#sweep-model-pop");
+  await expect(popup).toBeVisible();
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  const switches = popup.locator('.sweep-model-row > .sweep-model-switch[role="switch"]');
+  await expect(switches).toHaveCount(5);
+  await expect(switches.first()).toHaveAttribute("aria-checked", "true");
+  const actionGeometry = await page.evaluate(() => {
+    const sweep = document.querySelector("#btn-sweep").getBoundingClientRect();
+    const execute = document.querySelector("#btn-backtest").getBoundingClientRect();
+    const model = document.querySelector("#sweep-model-btn").getBoundingClientRect();
+    return {
+      executeHeight: Math.round(execute.height),
+      sweepHeight: Math.round(sweep.height),
+      modelHeight: Math.round(model.height),
+      modelWidth: Math.round(model.width),
+      modelThumb: (() => {
+        const thumb = document.querySelector(
+          "#sweep-model-pop > .sweep-model-row > .glass-switch > .switch-thumb",
+        );
+        const rect = thumb?.getBoundingClientRect();
+        return rect ? [Math.round(rect.width), Math.round(rect.height)] : null;
+      })(),
+    };
+  });
+  expect(actionGeometry.executeHeight).toBe(42);
+  expect(actionGeometry.sweepHeight).toBe(actionGeometry.executeHeight);
+  expect(actionGeometry.modelHeight).toBe(actionGeometry.executeHeight);
+  expect(actionGeometry.modelWidth).toBe(actionGeometry.modelHeight);
+  expect(actionGeometry.modelThumb).toEqual([32, 22]);
+  const geometry = await page.evaluate(() => {
+    const track = document.querySelector("#sweep-model-pop > .sweep-model-row > .glass-switch");
+    const thumb = track?.querySelector(":scope > .switch-thumb");
+    const param = document.querySelector("#pi-matrix-bt-long-pi.glass-switch");
+    const paramThumb = param?.querySelector(":scope > .switch-thumb");
+    const size = (node, child) => [
+      parseFloat(getComputedStyle(node).width),
+      parseFloat(getComputedStyle(node).height),
+      parseFloat(getComputedStyle(child).width),
+      parseFloat(getComputedStyle(child).height),
+    ];
+    return {
+      sweep: size(track, thumb),
+      param: size(param, paramThumb),
+    };
+  });
+  expect(geometry.sweep.map(Math.round)).toEqual(geometry.param.map(Math.round));
+
+  await switches.nth(1).click({ delay: 60 });
+  await expect(switches.nth(1)).toHaveAttribute("aria-checked", "true");
+  await expect(switches.first()).toHaveAttribute("aria-checked", "false");
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await trigger.click();
+  await expect(popup).toBeHidden();
+});
+
 async function expectMainLensAt(page, target) {
   const box = await target.boundingBox();
   expect(box).not.toBeNull();
@@ -597,10 +660,40 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
     "BETAFIB LEVELS",
     "DAY ZONE LEVELS",
   ]);
-  const popupSwitches = popup.locator('.glass-switch[role="switch"]');
+  const popupSwitches = popup.locator('.layer-row > .glass-switch[role="switch"]');
   expect(await popupSwitches.count()).toBeGreaterThan(0);
   await expect(popupSwitches.first()).toHaveAttribute("data-glass-material", "local");
-  expect(await popup.locator(".glass-switch[data-optical], .glass-switch .optical-layer").count()).toBe(0);
+  await expect(popup.locator(
+    '.layer-row > .glass-switch > .switch-thumb.optical-surface[data-optical="switch"]',
+  )).toHaveCount(10);
+  await expect(popup.locator(
+    '.layer-row > .glass-switch > .switch-thumb[data-glass-shrink="0.20"]',
+  )).toHaveCount(10);
+  await expect.poll(() => page.evaluate(() => (
+    [...document.querySelectorAll("#chart-layer-pop > .layer-row > .glass-switch")]
+      .slice(0, 3)
+      .every((track) => !track.classList.contains("interacting")
+        && track.style.getPropertyValue("--switch-glass") === "0.0000")
+  ))).toBe(true);
+  await expect.poll(() => page.evaluate(() => (
+    [...document.querySelectorAll(
+      "#chart-layer-pop > .layer-row > .glass-switch > .switch-thumb.optical-surface",
+    )].slice(0, 3).every((thumb) => {
+      const layer = thumb.querySelector(":scope > .optical-layer");
+      return Boolean(layer) && getComputedStyle(layer).opacity === "0";
+    })
+  ))).toBe(true);
+  await page.evaluate(() => {
+    const track = document.querySelector("#chart-layer-pop > .layer-row > .glass-switch");
+    track?.tpxSetState?.(track.getAttribute("aria-checked") === "true");
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const track = document.querySelector("#chart-layer-pop > .layer-row > .glass-switch");
+    const thumb = track?.querySelector(":scope > .switch-thumb");
+    return Boolean(track && thumb)
+      && !track.classList.contains("interacting")
+      && getComputedStyle(thumb).backgroundColor !== "rgb(8, 9, 13)";
+  })).toBe(true);
 
   await expect.poll(() => page.evaluate(() => {
     const lens = document.querySelector(
@@ -675,12 +768,38 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
   await expectMainLensAt(page, popup.locator(".layer-title"));
   await expectMainLensAt(page, popupSwitches.first());
 
+  const switchGeometry = await page.evaluate(() => {
+    const popupSwitch = document.querySelector(
+      "#chart-layer-pop > .layer-row > .glass-switch[role=\"switch\"]",
+    );
+    const paramSwitch = document.querySelector(
+      "#pi-matrix-bt-long-pi.glass-switch",
+    );
+    const geometry = (track) => {
+      const thumb = track?.querySelector(":scope > .switch-thumb");
+      const style = track ? getComputedStyle(track) : null;
+      const thumbStyle = thumb ? getComputedStyle(thumb) : null;
+      return {
+        width: style?.width,
+        height: style?.height,
+        thumbWidth: thumbStyle?.width,
+        thumbHeight: thumbStyle?.height,
+        after: thumb ? getComputedStyle(thumb, "::after").content : null,
+      };
+    };
+    return { popup: geometry(popupSwitch), param: geometry(paramSwitch) };
+  });
+  expect(switchGeometry.popup).toEqual({
+    ...switchGeometry.param,
+    after: "none",
+  });
+
   const checkedBefore = await popupSwitches.first().getAttribute("aria-checked");
   const proxyKey = await popupSwitches.first().getAttribute("data-switch-proxy");
   await page.evaluate((key) => {
     window.__tpxPopupPointerMaterial = null;
     const track = document.querySelector(
-      `#chart-layer-pop [data-switch-proxy="${key}"]`,
+      `#chart-layer-pop > .layer-row > [data-switch-proxy="${key}"]`,
     );
     track.addEventListener("pointerdown", () => requestAnimationFrame(() => {
       window.__tpxPopupPointerMaterial = {
@@ -690,9 +809,9 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
         center: getComputedStyle(
           track.querySelector(".switch-thumb"), "::after",
         ).backgroundColor,
-        centerTransform: getComputedStyle(
+        centerContent: getComputedStyle(
           track.querySelector(".switch-thumb"), "::after",
-        ).transform,
+        ).content,
         backing: getComputedStyle(track).getPropertyValue("--bg").trim(),
       };
     }), { once: true });
@@ -701,15 +820,30 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
   await expect.poll(() => page.evaluate(() => (
     window.__tpxPopupPointerMaterial?.interacting || false
   ))).toBe(true);
-  const localMaterial = await page.evaluate(() => window.__tpxPopupPointerMaterial);
+  await expect.poll(() => page.evaluate(() => {
+    const track = document.querySelector("#chart-layer-pop > .layer-row > .glass-switch");
+    return Boolean(track?.classList.contains("interacting"))
+      && getComputedStyle(track.querySelector(".switch-thumb")).backgroundColor
+        === "rgb(8, 9, 13)";
+  })).toBe(true);
+  const localMaterial = await page.evaluate(() => {
+    const track = document.querySelector("#chart-layer-pop > .layer-row > .glass-switch");
+    const thumb = track?.querySelector(".switch-thumb");
+    return {
+      ...window.__tpxPopupPointerMaterial,
+      track: getComputedStyle(track).backgroundColor,
+      thumb: getComputedStyle(thumb).backgroundColor,
+      center: getComputedStyle(thumb, "::after").backgroundColor,
+      centerContent: getComputedStyle(thumb, "::after").content,
+    };
+  });
   expect(localMaterial.backing).toMatch(/^#[0-9a-f]{6}$/i);
   const expectedBacking = `rgb(${[1, 3, 5].map((offset) => (
     Number.parseInt(localMaterial.backing.slice(offset, offset + 2), 16)
   )).join(", ")})`;
   expect(localMaterial.thumb).toBe(expectedBacking);
   expect(localMaterial.thumb).not.toBe(localMaterial.track);
-  expect(localMaterial.center).toBe(localMaterial.track);
-  expect(localMaterial.centerTransform).toBe("matrix(0.6, 0, 0, 0.6, 0, 0)");
+  expect(localMaterial.centerContent).toBe("none");
   await expect(popupSwitches.first()).toHaveAttribute(
     "aria-checked",
     checkedBefore === "true" ? "false" : "true",
@@ -720,7 +854,7 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
       'body > .main > .chart-lens[data-optical="precision"]',
     );
     const live = document.querySelector(
-      `#chart-layer-pop [data-switch-proxy="${key}"]`,
+      `#chart-layer-pop > .layer-row > [data-switch-proxy="${key}"]`,
     );
     const copies = lens
       ? [...lens.querySelectorAll(

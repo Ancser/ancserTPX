@@ -1880,38 +1880,131 @@
     user-select: none;
 }
 
-/* 1.0.9: Topstep XFA 一致性警告 —— 黃色三角,hover 顯示說明 */
+/* 1.0.10: Sweep keeps its action and scope trigger on one row.  The scope
+   button deliberately uses the same amber treatment as SWEEP, but its fixed
+   square geometry makes it read as a separate dropdown affordance. */
+.sweep-action-row {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    margin-top: 2px;
+    height: 42px;
+    min-height: 42px;
+}
+.sidebar #btn-backtest,
+.sweep-action-row #btn-sweep,
+.sweep-model-trigger {
+    height: 42px;
+    min-height: 42px;
+    box-sizing: border-box;
+}
+.sweep-action-row #btn-sweep {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    padding: 0 16px;
+    line-height: 1;
+}
+.sweep-model-trigger {
+    flex: 0 0 42px;
+    width: 42px;
+    min-width: 42px;
+    align-self: stretch;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.05rem;
+    line-height: 1;
+    letter-spacing: 0;
+    text-transform: none;
+}
+.sweep-model-pop {
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 0;
+    right: 0;
+    z-index: 70;
+    padding: .5rem .6667rem .6rem;
+    border: 1px solid var(--glass-rim, rgba(184, 192, 204, .45));
+    border-radius: max(var(--glass-radius, .5rem), .75rem);
+    background: var(--glass-bg-strong, rgba(8, 9, 13, .9));
+    box-shadow: var(--glass-relief,
+        inset 0 1px 1px rgba(255, 255, 255, .18),
+        inset 0 -1px 1px rgba(0, 0, 0, .34),
+        0 .4167rem 1.0833rem rgba(0, 0, 0, .22));
+    backdrop-filter: blur(20px) saturate(1.3);
+    -webkit-backdrop-filter: blur(20px) saturate(1.3);
+    isolation: isolate;
+}
+.sweep-model-pop.hidden { display: none; }
+.sweep-model-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: .75rem;
+    padding-bottom: .25rem;
+    margin-bottom: .1667rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text3);
+    font: 600 .5rem/1.15 'Rajdhani', sans-serif;
+    letter-spacing: .0833rem;
+}
+.sweep-model-title span {
+    color: var(--text3);
+    font: 400 .5rem/1.15 'IBM Plex Mono', monospace;
+    letter-spacing: .02rem;
+    white-space: nowrap;
+}
+.sweep-model-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    min-height: 1.45rem;
+    padding: .125rem 0;
+}
+.sweep-model-name {
+    color: var(--text2);
+    font: 600 .75rem/1.15 'Rajdhani', sans-serif;
+    letter-spacing: .0625rem;
+    white-space: nowrap;
+}
+.sweep-model-row:hover .sweep-model-name { color: var(--text); }
+
+/* Shared switch geometry: popup switches keep the same track/thumb ratio as
+   the PI controls. Their thumb is a real optical surface; chart-layer thumbs
+   use the per-surface 20% shrink override in the markup. */
+.chart-layer-pop .glass-switch,
+.sweep-model-pop .glass-switch {
+    width: 2.8333rem;
+    height: 1.1667rem;
+    box-sizing: border-box;
+}
+.chart-layer-pop .switch-thumb,
+.sweep-model-pop .switch-thumb {
+    position: absolute;
+    z-index: 5;
+    width: 1.3333rem;
+    height: .9167rem;
+    left: .0833rem;
+    top: .0833rem;
+}
+
+/* Topstep XFA 一致性警告; hover 顯示說明. */
 .tpx-warn { color: #fbbf24; cursor: help; }
-.metric-card .label .tpx-warn { margin-left: 4px; font-size: 1.1em; }
-/* 1.0.10: 兩段警示 —— >=40%(XFA)黃色 ⚠,>=50%(Combine)紅色 ▲。
+.metric-card .label .tpx-warn,
+.metric-card .label .tpx-danger { margin-left: 4px; font-size: 1.1em; }
+/* Two severity levels only change color: >=40%(XFA) amber, >=50%(Combine) red.
    BEST DAY 的數值本身保持綠色,風險只用圖示表達。 */
 .tpx-danger { color: var(--red); cursor: help; }
-.metric-card .label .tpx-danger { margin-left: 4px; font-size: 1.1em; }
-.tpx-danger-mark {
-    position: relative;
+.tpx-alert-mark {
     display: inline-block;
-    width: 1em;
-    height: 1em;
-    vertical-align: -0.14em;
-    color: var(--red);
-}
-.tpx-danger-triangle {
-    position: absolute;
-    inset: 0;
-    display: block;
-    background: currentColor;
-    clip-path: polygon(50% 0, 100% 100%, 0 100%);
-}
-.tpx-danger-exclamation {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    padding-top: 0.24em;
-    color: var(--bg);
-    font-size: 0.58em;
-    font-weight: 900;
+    font-family: "Segoe UI Symbol", "Noto Sans Symbols 2", sans-serif;
+    font-size: 1.05em;
     line-height: 1;
+    vertical-align: -0.08em;
 }
 
 /* 1.0.9: 風險上限=紅、獲利上限=綠。兩條滑桿長得一樣時很容易設錯邊,
@@ -1986,8 +2079,8 @@
 }
 .chart-layer-pop .layer-row:hover .layer-name { color: var(--text); }
 
-/* 拇指少了 .optical-surface 就沒有 position/radius/border,會塌成 0×0。
-   這裡補回幾何,但不碰折射鏡那套(見 HTML 註解)。 */
+/* The popup thumbs intentionally have no optical-surface clone, but retain
+   the same explicit geometry as every ordinary parameter switch. */
 .chart-layer-pop .switch-thumb {
     position: absolute;
     z-index: 5;

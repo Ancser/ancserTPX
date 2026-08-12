@@ -4571,6 +4571,7 @@ function redrawAllOverlays() {
 // 所以這裡只做「把 DOM 狀態同步回 CHART_OVERLAYS」,不再生成 markup。
 function buildChartLayerMenu() {
     document.querySelectorAll('#chart-layer-pop .glass-switch').forEach(tr => {
+        if (tr.closest('.optical-stage-copy')) return;
         const key = String(tr.dataset.switchProxy || '').replace(/^lp-/, '');
         if (!(key in CHART_OVERLAYS)) return;
         const on = CHART_OVERLAYS[key];
@@ -4579,8 +4580,19 @@ function buildChartLayerMenu() {
         //
         // 但 tpxSetState 的行程是從 track.clientWidth 算的,面板還 display:none
         // 時那是 0 → 行程被夾成 1px,拇指就卡在最左邊不動了。所以有版面才推。
+        // Opening the hidden panel already has the correct state in aria and
+        // in the switch controller's committed value.  Re-committing that
+        // same value would restart the long glass spring and leave the thumb
+        // in the dark interacting material for ~2 seconds.  Only drive the
+        // spring when the source state actually changed while the panel was
+        // closed.
+        const current = tr.getAttribute('aria-checked') === 'true';
+        if (current === on) return;
         if (tr.tpxSetState && tr.clientWidth > 0) tr.tpxSetState(on);
-        else tr.classList.toggle('on', on);
+        else {
+            tr.classList.toggle('on', on);
+            tr.setAttribute('aria-checked', String(on));
+        }
     });
 }
 
@@ -4588,7 +4600,9 @@ function buildChartLayerMenu() {
 // commit() 在呼叫 onChange **之前**就寫好 aria-checked,但 `on` class 要等
 // 下一幀彈簧 apply() 才更新 —— 所以讀 aria-checked,不要讀 class。
 function onLayerProxy(key) {
-    const tr = document.querySelector('#chart-layer-pop [data-switch-proxy="lp-' + key + '"]');
+    const tr = [...document.querySelectorAll(
+        '#chart-layer-pop [data-switch-proxy="lp-' + key + '"]'
+    )].find((node) => !node.closest('.optical-stage-copy'));
     if (!tr) return;
     toggleChartLayer(key, tr.getAttribute('aria-checked') === 'true');
 }
@@ -4598,7 +4612,13 @@ function toggleChartLayerMenu(force) {
     if (!pop) return;
     const show = (force === undefined) ? pop.classList.contains('hidden') : !!force;
     pop.classList.toggle('hidden', !show);
-    if (show) buildChartLayerMenu();
+    if (show) {
+        buildChartLayerMenu();
+        // Popup switch surfaces are mounted at boot while this panel is
+        // hidden; resync once it has a measurable box so their local optical
+        // layers are not left display:none.
+        window.TpxGlass?.sync?.(false);
+    }
 }
 
 document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
@@ -6220,6 +6240,89 @@ function _showBottomTab(name) {
     if (name === 'pnl') renderPnlCurve();
 }
 
+// Sweep model scope is a small multi-select, presented as glass switches so
+// the control stays readable in the single-column sidebar.  The ALL switch is
+// a convenience state; the request body still receives the same canonical
+// backend model names as the old native select.
+const SWEEP_MODEL_ORDER = Object.freeze(['TREND', 'DAY ZONE', 'DISTRIBUTION', 'FACTOR']);
+
+function _sweepModelButtons() {
+    return Array.from(document.querySelectorAll('#sweep-model-pop .sweep-model-switch'))
+        .filter((button) => !button.closest('.optical-stage-copy'));
+}
+
+function _setSweepModelSwitch(track, on) {
+    if (!track) return;
+    if (track.tpxSetState) track.tpxSetState(!!on, true);
+    else {
+        track.classList.toggle('on', !!on);
+        track.setAttribute('aria-checked', String(!!on));
+    }
+}
+
+function _sweepModelSelection() {
+    const buttons = _sweepModelButtons();
+    if (!buttons.length) return SWEEP_MODEL_ORDER.slice();
+    const all = buttons.find((button) => button.dataset.sweepModel === 'ALL');
+    if (all?.getAttribute('aria-checked') === 'true') return SWEEP_MODEL_ORDER.slice();
+    const enabled = new Set(buttons
+        .filter((button) => button.getAttribute('aria-checked') === 'true')
+        .map((button) => button.dataset.sweepModel));
+    return SWEEP_MODEL_ORDER.filter((model) => enabled.has(model));
+}
+
+function _normaliseSweepModelSwitch(source) {
+    const buttons = _sweepModelButtons();
+    if (!buttons.length) return;
+    const key = source?.dataset.sweepModel;
+    const all = buttons.find((button) => button.dataset.sweepModel === 'ALL');
+    if (key === 'ALL') {
+        const on = source.getAttribute('aria-checked') === 'true';
+        buttons.forEach((button) => _setSweepModelSwitch(button, on));
+        return;
+    }
+    const enabled = buttons.filter((button) => button.dataset.sweepModel !== 'ALL'
+        && button.getAttribute('aria-checked') === 'true');
+    // Keep ALL as a readable summary only when every individual model is on.
+    _setSweepModelSwitch(all, enabled.length === SWEEP_MODEL_ORDER.length);
+}
+
+// The inline handler runs after the tactile switch's pointer/keyboard commit.
+// A microtask keeps programmatic HTMLElement.click() and real pointer clicks
+// on the same path without making the spring controller race the normaliser.
+function onSweepModelSwitch(source) {
+    setTimeout(() => _normaliseSweepModelSwitch(source), 0);
+}
+
+function toggleSweepModelMenu(force) {
+    const pop = document.getElementById('sweep-model-pop');
+    const button = document.getElementById('sweep-model-btn');
+    if (!pop) return;
+    const show = (force === undefined) ? pop.classList.contains('hidden') : !!force;
+    pop.classList.toggle('hidden', !show);
+    if (button) button.setAttribute('aria-expanded', String(show));
+    if (show) {
+        window.TpxGlass?.sync?.(false);
+        const first = pop.querySelector('.sweep-model-switch');
+        if (first) setTimeout(() => first.focus(), 0);
+    }
+}
+
+document.addEventListener('click', (event) => {
+    const pop = document.getElementById('sweep-model-pop');
+    const button = document.getElementById('sweep-model-btn');
+    if (!pop || pop.classList.contains('hidden')) return;
+    if (pop.contains(event.target) || (button && button.contains(event.target))) return;
+    toggleSweepModelMenu(false);
+});
+document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    const pop = document.getElementById('sweep-model-pop');
+    if (!pop || pop.classList.contains('hidden')) return;
+    toggleSweepModelMenu(false);
+    document.getElementById('sweep-model-btn')?.focus();
+});
+
 // 1.0.9: 全策略參數掃描(TREND + DAY ZONE + DISTRIBUTION)→ 結果進 PRESETS 分頁,依 PF 排序
 async function runBacktestSweep() {
     const sweepBtn = document.getElementById('btn-sweep');
@@ -6243,20 +6346,9 @@ async function runBacktestSweep() {
     if (btBtn) btBtn.disabled = true;
     _showBottomTab('presets');
     const body = buildBacktestBody();
-    // 1.0.9: run/lock 面板 — 只掃勾選的 model(全勾 = 不帶參數,後端跑全部)
-    const scopeEl = document.getElementById('sweep-model-scope-bt');
-    const scope = scopeEl ? String(scopeEl.value || 'ALL').toUpperCase() : 'ALL';
-    const _mm = [];
-    if (scope === 'ALL') {
-        _mm.push('TREND', 'DAY ZONE', 'DISTRIBUTION', 'FACTOR');
-    } else if (['TREND', 'DAY ZONE', 'DISTRIBUTION', 'FACTOR'].includes(scope)) {
-        _mm.push(scope);
-    } else {
-        if ((document.getElementById('sweep-m-trend') || {}).checked) _mm.push('TREND');
-        if ((document.getElementById('sweep-m-dayzone') || {}).checked) _mm.push('DAY ZONE');
-        if ((document.getElementById('sweep-m-dist') || {}).checked) _mm.push('DISTRIBUTION');
-        if ((document.getElementById('sweep-m-factor') || {}).checked) _mm.push('FACTOR');
-    }
+    // 1.0.10: model scope comes from the glass-switch dropdown.  Keep the
+    // request values identical to the old native select for preset parity.
+    const _mm = _sweepModelSelection();
     if (!_mm.length) { log('Select at least one model before starting SWEEP', 'warn'); _resetSweepBtn(); if (sweepBtn) sweepBtn.disabled = false; if (btBtn) btBtn.disabled = false; return; }
     if (_mm.length < 4) body.sweep_models = _mm;
     log('SWEEP started: ' + _mm.join(' + ') + ' (MNQx1 locked, sorted by PF)…', 'info');
@@ -6364,6 +6456,11 @@ async function runBacktest() {
         }
 
         backtestData = await resp.json();
+
+        const piReplayCount = Number(backtestData.pi_replay_count || 0);
+        if (piReplayCount > 0 && String(btBody.strategy || '').toLowerCase() === 'pi') {
+            log('PI replay overlay → ' + piReplayCount + ' in-range audit mark(s)', 'info');
+        }
 
         log('Backtest complete // ' + backtestData.metrics.total_trades + ' trades // ' +
             'Win rate: ' + (backtestData.metrics.win_rate * 100).toFixed(1) + '% // ' +
@@ -6849,10 +6946,12 @@ async function refreshPiSignalMarkers() {
             sourceTs: sig.ts,
         })).filter(r => Number.isFinite(r.chartTime) && _piChartSourceAllowed(r.sourceTs));
 
-        // Live reception is intentionally not appended to the shared history
-        // file: doing that would change backtest calculations.  The separate
-        // record-only ``recorded`` stream is safe to overlay on both Backtest
-        // and Live charts, while engine ``received`` rows stay Live-only.
+        // The active Discord listener writes one durable audit row before any
+        // strategy callback.  Reuse that same row on both chart tabs instead
+        // of starting a second fetcher or mutating the immutable history file.
+        // Chart rendering is read-only; when the user explicitly runs a PI
+        // Backtest, the API separately replays the same in-range audit rows for
+        // that run and reports the count in the response.
         const activeTab = document.querySelector('.tab.active')?.dataset?.tab;
         if (activeTab === 'live' || activeTab === 'backtest') {
             try {
@@ -6861,11 +6960,10 @@ async function refreshPiSignalMarkers() {
                     const audit = await auditResp.json();
                     const seen = new Set();
                     for (const event of (audit.events || [])) {
-                        // ``recorded`` is the independent record-only
-                        // listener; ``received`` is the Live engine listener.
-                        // Preset acceptance never controls chart visibility.
+                        // ``received`` and ``recorded`` are both chart-visible
+                        // audit events.  Preset acceptance never controls chart visibility.
+                        // Neither event mutates history.
                         if (!event || event.event !== 'received' && event.event !== 'recorded' || !event.ts || !event.kind) continue;
-                        if (event.event === 'received' && activeTab !== 'live') continue;
                         if (sym.startsWith('MNQ') && event.future !== 'MNQ') continue;
                         if (sym.startsWith('MES') && event.future !== 'MES') continue;
                         if (!_piChartSourceAllowed(event.ts)) continue;
@@ -7896,12 +7994,10 @@ function renderMetrics(m, backtestTrades) {
     //   CALMAR < 1   年化報酬撐不過最大回撤
     //   交易 < 20     樣本太小,任何統計量都不可信
     //   WORST DAY 虧超過 $1k —— 單日損失已接近多數 Topstep 帳戶的 DLL
-    const _warn = (tip) => ' <span class="tpx-warn" title="' + _attr(tip) + '">&#9888;</span>';
-    // Keep the red threshold mark triangular, but make the severity explicit
-    // instead of showing the same solid triangle used by the old card.
-    const _dangerMark = '<span class="tpx-danger-mark" aria-hidden="true">'
-                      + '<span class="tpx-danger-triangle"></span>'
-                      + '<span class="tpx-danger-exclamation">!</span></span>';
+    // One Unicode warning shape for every severity. The wrapper supplies only
+    // the semantic color (amber warning vs red danger).
+    const _alertMark = '<span class="tpx-alert-mark" aria-hidden="true">&#9888;</span>';
+    const _warn = (tip) => ' <span class="tpx-warn" title="' + _attr(tip) + '">' + _alertMark + '</span>';
     const _nTrades = Number(total_trades || 0);
     // 沒有交易時 PF/RR/CALMAR 沒有意義,不要掛警示(交易數本身仍會警示)
     const _judgeable = _nTrades > 0;
@@ -7941,12 +8037,13 @@ function renderMetrics(m, backtestTrades) {
           value: '$' + total_loss.toFixed(0) + paren(liveStats ? '$' + num(liveStats.total_loss).toFixed(0) : ''),
           cls: total_loss < 0 ? 'neg' : '' },
         // 1.0.10: BEST DAY 的數值本身是獲利,一律綠色 —— 風險只用圖示表達。
-        //   >=40% 黃 ⚠ (XFA)   >=50% 紅 ▲ (Combine)
+        // One Unicode glyph; wrapper color conveys the severity.
+        //   >=40% amber alert (XFA)   >=50% red alert (Combine)
         { label: 'BEST DAY'
                  + (consistDanger
-                    ? ' <span class="tpx-danger" title="' + _attr(consistTip) + '">' + _dangerMark + '</span>'
+                    ? ' <span class="tpx-danger" title="' + _attr(consistTip) + '">' + _alertMark + '</span>'
                     : (consistWarn
-                       ? ' <span class="tpx-warn" title="' + _attr(consistTip) + '">&#9888;</span>'
+                       ? ' <span class="tpx-warn" title="' + _attr(consistTip) + '">' + _alertMark + '</span>'
                        : '')),
           value: (bestDay != null ? '$' + bestDay.toFixed(0) : '--')
                  + (consistPct != null
@@ -7964,12 +8061,13 @@ function renderMetrics(m, backtestTrades) {
           cls: (worstDay != null && worstDay < 0) ? 'neg' : '' },
         // 1.0.10: MAX DD 顯示為負數 —— 它是回撤,語意上是損失,跟 WORST DAY 一致。
         // 後端的 max_dd 是正值幅度(這裡只改顯示不動資料),所以門檻直接比正值。
-        //   > $1k 黃 ⚠   > $2k 紅 ▲
+        // One Unicode glyph; wrapper color conveys the severity.
+        //   > $1k amber alert   > $2k red alert
         { label: 'MAX DD'
                  + (_ddDanger
-                    ? ' <span class="tpx-danger" title="' + _attr(_ddTip) + '">' + _dangerMark + '</span>'
+                    ? ' <span class="tpx-danger" title="' + _attr(_ddTip) + '">' + _alertMark + '</span>'
                     : (_ddWarn
-                       ? ' <span class="tpx-warn" title="' + _attr(_ddTip) + '">&#9888;</span>'
+                       ? ' <span class="tpx-warn" title="' + _attr(_ddTip) + '">' + _alertMark + '</span>'
                        : '')),
           value: '$' + (max_dd > 0 ? '-' + max_dd.toFixed(0) : max_dd.toFixed(0))
                  + paren(liveStats

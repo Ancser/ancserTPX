@@ -55,10 +55,12 @@
 | PI-003 | `pi_long_only=True` 必須**壓過** `pi_signal_set` 與明確指定的 short kinds | `test_pi_pre_session_filter.py` |
 | PI-004 | `size` 欄位是零資訊(圈類恆為「大」、π 的大小是視覺系統多餘分類),**不得用於任何進場決策**。強弱軸是 `kind` | `test_pi_pre_session_filter.py` |
 | PI-005 | 時戳無法解析時**放行**而非崩潰 —— 寧可多一則訊號也不要 listener 掛掉 | `test_pi_pre_session_filter.py` |
-| PI-006 | 回測、實盤、圖表、研究腳本必須看到**同一組**訊號。共用 `backend/data/pi_history.load_rows()` | `test_pi_single_source.py` |
+| PI-006 | Normal historical backtest/research/chart data must share the same filtered history via `backend/data/pi_history.load_rows()`; Live and an explicit same-day PI Backtest may add their separately audited, run-scoped rows without rewriting that history | `test_pi_single_source.py` + `test_pi_live_audit.py` |
 | PI-007 | 重複的外部事件不得產生重複的策略動作 | `test_pi_single_source.py` |
 | PI-008 | Short circle bubbles (LEVEL 1/2) are parser/audit record-only and never enter the strategy queue; `size` remains non-decisional | `test_pi_pre_session_filter.py` |
 | PI-009 | Web/terminal startup may backfill today/yesterday into the separate audit stream, but every parsed mark is record-only (no strategy callback); pre-session rows stay diagnostic-only and chart visibility ignores preset acceptance | `test_live_status_health.py` |
+| PI-010 | The single active Discord listener's `received`/`recorded` audit rows may overlay both Live and Backtest charts; chart rendering never mutates the immutable history file | `test_ui_glass_repair_contracts.py` |
+| PI-011 | An explicit PI Backtest may merge in-range audit rows into that run only (deduped and pre-session filtered); it never appends to `pi_history`, changes Live callbacks, or creates an order | `test_pi_live_audit.py` + `test_pi_pre_session_filter.py` |
 
 ## DATA — 蠟燭庫
 

@@ -55,6 +55,13 @@ independent record-only listener now has a bounded today/yesterday catch-up and
 uses durable audit message ids as its stop boundary, so web/terminal restarts
 repair missing audit/chart rows without replaying the strategy.
 
+When the user explicitly runs a PI Backtest, the route now adds any in-range
+`received`/`recorded` audit marks as a temporary, deduplicated replay overlay.
+This makes a signal received today visible to the calculation immediately after
+clicking Backtest, while leaving `data/research/pi_signals.json` and the Live
+listener untouched. A normal historical run still uses the immutable history
+file only.
+
 ### R2 — Zone-age gate
 
 There is **no** zone-age trading block. The 0.17.0 code some notes refer to was

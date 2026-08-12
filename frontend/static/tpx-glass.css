@@ -242,6 +242,18 @@
     visibility: hidden !important;
 }
 
+/* A switch thumb is the lens, not part of the material it samples.  The
+   cloned switch track must therefore contribute only its green/grey track;
+   leaving the cream thumb in the SVG input turns an active popup switch into
+   an all-white lens.  Keep the geometry for alignment, but remove every paint
+   path from the sampling copy. */
+.optical-stage-copy > .switch-thumb[data-optical="switch"],
+.optical-stage-copy .glass-switch > .switch-thumb[data-optical="switch"] {
+    visibility: hidden !important;
+    opacity: 0 !important;
+    background: transparent !important;
+}
+
 .optical-stage-copy.optical-tier-2-source [data-glass-tier="1"] {
     visibility: visible !important;
 }
@@ -561,6 +573,15 @@
    could still become hit targets after the Lens appeared over Tier-1 UI. */
 .chart-lens,
 .chart-lens * { pointer-events: none !important; }
+
+/* Precision renders the popup switch's track, not the live cream thumb
+   underneath the lens.  Without this small occlusion the filtered layer has
+   transparent pixels around its sampled track and the real thumb shines
+   through, making an active switch look white or unsampled. */
+.chart-layer-pop .glass-switch.precision-under-lens > .switch-thumb,
+.sweep-model-pop .glass-switch.precision-under-lens > .switch-thumb {
+    visibility: hidden !important;
+}
 
 /* Shared lens behaviour for the dock bubble and segment indicator.
    Idle uses backdrop-filter (cheap, and the only thing that works
@@ -1110,38 +1131,6 @@
     box-shadow: var(--glass-relief);
 }
 
-/* Compact popup switches deliberately have no nested optical surface: ten
-   full-stage clones here would overwhelm the renderer. Reproduce the standard
-   optical switch's 40% centre shrink with one local material layer instead.
-   The thumb supplies the vacated page-colour ring; ::after is the sampled
-   gray/green centre at 60% size. This stays CSS-only in Tier 1 and therefore
-   remains visible inside Precision without recursive Glass. */
-.glass-switch[data-glass-sampling="material-only"] .switch-thumb::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    border-radius: inherit;
-    background: var(--switch-track-color);
-    opacity: 0;
-    transform: scale(0.60);
-    pointer-events: none;
-    transition: opacity 70ms linear, background 140ms linear;
-}
-
-.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb {
-    background: var(--bg);
-    /* Proportional compact relief: do not apply the full FAB/Lens edge to a
-       22px-high thumb, where it would swallow the visible centre. */
-    box-shadow:
-        0 1px 2px rgb(0 0 0 / 0.30),
-        inset 0 0 0 1px rgb(var(--cream-rgb) / 0.12);
-}
-
-.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb::after {
-    opacity: 1;
-}
-
 .glass-switch.interacting .switch-thumb .optical-layer { opacity: 1; }
 
 /* Language/theme state marks are presentation inside the existing thumb,
@@ -1270,6 +1259,29 @@
     width: 100% !important;
 }
 
+/* Sweep is an intentional two-column action row, not a form/select row.  Keep
+   this override after the generic single-column rule so an older cached skin
+   hook cannot stack the compact model trigger under SWEEP. */
+:root[data-tpx-glass-skin="on"] .sidebar .sweep-action-row {
+    display: flex !important;
+    grid-template-columns: minmax(0, 1fr) 2.4rem;
+    align-items: stretch !important;
+}
+:root[data-tpx-glass-skin="on"] .sidebar .sweep-action-row > #btn-sweep {
+    width: auto !important;
+    flex: 1 1 auto;
+}
+:root[data-tpx-glass-skin="on"] .sidebar .sweep-action-row > .sweep-model-trigger {
+    width: 42px !important;
+    min-width: 42px !important;
+    height: 42px !important;
+    min-height: 42px !important;
+    flex: 0 0 42px;
+    align-self: stretch;
+}
+
+/* The scope trigger stays a regular Sweep-style amber button. Popup thumbs
+   below are the interactive optical surfaces; the trigger itself is not. */
 :root[data-theme="light"][data-tpx-glass-skin="on"] #signal-legend,
 :root[data-theme="light"][data-tpx-glass-skin="on"] #lv-levels-panel,
 :root[data-theme="light"][data-tpx-glass-skin="on"] .glass-signal-legend,

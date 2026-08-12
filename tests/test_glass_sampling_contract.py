@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 GLASS_JS = ROOT / "frontend" / "static" / "tpx-glass.js"
 GLASS_CSS = ROOT / "frontend" / "static" / "tpx-glass.css"
+APP_CSS = ROOT / "frontend" / "static" / "ancserTPX.css"
 
 
 def _source(path: Path) -> str:
@@ -146,34 +147,45 @@ def test_tier_one_animated_style_only_mirrors_to_precision_copies():
     )
 
 
-def test_compact_material_switch_exposes_a_proportional_shrunk_center():
+def test_popup_switches_use_shared_geometry_without_compact_shrink():
     css = _source(GLASS_CSS)
     assert ".glass-switch.interacting .switch-thumb {" in css
-    assert "background: var(--bg);" in _slice(
-        css,
-        ".glass-switch.interacting .switch-thumb {",
-        '.glass-switch[data-glass-sampling="material-only"] .switch-thumb::after {',
+    # The old popup-only pseudo-layer applied a 60% center transform.  It was
+    # removed so chart/sweep rows use the ordinary switch track/thumb directly.
+    assert 'data-glass-sampling="material-only"' not in css
+    app_css = _source(APP_CSS)
+    assert ".chart-layer-pop .glass-switch," in app_css
+    assert ".sweep-model-pop .glass-switch" in app_css
+    assert "width: 2.8333rem;" in app_css
+    assert "height: 1.1667rem;" in app_css
+    assert "position: absolute;" in app_css[app_css.index(
+        ".chart-layer-pop .switch-thumb,"
+    ):]
+    assert "z-index: 5;" in app_css[app_css.index(
+        ".chart-layer-pop .switch-thumb,"
+    ):]
+
+
+def test_switch_sampling_copy_excludes_the_thumb_paint():
+    css = _source(GLASS_CSS)
+    selector = (
+        '.optical-stage-copy > .switch-thumb[data-optical="switch"],'
+        '\n.optical-stage-copy .glass-switch > '
+        '.switch-thumb[data-optical="switch"]'
     )
-    center = _slice(
-        css,
-        '.glass-switch[data-glass-sampling="material-only"] .switch-thumb::after {',
-        '.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb {',
-    )
-    assert "background: var(--switch-track-color);" in center
-    assert "transform: scale(0.60);" in center
-    ring = _slice(
-        css,
-        '.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb {',
-        '.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb::after {',
-    )
-    assert "background: var(--bg);" in ring
-    assert "var(--glass-relief)" not in ring
-    active_center = _slice(
-        css,
-        '.glass-switch.interacting[data-glass-sampling="material-only"] .switch-thumb::after {',
-        ".glass-switch.interacting .switch-thumb .optical-layer",
-    )
-    assert "opacity: 1;" in active_center
+    assert selector in css
+    rule = css[css.index(selector):css.index("}", css.index(selector))]
+    assert "visibility: hidden !important;" in rule
+    assert "opacity: 0 !important;" in rule
+    assert "background: transparent !important;" in rule
+
+
+def test_silent_same_state_switch_sync_cannot_leave_dark_interaction_stuck():
+    js = _source(GLASS_JS)
+    tactile = _slice(js, "function initTactileSwitch", "function startMirrorHeartbeat")
+    assert "if (!changed && silent && !pointerActive)" in tactile
+    assert "activity.target = 0;" in tactile
+    assert "beginSwitchIdleReturn();" in tactile
 
 
 def test_locale_uses_the_existing_tactile_switch_controller_once():
@@ -203,6 +215,12 @@ def test_tier_one_controls_do_not_hide_the_pointer_lens():
     tier = "target.closest('[data-glass-tier=\"1\"]')"
     assert tier in blocker
     assert blocker.index(tier) < blocker.index("target.closest(interactiveSelector)")
+    lens = _slice(js, "const lensSwitchSelector =", "const scale =")
+    assert 'const lensSwitchSelector =' in lens
+    assert 'target.closest(lensSwitchSelector)' in blocker
+    assert 'syncLensCoveredSwitch(event.target)' in js
+    assert 'precision-under-lens' in js
+    assert '.chart-layer-pop .glass-switch.precision-under-lens' in css
     assert ".chart-lens * { pointer-events: none !important; }" in css
 
 

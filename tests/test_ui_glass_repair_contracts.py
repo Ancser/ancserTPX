@@ -182,14 +182,19 @@ def test_pi_matrix_switches_use_the_real_optical_thumb_surface():
 
 
 def test_red_performance_threshold_mark_has_an_exclamation():
-    assert "tpx-danger-mark" in JS
-    assert "tpx-danger-triangle" in JS
-    assert "tpx-danger-exclamation" in JS
-    assert ".tpx-danger-mark" in CSS
-    assert ".tpx-danger-exclamation" in CSS
+    # Amber and red warnings share one Unicode glyph; only the semantic wrapper color differs.
+    assert "tpx-alert-mark" in JS
+    assert "_alertMark" in JS
+    assert "&#9888;" in JS
+    assert ".tpx-alert-mark" in CSS
+    assert ".tpx-alert-mark::before" not in CSS
+    assert ".tpx-alert-mark::after" not in CSS
+    assert "tpx-danger-mark" not in JS
+    assert "tpx-danger-triangle" not in CSS
+    assert "tpx-danger-exclamation" not in CSS
 
 
-def test_live_pi_audit_overlay_does_not_change_backtest_history_source():
+def test_live_pi_audit_overlay_is_read_only_and_backtest_replay_is_explicit():
     refresh = _function_source("refreshPiSignalMarkers")
     assert "API + '/pi/signals?'" in refresh
     assert "API + '/pi/signals/audit?limit=2000'" in refresh
@@ -198,6 +203,10 @@ def test_live_pi_audit_overlay_does_not_change_backtest_history_source():
     assert "Preset acceptance never controls chart visibility." in refresh
     assert "activeTab === 'live'" in refresh
     assert "activeTab === 'backtest'" in refresh
+    assert "Chart rendering is read-only" in refresh
+    assert "explicitly runs a PI" in refresh
+    assert "pi_history" not in refresh
+    assert "activeTab !== 'live'" not in refresh
 
 
 def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
@@ -302,7 +311,7 @@ def test_retired_auto_center_is_absent_but_other_chart_tools_remain():
     assert "const idx = _nearestBarIndex(sec)" in _function_source("_timeToXViaBars")
 
 
-def test_chart_layer_popup_contract_is_clone_safe_without_per_switch_optical_surfaces():
+def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     start = HTML.index('<div id="chart-layer-pop"')
     end = HTML.index('<div id="chart-quick-btns"', start)
     popup = HTML[start:end]
@@ -311,8 +320,11 @@ def test_chart_layer_popup_contract_is_clone_safe_without_per_switch_optical_sur
     assert 'data-glass-tier="1"' in popup
     assert 'data-glass-material="popup"' in popup
     assert popup.count('data-glass-material="local"') == 10
-    assert popup.count('data-glass-sampling="material-only"') == 10
-    assert "data-optical" not in popup
+    # Repeated rows use the PI matrix's real optical thumb path.  They keep
+    # the ordinary switch geometry but opt into the gentler 20% center shrink.
+    assert 'data-glass-sampling="material-only"' not in popup
+    assert popup.count('data-optical="switch"') == 10
+    assert popup.count('data-glass-shrink="0.20"') == 10
 
     assert "#chart-layer-pop" not in CSS
     assert ".chart-layer-pop {" in CSS
@@ -323,3 +335,37 @@ def test_chart_layer_popup_contract_is_clone_safe_without_per_switch_optical_sur
     assert "backdrop-filter: blur(20px) saturate(1.3)" in popup_rule
     assert ".chart-layer-pop::before" not in CSS
     assert ".chart-layer-pop::after" not in CSS
+    assert ".chart-layer-pop .glass-switch," in CSS
+    assert ".sweep-model-pop .glass-switch" in CSS
+    assert '.optical-stage-copy > .switch-thumb[data-optical="switch"],' in GLASS_CSS
+    assert "opacity: 0 !important;" in GLASS_CSS
+    assert "background: transparent !important;" in GLASS_CSS
+    assert "width: 2.8333rem;" in CSS
+    assert "height: 1.1667rem;" in CSS
+    layer_sync = _function_source("buildChartLayerMenu")
+    assert "const current = tr.getAttribute('aria-checked') === 'true';" in layer_sync
+    assert layer_sync.index("if (current === on) return;") < layer_sync.index("tr.tpxSetState(on)")
+
+
+def test_sweep_model_dropdown_contract_uses_glass_switches_and_preserves_scope_names():
+    start = HTML.index('<div class="sweep-action-row"')
+    end = HTML.index('<div id="backtest-progress-wrap"', start)
+    sweep = HTML[start:end]
+    assert 'id="btn-sweep"' in sweep
+    assert 'id="sweep-model-btn"' in sweep
+    assert 'onclick="toggleSweepModelMenu()"' in sweep
+    assert 'id="sweep-model-pop" class="sweep-model-pop hidden"' in sweep
+    assert sweep.count('class="glass-switch sweep-model-switch') == 5
+    for model in ("ALL", "FACTOR", "TREND", "DAY ZONE", "DISTRIBUTION"):
+        assert f'data-sweep-model="{model}"' in sweep
+    # The trigger is intentionally a regular Sweep-style button. Only the
+    # five popup thumbs use optical sampling; the trigger must not inherit a
+    # shrink lens or clone the sidebar behind its square affordance.
+    assert 'sweep-model-trigger-glass' not in sweep
+    assert sweep.count('data-optical="switch"') == 5
+    assert sweep.count('data-stage="switch"') == 5
+    assert 'data-optical="switch"' not in sweep.split('id="sweep-model-pop"', 1)[0].split('id="sweep-model-btn"', 1)[0]
+    assert "height: 42px;" in CSS
+    assert "function _sweepModelSelection()" in JS
+    assert "const _mm = _sweepModelSelection();" in _function_source("runBacktestSweep")
+    assert "sweep-model-scope-bt" not in JS

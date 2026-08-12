@@ -69,7 +69,8 @@ class BacktestEngine:
     def __init__(self, config: Optional[BacktestConfig] = None,
                  strategy_params: Optional[StrategyParams] = None,
                  zone_timeline: Optional[List[dict]] = None,
-                 record_equity: bool = True):
+                 record_equity: bool = True,
+                 pi_replay_rows: Optional[List[dict]] = None):
         # record_equity=False skips the per-candle equity curve. Machine-learning
         # grid runs (186 combos × up to 32 parallel workers) don't use the equity
         # curve — metrics come from trades — and on full-range data (hundreds of
@@ -77,6 +78,9 @@ class BacktestEngine:
         self._record_equity = record_equity
         self.config = config or BacktestConfig()
         self.strategy_params = strategy_params or StrategyParams()
+        # Run-scoped Live PI audit overlay.  It is intentionally passed only
+        # by the explicit PI Backtest route and never written to history.
+        self.pi_replay_rows = list(pi_replay_rows or [])
 
         # Resolve contract specs once. NQ=$20, MNQ=$2; tick size 0.25 for both.
         _cid = getattr(self.strategy_params, "contract_id", "") or "CON.F.US.MNQ.M26"
@@ -122,7 +126,10 @@ class BacktestEngine:
         # 出場/風控/下單路徑與其他策略完全共用。
         elif self.strategy_mode == "pi":
             from backend.strategy.pi_signal import PiSignalStrategy
-            self.trend_follow = PiSignalStrategy(params=self.strategy_params)
+            self.trend_follow = PiSignalStrategy(
+                params=self.strategy_params,
+                replay_rows=self.pi_replay_rows,
+            )
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
         # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。

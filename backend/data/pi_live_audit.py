@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -176,6 +176,88 @@ def load_recent_events(limit: int = 200, *, path: Path | None = None) -> list[di
             continue
         if isinstance(row, dict):
             rows.append(row)
+    return rows
+
+
+def load_replay_rows(
+    start: datetime,
+    end: datetime,
+    *,
+    future: str = "",
+    limit: int = 2000,
+    path: Path | None = None,
+) -> list[dict]:
+    """Return in-range PI audit marks as a run-scoped backtest input.
+
+    This deliberately does **not** append to the immutable history file.  It
+    lets a Backtest button replay signals received today without changing the
+    dataset used by normal research/backtests.  A
+    ``received`` and a later ``recorded`` row for the same Discord mark are
+    collapsed to one mark, and the shared 07:00 PT pre-session rule is kept.
+    """
+    try:
+        lo = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+        hi = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
+        lo = lo.astimezone(timezone.utc) - timedelta(minutes=2)
+        hi = hi.astimezone(timezone.utc) + timedelta(minutes=2)
+    except (AttributeError, TypeError, ValueError):
+        return []
+
+    want_future = str(future or "").upper()
+    symbol_by_future = {"MNQ": "QQQ", "MES": "SPY"}
+    try:
+        from backend.live.pi_listener import DIRECTION, is_pre_session
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for event in load_recent_events(limit, path=path):
+        if event.get("event") not in {"received", "recorded"}:
+            continue
+        kind = str(event.get("kind") or "")
+        if kind not in DIRECTION:
+            continue
+        try:
+            ts = datetime.fromisoformat(
+                str(event.get("ts") or "").replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.astimezone(timezone.utc)
+        if ts < lo or ts > hi or is_pre_session(ts):
+            continue
+
+        event_future = str(event.get("future") or "").upper()
+        if want_future and event_future != want_future:
+            continue
+        symbol = str(event.get("equity") or "").upper()
+        if not symbol:
+            symbol = symbol_by_future.get(event_future, "")
+        if symbol not in {"QQQ", "SPY"}:
+            continue
+
+        message_id = str(event.get("message_id") or "")
+        key = (message_id or ts.isoformat(), kind, symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "id": message_id,
+            "ts": ts.isoformat(),
+            "symbol": symbol,
+            "marks": [{
+                "kind": kind,
+                "size": event.get("size") or "?",
+                "count": 1,
+                "pos": event.get("pos"),
+            }],
+            "content": event.get("raw") or "",
+        })
+
+    rows.sort(key=lambda row: str(row.get("ts") or ""))
     return rows
 
 

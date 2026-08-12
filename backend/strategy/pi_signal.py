@@ -63,44 +63,72 @@ from backend.data.pi_history import HIST_PATH as _HIST_PATH  # noqa: E402
 _HIST_CACHE: Optional[list] = None
 
 
-def _load_history() -> list:
-    """讀 scripts/pi_collect_history.py 收集的歷史訊號,轉成 (ts, PiSignal) 並排序。
-
-    只讀一次(模組層快取)。檔案不存在就回空 —— 那表示還沒跑過收集腳本,
-    回測會是 0 筆,但不該因此讓策略無法建立。
-    """
-    global _HIST_CACHE
-    if _HIST_CACHE is not None:
-        return _HIST_CACHE
+def _rows_to_signals(rows: list[dict]) -> list:
+    """Convert canonical history-shaped rows into ordered PI signals."""
     out: list = []
-    # 1.0.10: 走共用 loader —— 開盤前重播的過濾規則只能有一份
-    # (見 docs/INVARIANTS.md PI-006)。讀不到檔案時 loader 回空 list。
-    from backend.data.pi_history import load_rows
-    rows = load_rows()
-
     from backend.live.pi_listener import SYMBOL_MAP, DIRECTION, PiSignal
     for r in rows:
-        sym = r.get("symbol")
-        if not sym:
+        sym = str(r.get("symbol") or "").upper()
+        future = SYMBOL_MAP.get(sym)
+        if not future:
             continue
         try:
             ts = datetime.fromisoformat(str(r["ts"]).replace("Z", "+00:00"))
-        except Exception:
+        except (KeyError, TypeError, ValueError):
             continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
         ts = ts.astimezone(timezone.utc)
-        for mk in r.get("marks", []):
-            d = DIRECTION.get(mk.get("kind"), 0)
+        for mk in r.get("marks") or []:
+            kind = mk.get("kind")
+            d = DIRECTION.get(kind, 0)
             if not d:
                 continue
             out.append((ts, PiSignal(
                 message_id=str(r.get("id", "")), ts=ts, equity=sym,
-                future=SYMBOL_MAP[sym], direction=d, kind=mk["kind"],
+                future=future, direction=d, kind=kind,
                 size=mk.get("size", ""), pos=mk.get("pos"),
                 raw=r.get("content", ""))))
     out.sort(key=lambda x: x[0])
-    logger.info("[PI] 載入 %d 個歷史訊號(%s → %s)供回測使用", len(out),
-                out[0][0].date() if out else "-", out[-1][0].date() if out else "-")
-    _HIST_CACHE = out
+    return out
+
+
+def _load_history(replay_rows: Optional[list[dict]] = None) -> list:
+    """讀 scripts/pi_collect_history.py 收集的歷史訊號,轉成 (ts, PiSignal) 並排序。
+
+    只讀一次(模組層快取)。``replay_rows`` 是單次 Backtest 的暫時
+    Live-audit overlay；它永遠不會寫回歷史檔或污染模組快取。
+    """
+    global _HIST_CACHE
+    if _HIST_CACHE is None:
+        # 1.0.10: 走共用 loader —— 開盤前重播的過濾規則只能有一份
+        # (見 docs/INVARIANTS.md PI-006)。讀不到檔案時 loader 回空 list。
+        from backend.data.pi_history import load_rows
+        _HIST_CACHE = _rows_to_signals(load_rows())
+        logger.info("[PI] 載入 %d 個歷史訊號(%s → %s)供回測使用",
+                    len(_HIST_CACHE),
+                    _HIST_CACHE[0][0].date() if _HIST_CACHE else "-",
+                    _HIST_CACHE[-1][0].date() if _HIST_CACHE else "-")
+
+    if not replay_rows:
+        return _HIST_CACHE
+
+    # A live row can also be present in the historical file after an explicit
+    # archival import.  Keep the current run deterministic and avoid a double
+    # entry when both sources carry the same Discord message/kind.
+    out = list(_HIST_CACHE)
+    seen = {
+        (str(getattr(sig, "message_id", "") or ""), getattr(sig, "kind", ""), ts)
+        for ts, sig in out
+    }
+    for ts, sig in _rows_to_signals(replay_rows):
+        key = (str(getattr(sig, "message_id", "") or ""),
+               getattr(sig, "kind", ""), ts)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((ts, sig))
+    out.sort(key=lambda x: x[0])
     return out
 
 
@@ -125,7 +153,7 @@ class PiSignalStrategy(_ResearchBase):
     DEFAULT_LONG_KINDS = ("青π", "深蓝圈")
     DEFAULT_SHORT_KINDS = ()
 
-    def __init__(self, params):
+    def __init__(self, params, replay_rows: Optional[list[dict]] = None):
         super().__init__(params)
         self._queue: deque = deque(maxlen=32)
         # 1.0.10:濾除開盤前重播後空方轉為淨虧(PF 0.91),預設關閉做空。
@@ -160,7 +188,7 @@ class PiSignalStrategy(_ResearchBase):
         # 否則回測時佇列永遠是空的,結果一定 0 筆。
         # 只在 K 棒時間**對得上訊號時間**(±_HIST_TOL_MIN)時才觸發,所以
         # live 模式下(K 棒是「現在」、歷史訊號都在過去)不會被誤觸。
-        self._hist: list = _load_history()
+        self._hist: list = _load_history(replay_rows)
         self._hist_i = 0
         self.pi_max_age_min = int(
             getattr(params, "pi_max_signal_age_min", DEFAULT_MAX_SIGNAL_AGE_MIN) or

@@ -6,6 +6,7 @@ from backend.data.pi_live_audit import (
     append_message_event,
     append_signal_event,
     append_status_event,
+    load_replay_rows,
     load_message_ids,
     load_message_timestamps,
     load_recent_events,
@@ -99,3 +100,30 @@ def test_live_audit_message_ids_are_unbounded_for_restart_boundary(tmp_path):
     assert "1" in ids and "2105" in ids
     stamps = load_message_timestamps(path=path)
     assert stamps == {"2026-08-10T16:00:00+00:00"}
+
+
+def test_replay_rows_are_in_range_deduped_and_pre_session_filtered(tmp_path):
+    path = tmp_path / "pi.jsonl"
+    signal = _signal()
+    signal.message_id = "replay-1"
+    signal.ts = datetime(2026, 8, 11, 17, 12, 49, tzinfo=timezone.utc)
+    assert append_signal_event(signal, event="received", path=path)
+    # The same Discord mark may later be seen by the record-only catch-up.
+    assert append_signal_event(signal, event="recorded", path=path)
+
+    pre_session = _signal()
+    pre_session.message_id = "replay-pre"
+    pre_session.ts = datetime(2026, 8, 11, 13, 33, tzinfo=timezone.utc)
+    assert append_signal_event(pre_session, event="received", path=path)
+
+    rows = load_replay_rows(
+        datetime(2026, 8, 11, 17, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 11, 18, 0, tzinfo=timezone.utc),
+        future="MNQ",
+        path=path,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "replay-1"
+    assert rows[0]["symbol"] == "QQQ"
+    assert rows[0]["marks"][0]["kind"] == "青π"

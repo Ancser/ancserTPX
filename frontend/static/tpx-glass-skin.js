@@ -258,11 +258,6 @@
         topbar.dataset.opticalStage = '#chart-container, [data-stage="research"]';
         document.body.appendChild(topbar);
 
-        // The sweep pair is an inline-styled exception to TPX's normal
-        // .form-row structure. Mark it so the single-column skin can stack
-        // the button and its model selector like every other sidebar option.
-        byId("btn-sweep")?.parentElement?.classList.add("glass-single-stack");
-
         /* Spans the full viewport so the dock's centre is the SCREEN's
            centre. Offsetting the bar to start at the sidebar's right
            edge centred the dock on the chart instead, which is why the

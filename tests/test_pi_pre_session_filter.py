@@ -161,6 +161,37 @@ class TestBacktestPath:
         assert len(out) == 1, "只有 10:12 PT 那筆該留下"
         assert not any(is_pre_session(ts) for ts, _ in out)
 
+    def test_live_replay_rows_are_run_scoped_and_do_not_mutate_history_cache(self, tmp_path, monkeypatch):
+        import json
+
+        from backend.data import pi_history
+        from backend.strategy import pi_signal as ps
+
+        base = [{
+            "id": "hist-1",
+            "ts": "2026-08-10T17:12:00+00:00",
+            "symbol": "QQQ",
+            "marks": [{"kind": "青π", "size": "中", "count": 1}],
+            "content": "",
+        }]
+        f = tmp_path / "pi_signals.json"
+        f.write_text(json.dumps(base), encoding="utf-8")
+        monkeypatch.setattr(pi_history, "HIST_PATH", f)
+        monkeypatch.setattr(ps, "_HIST_CACHE", None)
+
+        replay = [{
+            "id": "live-1",
+            "ts": "2026-08-11T17:12:49+00:00",
+            "symbol": "QQQ",
+            "marks": [{"kind": "青π", "size": "中", "count": 1}],
+            "content": "",
+        }]
+        with_replay = ps._load_history(replay)
+        assert {sig.message_id for _, sig in with_replay} == {"hist-1", "live-1"}
+
+        # A normal run still sees only immutable historical rows.
+        assert [sig.message_id for _, sig in ps._load_history()] == ["hist-1"]
+
 
 class TestSizeIsNotUsedForFiltering:
     """size 是視覺系統的多餘分類,不得影響是否進場。

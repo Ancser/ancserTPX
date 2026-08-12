@@ -1683,6 +1683,9 @@ class BacktestResponse(BaseModel):
     trades: List[TradeResponse]
     zones: List[ZoneResponse]
     equity_curve: List[List[float]]   # [[timestamp_ms, equity], ...]
+    # Number of in-range Live PI audit marks replayed for this run.  These are
+    # transient inputs only; the immutable historical file is unchanged.
+    pi_replay_count: int = 0
 
 
 # ── 路由 ──────────────────────────────────────────────
@@ -2854,6 +2857,24 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     )
 
     strategy_params = _build_strategy_params_from_request(req, contract_size)
+    pi_replay_rows: List[dict] = []
+    _strategy_name = str(getattr(strategy_params, "strategy", "") or "").lower()
+    if _strategy_name == "pi" and workset_candles:
+        ordered_workset = sorted(workset_candles, key=lambda c: c.timestamp)
+        # The strategy matches source timestamps to 1m candles with a ±2m
+        # tolerance; the audit loader applies the same bounded padding.
+        from backend.data.pi_live_audit import load_replay_rows
+        pi_replay_rows = await asyncio.to_thread(
+            load_replay_rows,
+            ordered_workset[0].timestamp,
+            ordered_workset[-1].timestamp,
+            future=bt_symbol,
+        )
+        if pi_replay_rows:
+            logger.info(
+                "[BACKTEST] PI replay overlay: %d in-range audit mark(s) | future=%s",
+                len(pi_replay_rows), bt_symbol,
+            )
     # 1.0.9: zone timeline 是最慢的 detector 全掃(數十秒~數分鐘),只有「用
     # 共識 zone 進場」的策略才需要。原本用「不是 sigma / fade / pmo / factor」
     # 的黑名單寫法 —— 每加一個新策略就會忘記加進去,結果新策略卡在建 zone
@@ -2862,7 +2883,6 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     # 目前沒有任何策略需要 —— 唯一的消費者 TREND 已在 1.0.9 移除;
     # fade 自己算前日 VP、factor/pmo/sigma/intramom 完全不看 zone。
     # 未來若有新策略需要,把它的 strategy 值加進 _ZONE_TIMELINE_STRATEGIES。
-    _strategy_name = str(getattr(strategy_params, "strategy", "") or "").lower()
     needs_zone_timeline = _strategy_name in _ZONE_TIMELINE_STRATEGIES
 
     method = str(getattr(req, "method", "single") or "single").lower()
@@ -2903,6 +2923,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         config,
         strategy_params=strategy_params,
         zone_timeline=zone_timeline,
+        pi_replay_rows=pi_replay_rows,
     )
 
     candles = (
@@ -3078,6 +3099,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         trades=trades_resp,
         zones=zones_resp,
         equity_curve=equity,
+        pi_replay_count=len(pi_replay_rows),
     )
     _update_bt_progress("done", len(candles), len(candles), "Complete", status="done")
     return response
