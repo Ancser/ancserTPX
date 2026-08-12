@@ -6244,7 +6244,12 @@ function _showBottomTab(name) {
 // the control stays readable in the single-column sidebar.  The ALL switch is
 // a convenience state; the request body still receives the same canonical
 // backend model names as the old native select.
-const SWEEP_MODEL_ORDER = Object.freeze(['TREND', 'DAY ZONE', 'DISTRIBUTION', 'FACTOR']);
+// 1.0.10p: TREND 曾經在這份清單和 dropdown 裡,但 backend 的 run_model_sweep()
+// 只 dispatch DAY ZONE / DISTRIBUTION / FACTOR —— 沒有 run_trend_sweep。選
+// 「TREND ONLY」會讓 want={'TREND'},三個 _on() 全部 False,sweep 跑完回零筆。
+// 這份清單的每個項目都必須在 backend 有對應的 dispatch,由
+// test_sweep_model_scope_matches_backend_dispatch 釘住。
+const SWEEP_MODEL_ORDER = Object.freeze(['DAY ZONE', 'DISTRIBUTION', 'FACTOR', 'PI']);
 
 function _sweepModelButtons() {
     return Array.from(document.querySelectorAll('#sweep-model-pop .sweep-model-switch'))
@@ -6350,7 +6355,9 @@ async function runBacktestSweep() {
     // request values identical to the old native select for preset parity.
     const _mm = _sweepModelSelection();
     if (!_mm.length) { log('Select at least one model before starting SWEEP', 'warn'); _resetSweepBtn(); if (sweepBtn) sweepBtn.disabled = false; if (btBtn) btBtn.disabled = false; return; }
-    if (_mm.length < 4) body.sweep_models = _mm;
+    // 全選就不送 sweep_models(backend 的 None = 全跑)。長度用清單本身,
+    // 不要寫死數字 —— 之前寫死 4,清單一改就會靜默送出部分選取。
+    if (_mm.length < SWEEP_MODEL_ORDER.length) body.sweep_models = _mm;
     log('SWEEP started: ' + _mm.join(' + ') + ' (MNQx1 locked, sorted by PF)…', 'info');
     _startBacktestProgress();
 
@@ -8884,11 +8891,9 @@ function _researchClass(value) {
 // 兩個月的數字)。一律用 30.44 天歸一化的月率來讀。
 const _ROB_DAYS_PER_MONTH = 30.44;
 
-function _robMonthlyPnl(totalPnl, msStart, msEnd) {
-    const span = (Number(msEnd) - Number(msStart)) / 86400000;   // 天
-    if (!Number.isFinite(span) || span < 1) return null;
-    return Number(totalPnl) / (span / _ROB_DAYS_PER_MONTH);
-}
+// 1.0.10p: _robMonthlyPnl moved to backend.backtest.robustness.monthly_pnl and
+// arrives as rob.monthly_pnl. _robMonthlyOf below stays — it only divides an
+// already-computed segment P&L by a month count for display.
 
 // 把一段期間的損益直接換算成月率(給走查各段用,各段長度不同才需要歸一化)
 function _robMonthlyOf(pnl, months) {
@@ -8899,67 +8904,32 @@ const _ROB_POINT_VALUE = { MNQ: 2, NQ: 20, ENQ: 20, MES: 5, ES: 50, MGC: 10, GC:
 const _ROB_TICK = 0.25;
 // Documented EMAPMO market fill 2026-07-23 14:31Z: +3.5 pts vs strategy price.
 const _ROB_SLIP_ANCHOR_TICKS = 14;
+// Must match backend.backtest.robustness.DEFAULT_SLIP_LEVELS; the measured
+// level is appended per render when it is not already one of these.
+const _ROB_SLIP_LEVELS = [1, 2, 4, 8];
 
 function _robTickValue(trades) {
     const sym = String((trades[0] || {}).symbol || '/MNQ').replace('/', '').toUpperCase();
     return (_ROB_POINT_VALUE[sym] || 2) * _ROB_TICK;
 }
 
-function _robSeriesStats(pnls) {
-    let gain = 0, loss = 0, eq = 0, peak = 0, dd = 0, wins = 0;
-    for (const p of pnls) {
-        if (p > 0) { gain += p; wins++; } else loss += -p;
-        eq += p;
-        if (eq > peak) peak = eq;
-        if (peak - eq > dd) dd = peak - eq;
-    }
-    return {
-        pnl: eq,
-        pf: loss > 0 ? gain / loss : (gain > 0 ? 999 : 0),
-        maxDd: dd,
-        win: pnls.length ? wins / pnls.length : 0,
-        n: pnls.length,
-    };
-}
+// 1.0.10p: _robSeriesStats moved to backend.backtest.robustness.series_stats.
+// It was the shared kernel under Monte Carlo, walk-forward AND the slip table,
+// so leaving a copy here would have kept all three able to drift from the
+// backend independently.
 
-function _robMonteCarlo(pnls, iters) {
-    const n = pnls.length;
-    if (n < 10) return null;
-    iters = iters || 1000;
-    const totals = [], dds = [], pfs = [];
-    for (let i = 0; i < iters; i++) {
-        let eq = 0, peak = 0, dd = 0, gain = 0, loss = 0;
-        for (let j = 0; j < n; j++) {
-            const p = pnls[(Math.random() * n) | 0];
-            if (p > 0) gain += p; else loss += -p;
-            eq += p;
-            if (eq > peak) peak = eq;
-            if (peak - eq > dd) dd = peak - eq;
-        }
-        totals.push(eq);
-        dds.push(dd);
-        pfs.push(loss > 0 ? gain / loss : (gain > 0 ? 999 : 0));
-    }
-    totals.sort((a, b) => a - b);
-    dds.sort((a, b) => a - b);
-    pfs.sort((a, b) => a - b);
-    const q = (arr, p) => arr[Math.min(arr.length - 1, Math.max(0, Math.round(p * (arr.length - 1))))];
-    return {
-        iters, totals,
-        pnlP5: q(totals, 0.05), pnlP50: q(totals, 0.50), pnlP95: q(totals, 0.95),
-        pLoss: totals.filter(v => v <= 0).length / iters,
-        ddP50: q(dds, 0.50), ddP95: q(dds, 0.95),
-        pDd2k: dds.filter(v => v > 2000).length / iters,
-        pfP5: q(pfs, 0.05),
-    };
-}
-
-function _robMcPass(mc) {
-    return !!mc && mc.pLoss <= 0.05 && mc.ddP95 < 2000 && mc.pfP5 > 1.0;
-}
-
-let _robLegacyMcCache = null;
+// 1.0.10p: Monte Carlo and walk-forward used to be computed right here.
+// They now live in backend/backtest/robustness.py, because a browser-only
+// implementation meant the sweep could not gate on these numbers, research
+// scripts each rewrote their own bootstrap, and pytest could not reach any of
+// it. The old one also used Math.random(), so the same trades produced
+// different percentiles on every render and no reported figure could be
+// checked afterwards; the backend seeds its RNG.
+//
+// This file now only formats what the endpoint returns. Do not reintroduce a
+// local bootstrap "just for a preview" — that is the drift this move undid.
 let _robTopstepCache = null;
+let _robBackendCache = null;
 
 function _robTradesCacheKey(trades) {
     return (trades || []).map(tr => [
@@ -8968,13 +8938,33 @@ function _robTradesCacheKey(trades) {
     ].join(':')).join('|');
 }
 
-function _robCachedMonteCarlo(trades, pnls, force) {
-    const cacheKey = _robTradesCacheKey(trades);
-    if (!force && _robLegacyMcCache && _robLegacyMcCache.cacheKey === cacheKey) {
-        return _robLegacyMcCache.value;
+async function _robFetchBackend(trades, slipLevels, force) {
+    // Slip levels are part of the key: the measured level can change between
+    // renders, and a cache hit would then serve a table missing that row.
+    const cacheKey = _robTradesCacheKey(trades) + '#' + slipLevels.join(',');
+    if (!force && _robBackendCache && _robBackendCache.cacheKey === cacheKey) {
+        return _robBackendCache.value;
     }
-    const value = _robMonteCarlo(pnls, 1000);
-    _robLegacyMcCache = { cacheKey: cacheKey, value: value };
+    let value = null;
+    try {
+        const resp = await fetch(API + '/research/robustness', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                trades: trades.map(tr => ({
+                    entry_time: tr.entry_time, pnl: tr.pnl,
+                    size: tr.size, symbol: tr.symbol,
+                })),
+                iters: 1000,
+                slip_levels: slipLevels,
+            }),
+        });
+        if (resp.ok) value = await resp.json();
+        else log('Robustness request failed: ' + resp.status, 'warn');
+    } catch (e) {
+        log('Robustness request failed: ' + e.message, 'warn');
+    }
+    _robBackendCache = { cacheKey: cacheKey, value: value };
     return value;
 }
 
@@ -9125,20 +9115,10 @@ function _robTopstepHtml(analysis, slipTicks) {
         + '</div>';
 }
 
-function _robWalkForward(trades) {
-    const rows = trades.filter(tr => tr.entry_time);
-    if (rows.length < 6) return null;
-    const times = rows.map(tr => new Date(tr.entry_time).getTime());
-    const t0 = Math.min(...times), t1 = Math.max(...times);
-    const span = Math.max(1, t1 - t0);
-    const segs = [[], [], []];
-    rows.forEach((tr, i) => {
-        const seg = Math.min(2, Math.floor((times[i] - t0) * 3 / span));
-        segs[seg].push(Number(tr.pnl) || 0);
-    });
-    const stats = segs.map(_robSeriesStats);
-    return { stats, pass: stats.every(s => s.n > 0 && s.pnl > 0 && s.pf > 1.0) };
-}
+// 1.0.10p: _robWalkForward lived here and sweep.py had a second, independent
+// three-way split. Two implementations of one concept, with nothing keeping
+// them in step. backend.backtest.robustness.walk_forward is now the only one
+// this panel uses; test_robustness.py pins it against sweep.py's.
 
 // Measured slip: live fill vs the open of its 5m bar (the FACTOR backtest fill
 // assumption). Market-order fills land <120s after the 5m boundary and are not
@@ -9184,7 +9164,7 @@ function _robBadge(pass, passText, failText) {
         + t(pass ? passText : failText) + '</span>';
 }
 
-function renderResearchRobustness(force) {
+async function renderResearchRobustness(force) {
     const status = document.getElementById('robustness-status');
     const content = document.getElementById('robustness-content');
     if (!status || !content) return;
@@ -9195,15 +9175,35 @@ function renderResearchRobustness(force) {
         content.innerHTML = '';
         return;
     }
-    const pnls = trades.map(tr => Number(tr.pnl) || 0);
-    const base = _robSeriesStats(pnls);
-    const tickVal = _robTickValue(trades);
+    // Measured slip decides which extra level the slip table highlights, and
+    // the backend scores the levels, so it has to be known before the request.
+    const slip = _robMeasureSlip();
+    const used = Math.max(1, Math.round(slip.usedTicks));
+    const slipLevels = _ROB_SLIP_LEVELS.slice();
+    if (slipLevels.indexOf(used) < 0) slipLevels.push(used);
+    slipLevels.sort((a, b) => a - b);
+
+    // 1.0.10p: every number below now comes from POST /api/research/robustness.
+    // Bail out visibly rather than silently rendering a half-empty panel — a
+    // blank card used to be indistinguishable from "no edge".
+    status.textContent = t('Evaluating…');
+    const rob = await _robFetchBackend(trades, slipLevels, !!force);
+    if (!rob || !rob.stats) {
+        status.textContent = t('Robustness service unavailable — see SYSTEM LOG.');
+        content.innerHTML = '';
+        return;
+    }
+    const base = {
+        pnl: rob.stats.pnl, pf: rob.stats.pf,
+        maxDd: rob.stats.max_dd, win: rob.stats.win, n: rob.stats.n,
+    };
+    const tickVal = (rob.slip && rob.slip.tick_value) || _robTickValue(trades);
     const times = trades.map(tr => new Date(tr.entry_time).getTime()).filter(Number.isFinite);
     const d0 = times.length ? new Date(Math.min(...times)) : null;
     const d1 = times.length ? new Date(Math.max(...times)) : null;
     // 1.0.10: 月均是主要數字,總額退居括號 —— 不同長度的回測用總額比較沒有意義。
-    const spanMonths = (d0 && d1) ? ((d1 - d0) / 86400000) / _ROB_DAYS_PER_MONTH : null;
-    const monthly = (d0 && d1) ? _robMonthlyPnl(base.pnl, d0.getTime(), d1.getTime()) : null;
+    const spanMonths = rob.span_months;
+    const monthly = rob.monthly_pnl;
     status.textContent = trades.length + ' ' + t('trades') + ' · '
         + String((trades[0] || {}).symbol || '')
         + (d0 ? (' · ' + d0.toISOString().slice(0, 10) + ' → ' + d1.toISOString().slice(0, 10)
@@ -9213,13 +9213,23 @@ function renderResearchRobustness(force) {
         + ' (' + t('total') + ' $' + Math.round(base.pnl) + ')'
         + ' · maxDD $' + Math.round(base.maxDd);
 
-    const slip = _robMeasureSlip();
     const topstepSlipPerContract = Math.max(0, Number(slip.usedTicks) || 0) * tickVal;
     const topstep = _robTopstepAnalysis(trades, topstepSlipPerContract, !!force);
     const topstepHtml = _robTopstepHtml(topstep, slip.usedTicks);
 
     // ── Monte Carlo ──────────────────────────────────────────
-    const mc = _robCachedMonteCarlo(trades, pnls, !!force);
+    // Backend field names are snake_case; map once here so the markup below
+    // stays as it was rather than being rewritten in two places.
+    const _mcRaw = rob.monte_carlo;
+    const mc = _mcRaw && {
+        iters: _mcRaw.iters,
+        pnlP5: _mcRaw.pnl_p5, pnlP50: _mcRaw.pnl_p50, pnlP95: _mcRaw.pnl_p95,
+        pLoss: _mcRaw.p_loss,
+        ddP50: _mcRaw.dd_p50, ddP95: _mcRaw.dd_p95,
+        pDd2k: _mcRaw.p_dd_breach,
+        pfP5: _mcRaw.pf_p5,
+        pass: rob.monte_carlo_pass,
+    };
     let mcHtml;
     if (!mc) {
         mcHtml = '<div class="institution-status">' + t('Not enough trades (need ≥10).') + '</div>';
@@ -9244,7 +9254,13 @@ function renderResearchRobustness(force) {
     }
 
     // ── Walk-forward ─────────────────────────────────────────
-    const wf = _robWalkForward(trades);
+    const _wfRaw = rob.walk_forward;
+    const wf = _wfRaw && {
+        pass: _wfRaw.pass,
+        stats: _wfRaw.segments.map(s => ({
+            n: s.n, pnl: s.pnl, pf: s.pf, win: s.win, maxDd: s.max_dd,
+        })),
+    };
     let wfHtml;
     if (!wf) {
         wfHtml = '<div class="institution-status">' + t('Not enough trades (need ≥6).') + '</div>';
@@ -9270,11 +9286,14 @@ function renderResearchRobustness(force) {
     }
 
     // ── Slippage injection ───────────────────────────────────
-    const sizes = trades.map(tr => Number(tr.size) || 1);
-    const used = Math.max(1, Math.round(slip.usedTicks));
-    const levels = [1, 2, 4, 8];
-    if (levels.indexOf(used) < 0) levels.push(used);
-    levels.sort((a, b) => a - b);
+    // Rows come from the backend (rob.slip.levels), which charges level × tick
+    // × size per trade — same arithmetic, one implementation.
+    const slipByLevel = new Map(
+        (rob.slip && rob.slip.levels ? rob.slip.levels : []).map(
+            row => [row.level, {
+                pnl: row.stats.pnl, pf: row.stats.pf,
+                maxDd: row.stats.max_dd, win: row.stats.win, n: row.stats.n,
+            }]));
     const slipRow = (lvl, stats, highlight) =>
         '<tr' + (highlight ? ' class="rob-slip-used"' : '') + '>'
         + '<td>' + (lvl === 0 ? t('original') : lvl + 't' + (highlight ? ' ★' : '')) + '</td>'
@@ -9289,18 +9308,16 @@ function renderResearchRobustness(force) {
         + '<table class="institution-table"><thead><tr><th>' + t('RT slip')
         + '</th><th>PnL</th><th>PF</th><th>ΔPF</th><th>maxDD</th></tr></thead><tbody>'
         + slipRow(0, base, false)
-        + levels.map(lvl => slipRow(
-            lvl,
-            _robSeriesStats(pnls.map((p, i) => p - lvl * tickVal * sizes[i])),
-            lvl === used)).join('')
+        + slipLevels.filter(lvl => slipByLevel.has(lvl)).map(lvl => slipRow(
+            lvl, slipByLevel.get(lvl), lvl === used)).join('')
         + '</tbody></table>';   // 1.0.10: 移除長篇滑價說明,只留表格
 
-    const usedStats = _robSeriesStats(pnls.map((p, i) => p - used * tickVal * sizes[i]));
+    const usedStats = slipByLevel.get(used) || base;
     content.innerHTML =
         '<div class="institution-grid">'
         + topstepHtml
         + '<div class="institution-card"><h3>' + t('MONTE CARLO') + ' · 1000×'
-        + (mc ? ' ' + _robBadge(_robMcPass(mc), 'PASS', 'FAIL') : '') + '</h3>' + mcHtml + '</div>'
+        + (mc ? ' ' + _robBadge(mc.pass, 'PASS', 'FAIL') : '') + '</h3>' + mcHtml + '</div>'
         + '<div class="institution-card"><h3>' + t('WALK-FORWARD') + ' · 3 ' + t('segments')
         + (wf ? ' ' + _robBadge(wf.pass, 'PASS', 'FAIL') : '') + '</h3>' + wfHtml + '</div>'
         + '<div class="institution-card institution-wide"><h3>' + t('SLIPPAGE INJECTION')
@@ -9440,7 +9457,11 @@ async function renderCalendar(force) {
             : 'run a backtest first to populate the BT side · ' + lvN + ' live trades loaded';
     }
     renderWeeklyIncomeCurve(bt, live);
-    renderResearchRobustness();   // 1.0.9: Monte Carlo / Walk-Forward / Slippage
+    // 1.0.10p: now async (it fetches /research/robustness). Fire-and-forget is
+    // fine for a panel render, but an unhandled rejection would only surface in
+    // the devtools console, so route failures into the app log instead.
+    renderResearchRobustness().catch(
+        e => log('Robustness panel failed: ' + e.message, 'error'));
     glassResample('#calendar-view');   // 1.0.10 #1
 }
 

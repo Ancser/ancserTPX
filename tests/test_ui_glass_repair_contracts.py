@@ -425,15 +425,20 @@ def test_sweep_model_dropdown_contract_uses_glass_switches_and_preserves_scope_n
     assert 'id="sweep-model-btn"' in sweep
     assert 'onclick="toggleSweepModelMenu()"' in sweep
     assert 'id="sweep-model-pop" class="sweep-model-pop hidden"' in sweep
-    assert sweep.count('class="glass-switch sweep-model-switch') == 5
-    for model in ("ALL", "FACTOR", "TREND", "DAY ZONE", "DISTRIBUTION"):
-        assert f'data-sweep-model="{model}"' in sweep
+    # 1.0.10p: derive the count from the markup instead of hardcoding it.
+    # WHICH models are offered is owned by test_sweep_model_scope.py, which
+    # checks them against the backend dispatch; pinning a number here as well
+    # only means every model added or removed breaks an unrelated test.
+    models = re.findall(r'data-sweep-model="([^"]+)"', sweep)
+    assert "ALL" in models
+    assert len(models) >= 2, "dropdown needs ALL plus at least one model"
+    assert sweep.count('class="glass-switch sweep-model-switch') == len(models)
     # The trigger is intentionally a regular Sweep-style button. Only the
-    # five popup thumbs use optical sampling; the trigger must not inherit a
+    # popup thumbs use optical sampling; the trigger must not inherit a
     # shrink lens or clone the sidebar behind its square affordance.
     assert 'sweep-model-trigger-glass' not in sweep
-    assert sweep.count('data-optical="switch"') == 5
-    assert sweep.count('data-stage="switch"') == 5
+    assert sweep.count('data-optical="switch"') == len(models)
+    assert sweep.count('data-stage="switch"') == len(models)
     assert 'data-optical="switch"' not in sweep.split('id="sweep-model-pop"', 1)[0].split('id="sweep-model-btn"', 1)[0]
     assert "height: 42px;" in CSS
     assert "function _sweepModelSelection()" in JS

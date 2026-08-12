@@ -35,12 +35,10 @@ description of today's system. Several describe strategies that no longer exist.
 
 ## Rules
 
-- Do not change trading behaviour unless the task explicitly approves it.
-- Do not delete an unexplained workaround, observer, fallback, or special case.
-  Before removing one, state: why it exists, which invariant it protects, how
-  the replacement preserves it, and which test proves equivalence.
-- Never mix an architecture refactor with a strategy/risk behaviour change.
-- Do not commit unless the user asks.
+All working rules — including "don't delete an unexplained special case,"
+"never mix a refactor with a behaviour change," and "don't commit unless
+asked" — live in `CLAUDE.md` only. Read them there; this file does not
+restate them, or the two copies would drift.
 
 ## Research agent → coding agent
 
@@ -65,8 +63,5 @@ Scope coding tickets narrowly. `"clean up the PI architecture"` and
 
 ## Verification standard
 
-`ast.parse`, `import`, and "the existing tests are green" **do not count as
-verification** — all three passed on the day a block-replace silently deleted
-two regexes and left the live listener guaranteed to crash on its first signal.
-
 See the verification section of `CLAUDE.md` before claiming something works.
+Passing tests and a clean `import`/`ast.parse` are not sufficient on their own.

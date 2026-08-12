@@ -241,7 +241,17 @@ test("sweep model scope opens as a glass-switch dropdown", async ({ page }) => {
   await expect(popup).toBeVisible();
   await expect(trigger).toHaveAttribute("aria-expanded", "true");
   const switches = popup.locator('.sweep-model-row > .sweep-model-switch[role="switch"]');
-  await expect(switches).toHaveCount(5);
+  // ALL + one switch per backend-dispatchable model. The exact roster is
+  // owned by test_sweep_model_scope.py (it is checked against the backend);
+  // this test only cares that every offered model is a working glass switch.
+  // Count live switches only: every optical surface leaves a stage copy in the
+  // DOM carrying the same data- attributes, so a bare querySelectorAll double
+  // counts. This is the same filter _sweepModelButtons() applies in the app.
+  const modelCount = await page.evaluate(() => [...document.querySelectorAll(
+    "#sweep-model-pop [data-sweep-model]",
+  )].filter((n) => !n.closest(".optical-stage-copy")).length - 1);
+  expect(modelCount).toBeGreaterThan(0);
+  await expect(switches).toHaveCount(modelCount + 1);
   await expect(switches.first()).toHaveAttribute("aria-checked", "true");
   const actionGeometry = await page.evaluate(() => {
     const sweep = document.querySelector("#btn-sweep").getBoundingClientRect();

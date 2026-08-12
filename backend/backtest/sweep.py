@@ -41,6 +41,40 @@ DISTRIBUTION_STOP_SPAN = (0.75, 1.0, 1.5)
 DISTRIBUTION_TARGET = ("half", "center")
 ALL_SESSIONS = ["ASIA", "EURO", "PRE", "RTH", "AH"]
 
+# ── PI grid (1.0.10p) ────────────────────────────────────────────────────
+# The other models sweep pre-baked combinations. PI deliberately sweeps every
+# signal kind as its OWN on/off switch instead of the named PI_SIGNAL_SETS
+# presets, so "青π alone" and "青π + 深蓝圈" are separate, separately-scored
+# grid points rather than being hidden inside a set name. PiSignalStrategy
+# already honours explicit pi_long_kinds/pi_short_kinds over pi_signal_set.
+#
+# 紫圈 is absent on purpose: PI-004 makes short bubbles record-only and
+# PiSignalStrategy strips SHORT_BUBBLE_KINDS unconditionally, so a grid point
+# containing it would silently collapse onto the identical run without it.
+# That also means the "short level 1 / level 2 are mixed"問題 does not reach
+# this sweep — 粉π is the only tradeable short kind.
+PI_LONG_KINDS = ("青π", "深蓝圈", "淡蓝圈")
+PI_SHORT_KINDS = ("粉π",)
+PI_SL = (2.5, 3.0, 3.5, 4.0, 4.5)      # ×ATR blend; PI BEST is 4.0
+PI_RR = (2, 3, 4, 6)                   # PI BEST is 3; 6 ≈ "ride to the close"
+PI_MAX_AGE = (5, 10)                   # PI BEST is 5
+
+
+def _subsets(items: tuple) -> tuple:
+    """Every on/off combination of `items`, shortest first."""
+    out = [()]
+    for item in items:
+        out += [combo + (item,) for combo in out]
+    return tuple(sorted(out, key=len))
+
+
+PI_KIND_COMBOS = tuple(
+    (longs, shorts)
+    for longs in _subsets(PI_LONG_KINDS)
+    for shorts in _subsets(PI_SHORT_KINDS)
+    if longs or shorts          # a grid point that trades nothing is not a variant
+)
+
 
 def _factor_family_label(family: str) -> str:
     key = str(family or "").lower()
@@ -659,6 +693,109 @@ def cross_symbol_validate(results: List[dict], base_params: StrategyParams,
         r.setdefault("g5_pass", None)   # 未驗證(本來就沒 accept)
 
 
+def _pi_signal_window(candles: List[Candle]) -> List[Candle]:
+    """Trim candles to the span where PI signals actually exist.
+
+    PI is signal-driven: the Discord history covers about two months, while the
+    candle store holds six years. Feeding the whole store to the engine spends
+    97% of every run stepping through bars that can never produce a PI trade —
+    measured 58.8s per variant full-range versus 1.66s windowed, with byte-
+    identical results (trades=11, PF 3.173 both ways). The warm-up margin keeps
+    the ATR/blend state the SL rule needs.
+
+    Returns the input unchanged if the history is unreadable, so a broken or
+    empty history degrades to "slow but correct" instead of "silently zero".
+    """
+    from datetime import timedelta
+    try:
+        from backend.data.pi_history import load_rows, parse_ts
+        stamps = sorted(parse_ts(r["ts"]) for r in load_rows())
+    except Exception as exc:                      # pragma: no cover - defensive
+        logger.warning("[PI] signal window unavailable (%s: %s); using full range",
+                       type(exc).__name__, exc)
+        return candles
+    if not stamps or not candles:
+        return candles
+    lo = stamps[0] - timedelta(days=3)            # warm-up for ATR/blend
+    hi = stamps[-1] + timedelta(days=1)
+    window = [c for c in candles if lo <= c.timestamp <= hi]
+    return window or candles
+
+
+def run_pi_sweep(
+    candles: List[Candle],
+    base_params: StrategyParams,
+    progress_cb: Optional[Callable[[int, int, str], None]] = None,
+) -> List[dict]:
+    """Sweep PI signal-kind switches against SL / RR / signal-age.
+
+    Every dimension is independent — each signal kind is its own switch — so
+    the result table can answer "is 淡蓝圈 carrying its weight?" directly
+    instead of only comparing named presets against each other.
+    """
+    window = _pi_signal_window(candles)
+    total = len(PI_KIND_COMBOS) * len(PI_SL) * len(PI_RR) * len(PI_MAX_AGE)
+    results: List[dict] = []
+    i = 0
+
+    for longs, shorts in PI_KIND_COMBOS:
+        for sl_value in PI_SL:
+            for rr in PI_RR:
+                for age in PI_MAX_AGE:
+                    i += 1
+                    p = copy.deepcopy(base_params)
+                    p.strategy = "pi"
+                    p.tr_allowed_sessions = list(ALL_SESSIONS)
+                    p.tr_one_trade_per_session = False
+                    p.one_trade_per_session_direction = False
+                    p.tr_exit_mode = "tp"
+                    p.tr_daily_loss_stop = 1
+                    p.trail_enabled = False
+                    p.tr_trail_enabled = False
+                    p.rr_ratio = int(rr)
+                    p.factor_sl_rule = "atr_blend"
+                    p.factor_tp_rule = "atr_blend"
+                    p.factor_sl_value = float(sl_value)
+                    p.factor_tp_value = float(sl_value) * float(rr)
+                    p.factor_max_hold_bars = 0
+                    p.factor_max_trades_per_day = 3
+                    p.factor_warmup_bars = 150
+                    # Explicit kinds beat pi_signal_set inside PiSignalStrategy;
+                    # pi_long_only is a hard switch that would blank the shorts,
+                    # so it has to follow the grid rather than the base preset.
+                    p.pi_long_kinds = list(longs)
+                    p.pi_short_kinds = list(shorts)
+                    p.pi_long_only = not shorts
+                    p.pi_max_signal_age_min = int(age)
+                    r = _run_one(p, window, None)
+                    r["params"] = {
+                        "strategy": "pi",
+                        "tr_allowed_sessions": list(ALL_SESSIONS),
+                        "tr_exit_mode": "tp",
+                        "tr_daily_loss_stop": 1,
+                        "rr_ratio": int(rr),
+                        "factor_sl_rule": "atr_blend",
+                        "factor_tp_rule": "atr_blend",
+                        "factor_sl_value": float(sl_value),
+                        "factor_tp_value": float(sl_value) * float(rr),
+                        "factor_max_hold_bars": 0,
+                        "factor_max_trades_per_day": 3,
+                        "factor_warmup_bars": 150,
+                        "pi_long_kinds": list(longs),
+                        "pi_short_kinds": list(shorts),
+                        "pi_long_only": not shorts,
+                        "pi_max_signal_age_min": int(age),
+                    }
+                    r["label"] = (
+                        f"PI L[{'+'.join(longs) or '—'}] S[{'+'.join(shorts) or '—'}] "
+                        f"SL{sl_value:g} RR{int(rr)} AGE{int(age)}"
+                    )
+                    results.append(r)
+                    if progress_cb and (i % 8 == 0 or i == total):
+                        progress_cb(i, total, "PI " + r["label"])
+    return results
+
+
 def run_model_sweep(
     candles: List[Candle],
     base_params: StrategyParams,
@@ -676,7 +813,8 @@ def run_model_sweep(
         * len(DISTRIBUTION_ACCEPT) * len(DISTRIBUTION_STOP_SPAN) * len(DISTRIBUTION_TARGET)
     )
     factor_total = len(FACTOR_GRID) + len(FACTOR_SESSION_VA_GRID)
-    grand_total = day_total + dist_total + factor_total
+    pi_total = len(PI_KIND_COMBOS) * len(PI_SL) * len(PI_RR) * len(PI_MAX_AGE)
+    grand_total = day_total + dist_total + factor_total + pi_total
     done_offset = 0
 
     def _wrap(model: str, offset: int):
@@ -697,6 +835,10 @@ def run_model_sweep(
     gc.collect()
     if _on("FACTOR"):
         out.extend(run_factor_sweep(candles, base_params, _wrap("FACTOR", done_offset)))
+    done_offset += factor_total
+    gc.collect()
+    if _on("PI"):
+        out.extend(run_pi_sweep(candles, base_params, _wrap("PI", done_offset)))
     _annotate_plateau_and_acceptance(out)
     gc.collect()
     # 1.0.9 G5:最後一道關卡 —— 已 accept 的變體必須在另一個商品上也站得住

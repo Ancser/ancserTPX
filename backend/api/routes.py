@@ -3334,9 +3334,44 @@ async def get_backtest_sweep_results():
         logger.warning(f"read sweep results failed: {e}")
     return {
         "results": [],
-        "qualified_by_model": {"TREND": [], "DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": []},
+        # 1.0.10p: keys follow the models run_model_sweep() actually dispatches.
+        # TREND sat here long after its sweep stopped existing.
+        "qualified_by_model": {"DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": [], "PI": []},
         "created_at": None,
     }
+
+
+class RobustnessRequest(BaseModel):
+    """Trades to score. Only the four fields the maths needs are read."""
+    trades: List[dict] = []
+    iters: int = 1000
+    seed: Optional[int] = None          # None -> module default (reproducible)
+    dd_threshold: float = 2000.0
+    slip_levels: List[int] = [1, 2, 4, 8]
+
+
+@router.post("/research/robustness")
+async def post_research_robustness(req: RobustnessRequest):
+    """Monte Carlo + walk-forward + slip injection for a set of trades.
+
+    1.0.10p: this used to run in the browser (`_robMonteCarlo`,
+    `_robWalkForward`), which meant the sweep could not gate on it, research
+    scripts each reimplemented it, and pytest could not reach it. One
+    implementation now lives in backend.backtest.robustness and everything —
+    panel, sweep, scripts — reads it from here.
+    """
+    from backend.backtest import robustness
+
+    trades = [t for t in (req.trades or []) if t.get("pnl") is not None]
+    if not trades:
+        return {"trades": 0, "stats": None, "monte_carlo": None,
+                "walk_forward": None, "slip": None}
+    kwargs = {"iters": max(1, min(20000, int(req.iters))),
+              "dd_threshold": float(req.dd_threshold),
+              "slip_levels": req.slip_levels or robustness.DEFAULT_SLIP_LEVELS}
+    if req.seed is not None:
+        kwargs["seed"] = int(req.seed)
+    return robustness.evaluate(trades, **kwargs)
 
 
 # ── 1.0.9 P0: 影子重放(實盤 vs 同參數回測 逐筆對賬)──────────────
