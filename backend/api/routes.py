@@ -5192,16 +5192,21 @@ async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
 
 
 @router.get("/pi/signals/audit")
-async def pi_signal_audit(limit: int = 200):
+async def pi_signal_audit(limit: int = 200, events: Optional[str] = None):
     """Return recent local live-PI reception/callback audit events.
 
     This is deliberately separate from ``/pi/signals``: that route serves the
     immutable historical file used by backtest/chart parity, while live audit
     rows include both Discord ``ts`` and local ``received_at`` timestamps.
+
+    ``events`` is a comma-separated allow-list applied BEFORE ``limit``. The
+    chart passes ``received,recorded``: without it the listener's per-poll
+    heartbeat fills the window and older signals fall off within hours.
     """
     from backend.data.pi_live_audit import load_recent_events
 
-    return {"events": load_recent_events(limit)}
+    wanted = [e.strip() for e in str(events).split(",") if e.strip()] if events else None
+    return {"events": load_recent_events(limit, events=wanted)}
 
 
 @router.get("/pi/recorder/status")

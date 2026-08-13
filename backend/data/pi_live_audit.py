@@ -15,7 +15,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -154,12 +154,24 @@ def append_status_event(event: str, *, path: Path | None = None,
         return False
 
 
-def load_recent_events(limit: int = 200, *, path: Path | None = None) -> list[dict]:
-    """Read the newest valid audit rows for diagnostics/API consumers."""
+def load_recent_events(limit: int = 200, *, path: Path | None = None,
+                       events: Iterable[str] | None = None) -> list[dict]:
+    """Read the newest valid audit rows for diagnostics/API consumers.
+
+    ``events`` restricts which ``event`` values count toward ``limit``, and
+    that ordering is the whole point. This stream is dominated by heartbeat:
+    the listener writes ``poll_complete`` plus ``fetch_success`` every 30-60s,
+    so on 2026-08-12 the newest 2000 rows covered only 11 hours and contained
+    1829 heartbeat rows against a single signal — 11 of the 12 signals in the
+    file were invisible to the chart and to the backtest replay that shares
+    this reader. Taking a raw tail and filtering afterwards silently loses
+    them; filtering first keeps ``limit`` meaning "this many signals".
+    """
     try:
         count = max(1, min(2000, int(limit)))
     except (TypeError, ValueError):
         count = 200
+    wanted = {str(e) for e in events} if events else None
     target = path or AUDIT_PATH
     try:
         lines = target.read_text(encoding="utf-8").splitlines()
@@ -169,13 +181,21 @@ def load_recent_events(limit: int = 200, *, path: Path | None = None) -> list[di
         logger.warning("[PI] 無法讀取 live signal audit %s: %s", target, exc)
         return []
     rows: list[dict] = []
-    for line in lines[-count:]:
+    # Walk backwards so a filtered read stops as soon as it has enough rows
+    # instead of parsing the whole file every poll.
+    for line in reversed(lines):
+        if len(rows) >= count:
+            break
         try:
             row = json.loads(line)
         except (TypeError, ValueError):
             continue
-        if isinstance(row, dict):
-            rows.append(row)
+        if not isinstance(row, dict):
+            continue
+        if wanted is not None and str(row.get("event")) not in wanted:
+            continue
+        rows.append(row)
+    rows.reverse()
     return rows
 
 
@@ -212,7 +232,10 @@ def load_replay_rows(
 
     rows: list[dict] = []
     seen: set[tuple[str, str, str]] = set()
-    for event in load_recent_events(limit, path=path):
+    # Filter in the reader, not here: heartbeat rows would otherwise consume
+    # the whole window and the replay would silently see almost no signals.
+    for event in load_recent_events(limit, path=path,
+                                    events=("received", "recorded")):
         if event.get("event") not in {"received", "recorded"}:
             continue
         kind = str(event.get("kind") or "")

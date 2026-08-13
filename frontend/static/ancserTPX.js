@@ -6962,7 +6962,11 @@ async function refreshPiSignalMarkers() {
         const activeTab = document.querySelector('.tab.active')?.dataset?.tab;
         if (activeTab === 'live' || activeTab === 'backtest') {
             try {
-                const auditResp = await fetch(API + '/pi/signals/audit?limit=2000');
+                // events= filters server-side BEFORE the limit. Without it the
+                // listener's per-poll heartbeat fills the 2000-row window and
+                // the chart only ever sees the last few hours of signals.
+                const auditResp = await fetch(
+                    API + '/pi/signals/audit?limit=2000&events=received,recorded');
                 if (auditResp.ok) {
                     const audit = await auditResp.json();
                     const seen = new Set();

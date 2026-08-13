@@ -206,7 +206,10 @@ def test_red_performance_threshold_mark_has_an_exclamation():
 def test_live_pi_audit_overlay_is_read_only_and_backtest_replay_is_explicit():
     refresh = _function_source("refreshPiSignalMarkers")
     assert "API + '/pi/signals?'" in refresh
-    assert "API + '/pi/signals/audit?limit=2000'" in refresh
+    # 1.0.10p: the limit alone is not the contract — `events=` has to be there
+    # too. The listener writes a heartbeat row every poll, so an unfiltered
+    # 2000-row window covered 11 hours and held 1 of the file's 12 signals.
+    assert "/pi/signals/audit?limit=2000&events=received,recorded" in refresh
     assert "event.event !== 'received'" in refresh
     assert "event.event !== 'recorded'" in refresh
     assert "Preset acceptance never controls chart visibility." in refresh

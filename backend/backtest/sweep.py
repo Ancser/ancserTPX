@@ -211,7 +211,8 @@ def _preset_snapshot(params: StrategyParams) -> dict:
     return out
 
 
-def _run_one(params: StrategyParams, candles: List[Candle], timeline: Optional[List[dict]]) -> dict:
+def _run_one(params: StrategyParams, candles: List[Candle], timeline: Optional[List[dict]],
+             pi_replay_rows: Optional[List[dict]] = None) -> dict:
     cid = params.contract_id
     config = BacktestConfig(
         strategies=["trend"], initial_capital=50_000.0,
@@ -219,8 +220,15 @@ def _run_one(params: StrategyParams, candles: List[Candle], timeline: Optional[L
         fees_rt=get_fees_rt(cid),
         value_area_pct=float(getattr(params, "value_area_pct", 0.80)),
     )
+    # 1.0.10p: /backtest overlays the live audit on top of the historical PI
+    # file (routes.py -> load_replay_rows), and the sweep did not. Same
+    # strategy, same params, different signal set depending on which button
+    # you pressed: the sweep silently stopped at the last archived signal
+    # while a single backtest saw days more. The caller resolves the rows once
+    # per sweep, not once per variant.
     result = BacktestEngine(config=config, strategy_params=params,
-                            zone_timeline=timeline, record_equity=False).run(candles)
+                            zone_timeline=timeline, record_equity=False,
+                            pi_replay_rows=pi_replay_rows).run(candles)
     m = result.metrics
     day = defaultdict(float)
     week = defaultdict(float)          # 1.0.9: 週變異(CV)用
@@ -693,7 +701,8 @@ def cross_symbol_validate(results: List[dict], base_params: StrategyParams,
         r.setdefault("g5_pass", None)   # 未驗證(本來就沒 accept)
 
 
-def _pi_signal_window(candles: List[Candle]) -> List[Candle]:
+def _pi_signal_window(candles: List[Candle],
+                      extra_stamps: Optional[List] = None) -> List[Candle]:
     """Trim candles to the span where PI signals actually exist.
 
     PI is signal-driven: the Discord history covers about two months, while the
@@ -703,23 +712,60 @@ def _pi_signal_window(candles: List[Candle]) -> List[Candle]:
     identical results (trades=11, PF 3.173 both ways). The warm-up margin keeps
     the ATR/blend state the SL rule needs.
 
-    Returns the input unchanged if the history is unreadable, so a broken or
-    empty history degrades to "slow but correct" instead of "silently zero".
+    ``extra_stamps`` must carry the live-audit marks. Sizing the window from
+    the archived file alone cuts it off at the last archival run, and every
+    newer live signal then lands outside the window — the overlay loads
+    correctly and still contributes nothing, which looks exactly like "no new
+    signals".
+
+    Returns the input unchanged if no source is readable, so a broken or empty
+    history degrades to "slow but correct" instead of "silently zero".
     """
     from datetime import timedelta
+    stamps = list(extra_stamps or [])
     try:
         from backend.data.pi_history import load_rows, parse_ts
-        stamps = sorted(parse_ts(r["ts"]) for r in load_rows())
+        stamps += [parse_ts(r["ts"]) for r in load_rows()]
     except Exception as exc:                      # pragma: no cover - defensive
-        logger.warning("[PI] signal window unavailable (%s: %s); using full range",
+        logger.warning("[PI] signal window: history unreadable (%s: %s)",
                        type(exc).__name__, exc)
-        return candles
     if not stamps or not candles:
         return candles
+    stamps.sort()
     lo = stamps[0] - timedelta(days=3)            # warm-up for ATR/blend
     hi = stamps[-1] + timedelta(days=1)
     window = [c for c in candles if lo <= c.timestamp <= hi]
     return window or candles
+
+
+def _pi_replay_overlay(candles: List[Candle], base_params: StrategyParams) -> List[dict]:
+    """Live-audit marks for this symbol, matching what /backtest overlays.
+
+    Resolved against the FULL candle range, not the signal window: the window
+    is sized from these stamps, so asking the window first would be circular
+    and would drop every mark newer than the last archived signal.
+
+    The historical file is only refreshed when someone runs
+    scripts/pi_collect_history.py, so it lags the listener by however long it
+    has been since the last archival run. `_load_history` merges this overlay
+    in and de-duplicates on (message_id, kind, ts), so a signal present in both
+    sources is counted once.
+    """
+    if not candles:
+        return []
+    try:
+        from backend.data.pi_live_audit import load_replay_rows
+        future = _extract_symbol(getattr(base_params, "contract_id", "") or "")
+        rows = load_replay_rows(candles[0].timestamp, candles[-1].timestamp,
+                                future=future)
+    except Exception as exc:                      # pragma: no cover - defensive
+        logger.warning("[PI] sweep replay overlay unavailable (%s: %s)",
+                       type(exc).__name__, exc)
+        return []
+    if rows:
+        logger.info("[PI] sweep replay overlay: %d live mark(s) | future=%s",
+                    len(rows), future)
+    return rows
 
 
 def run_pi_sweep(
@@ -733,7 +779,17 @@ def run_pi_sweep(
     the result table can answer "is 淡蓝圈 carrying its weight?" directly
     instead of only comparing named presets against each other.
     """
-    window = _pi_signal_window(candles)
+    # Order matters: the overlay is resolved first so the window can be sized
+    # to cover live marks the archived file does not have yet.
+    replay = _pi_replay_overlay(candles, base_params)
+    from backend.data.pi_history import parse_ts as _parse_ts
+    replay_stamps = []
+    for row in replay:
+        try:
+            replay_stamps.append(_parse_ts(row["ts"]))
+        except Exception:
+            continue
+    window = _pi_signal_window(candles, replay_stamps)
     total = len(PI_KIND_COMBOS) * len(PI_SL) * len(PI_RR) * len(PI_MAX_AGE)
     results: List[dict] = []
     i = 0
@@ -767,7 +823,7 @@ def run_pi_sweep(
                     p.pi_short_kinds = list(shorts)
                     p.pi_long_only = not shorts
                     p.pi_max_signal_age_min = int(age)
-                    r = _run_one(p, window, None)
+                    r = _run_one(p, window, None, pi_replay_rows=replay)
                     r["params"] = {
                         "strategy": "pi",
                         "tr_allowed_sessions": list(ALL_SESSIONS),

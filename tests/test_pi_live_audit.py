@@ -127,3 +127,55 @@ def test_replay_rows_are_in_range_deduped_and_pre_session_filtered(tmp_path):
     assert rows[0]["id"] == "replay-1"
     assert rows[0]["symbol"] == "QQQ"
     assert rows[0]["marks"][0]["kind"] == "青π"
+
+
+def _sig(message_id: str, minute: int) -> PiSignal:
+    return PiSignal(
+        message_id=message_id,
+        ts=datetime(2026, 8, 10, 16, minute, tzinfo=timezone.utc),
+        equity="QQQ", future="MNQ", direction=1,
+        kind="青π", size="大", pos="中部", raw="@everyone (QQQ)",
+    )
+
+
+def test_heartbeat_rows_cannot_crowd_signals_out_of_the_window(tmp_path):
+    """The window must count SIGNALS, not every row the listener writes.
+
+    Observed 2026-08-12: the listener appends poll_complete + fetch_success
+    every 30-60s, so the newest 2000 rows spanned 11 hours and held 1829
+    heartbeat rows against 1 signal. Eleven of the twelve signals in the file
+    were invisible to both the chart and the backtest replay, with nothing
+    failing -- the chart simply looked like "no signals today".
+    """
+    path = tmp_path / "pi.jsonl"
+    assert append_signal_event(
+        _sig("old-1", 0), event="received",
+        received_at=datetime(2026, 8, 10, 16, 0, 2, tzinfo=timezone.utc), path=path)
+    # Bury it under heartbeat, exactly as a day of polling does.
+    for i in range(500):
+        assert append_status_event("poll_complete", path=path, in_window=True,
+                                   cursor=str(i), batch_size=0)
+
+    unfiltered = load_recent_events(50, path=path)
+    assert not [r for r in unfiltered if r.get("event") == "received"], (
+        "precondition: a raw tail is supposed to lose the signal here"
+    )
+
+    filtered = load_recent_events(50, path=path, events=("received", "recorded"))
+    assert [r["event"] for r in filtered] == ["received"]
+    assert filtered[0]["kind"] == "青π"
+    assert filtered[0]["message_id"] == "old-1"
+
+
+def test_filtered_window_keeps_chronological_order_and_limit(tmp_path):
+    path = tmp_path / "pi.jsonl"
+    for i in range(6):
+        assert append_signal_event(
+            _sig(f"m{i}", i), event="received",
+            received_at=datetime(2026, 8, 10, 16, i, 2, tzinfo=timezone.utc),
+            path=path)
+        assert append_status_event("poll_complete", path=path, in_window=True)
+
+    rows = load_recent_events(3, path=path, events=("received",))
+    # Newest three, still in chronological order.
+    assert [r["message_id"] for r in rows] == ["m3", "m4", "m5"]
