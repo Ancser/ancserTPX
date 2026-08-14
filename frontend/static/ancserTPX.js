@@ -4178,10 +4178,77 @@ function _renderLiveStatus(st) {
 
 let _lastLiveCandleTime = '';
 
+/* 1.0.10p — chart catch-up after an idle stretch.
+ *
+ * `/data/latest-candles` always returns the newest 60 one-minute bars; `since`
+ * only filters inside that window. So any pause longer than an hour leaves a
+ * hole the live poll can never fill — and this poll pauses on every CLOSED
+ * session, so an overnight or weekend gap was permanent until the page was
+ * reloaded by hand. Observed 2026-08-14: the backend had ingested an unbroken
+ * 60-bars-per-hour record all night, while the open tab still showed the
+ * previous afternoon. The engine was fine; the screen said otherwise, which is
+ * the expensive half — a stale chart reads exactly like a dead engine.
+ *
+ * When the gap is wider than the 60-bar window, reload the whole series from
+ * the store instead of appending a bar across the hole.
+ */
+const _CHART_GAP_SEC = 120;                  // > 2 bars of daylight = a hole
+const _CHART_CLOSED_CHECK_MS = 60 * 1000;    // how often to look while CLOSED
+let _chartClosedCheckAt = 0;
+
+function _chartNewestBarTime() {
+    const buf = _rawCandleBuffer;
+    return (buf && buf.length) ? buf[buf.length - 1].time : null;
+}
+
+/* Reload the whole series from the store.
+ *
+ * Deliberately NOT triggered by a wall-clock staleness threshold. A weekend
+ * leaves the chart legitimately hours old with nothing newer to fetch, and a
+ * clock rule fires anyway — reloading on a timer and yanking the view back to
+ * the default range while the user is panning. The only honest trigger is
+ * "the server has bars we do not", which is what the caller checks.
+ */
+async function _chartCatchUp(reason) {
+    const before = _chartNewestBarTime();
+    try {
+        await fetchAndShowChart();
+    } catch (e) {
+        log('Chart catch-up failed: ' + e.message, 'warn');
+        return false;
+    }
+    if (_chartNewestBarTime() !== before) log('Chart caught up after ' + reason, 'info');
+    _lastLiveCandleTime = '';   // incremental cursor is meaningless after a reload
+    return true;
+}
+
 async function pollLiveCandle() {
     // Fetch fresh candles from API and append new bars
     const session = getMarketSession();
-    if (session && session.label === 'CLOSED') return;
+
+    // Still checked while CLOSED, at a slow rate: coming back to a tab left
+    // open overnight has to show current data without a manual refresh, and
+    // the poll below is the thing that stops during a closed session.
+    if (session && session.label === 'CLOSED') {
+        const now = Date.now();
+        if (now - _chartClosedCheckAt < _CHART_CLOSED_CHECK_MS) return;
+        _chartClosedCheckAt = now;
+        try {
+            const resp = await fetch(API + '/data/latest-candles');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const rows = (data && data.candles) || [];
+            if (!rows.length) return;
+            const serverNewest = Math.max(...rows.map(
+                c => isoToChartTime(c.time || c.timestamp)));
+            const ours = _chartNewestBarTime();
+            // Only when the server genuinely holds bars we are missing.
+            if (ours == null || serverNewest - ours > _CHART_GAP_SEC) {
+                await _chartCatchUp('a closed-session gap');
+            }
+        } catch (e) { /* offline while closed — nothing to repair */ }
+        return;
+    }
 
     try {
         const url = API + '/data/latest-candles' + (_lastLiveCandleTime ? '?since=' + encodeURIComponent(_lastLiveCandleTime) : '');
@@ -4196,6 +4263,18 @@ async function pollLiveCandle() {
             const tb = new Date(b.time || b.timestamp).getTime();
             return ta - tb;
         });
+
+        // The response is the evidence, not the clock: if its oldest bar is
+        // already past ours, the missing stretch is wider than the 60-bar
+        // window can hand back and appending would draw straight across the
+        // hole. Reload from the store, which does have those bars.
+        const lastBar = _chartNewestBarTime();
+        if (lastBar != null && sorted.length) {
+            const oldest = isoToChartTime(sorted[0].time || sorted[0].timestamp);
+            if (oldest - lastBar > _CHART_GAP_SEC) {
+                if (await _chartCatchUp('a feed gap')) return;
+            }
+        }
 
         let updated = 0;
         for (const c of sorted) {
@@ -4410,6 +4489,17 @@ const NY_OPEN_ZONE_WINDOWS = [
 function utcMsToChartTime(ms) {
     const localOffset = new Date(ms).getTimezoneOffset() * -60;
     return Math.floor(ms / 1000) + localOffset;
+}
+
+/* Inverse of utcMsToChartTime. Chart time is UTC seconds shifted by the local
+   offset, so recovering the instant needs that offset back out. Resolve it
+   from the approximate instant rather than from `now`: across a DST boundary
+   the two differ by an hour, and this feeds a staleness threshold. */
+function chartTimeToUtcMs(chartTime) {
+    const approxMs = Number(chartTime) * 1000;
+    if (!Number.isFinite(approxMs)) return NaN;
+    const offsetSec = new Date(approxMs).getTimezoneOffset() * -60;
+    return (Number(chartTime) - offsetSec) * 1000;
 }
 
 function _timeZoneOffsetMs(timeZone, utcMs) {

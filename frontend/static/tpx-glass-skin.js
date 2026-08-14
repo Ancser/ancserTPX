@@ -86,10 +86,17 @@
 
         const topbar = el("div", "glass-topbar");
 
-        // Brand, minus the version chip's inline styling.
+        /* Brand, minus the version chip's inline styling.
+           1.1.1: the version is READ from the markup rather than repeated
+           here. It used to be hardcoded in this string as well as in the h1,
+           so the badge kept showing an older release than index.html claimed
+           — and since the skin deletes the h1, the copy nobody could see was
+           the one people edited. Read it before the removal below. */
         const h1 = header.querySelector("h1");
+        const version = (h1?.querySelector("span:last-of-type")?.textContent || "").trim();
         const brand = el("div", "topbar-brand");
-        brand.innerHTML = '<b>ancser</b>TPX <span class="ver">1.0.10</span>';
+        brand.innerHTML = '<b>ancser</b>TPX <span class="ver"></span>';
+        brand.querySelector(".ver").textContent = version;
         if (h1) h1.remove();
         topbar.appendChild(brand);
 

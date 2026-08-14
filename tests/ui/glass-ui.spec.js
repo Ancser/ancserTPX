@@ -47,6 +47,30 @@ async function openApp(page) {
   await settleTwoFrames(page);
 }
 
+/* The PI LONG/SHORT matrix only renders for a PI preset, and which preset the
+ * app opens on comes from `last_used_bt` in the developer's live
+ * data/presets.json — the running server rewrites that every time someone
+ * clicks a preset in the UI. Tests that reach for #pi-matrix-* were therefore
+ * passing or failing based on what was last clicked, with a null boundingBox
+ * as the only clue. Select one explicitly instead of inheriting that state. */
+async function selectPiPreset(page) {
+  const chosen = await page.evaluate(async () => {
+    const sel = document.querySelector("#preset-bt");
+    if (!sel) return null;
+    const opt = [...sel.options].find(o => /^PI\b/i.test(o.value || o.textContent));
+    if (!opt) return null;
+    if (sel.value !== opt.value) {
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return opt.value;
+  });
+  expect(chosen, "no PI preset in data/presets.json").not.toBeNull();
+  await expect(page.locator("#pi-matrix-bt-long-pi")).toBeVisible();
+  await settleTwoFrames(page);
+  return chosen;
+}
+
 async function settleTwoFrames(page) {
   await page.evaluate(() => new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -122,12 +146,21 @@ async function openLayerPopup(page) {
   await expect(page.locator("#chart-layer-pop")).toBeVisible();
 }
 
-test("release label is 1.0.10 and chart watermark has no version chip", async ({ page }) => {
+test("version shows in the top-left brand only, never in the tab title", async ({ page }) => {
   await openApp(page);
 
-  await expect(page).toHaveTitle("ancserTPX · 1.0.10");
-  await expect(page.locator("body > .glass-topbar > .topbar-brand > .ver"))
-    .toHaveText("1.0.10");
+  // The tab title is deliberately version-free; the brand badge carries it.
+  await expect(page).toHaveTitle("ancserTPX");
+  const ver = page.locator("body > .glass-topbar > .topbar-brand > .ver");
+  await expect(ver).toHaveText("1.1.1");
+  // The skin used to hardcode this string as well as the markup, so the two
+  // drifted apart. Pin that the badge is whatever index.html declares.
+  const declared = await page.evaluate(async () => {
+    const html = await (await fetch("/static/ancserTPX.html")).text();
+    const m = html.match(/letter-spacing:2px;margin-left:2px;">\s*([^\s<]+)/);
+    return m ? m[1] : null;
+  });
+  expect(declared).toBe("1.1.1");
   const watermark = page.locator("#chart-container > .chart-watermark");
   await expect(watermark).toHaveCount(1);
   await expect(watermark.locator("small")).toHaveCount(0);
@@ -184,6 +217,7 @@ test("a popup switch keeps its own lens while it is being dragged", async ({ pag
 
 test("releasing a switch never repaints the thumb solid --bg", async ({ page }) => {
   await openApp(page);
+  await selectPiPreset(page);
   const track = page.locator("#pi-matrix-bt-long-pi");
   const restingFace = await page.evaluate(() => getComputedStyle(
     document.querySelector("#pi-matrix-bt-long-pi > .switch-thumb"),
@@ -231,6 +265,7 @@ test("releasing a switch never repaints the thumb solid --bg", async ({ page }) 
 
 test("sweep model scope opens as a glass-switch dropdown", async ({ page }) => {
   await openApp(page);
+  await selectPiPreset(page);
 
   const trigger = page.locator("#sweep-model-btn");
   await expect(trigger).toBeVisible();
@@ -729,6 +764,9 @@ test("Chart tools contains latest and layers only after auto-center removal", as
 });
 
 test("Precision samples Tier-1 popup material without recursive Glass", async ({ page }) => {
+  // Compares the popup switch against the PI matrix switch, so the PI matrix
+  // has to exist regardless of which preset was last clicked in the live UI.
+  await selectPiPreset(page);
   const tierSummary = await page.evaluate(() => {
     const liveRoots = [...document.querySelectorAll("[data-optical]")]
       .filter((node) => !node.closest(".optical-layer, .optical-stage-copy"));
