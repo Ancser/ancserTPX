@@ -8983,18 +8983,22 @@ function _researchClass(value) {
 // 1.0.10: 月均損益。總 PnL 不可比 —— 回測 7 個月的 $5,000 跟 2 個月的 $5,000
 // 是完全不同的東西,而正是這種比較讓 BEST 的 PF 4.25 看起來很好(那是 6-7 月
 // 兩個月的數字)。一律用 30.44 天歸一化的月率來讀。
-const _ROB_DAYS_PER_MONTH = 30.44;
-
-// 1.0.10p: _robMonthlyPnl moved to backend.backtest.robustness.monthly_pnl and
-// arrives as rob.monthly_pnl. _robMonthlyOf below stays — it only divides an
-// already-computed segment P&L by a month count for display.
+// 1.1.1: _ROB_DAYS_PER_MONTH (30.44) lived here and was already dead — the
+// monthly figure arrives as rob.monthly_pnl / rob.span_months. A second copy
+// of "how long a month is" is exactly the kind of constant that drifts
+// unnoticed, so it is gone rather than kept "just in case".
+// _robMonthlyOf below stays: it only divides an already-computed segment P&L
+// by a month count for display, it does not redefine the month.
 
 // 把一段期間的損益直接換算成月率(給走查各段用,各段長度不同才需要歸一化)
 function _robMonthlyOf(pnl, months) {
     return (Number.isFinite(months) && months > 0) ? Number(pnl) / months : null;
 }
 
-const _ROB_POINT_VALUE = { MNQ: 2, NQ: 20, ENQ: 20, MES: 5, ES: 50, MGC: 10, GC: 100, ZL: 600 };
+// 1.1.1: the per-contract point-value table went with it. The backend already
+// returns rob.slip.tick_value from backend.backtest.robustness.POINT_VALUE;
+// keeping a browser copy as a "fallback" meant two tables that price P&L
+// differently for whichever symbol was updated in only one of them.
 const _ROB_TICK = 0.25;
 // Documented EMAPMO market fill 2026-07-23 14:31Z: +3.5 pts vs strategy price.
 const _ROB_SLIP_ANCHOR_TICKS = 14;
@@ -9002,10 +9006,6 @@ const _ROB_SLIP_ANCHOR_TICKS = 14;
 // level is appended per render when it is not already one of these.
 const _ROB_SLIP_LEVELS = [1, 2, 4, 8];
 
-function _robTickValue(trades) {
-    const sym = String((trades[0] || {}).symbol || '/MNQ').replace('/', '').toUpperCase();
-    return (_ROB_POINT_VALUE[sym] || 2) * _ROB_TICK;
-}
 
 // 1.0.10p: _robSeriesStats moved to backend.backtest.robustness.series_stats.
 // It was the shared kernel under Monte Carlo, walk-forward AND the slip table,
@@ -9291,7 +9291,11 @@ async function renderResearchRobustness(force) {
         pnl: rob.stats.pnl, pf: rob.stats.pf,
         maxDd: rob.stats.max_dd, win: rob.stats.win, n: rob.stats.n,
     };
-    const tickVal = (rob.slip && rob.slip.tick_value) || _robTickValue(trades);
+    // Sole source: backend.backtest.robustness.POINT_VALUE. evaluate() always
+    // returns slip for a non-empty trade list, and the panel has already
+    // returned above when rob is missing — so a local fallback table would
+    // only ever be a second answer waiting to disagree.
+    const tickVal = rob.slip.tick_value;
     const times = trades.map(tr => new Date(tr.entry_time).getTime()).filter(Number.isFinite);
     const d0 = times.length ? new Date(Math.min(...times)) : null;
     const d1 = times.length ? new Date(Math.max(...times)) : null;

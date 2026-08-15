@@ -112,12 +112,13 @@
 | UI-015 | **拇指就是鏡片,任何情況都不可以被遮蔽。** `visibility` 會繼承,遮住 `.switch-thumb` 等於一起關掉裡面那層 `.optical-layer` —— 開關照樣能拖能點,但 active 狀態整個消失(只剩一顆綠藥丸) | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 | UI-016 | Stage 複本沒有 `.optical-layer`(複本在 `buildOpticalSurfaces()` 掛 layer **之前**就做好了),但 class 與 inline style 會被原樣鏡射進去。所以複本**永遠只能畫靜止材質**,不得繼承 lens-up 狀態,否則 Precision 會在活的拇指上蓋一顆純 `--bg` 藥丸。同理,控制項自己舉起鏡片時 Precision 必須讓開 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 | UI-017 | lens-up 材質是一組**成對**的東西(`--bg` 底 + `.optical-layer`),兩半都必須由 `--switch-glass` 驅動。綁到 `.interacting` class 上就會變成兩個時鐘:`apply()` 在拇指停止移動那一幀就拿掉 class,彈簧卻還要再跑 ~70ms,結果鏡片已經淡出、底色還停在 `--bg` —— 每次放手都閃一下黑 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| RES-001 | **走查分段只能有一份定義。** `sweep.py` 的評分與 RESEARCH 面板的走查必須呼叫同一個 `robustness.segment_index()`。1.0.8g 起 `sweep.py` 內嵌一份、1.1 又在 `robustness.py` 寫了第二份,兩者只靠一個「比對原始碼字串」的測試宣稱一致 —— 從未拿實際數字對過。同一個詞在兩條路徑上可能是兩件事 | `test_robustness.py` |
 
 ---
 
 ## 目前的覆蓋缺口(誠實版)
 
-**48 條目前都已有自動化保護。** UI-002…017 的 paint/timing 行為由
+**49 條目前都已有自動化保護。** UI-002…017 的 paint/timing 行為由
 `tests/ui/glass-ui.spec.js` 在 Chromium 驗證;小型架構接縫另由 pytest static
 contracts 快速擋回歸。CI 的 browser job 以 `--lifespan off` 啟動 app,不得啟動
 candle accumulator / shadow replay / broker 連線。

@@ -130,20 +130,56 @@ def test_walk_forward_declines_rather_than_guessing_on_thin_samples():
     assert walk_forward([{"pnl": 1} for _ in range(10)]) is None
 
 
-def test_walk_forward_agrees_with_the_sweep_three_way_split():
-    """sweep.py keeps its own inline split over day-keyed aggregates.
+def test_sweep_uses_the_shared_split_instead_of_its_own_copy():
+    """1.1.1: one definition, not two that a string check claims agree.
 
-    Two implementations of one concept is what let the frontend and the sweep
-    drift apart in the first place. They must at least agree on the boundary
-    rule: `min(segments-1, offset * segments // span)`.
+    This used to assert that sweep.py still contained the literal line
+    `seg = min(2, int(off * 3 / span_days))`. That guarded the *spelling* of a
+    duplicate, not its behaviour — the two implementations were never compared
+    on a single number, so "walk-forward" could have meant different things in
+    a sweep and in the RESEARCH panel without any test noticing.
     """
+    import inspect
     from backend.backtest import sweep
-    src = sweep.__file__
-    text = Path(src).read_text(encoding="utf-8")
-    assert "seg = min(2, int(off * 3 / span_days))" in text, (
-        "sweep.py's walk-forward split changed shape; re-check it against "
-        "backend.backtest.robustness.walk_forward before trusting either"
-    )
+
+    body = inspect.getsource(sweep._run_one)
+    assert "segment_index(" in body, "sweep no longer uses the shared split"
+    assert "min(2, int(" not in body, "sweep reintroduced its own inline split"
+
+
+def test_the_shared_split_reproduces_the_original_sweep_arithmetic():
+    """Exhaustive equivalence against the 1.0.8g formula it replaced.
+
+    The clamp is the whole risk: the final day sits exactly at `span`, which
+    divides to `segments` and indexes one past the last bucket.
+    """
+    from backend.backtest.robustness import segment_index
+
+    for span_days in range(1, 200):
+        for off in range(0, span_days + 1):
+            original = min(2, int(off * 3 / span_days))     # the replaced line
+            assert segment_index(off, span_days) == original, (off, span_days)
+
+    # Positive assertion: this really does exercise every bucket, otherwise a
+    # constant-returning implementation would satisfy the loop above.
+    seen = {segment_index(off, 90) for off in range(0, 91)}
+    assert seen == {0, 1, 2}
+
+
+def test_day_span_bucketing_matches_the_sweep_day_loop():
+    """The day-keyed helper must land dates in the same buckets."""
+    from datetime import date, timedelta
+    from backend.backtest.robustness import segment_day_span, segment_index
+
+    d0 = date(2026, 6, 1)
+    keys = [(d0 + timedelta(days=i)).isoformat() for i in range(0, 61, 3)]
+    span_days = max(1, (date.fromisoformat(keys[-1]) - d0).days + 1)
+
+    got = dict((k, i) for i, k in segment_day_span(keys))
+    for k in keys:
+        off = (date.fromisoformat(k) - d0).days
+        assert got[k] == segment_index(off, span_days)
+    assert set(got.values()) == {0, 1, 2}
 
 
 # ── normalisation + top level ───────────────────────────────────────────

@@ -273,13 +273,18 @@ def _run_one(params: StrategyParams, candles: List[Candle], timeline: Optional[L
         span_days = max(1, (d1 - d0).days + 1)
         monthly_rate = float(m.total_pnl) * 30.44 / span_days
         # 1.0.9 P1: walk-forward 三段(日期跨度三等分)— 各段獨立 pnl
+        #
+        # 1.1.1: 分段規則搬到 robustness.segment_index()。這裡原本自己算一份,
+        # robustness.walk_forward() 又算一份,兩者只靠一個比對原始碼字串的測試
+        # 「宣稱」一致 —— 從沒有拿實際數字對過。同一個「走查」在 sweep 和
+        # RESEARCH 面板可能是兩件事而沒人會發現。
+        from backend.backtest.robustness import segment_index
         for dk, v in day.items():
             off = (_date.fromisoformat(dk) - d0).days
-            seg = min(2, int(off * 3 / span_days))
-            seg_pnls[seg] += v
+            seg_pnls[segment_index(off, span_days)] += v
         for dk, p in trade_pnls:
             off = (_date.fromisoformat(dk) - d0).days
-            seg = min(2, int(off * 3 / span_days))
+            seg = segment_index(off, span_days)
             if p > 0:
                 seg_gains[seg] += p
             else:

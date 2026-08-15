@@ -146,6 +146,41 @@ def monte_carlo_passes(mc: Optional[dict]) -> bool:
             and mc["pf_p5"] > 1.0)
 
 
+def segment_index(offset: float, span: float, segments: int = 3) -> int:
+    """Which walk-forward bucket a point `offset` into a `span` belongs to.
+
+    1.1.1: THE single definition of the split. It previously existed twice —
+    inline in sweep.py (day-keyed aggregates, since 1.0.8g) and again here
+    (trade dicts) — with nothing but a string-matching test claiming the two
+    agreed. They were never checked against each other on actual numbers, so
+    "walk-forward" could have meant two different things depending on whether
+    you ran a sweep or opened the RESEARCH panel.
+
+    The clamp is load-bearing: the last point sits exactly at `span`, which
+    divides to `segments` and would index one past the end.
+    """
+    if span <= 0:
+        return 0
+    return min(segments - 1, int(offset * segments / span))
+
+
+def segment_day_span(day_keys: Sequence[str], segments: int = 3):
+    """Bucket ISO date strings into equal date spans; yields (index, key).
+
+    Span is counted in whole days INCLUSIVE of both ends (`+ 1`), matching the
+    sweep's original arithmetic — a one-day run is a span of 1, not 0.
+    """
+    from datetime import date as _date
+    keys = sorted(day_keys)
+    if not keys:
+        return
+    d0 = _date.fromisoformat(keys[0])
+    span_days = max(1, (_date.fromisoformat(keys[-1]) - d0).days + 1)
+    for key in day_keys:
+        off = (_date.fromisoformat(key) - d0).days
+        yield segment_index(off, span_days, segments), key
+
+
 def walk_forward(trades: Iterable[dict], segments: int = 3) -> Optional[dict]:
     """Split trades into equal DATE spans (not equal counts) and score each.
 
@@ -163,8 +198,8 @@ def walk_forward(trades: Iterable[dict], segments: int = 3) -> Optional[dict]:
     span = max(1.0, t1 - t0)
     buckets: List[List[float]] = [[] for _ in range(segments)]
     for trade, stamp in zip(rows, stamps):
-        idx = min(segments - 1, int((stamp - t0) * segments / span))
-        buckets[idx].append(float(trade.get("pnl") or 0.0))
+        buckets[segment_index(stamp - t0, span, segments)].append(
+            float(trade.get("pnl") or 0.0))
     stats = [series_stats(b) for b in buckets]
     return {
         "segments": stats,

@@ -1248,6 +1248,27 @@ test("calendar grid owns each shared edge once and draws a complete today frame"
   await expect.poll(() => page.locator("#cal-grid > .cal-cell").count())
     .toBeGreaterThan(0);
 
+  /* Put the today frame on a real date cell before measuring it.
+   *
+   * Column 6 is a weekly summary cell with no date, so it can never take
+   * .cal-today. When the real today lands there — every Saturday — the frame
+   * assertions below received `null` and this test went red for reasons that
+   * had nothing to do with the calendar's edges. What it measures is the CSS
+   * the class draws, so mark a date cell explicitly instead of depending on
+   * which weekday the suite happens to run on. */
+  const marked = await page.evaluate(() => {
+    const grid = document.querySelector("#cal-grid");
+    const cell = grid.querySelector(
+      ".cal-cell:not(.cal-week):not(.cal-empty):not(.cal-today)",
+    );
+    if (!cell) return false;
+    grid.querySelectorAll(".cal-today").forEach(n => n.classList.remove("cal-today"));
+    cell.classList.add("cal-today");
+    return true;
+  });
+  expect(marked, "no ordinary date cell in the grid").toBe(true);
+  await settleTwoFrames(page);
+
   const geometry = await page.evaluate(() => {
     const grid = document.querySelector("#cal-grid");
     const cells = [...(grid?.children || [])];

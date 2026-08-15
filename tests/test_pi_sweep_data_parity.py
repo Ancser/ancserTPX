@@ -67,10 +67,24 @@ class _Bar:
         self.timestamp = ts
 
 
-def test_window_widens_to_include_a_live_mark_past_the_archive():
-    """Behavioural half: a stamp after the archive must widen the window."""
+def test_window_widens_to_include_a_live_mark_past_the_archive(monkeypatch):
+    """Behavioural half: a stamp after the archive must widen the window.
+
+    The archive is supplied here rather than read from disk.
+    `data/research/pi_signals.json` is not in version control — it is produced
+    by `scripts/pi_collect_history.py` on the developer's machine — so reading
+    the real one made this pass locally and fail on a clean checkout, where
+    `load_rows()` returns [] and `_pi_signal_window` correctly declines to trim
+    anything. That is a defect in the test, not the window.
+    """
     base = datetime(2026, 8, 1, tzinfo=timezone.utc)
     candles = [_Bar(base + timedelta(hours=i)) for i in range(24 * 30)]
+
+    archived = base + timedelta(days=5)
+    monkeypatch.setattr(
+        "backend.data.pi_history.load_rows",
+        lambda *a, **k: [{"ts": archived.isoformat()}],
+    )
 
     archived_only = sweep._pi_signal_window(candles)
     late = candles[-1].timestamp - timedelta(hours=2)
@@ -79,10 +93,25 @@ def test_window_widens_to_include_a_live_mark_past_the_archive():
     # Positive assertion: the helper must actually be trimming something here,
     # otherwise "widened" below would be trivially true.
     assert len(archived_only) < len(candles), "window did not trim at all"
-    assert len(with_live) >= len(archived_only)
+    assert archived_only[-1].timestamp < late, (
+        "precondition: the archive must end before the live mark"
+    )
+    assert len(with_live) > len(archived_only)
     assert with_live[-1].timestamp >= late, (
         "a live mark past the archived span was left outside the window"
     )
+
+
+def test_window_declines_to_trim_when_no_signal_source_is_readable():
+    """A clean checkout has no archived history; that must not mean 'no bars'.
+
+    Returning an empty window here would make every PI sweep on a fresh
+    machine score zero trades and look like the strategy stopped working.
+    """
+    base = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    candles = [_Bar(base + timedelta(hours=i)) for i in range(48)]
+    assert sweep._pi_signal_window(candles, []) is not None
+    assert len(sweep._pi_signal_window([], [])) == 0
 
 
 def test_overlay_reads_the_full_range_not_the_window():
