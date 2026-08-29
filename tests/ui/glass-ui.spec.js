@@ -47,6 +47,69 @@ async function openApp(page) {
   await settleTwoFrames(page);
 }
 
+test("Execute Trades refreshes broker truth when the tab is opened", async ({ page }) => {
+  await openApp(page);
+
+  const requests = [];
+  await page.route("**/api/live/trade-history**", async (route) => {
+    requests.push(route.request().url());
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        source: "api",
+        count: 1,
+        account_id: 22373660,
+        by_account: [],
+        trades: [{
+          trade_id: "3010999438_3011352573",
+          account_id: 22373660,
+          contract_id: "CON.F.US.MNQ.U26",
+          direction: "buy",
+          size: 1,
+          entry_time: "2026-08-20T18:11:03.104848+00:00",
+          exit_time: "2026-08-20T19:45:04.445174+00:00",
+          entry_price: 29216.0,
+          exit_price: 29308.75,
+          gross_pnl: 185.5,
+          pnl: 184.26,
+          commission: 0.5,
+          fees: 0.74,
+          exit_reason: "tp",
+          source: "topstep",
+        }],
+      }),
+    });
+  });
+
+  const executeTab = page.locator('.bottom-tab[data-btab="execute"]').first();
+  const executeBox = await executeTab.boundingBox();
+  expect(executeBox).not.toBeNull();
+  await page.mouse.click(
+    executeBox.x + executeBox.width / 2,
+    executeBox.y + executeBox.height / 2,
+  );
+
+  await expect.poll(() => requests.some((url) => (
+    new URL(url).searchParams.get("refresh") === "true"
+  ))).toBe(true);
+  await expect(page.locator("#execute-tbody tr").first()).toContainText("999438");
+  await expect(page.locator("#execute-tbody tr").first()).toContainText("29216.00");
+  await expect(page.locator("#execute-tbody tr").first()).toContainText("$+185.50");
+
+  requests.length = 0;
+  await page.evaluate(() => {
+    _lastExecuteHistoryPassiveRequestMs = 0;
+    refreshVisibleExecuteTrades(false);
+  });
+  await expect.poll(() => requests.some((url) => (
+    new URL(url).searchParams.get("refresh") === null
+  ))).toBe(true);
+  const passiveRequestCount = requests.length;
+  await page.evaluate(() => refreshVisibleExecuteTrades(false));
+  await page.waitForTimeout(100);
+  expect(requests).toHaveLength(passiveRequestCount);
+});
+
 /* The PI LONG/SHORT matrix only renders for a PI preset, and which preset the
  * app opens on comes from `last_used_bt` in the developer's live
  * data/presets.json — the running server rewrites that every time someone
@@ -649,6 +712,23 @@ test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset p
   }));
   expect(thumbStyles.every((thumb) => thumb.position === "absolute" && thumb.width > 0 && thumb.height > 0 && thumb.opacity > 0)).toBe(true);
   await expect(page.locator("#factor-params-bt")).toBeHidden();
+  await expect(page.locator("#factor-sl-value-label-bt")).toHaveText("LONG SL");
+  await expect(page.locator("#pi-short-sl-group-bt")).toBeVisible();
+
+  const slGeometry = await page.evaluate(() => {
+    const box = (selector) => {
+      const rect = document.querySelector(selector).getBoundingClientRect();
+      return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    };
+    return {
+      anchor: box("#factor-sl-rule-bt"),
+      long: box("#factor-sl-value-bt"),
+      short: box("#pi-short-sl-bt"),
+    };
+  });
+  expect(Math.abs(slGeometry.long.y - slGeometry.short.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(slGeometry.long.width - slGeometry.short.width)).toBeLessThanOrEqual(1);
+  expect(slGeometry.anchor.width).toBeGreaterThan(slGeometry.long.width * 1.9);
 
   let payload = await page.evaluate(() => collectStrategyParams("bt"));
   expect(payload.pi_signal_set).toBe("long_pi_only");
@@ -707,6 +787,11 @@ test("requested compact-control geometry matches its surrounding controls", asyn
       const rect = live(selector).getBoundingClientRect();
       return [rect.width, rect.height];
     };
+    const contract = live("#contract-bt").getBoundingClientRect();
+    const contractRow = live("#contract-bt").closest(".form-row");
+    const multiplier = contractRow.querySelector(".form-mult");
+    const multRect = multiplier.getBoundingClientRect();
+    const sizeRect = live("#size-bt").getBoundingClientRect();
     return {
       tuner: size(".glass-tuner .tuner-trigger"),
       avatar: size(".account-orb"),
@@ -716,13 +801,21 @@ test("requested compact-control geometry matches its surrounding controls", asyn
         .map((node) => getComputedStyle(node).fontSize),
       selectFonts: ["#contract-bt", "#contract-live"]
         .map((selector) => getComputedStyle(live(selector)).fontSize),
+      multiplierWidth: multRect.width,
+      multiplierCenterOffset: Math.abs(
+        (multRect.left + multRect.width / 2) - (contract.right + sizeRect.left) / 2,
+      ),
+      pairedSelectWidths: [contract.width, sizeRect.width],
     };
   });
   expect(geometry.tuner).toEqual([63, 63]);
   expect(geometry.tuner).toEqual(geometry.avatar);
   expect(geometry.tunerOptical).toBe(false);
-  expect(geometry.multiplierFonts).toEqual(["18px", "18px"]);
-  expect(geometry.multiplierFonts).toEqual(geometry.selectFonts);
+  expect(geometry.multiplierFonts).toEqual(["36px", "36px"]);
+  expect(geometry.selectFonts).toEqual(["18px", "18px"]);
+  expect(geometry.multiplierWidth).toBeCloseTo(26, 0);
+  expect(geometry.multiplierCenterOffset).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(geometry.pairedSelectWidths[0] - geometry.pairedSelectWidths[1])).toBeLessThanOrEqual(1);
 });
 
 test("Chart tools contains latest and layers only after auto-center removal", async ({ page }) => {

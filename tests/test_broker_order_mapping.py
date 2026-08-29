@@ -18,7 +18,9 @@ import 通過、142 個測試全綠,仍然可以有一條路徑整條是壞的 �
 
 映射寫反不會拋例外 —— 它會**用正確的價格送出方向相反的單**。
 """
+import asyncio
 import inspect
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -116,12 +118,8 @@ class TestPayloadShape:
         for k in ("accountId", "contractId", "type", "side", "size"):
             assert k in j, f"payload 缺 {k}"
 
-    def test_explicit_brackets_are_forwarded_for_non_engine_callers(self):
-        """Adapter 仍須原樣轉送外部 caller 明確提供的 bracket。
-
-        LiveTradingEngine intentionally omits these fields because Topstep Auto
-        OCO is the sole protection owner; this test covers adapter compatibility
-        for other explicit callers.
+    def test_explicit_brackets_are_forwarded(self):
+        """Adapter 須原樣轉送 live engine 明確提供的 attached bracket。
 
         2026-08-08 更正:這裡原本斷言「payload 不含 bracket」,但那只在
         OrderRequest 欄位是 None 時成立 —— 恆真,而且從來沒碰到引擎的
@@ -134,7 +132,7 @@ class TestPayloadShape:
         assert j["stopLossBracket"] == {"ticks": -40, "type": 4}
         assert j["takeProfitBracket"] == {"ticks": 120, "type": 1}
 
-    def test_brackets_omitted_only_when_engine_leaves_them_none(self):
+    def test_brackets_omitted_when_caller_leaves_them_none(self):
         """None 才省略 —— 送 null 過去會被 API 當成明確的「無保護」。"""
         j = _payload_for(_order())["json"]
         assert "stopLossBracket" not in j
@@ -142,6 +140,35 @@ class TestPayloadShape:
 
     def test_size_is_forwarded_verbatim(self):
         assert _payload_for(_order(size=3))["json"]["size"] == 3
+
+
+class TestOrderSearchPayload:
+    """ProjectX rejects Order/search when its required time window is absent."""
+
+    def test_required_timestamp_window_is_sent_and_rows_are_returned(self):
+        captured = {}
+        expected = [{"id": 77, "status": 2, "fillVolume": 1}]
+
+        async def request(method, path, **kwargs):
+            captured.update(method=method, path=path, **kwargs)
+            return {"orders": expected}
+
+        client = TopstepXClient(username="u", api_key="k")
+        client._request = request
+
+        rows = asyncio.run(client.get_orders(123))
+        payload = captured["json"]
+
+        assert rows == expected, "positive precondition: valid broker rows must survive parsing"
+        assert captured["method"] == "POST"
+        assert captured["path"] == "/api/Order/search"
+        assert payload["accountId"] == 123
+        assert payload["startTimestamp"]
+        assert payload["endTimestamp"]
+
+        start = datetime.strptime(payload["startTimestamp"], "%Y-%m-%dT%H:%M:%SZ")
+        end = datetime.strptime(payload["endTimestamp"], "%Y-%m-%dT%H:%M:%SZ")
+        assert end - start == timedelta(days=60)
 
 
 class TestPracticeAccountGuard:

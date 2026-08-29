@@ -287,9 +287,28 @@ def test_requested_control_geometry_is_explicit_and_consistent():
         GLASS_CSS.index(".glass-tuner .tuner-trigger {"):
         GLASS_CSS.index("}", GLASS_CSS.index(".glass-tuner .tuner-trigger {"))
     ]
-    assert "font-size: .75rem" in multiplier
+    assert "flex: 0 0 26px" in multiplier
+    assert "justify-content: center" in multiplier
+    assert "font-size: 1.5rem" in multiplier
     assert "width: 2.625rem" in tuner
     assert "height: 2.625rem" in tuner
+
+
+def test_pi_sl_values_are_named_by_side_and_share_one_two_column_row():
+    for mode in ("bt", "live"):
+        row_start = HTML.index(f'id="factor-sl-row-{mode}"')
+        row_end = HTML.index("</div>\n                    </div>", row_start)
+        row = HTML[row_start:row_end]
+        assert f'id="factor-sl-value-label-{mode}">SL INPUT<' in row
+        assert f'id="pi-short-sl-group-{mode}"' in row
+        assert f'id="pi-short-sl-{mode}"' in row
+        assert HTML.count(f'id="pi-short-sl-{mode}"') == 1
+
+    assert "slRow.classList.toggle('pi-dual-sl', isPi)" in JS
+    assert "longSlLabel.textContent = isPi ? 'LONG SL' : 'SL INPUT'" in JS
+    assert "'LONG SL': '多單 SL'" in JS
+    assert ".factor-sl-row.pi-dual-sl" in CSS
+    assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in CSS
 
 
 def test_retired_auto_center_is_absent_but_other_chart_tools_remain():

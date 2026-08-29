@@ -22,7 +22,7 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z&intraarrow=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&sweepglass=9">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z&intraarrow=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&sweepglass=9&slpair=1&multx=2">
     <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10p-glass83">
 </head>
 <body>
@@ -137,7 +137,7 @@
                         <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                     </select>
                 </div>
-                <div class="form-mult">&times;</div>
+                <div class="form-mult" aria-hidden="true">&times;</div>
                 <div class="form-group fx1">
                     <label>SIZE</label>
                     <select id="size-bt" onchange="updateTrailBounds('bt'); refreshCapsForContract('bt')"></select>
@@ -609,8 +609,8 @@
 
                 <div class="panel-title mt14">EXIT SETTINGS</div>
                 <div id="factor-exit-bt" style="display:none;">
-                    <div class="form-row">
-                        <div class="form-group fx1">
+                    <div class="form-row factor-sl-row" id="factor-sl-row-bt">
+                        <div class="form-group fx1 factor-sl-anchor-group">
                             <label>SL ANCHOR</label>
                             <select id="factor-sl-rule-bt" onchange="onFactorRiskAnchorChange('bt','sl')">
                                 <option value="atr">ATR</option>
@@ -624,8 +624,8 @@
                                 <option value="fib">FIB LEVEL</option>
                             </select>
                         </div>
-                        <div class="form-group fx1">
-                            <label>SL INPUT</label>
+                        <div class="form-group fx1 factor-long-sl-group">
+                            <label><span id="factor-sl-value-label-bt">SL INPUT</span></label>
                             <select id="factor-sl-value-bt">
                                 <option value="0.5">0.5</option>
                                 <option value="0.75">0.75</option>
@@ -634,6 +634,15 @@
                                 <option value="2">2</option>
                                 <option value="2.5" selected>2.5</option>
                                 <option value="3">3</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1 pi-short-sl-group" id="pi-short-sl-group-bt" style="display:none;">
+                            <label>SHORT SL <span class="lbl-hint">(×atr_blend)</span></label>
+                            <select id="pi-short-sl-bt">
+                                <option value="1.5">1.5</option>
+                                <option value="2">2.0</option>
+                                <option value="2.5" selected>2.5</option>
+                                <option value="3.5">3.5</option>
                             </select>
                         </div>
                     </div>
@@ -693,15 +702,6 @@
                 <div id="pi-exit-bt" style="display:none;">
                     <div class="lbl-hint" style="margin:2px 0 6px;">Longs use SL/TP ANCHOR above · shorts use independent settings (longer holds perform worse)</div>
                     <div class="form-row">
-                        <div class="form-group fx1">
-                            <label>SHORT SL <span class="lbl-hint">(×atr_blend)</span></label>
-                            <select id="pi-short-sl-bt">
-                                <option value="1.5">1.5</option>
-                                <option value="2">2.0</option>
-                                <option value="2.5" selected>2.5</option>
-                                <option value="3.5">3.5</option>
-                            </select>
-                        </div>
                         <div class="form-group fx1">
                             <label>SHORT TIME EXIT <span class="lbl-hint">(minutes · 0=OFF)</span></label>
                             <select id="pi-short-hold-bt">
@@ -913,7 +913,7 @@
                             <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
                         </select>
                     </div>
-                    <div class="form-mult">&times;</div>
+                    <div class="form-mult" aria-hidden="true">&times;</div>
                     <div class="form-group fx1">
                         <label>SIZE</label>
                         <select id="size-live" onchange="updateTrailBounds('live'); refreshCapsForContract('live')"></select>
@@ -1385,8 +1385,8 @@
 
                     <div class="panel-title mt14">EXIT SETTINGS</div>
                     <div id="factor-exit-live" style="display:none;">
-                    <div class="form-row">
-                        <div class="form-group fx1">
+                    <div class="form-row factor-sl-row" id="factor-sl-row-live">
+                        <div class="form-group fx1 factor-sl-anchor-group">
                             <label>SL ANCHOR</label>
                             <select id="factor-sl-rule-live" onchange="onFactorRiskAnchorChange('live','sl')">
                                 <option value="atr">ATR</option>
@@ -1400,8 +1400,8 @@
                                 <option value="fib">FIB LEVEL</option>
                             </select>
                         </div>
-                        <div class="form-group fx1">
-                            <label>SL INPUT</label>
+                        <div class="form-group fx1 factor-long-sl-group">
+                            <label><span id="factor-sl-value-label-live">SL INPUT</span></label>
                             <select id="factor-sl-value-live">
                                 <option value="0.5">0.5</option>
                                 <option value="0.75">0.75</option>
@@ -1410,6 +1410,15 @@
                                 <option value="2">2</option>
                                 <option value="2.5" selected>2.5</option>
                                 <option value="3">3</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1 pi-short-sl-group" id="pi-short-sl-group-live" style="display:none;">
+                            <label>SHORT SL <span class="lbl-hint">(×atr_blend)</span></label>
+                            <select id="pi-short-sl-live">
+                                <option value="1.5">1.5</option>
+                                <option value="2">2.0</option>
+                                <option value="2.5" selected>2.5</option>
+                                <option value="3.5">3.5</option>
                             </select>
                         </div>
                     </div>
@@ -1469,15 +1478,6 @@
                 <div id="pi-exit-live" style="display:none;">
                     <div class="lbl-hint" style="margin:2px 0 6px;">Longs use SL/TP ANCHOR above · shorts use independent settings (longer holds perform worse)</div>
                     <div class="form-row">
-                        <div class="form-group fx1">
-                            <label>SHORT SL <span class="lbl-hint">(×atr_blend)</span></label>
-                            <select id="pi-short-sl-live">
-                                <option value="1.5">1.5</option>
-                                <option value="2">2.0</option>
-                                <option value="2.5" selected>2.5</option>
-                                <option value="3.5">3.5</option>
-                            </select>
-                        </div>
                         <div class="form-group fx1">
                             <label>SHORT TIME EXIT <span class="lbl-hint">(minutes · 0=OFF)</span></label>
                             <select id="pi-short-hold-live">
@@ -1965,7 +1965,7 @@
 </div>
 
     <script src="/static/topstep-eval.js?v=1.0.9k-topstep1"></script>
-    <script src="/static/ancserTPX.js?v=1.0.10z&intraarrow=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&sweepglass=9&robustness=1&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&statushealth=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.10z&intraarrow=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&sweepglass=9&robustness=1&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&statushealth=1"></script>
     <!-- Production handlers bind first; the skin then moves those same nodes. -->
     <script src="/static/tpx-glass-skin.js?v=1.1.1-brand1"></script>
     <script src="/static/tpx-glass.js?v=1.0.10p-glass82"></script>

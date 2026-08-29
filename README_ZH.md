@@ -105,19 +105,23 @@ Web 回測在**獨立子進程**（`ProcessPoolExecutor`）中運行，擁有自
 
 在網頁右上角 **CONNECT** 面板輸入 **郵箱** 和 **API Key**，首次連線成功後會自動保存到 `.env`，無需手動編輯檔案。
 
-### 3. TopstepX Auto OCO Preset
+### 3. Attached Auto OCO（API 入場契約）
 
-即時交易需要啟用 TopstepX **Auto OCO Brackets**。Bot 會在每一張 API 入場單裡送 `stopLossBracket` / `takeProfitBracket`；只在 preset 畫面打勾，裸 API 單不會自動附上 SL/TP。
+> **2026-08-17 更正：** `1.0.10n` 引入的純 entry 決策已取代。
+> 不得移除 API bracket 欄位，也不得把帳戶／網頁 preset 當成 Bot 的保護來源。
 
-建議在 TopstepX 這樣設定：
+Bot 的實盤保護來源，是每張 API 入場 request 內唯一一組 attached pair：
+`stopLossBracket` 與 `takeProfitBracket`。TopstepX 網頁選取的 OCO template
+可能用於手動網頁單，但不能取代這兩個 API 欄位；引擎不得等待 preset
+替一張裸 entry 補上保護。
 
-- 開啟 [TopstepX Risk Settings](https://topstepx.com/settings?tab=risk-settings)
-- 啟用 **Auto OCO Brackets**
-- 建立一個給本 bot 使用的 preset
+API 保護契約：
+
 - **Stop Loss Order Type**：`Stop Market`
 - **Take Profit Order Type**：`Limit`
-- preset 的 ticks 只是備用/預設值；Bot 會在 API 入場單裡送策略計算出的 SL/TP ticks
-- 不要把 preset SL 設成 `Trailing Stop Market`；trail 由 bot 透過修改既有 Auto OCO stop order 來完成
+- limit 與 market entry 都由 Bot 附帶策略計算的 bracket tick offsets
+- 成交後不得另開第二組獨立 SL/TP
+- trail 只修改 attached Auto OCO 的既有 stop order
 
 實際下單流程：
 
@@ -126,7 +130,10 @@ Web 回測在**獨立子進程**（`ProcessPoolExecutor`）中運行，擁有自
 3. Bot 等待子單出現，篩選正確平倉方向，然後確認/修改 SL/TP 到策略算法計算出的價格。
 4. Trail SL 觸發後，Bot 會修改同一張 Auto OCO SL，不會另外新掛一張 stop order。
 
-如果 Auto OCO 子單沒有生成，live log 會出現 `[AUTO OCO]` 警告，Bot 不會退回到手動 bracket 下單。如果成交後 5 分鐘仍沒有 SL/TP，Bot 會先平倉、暫停 engine，並在 log 裡留下上面的 Risk Settings 連結。
+如果 attached 子單沒有生成，live log 會出現 `[AUTO OCO]` 警告，Bot
+不會退回再開第二組 bracket。成交後 5 分鐘仍沒有 SL/TP 時，Bot 會平倉並
+暫停 engine。排障應檢查 entry payload／API response／broker open orders；
+修改帳戶 preset 不能取代 entry 內的 bracket 欄位。
 
 ---
 
@@ -166,7 +173,7 @@ Web 回測在**獨立子進程**（`ProcessPoolExecutor`）中運行，擁有自
 ### Live Trading
 
 1. 選擇交易帳戶
-2. 確認 TopstepX Auto OCO preset 已啟用
+2. 啟動新版 engine 前先確認帳戶已平倉
 3. 點擊 **GO LIVE**
 4. 需要停止或手動平倉時，使用 **STOP** 或 **FLATTEN**
 

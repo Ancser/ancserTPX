@@ -1,7 +1,8 @@
 """1.0.10: π 訊號的不對稱出場結構 —— 實際會上線的那一版。
 
-前提(已由 engine.py:870-930 確認):TopstepX Auto OCO 的括號是**必須開啟**的基礎,
-但引擎會在子單建立後用 `modify_order()` 把 SL/TP 改成策略計算的價位。
+前提(現行 EXEC-004 / EXEC-005):每張 API entry 必須附帶
+`stopLossBracket` / `takeProfitBracket`,不可用帳戶 preset 取代。TopstepX
+依 attached 欄位建立子單後,引擎再用 `modify_order()` 把 SL/TP 校準成策略價位。
 所以線上一定有 SL/TP,不存在「純時間出場、完全無 SL」的情境 ——
 本腳本只測**帶 SL 的**組合,才是真實會發生的事。
 

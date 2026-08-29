@@ -115,19 +115,24 @@ The system keeps one interpretable logistic-regression model at `data/models/con
 
 Enter your **email** and **API key** in the Web UI's top-right **CONNECT** panel. Credentials are saved to `.env` automatically on first connect — no manual file editing needed.
 
-### 3. TopstepX Auto OCO Preset
+### 3. Attached Auto OCO (API Entry Contract)
 
-Live trading requires TopstepX **Auto OCO Brackets** to be enabled. The bot sends `stopLossBracket` and `takeProfitBracket` fields with each API entry order; the preset screen alone does not attach SL/TP to naked API orders.
+> **2026-08-17 correction:** the plain-entry decision introduced in `1.0.10n`
+> is superseded. Never remove the API bracket fields or treat an account/UI
+> preset as the bot's protection source.
 
-Recommended setup in TopstepX:
+The bot's live protection source is one attached pair in every API entry request:
+`stopLossBracket` and `takeProfitBracket`. A TopstepX OCO template selected in
+the website may apply to manual website orders, but it does not replace these
+API fields and the engine must not wait for a preset to protect a naked entry.
 
-- Open [TopstepX Risk Settings](https://topstepx.com/settings?tab=risk-settings)
-- Enable **Auto OCO Brackets**
-- Create a preset for this bot
+API protection contract:
+
 - **Stop Loss Order Type**: `Stop Market`
 - **Take Profit Order Type**: `Limit`
-- The preset's tick distances are only a fallback/default; the bot sends strategy-specific SL/TP ticks in the API order
-- Do not use `Trailing Stop Market` for the preset SL; trailing is handled by the bot by modifying the existing Auto OCO stop order
+- The bot sends strategy-specific bracket tick offsets with both limit and market entries
+- The engine must not place a second independent SL/TP pair after fill
+- Trailing is handled by modifying the attached Auto OCO stop order
 
 Runtime behavior:
 
@@ -136,7 +141,11 @@ Runtime behavior:
 3. The bot waits for those child orders, selects the correct exit direction, and confirms/modifies SL/TP to the strategy-calculated prices.
 4. When Trail SL triggers, the bot modifies the existing Auto OCO SL instead of placing a new stop order.
 
-If the Auto OCO child orders are not created, live logs will show an `[AUTO OCO]` warning and the bot will not fall back to manual bracket orders. If SL/TP are still missing 5 minutes after fill, the bot flattens the position, pauses the engine, and logs the Risk Settings link above.
+If the attached child orders are not created, live logs show an `[AUTO OCO]`
+warning and the bot does not fall back to a second bracket pair. If SL/TP are
+still missing 5 minutes after fill, the bot flattens the position and pauses the
+engine. Diagnose the entry payload/API response and broker open orders; changing
+an account preset is not a substitute for the attached fields.
 
 ---
 
@@ -176,7 +185,7 @@ Run the matching files for your operating system:
 ### Live Trading
 
 1. Select a trading account
-2. Confirm the TopstepX Auto OCO preset is enabled
+2. Confirm the account is flat before starting a new engine build
 3. Click **GO LIVE**
 4. Use **STOP** or **FLATTEN** when you want to stop trading or close positions manually
 

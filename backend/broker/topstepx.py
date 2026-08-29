@@ -80,6 +80,14 @@ def order_error_meaning(code: Optional[int]) -> str:
         return f"Unknown error code ({code})"
 
 
+def _utc_search_window(days: int) -> Tuple[str, str]:
+    """Return the bounded UTC window required by ProjectX search endpoints."""
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return start.strftime(fmt), end.strftime(fmt)
+
+
 # ── Futures contract month codes & auto front-month rollover ──────────────
 # Single-letter month codes used in contract ids (e.g. 'U26' = Sept 2026).
 _MONTH_CODE_TO_NUM: Dict[str, int] = {
@@ -869,16 +877,28 @@ class TopstepXClient:
             logger.error(f"[ORDER CANCEL] order_id={order_id} exception: {e}")
             return False
 
-    async def get_orders(self, account_id: int) -> List[Dict]:
-        """查詢所有訂單 (open + filled + cancelled)"""
+    async def get_orders(self, account_id: int, days: int = 60) -> List[Dict]:
+        """查詢近期訂單 (open + filled + cancelled)。
+
+        ProjectX ``/api/Order/search`` requires ``startTimestamp``.  This
+        client historically sent only ``accountId``; the current API rejects
+        that payload with HTTP 400, which can prevent a filled entry from
+        reaching protection synchronization.
+        """
+        start, end = _utc_search_window(days)
+        payload = {
+            "accountId": account_id,
+            "startTimestamp": start,
+            "endTimestamp": end,
+        }
         data = await self._request(
             "POST", "/api/Order/search",
-            json={"accountId": account_id}
+            json=payload,
         )
         logger.info(
             f"[ORDER SEARCH] account={account_id} | response_type={type(data).__name__} "
             f"keys={list(data.keys()) if isinstance(data, dict) else 'list'} "
-            f"raw_preview={str(data)[:500]}"
+            f"window={start}..{end} | raw_preview={str(data)[:500]}"
         )
         orders = data.get("orders", data if isinstance(data, list) else [])
         logger.info(f"[ORDER SEARCH] parsed {len(orders)} orders")
@@ -888,13 +908,11 @@ class TopstepXClient:
         self, account_id: int, days: int = 60
     ) -> List[Dict]:
         """查詢已完成交易歷史 (Trades tab in TopstepX) — last `days` days."""
-        from datetime import datetime, timedelta
-        end = datetime.utcnow()
-        start = end - timedelta(days=days)
+        start, end = _utc_search_window(days)
         payload = {
             "accountId": account_id,
-            "startTimestamp": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "endTimestamp": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "startTimestamp": start,
+            "endTimestamp": end,
         }
         data = await self._request("POST", "/api/Trade/search", json=payload)
         trades = data.get("trades", data if isinstance(data, list) else [])

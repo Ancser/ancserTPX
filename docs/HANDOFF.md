@@ -1,12 +1,12 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-08-08. Baseline `1.0.10i` + the uncommitted fixes listed below.
+Updated 2026-08-27. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            278 passing (~45s), CI green (pytest + frontend node --check)
-invariants       36 total / 32 automated / 4 unprotected (UI-002..005, all Glass)
+tests            418 pytest passing + 8 subtests + browser interaction coverage
+invariants       60 total / 60 automated / 0 unprotected
 strategies       factor · momentum · betafib · pi · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ
 ```
@@ -28,20 +28,30 @@ only as a FACTOR-family alias.
 
 ## Open questions — resolve before touching the related code
 
-### R0 — Protective-order ownership resolved (2026-08-11)
+### R0 — Protective-order ownership corrected (2026-08-17)
 
-The live incident showed that attached entry brackets and Topstep Auto OCO
-children were both created. That produced duplicate protection pairs and the
-far-away residual orders visible in TopstepX. The approved behavior is now:
+This supersedes the 2026-08-11 / 1.0.10n decision. That decision was made
+before the bracket parameters were understood and incorrectly removed the
+engine's attached brackets. Current live evidence showed a PI BEST entry with
+valid intended SL/TP but no child orders, while TopstepX explicitly reported
+that Position brackets are disabled and only Auto OCO brackets can be used.
 
-1. Live entries are plain limit/market orders with no bracket payload.
-2. TopstepX Auto OCO creates the only SL/TP child pair.
-3. The engine scans for those existing child IDs and uses `modify_order()` to
-   apply the strategy prices; it never creates a second pair.
+The approved behavior is now:
 
-The broker adapter still forwards explicit bracket fields for non-engine
-callers. `tests/test_exec_protection_invariants.py` protects both the plain
-entry contract and the scan → modify path.
+1. Every live limit/market entry request carries one attached Auto OCO SL/TP pair.
+2. The engine scans for those attached child IDs after fill and uses
+   `modify_order()` to align them with the strategy's absolute prices.
+3. The engine never places a second independent SL/TP pair.
+
+`tests/test_exec_protection_invariants.py` executes both entry paths and also
+protects the scan → modify path.
+
+The same incident exposed a separate broker-contract failure: current
+`/api/Order/search` rejects the historical account-only payload with HTTP 400.
+It now receives a bounded UTC `startTimestamp` / `endTimestamp` window, so a
+filled entry can leave pending state and reach protection synchronization. The
+exact date ProjectX began strictly enforcing the documented timestamp is not
+established.
 
 The same incident also proved that two concurrent web/terminal starts could
 run two PI listeners for one account. `LiveEngineLease` and the per-account
@@ -123,6 +133,7 @@ routes.py held a third copy of PI defaults       now reads _PARAM_DEFAULTS
 candle_store.load() leaked its cache list        cache-miss path now copies
 pi_signal / routes each re-read the signal json  both go through load_rows()
 glass skin removed the language toggle           now re-parents it
-EXEC-004 invariant stated the opposite of code   corrected; see R0
+EXEC-004 reverted to the pre-1.0.10n contract after live evidence   see corrected R0
 LIVE-001 / LIVE-003 named things that never existed   corrected
+Execute Trades could retain an old broker cache indefinitely   bounded refresh + tab-open refresh
 ```

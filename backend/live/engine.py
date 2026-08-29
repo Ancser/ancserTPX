@@ -77,12 +77,16 @@ class LiveTradingEngine:
 
     # 加州 12:45 PT = 15:45 ET = 14:45 CT = 19:45 UTC
     TRAIL_TICK_STEP = 5
+    MIN_STOP_BRACKET_TICKS = 4
+    MIN_TP_BRACKET_TICKS = 1
     AUTO_OCO_FAILSAFE_SECONDS = 5 * 60
     AUTO_OCO_RETRY_SECONDS = 15.0
     MANUAL_GUARDIAN_RETRY_SECONDS = 15.0
     MANUAL_GUARDIAN_BUSY_TIMEOUT_SECONDS = 15.0
     MANUAL_GUARDIAN_RECOVERY_SCAN_SECONDS = 15.0
     LIVE_TICK_OVERDUE_SECONDS = 45.0
+    # Diagnostic/UI convenience only; this setting is not a protection source.
+    # Every API entry must carry attached brackets per EXEC-004.
     AUTO_OCO_SETTINGS_URL = "https://topstepx.com/settings?tab=risk-settings"
     FLATTEN_TIME_UTC = time(19, 45)     # UTC 19:45 = PT 12:45 flatten
     PRE_FLATTEN_UTC = time(19, 30)      # UTC 19:30 = PT 12:30 cancel pending
@@ -899,7 +903,7 @@ class LiveTradingEngine:
                 self._protection_synced = False
                 self._log_event(
                     f"[AUTO OCO] Timed out waiting for {'+'.join(missing)} child order(s); "
-                    "confirm that a TopstepX Auto OCO preset is enabled",
+                    "the attached entry bracket did not create the expected protection",
                     "error",
                 )
                 return False
@@ -3078,8 +3082,8 @@ class LiveTradingEngine:
 
         self._log_event(
             f"[AUTO OCO] {missing_text} still missing {elapsed / 60:.1f} minutes after "
-            "the entry fill. Auto OCO may not be configured; flattening and pausing "
-            f"the engine now. Settings: {self.AUTO_OCO_SETTINGS_URL}",
+            "the entry fill. The attached entry bracket did not produce both child "
+            "orders; flattening and pausing the engine now.",
             "error",
         )
 
@@ -3109,8 +3113,7 @@ class LiveTradingEngine:
             self._release_owner_lease()
             self._save_zones()
             self._log_event(
-                f"[AUTO OCO] Auto OCO is not configured; the engine is paused. "
-                f"Open {self.AUTO_OCO_SETTINGS_URL}",
+                "[AUTO OCO] Attached protection was not confirmed; the engine is paused.",
                 "error",
             )
 
@@ -3929,6 +3932,47 @@ class LiveTradingEngine:
         """
         return round(round(price / TICK_SIZE) * TICK_SIZE, 2)
 
+    def _normalize_entry_protection(self, signal: TradeSignal) -> List[str]:
+        """Keep attached Auto OCO brackets valid before sending an entry.
+
+        TopstepX only permits Auto OCO protection to be attached to the entry;
+        it no longer permits adding a position bracket after the fill.  Keep a
+        minimum non-zero distance on the correct side so the atomic entry plus
+        protection request cannot be rejected for degenerate geometry.
+        """
+        fixes: List[str] = []
+        entry = signal.entry_price
+
+        sl_ticks = int(round((signal.sl_price - entry) / self.tick_size))
+        tp_ticks = int(round((signal.tp_price - entry) / self.tick_size))
+
+        if signal.direction == Direction.BUY:
+            fixed_sl_ticks = min(sl_ticks, -self.MIN_STOP_BRACKET_TICKS)
+            fixed_tp_ticks = max(tp_ticks, self.MIN_TP_BRACKET_TICKS)
+        else:
+            fixed_sl_ticks = max(sl_ticks, self.MIN_STOP_BRACKET_TICKS)
+            fixed_tp_ticks = min(tp_ticks, -self.MIN_TP_BRACKET_TICKS)
+
+        if fixed_sl_ticks != sl_ticks:
+            old = signal.sl_price
+            signal.sl_price = self._round_to_tick(entry + fixed_sl_ticks * self.tick_size)
+            fixes.append(f"SL {old:.2f}->{signal.sl_price:.2f} ({sl_ticks}t->{fixed_sl_ticks}t)")
+        if fixed_tp_ticks != tp_ticks:
+            old = signal.tp_price
+            signal.tp_price = self._round_to_tick(entry + fixed_tp_ticks * self.tick_size)
+            fixes.append(f"TP {old:.2f}->{signal.tp_price:.2f} ({tp_ticks}t->{fixed_tp_ticks}t)")
+
+        return fixes
+
+    def _entry_brackets_for_signal(self, signal: TradeSignal) -> tuple[Dict[str, int], Dict[str, int]]:
+        """Build ProjectX attached-bracket payload from signed entry offsets."""
+        sl_ticks = int(round((signal.sl_price - signal.entry_price) / self.tick_size))
+        tp_ticks = int(round((signal.tp_price - signal.entry_price) / self.tick_size))
+        return (
+            {"ticks": sl_ticks, "type": 4},  # Stop Market
+            {"ticks": tp_ticks, "type": 1},  # Limit
+        )
+
     def _market_risk_limit_ticks(self, signal: TradeSignal) -> Optional[float]:
         """Runtime max-risk cap for market-entry strategies."""
         zone_source = str(getattr(signal, "zone_source", "") or "").lower()
@@ -4040,6 +4084,9 @@ class LiveTradingEngine:
                 if signal.direction == Direction.BUY
                 else signal.entry_price - far
             )
+        protection_fixes = self._normalize_entry_protection(signal)
+        if protection_fixes:
+            self._log_event("[BRACKET FIX] " + " | ".join(protection_fixes), "warn")
         signal.original_entry_price = getattr(signal, "original_entry_price", signal.entry_price)
         signal.original_sl_price = signal.sl_price
         signal.original_tp_price = signal.tp_price
@@ -4089,6 +4136,7 @@ class LiveTradingEngine:
                 f"[ZONE] Signal uses zone_id={signal.zone_id} | strategy={signal.strategy.value}"
             )
 
+        stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
         order = OrderRequest(
             account_id=self.account_id,
             contract_id=self.contract_id,
@@ -4096,6 +4144,8 @@ class LiveTradingEngine:
             side=side,
             size=self.contract_size,
             limit_price=signal.entry_price,
+            stop_loss_bracket=stop_loss_bracket,
+            take_profit_bracket=take_profit_bracket,
         )
 
         try:
@@ -4115,6 +4165,7 @@ class LiveTradingEngine:
                 self._log_event(
                     f"Pending order placed #{resp.order_id} | {dir_label} LIMIT @ {signal.entry_price:.2f} | "
                     f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
+                    f"bracket SL={stop_loss_bracket['ticks']}t TP={take_profit_bracket['ticks']}t | "
                     f"strategy={signal.strategy.value}"
                 )
                 return True
@@ -4133,7 +4184,7 @@ class LiveTradingEngine:
             return False
 
     async def _place_market_entry(self, signal: TradeSignal) -> bool:
-        """Place a market entry; Topstep Auto OCO protects the fill."""
+        """Place a market entry with atomic attached Auto OCO protection."""
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
@@ -4159,15 +4210,25 @@ class LiveTradingEngine:
                     "error",
                 )
                 return False
+        protection_fixes = self._normalize_entry_protection(signal)
+        if protection_fixes:
+            self._log_event("[BRACKET FIX] " + " | ".join(protection_fixes), "warn")
+        ok, reason = self._validate_market_signal_geometry(signal, signal.entry_price)
+        if not ok:
+            self._log_event(f"[MARKET BLOCK] after bracket normalize: {reason}", "error")
+            return False
         side = 1 if signal.direction == Direction.BUY else 2
         dir_label = "BUY" if signal.direction == Direction.BUY else "SELL"
 
+        stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
         order = OrderRequest(
             account_id=self.account_id,
             contract_id=self.contract_id,
             order_type=2,   # Market
             side=side,
             size=self.contract_size,
+            stop_loss_bracket=stop_loss_bracket,
+            take_profit_bracket=take_profit_bracket,
         )
 
         try:
@@ -4187,7 +4248,8 @@ class LiveTradingEngine:
                 self._mark_session_direction_locked(signal)
                 self._log_event(
                     f"Market order #{resp.order_id} | {dir_label} MKT @ ~{signal.entry_price:.2f} | "
-                    f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f}"
+                    f"SL={signal.sl_price:.2f} TP={signal.tp_price:.2f} | "
+                    f"bracket SL={stop_loss_bracket['ticks']}t TP={take_profit_bracket['ticks']}t"
                 )
                 return True
             else:

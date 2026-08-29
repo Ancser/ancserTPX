@@ -27,9 +27,11 @@
 | EXEC-001 | 內部 `side 1=Buy/2=Sell` → API `0=Bid/1=Ask`;兩個方向**不得映射到同一個值**。寫反不會拋例外,會用正確價格下反方向的單 | `test_broker_order_mapping.py` |
 | EXEC-002 | 內部 `type 3=Stop` → API `type 4`。API **沒有 type 3**,不得送出 | `test_broker_order_mapping.py` |
 | EXEC-003 | 非 Practice 帳戶必須拒絕;帳號查不到時**拒絕而非放行** | `test_broker_order_mapping.py` |
-| EXEC-004 | 進場單**不附帶** `stopLossBracket` / `takeProfitBracket`;TopstepX 帳戶的 Auto OCO 建立唯一 SL/TP 子單,引擎只掃描並以 `modify_order()` 套用策略價位。broker adapter 仍可轉送其他 caller 明確提供的 optional bracket | `test_exec_protection_invariants.py` |
-| EXEC-005 | Auto OCO 括號**可以**用 `modify_order()` 改成策略價位。「不自己下 SL/TP」指的是不另開新單,不是不能改 | `test_exec_protection_invariants.py` |
+| EXEC-004 | 每筆 live limit / market entry **必須同一個 request 附帶**策略的 `stopLossBracket` 與 `takeProfitBracket`,使用相對 entry 的有號 tick offset;不得等成交後才嘗試新增 Position bracket | `test_exec_protection_invariants.py` |
+| EXEC-005 | 成交後只掃描 attached Auto OCO 建立的子單 ID,再以 `modify_order()` 校準到策略絕對價位;**不得另開第二組**獨立 SL/TP | `test_exec_protection_invariants.py` |
 | EXEC-006 | 沒有市價參考時**必須拒絕下單**(return),不是只記 WARN | `test_exec_protection_invariants.py` |
+| EXEC-007 | `/api/Order/search` 必須帶 bounded UTC `startTimestamp`(及 `endTimestamp`);查單 HTTP 400 不得令已成交 entry 永遠卡在 pending、跳過保護同步 | `test_broker_order_mapping.py` |
+| EXEC-008 | `EXECUTE TRADES` 以 broker `Trade/search` 為真相；磁碟 cache 不得無限過期。打開分頁必須立即強制刷新，保持可見時要以有界頻率補抓，錯過 open→flat transition 也不得永久漏掉真實成交 | `test_trade_history_refresh.py` + `tests/ui/glass-ui.spec.js` |
 
 ## LIVE — 執行期
 
@@ -118,7 +120,7 @@
 
 ## 目前的覆蓋缺口(誠實版)
 
-**49 條目前都已有自動化保護。** UI-002…017 的 paint/timing 行為由
+**60 條目前都已有自動化保護。** UI-002…017 的 paint/timing 行為由
 `tests/ui/glass-ui.spec.js` 在 Chromium 驗證;小型架構接縫另由 pytest static
 contracts 快速擋回歸。CI 的 browser job 以 `--lifespan off` 啟動 app,不得啟動
 candle accumulator / shadow replay / broker 連線。
@@ -145,17 +147,20 @@ INVARIANTS.md        LIVE-003 整條是幻覺 —— 見下(已改為提案)
 `if zone_age > 86400: logger.warning(...)` —— **24 小時、而且只是警告**。
 兩條幽靈都來自「憑舊筆記寫不變量」。
 
-### R0 — 保護單所有權已釐清(2026-08-11)
+### R0 — 保護單所有權更正(2026-08-17;取代 2026-08-11 結論)
 
-實盤事件確認重構後同一筆 entry 同時產生 attached bracket 與 TopstepX
-Auto OCO 子單,造成重複保護、殘留遠端 SL/TP,並在短距離策略訊號上快速出場。
-使用者確認 Auto OCO 是帳戶端唯一保護來源。因此兩條進場路徑現在只送純
-entry;成交後由 `_scan_auto_oco_order_ids()` 找到既有子單,再以
-`modify_order()` 套用策略 SL/TP。adapter 對其他明確 caller 的 optional
-bracket 轉送能力保留,但 live engine 不再使用它。
+2026-08-11 在尚未理解 bracket 參數時,把重複／遠端保護單歸因於 entry
+attached bracket,並在 1.0.10n 改成純 entry。2026-08-17 的實盤證據推翻了
+這個結論:PI BEST 已算出 SL/TP,但純 API entry 成交後沒有任何保護子單;
+TopstepX 畫面同時明示 Position brackets 已停用、只能使用 Auto OCO brackets。
 
-`test_exec_protection_invariants.py` 會鎖住「entry 不帶 bracket」與
-「Auto OCO 只走 scan → modify」兩個契約。
+現行所有權是:live engine 在 limit 與 market entry request 內附帶唯一一組
+Auto OCO bracket。成交後 `_scan_auto_oco_order_ids()` 只找這組 attached
+children,再以 `modify_order()` 校準到策略 SL/TP;不得另開第二組獨立保護單。
+這恢復 1.0.10n 以前的 entry 契約,但保留後來加入的 scan → modify 校準。
+
+`test_exec_protection_invariants.py` 會執行兩條真實 entry path,鎖住
+「entry 必帶 bracket」與「attached children 只走 scan → modify」兩個契約。
 
 ### 提案(不是不變量,尚未實作)
 

@@ -1,30 +1,87 @@
-"""下單保護的兩條不變量(EXEC-005 / EXEC-006)。
+"""下單保護的不變量(EXEC-004 / EXEC-005 / EXEC-006)。
 
-兩條都在 `backend/live/engine.py`,兩條的失敗模式都是**用錯的價位下真錢**。
+三條都在 `backend/live/engine.py`,失敗模式是**裸倉或用錯的價位下真錢**。
 """
 from __future__ import annotations
 
+import asyncio
 import ast
 import inspect
 import math
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from backend.db.models import (
+    Direction,
+    OrderResponse,
+    StrategyParams,
+    StrategyType,
+    TradeSignal,
+)
 from backend.live.engine import LiveTradingEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = ROOT / "backend" / "live" / "engine.py"
+README_EN = ROOT / "README.md"
+README_ZH = ROOT / "README_ZH.md"
+PI_ASYMMETRIC_STUDY = ROOT / "scripts" / "pi_asymmetric_config.py"
+CONTRACT = "CON.F.US.MNQ.U26"
+
+
+def _entry_signal(*, order_type: str, direction: Direction = Direction.BUY) -> TradeSignal:
+    if direction == Direction.BUY:
+        sl_price, tp_price = 90.0, 120.0
+    else:
+        sl_price, tp_price = 110.0, 80.0
+    return TradeSignal(
+        strategy=StrategyType.TREND_FOLLOW,
+        direction=direction,
+        entry_price=100.0,
+        sl_price=sl_price,
+        tp_price=tp_price,
+        zone_id="attached-bracket-test",
+        reason="attached bracket regression",
+        zone_source="pi",
+        order_type=order_type,
+    )
+
+
+def _entry_engine() -> tuple[LiveTradingEngine, AsyncMock]:
+    place_order = AsyncMock(return_value=OrderResponse(order_id=77, success=True))
+    client = MagicMock()
+    client.place_order = place_order
+    params = StrategyParams(
+        strategy="pi",
+        contract_id=CONTRACT,
+        contract_size=1,
+    )
+    with patch("backend.live.engine.EMAPMOSignalMessenger.from_env", return_value=MagicMock()):
+        engine = LiveTradingEngine(
+            client,
+            account_id=123,
+            contract_id=CONTRACT,
+            contract_size=1,
+            strategy_params=params,
+        )
+    engine._last_market_price = 100.0
+    engine._log = []
+    engine._persist_breakout_lock = MagicMock()
+    engine._mark_session_direction_locked = MagicMock()
+    return engine, place_order
 
 
 class TestAutoOcoOverride:
     """EXEC-005:Auto OCO 建的括號**必須**被改成策略價位。
 
-    TopstepX 帳戶端開了 Auto OCO,送出進場單時券商會自動掛一組 SL/TP 子單,
-    用的是帳戶設定的固定點數(300:900)。策略要的是 atr_blend 算出來的價位。
+    進場 request 附帶 Auto OCO bracket 後,券商會依 tick offset 建立一組
+    SL/TP 子單。市場單實際成交價可能偏離訊號參考價,因此仍須依策略絕對
+    價位校準。
 
     流程:送單 → `_scan_auto_oco_order_ids()` 等子單出現 → `modify_order()`
     改價。這條容易被誤讀成「引擎不該碰 SL/TP」而整段刪掉 ——
     **「不自己下 SL/TP」指的是不另開新單,不是不能改既有的。**
-    刪掉的話停損會停在帳戶預設點數,跟策略算的完全無關,而且不會有錯誤訊息。
+    刪掉的話,市場單滑價後只剩依訊號參考價算出的初始 tick offset,
+    不會校準回策略的絕對價位。
     """
 
     def test_scan_then_modify_helpers_exist(self):
@@ -45,13 +102,13 @@ class TestAutoOcoOverride:
     def test_scan_result_feeds_modify_order(self):
         """結構性:`_scan_auto_oco_order_ids` 的結果必須被 modify_order 用到。
 
-        兩者都存在但沒接起來的話,括號一樣是帳戶預設值。
+        兩者都存在但沒接起來的話,括號仍停在 attached entry 的初始價位。
         """
         src = ENGINE.read_text(encoding="utf-8")
         i = src.index("_scan_auto_oco_order_ids(signal)")
         window = src[i:i + 4000]
         assert "modify_order" in window, \
-            "掃到 Auto OCO 子單之後沒有接 modify_order —— 括號不會被改成策略價位"
+            "掃到 attached Auto OCO 子單之後沒有接 modify_order —— 括號不會被改成策略價位"
 
     def test_rationale_is_documented(self):
         """這條最容易被誤刪,理由必須留在原始碼裡。"""
@@ -60,25 +117,78 @@ class TestAutoOcoOverride:
         assert "OCO" in src[i - 600:i + 400]
 
 
-class TestEntryUsesTopstepAutoOco:
-    """EXEC-004: entries are plain orders; Auto OCO owns the child pair."""
+class TestEntryAttachesAutoOcoBrackets:
+    """EXEC-004: protection is attached atomically to every entry request.
 
-    def test_limit_entry_does_not_attach_a_second_protection_pair(self):
-        src = inspect.getsource(LiveTradingEngine._place_order)
-        assert "stop_loss_bracket" not in src
-        assert "take_profit_bracket" not in src
-        assert "_entry_brackets_for_signal" not in src
+    TopstepX no longer permits adding a position bracket after the fill (the
+    platform says "Only Auto OCO brackets can be used").  Waiting until a
+    position appears therefore creates an unrecoverable naked-position window.
+    Both real entry paths are executed here; source-string presence alone would
+    not prove that the bracket objects reach ``place_order``.
+    """
 
-    def test_market_entry_does_not_attach_a_second_protection_pair(self):
-        src = inspect.getsource(LiveTradingEngine._place_market_entry)
-        assert "stop_loss_bracket" not in src
-        assert "take_profit_bracket" not in src
-        assert "_entry_brackets_for_signal" not in src
+    def test_signed_offsets_and_order_types_match_both_directions(self):
+        engine, _ = _entry_engine()
 
-    def test_existing_auto_oco_children_are_modified(self):
+        long_sl, long_tp = engine._entry_brackets_for_signal(
+            _entry_signal(order_type="market", direction=Direction.BUY)
+        )
+        short_sl, short_tp = engine._entry_brackets_for_signal(
+            _entry_signal(order_type="market", direction=Direction.SELL)
+        )
+
+        assert long_sl == {"ticks": -40, "type": 4}
+        assert long_tp == {"ticks": 80, "type": 1}
+        assert short_sl == {"ticks": 40, "type": 4}
+        assert short_tp == {"ticks": -80, "type": 1}
+
+    def test_limit_entry_reaches_broker_with_attached_pair(self):
+        engine, place_order = _entry_engine()
+
+        assert asyncio.run(engine._place_order(_entry_signal(order_type="limit"))) is True
+        request = place_order.await_args.args[0]
+
+        assert request.stop_loss_bracket == {"ticks": -40, "type": 4}
+        assert request.take_profit_bracket == {"ticks": 80, "type": 1}
+
+    def test_market_entry_reaches_broker_with_attached_pair(self):
+        engine, place_order = _entry_engine()
+
+        assert asyncio.run(engine._place_market_entry(_entry_signal(order_type="market"))) is True
+        request = place_order.await_args.args[0]
+
+        assert request.stop_loss_bracket == {"ticks": -40, "type": 4}
+        assert request.take_profit_bracket == {"ticks": 80, "type": 1}
+
+    def test_attached_children_are_still_repriced_after_fill(self):
         src = ENGINE.read_text(encoding="utf-8")
         assert "_scan_auto_oco_order_ids" in src
         assert "modify_order" in src
+
+
+class TestCurrentProtectionGuidance:
+    """Current guides must not resurrect the superseded 1.0.10n ownership model."""
+
+    def test_operator_guides_mark_plain_entry_decision_superseded(self):
+        en = README_EN.read_text(encoding="utf-8")
+        zh = README_ZH.read_text(encoding="utf-8")
+
+        assert "1.0.10n" in en and "superseded" in en.lower()
+        assert "1.0.10n" in zh and "已取代" in zh
+
+    def test_operator_guides_do_not_make_account_preset_the_protection_source(self):
+        en = README_EN.read_text(encoding="utf-8")
+        zh = README_ZH.read_text(encoding="utf-8")
+
+        assert "Confirm the TopstepX Auto OCO preset is enabled" not in en
+        assert "確認 TopstepX Auto OCO preset 已啟用" not in zh
+
+    def test_pi_research_names_attached_api_fields_as_protection_source(self):
+        src = PI_ASYMMETRIC_STUDY.read_text(encoding="utf-8")
+
+        assert "stopLossBracket" in src
+        assert "takeProfitBracket" in src
+        assert "不可用帳戶 preset 取代" in src
 
 
 class TestMarketPriceGuard:

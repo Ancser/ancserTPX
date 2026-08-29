@@ -4411,6 +4411,24 @@ _LIVE_EXITS_FILE = os.path.join(
     "data", "live_exits.json"
 )
 
+# The browser polls this endpoint through a disk cache so it does not issue a
+# 60-day Trade/search on every live-status tick.  The cache used to have no
+# expiry at all: if the browser missed the exact open->flat transition, the
+# Execute Trades tab could keep showing an older trading day indefinitely even
+# though Topstep already contained the closing fill.
+_TRADE_HISTORY_CACHE_MAX_AGE_SECONDS = 60.0
+
+
+def _trade_history_cache_is_fresh(now_epoch: Optional[float] = None) -> bool:
+    try:
+        modified = os.path.getmtime(_TRADE_HISTORY_FILE)
+    except OSError:
+        return False
+    if now_epoch is None:
+        now_epoch = datetime.now(timezone.utc).timestamp()
+    age = max(0.0, float(now_epoch) - float(modified))
+    return age <= _TRADE_HISTORY_CACHE_MAX_AGE_SECONDS
+
 
 def _load_trade_history_cache() -> List[dict]:
     try:
@@ -4797,13 +4815,11 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
             except (TypeError, ValueError):
                 filter_acc_id = 0
 
-    if not refresh:
-        cached = _ensure_net_trade_pnl(_load_trade_history_cache())
-        if cached:
-            return _trade_history_response(cached, filter_acc_id, "cache")
+    cached = _ensure_net_trade_pnl(_load_trade_history_cache())
+    if not refresh and cached and _trade_history_cache_is_fresh():
+        return _trade_history_response(cached, filter_acc_id, "cache")
 
     if not _topstepx_client:
-        cached = _ensure_net_trade_pnl(_load_trade_history_cache())
         return _trade_history_response(cached, filter_acc_id, "cache")
 
     try:
@@ -4834,7 +4850,8 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
         if all_trades:
             _save_trade_history_cache(all_trades)
 
-        return _trade_history_response(all_trades, filter_acc_id, "api")
+        source = "api" if refresh else "api_stale_refresh"
+        return _trade_history_response(all_trades, filter_acc_id, source)
 
     except Exception as e:
         logger.error(f"[TRADE HISTORY] failed: {e}")

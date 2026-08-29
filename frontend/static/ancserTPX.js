@@ -725,6 +725,16 @@ function updateStrategyParamVisibility(mode) {
     show('factor-exit-' + mode, isFactor || isIntramom || isSessfib || isPi);
     show('pi-params-' + mode, isPi);
     show('pi-exit-' + mode, isPi);
+    show('pi-short-sl-group-' + mode, isPi);
+    const slRow = document.getElementById('factor-sl-row-' + mode);
+    if (slRow) slRow.classList.toggle('pi-dual-sl', isPi);
+    const longSlLabel = document.getElementById('factor-sl-value-label-' + mode);
+    if (longSlLabel) {
+        // PI uses factor_sl_value for longs and pi_short_sl_value for shorts.
+        // Keep the generic label for every other strategy sharing this control.
+        longSlLabel.textContent = isPi ? 'LONG SL' : 'SL INPUT';
+        if (typeof _i18nTranslateTree === 'function') _i18nTranslateTree(longSlLabel);
+    }
     show('betafib-exit-' + mode, isSessfib);
     ['factor-family-', 'factor-pmo-mode-', 'factor-va-filter-'].forEach((id) => {
         const el = document.getElementById(id + mode);
@@ -2914,6 +2924,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (tab === 'presets') renderSweepTable();
             if (tab === 'log') scrollSystemLogToBottom();
             if (tab === 'pnl') renderPnlCurve();
+            if (tab === 'execute') {
+                revealNewestExecuteTrade();
+                refreshVisibleExecuteTrades(true);
+            }
             glassResample();   // 1.0.10 #1:面板剛換,取樣還是舊分頁的內容
         };
     });
@@ -2926,6 +2940,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (active && active.dataset.tab === 'live') {
             pollLiveStatus({ restart: true });
             pollLiveSlots({ restart: true });
+            refreshVisibleExecuteTrades(true);
         }
     });
 });
@@ -4158,6 +4173,11 @@ function _renderLiveStatus(st) {
         const becameFlat = _lastLiveHadWorkingTrade && !hasWorkingTrade;
         if (newClosedTrade || becameFlat) {
             refreshTradeHistoryForCurrentAccount(newClosedTrade || becameFlat);
+        } else {
+            // A hidden/suspended tab can miss the one poll where position turns
+            // flat. While Execute Trades is visible, make a bounded passive
+            // request; the backend cache TTL decides when Trade/search is due.
+            refreshVisibleExecuteTrades(false);
         }
         if (newestClosedKey) _lastLiveClosedKey = newestClosedKey;
         _lastLiveHadWorkingTrade = hasWorkingTrade;
@@ -5689,6 +5709,9 @@ function dedupeLiveCompletedTrades(trades) {
 let _tradeHistoryRefreshInFlight = false;
 let _lastLiveHadWorkingTrade = false;
 let _lastLiveClosedKey = '';
+let _executeLatestTradeKey = '';
+let _lastExecuteHistoryPassiveRequestMs = 0;
+const EXECUTE_HISTORY_PASSIVE_REFRESH_MS = 30 * 1000;
 
 async function refreshTradeHistoryForCurrentAccount(refresh) {
     if (_tradeHistoryRefreshInFlight) return;
@@ -5700,6 +5723,27 @@ async function refreshTradeHistoryForCurrentAccount(refresh) {
     } finally {
         _tradeHistoryRefreshInFlight = false;
     }
+}
+
+function executeTradesTabIsActive() {
+    const tab = document.querySelector('.bottom-tab.active');
+    return !!tab && tab.dataset.btab === 'execute';
+}
+
+function revealNewestExecuteTrade() {
+    const tbody = document.getElementById('execute-tbody');
+    const content = tbody ? tbody.closest('.bottom-content') : null;
+    if (content) content.scrollTop = 0;
+}
+
+function refreshVisibleExecuteTrades(force) {
+    if (!executeTradesTabIsActive()) return;
+    const now = Date.now();
+    if (!force && now - _lastExecuteHistoryPassiveRequestMs < EXECUTE_HISTORY_PASSIVE_REFRESH_MS) {
+        return;
+    }
+    _lastExecuteHistoryPassiveRequestMs = now;
+    refreshTradeHistoryForCurrentAccount(!!force);
 }
 
 function drawPendingOrderOverlay(po, idx) {
@@ -6328,6 +6372,10 @@ function _showBottomTab(name) {
     if (name === 'presets') renderSweepTable();
     if (name === 'log') scrollSystemLogToBottom();
     if (name === 'pnl') renderPnlCurve();
+    if (name === 'execute') {
+        revealNewestExecuteTrade();
+        refreshVisibleExecuteTrades(true);
+    }
 }
 
 // Sweep model scope is a small multi-select, presented as glass switches so
@@ -8331,6 +8379,7 @@ function renderExecuteTrades(trades) {
     const tbody = document.getElementById('execute-tbody');
     if (!tbody) return;
     if (!trades || trades.length === 0) {
+        _executeLatestTradeKey = '';
         tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:var(--text2);padding:20px;">NO EXECUTE TRADE DATA</td></tr>';
         return;
     }
@@ -8340,6 +8389,10 @@ function renderExecuteTrades(trades) {
         const tb = b.entry_time ? new Date(b.entry_time).getTime() : 0;
         return tb - ta;
     });
+    const latest = sorted[0] || {};
+    const latestKey = String(latest.trade_id || '') + '|' + String(latest.entry_time || '');
+    const newestChanged = !!_executeLatestTradeKey && latestKey !== _executeLatestTradeKey;
+    _executeLatestTradeKey = latestKey;
 
     const fmtTime = (iso) => {
         if (!iso) return '--';
@@ -8406,6 +8459,7 @@ function renderExecuteTrades(trades) {
             '<td title="' + esc(why) + '" style="color:var(--text2);font-family:\'IBM Plex Mono\',monospace;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(whyShort) + '</td>' +
         '</tr>';
     }).join('');
+    if (newestChanged && executeTradesTabIsActive()) revealNewestExecuteTrade();
 }
 
 function classifyZoneType(z) {
@@ -9912,7 +9966,7 @@ const I18N_ZH = {
     'LONG ONLY': '只做多', 'SHORT ONLY': '只做空',
     'SIGNAL MODE': '訊號模式', 'NORMAL': '標準', 'EARLY': '提早',
     'VA FILTER': 'VA 過濾', 'OUTSIDE VA80': 'VA80 之外',
-    'SL ANCHOR': 'SL 錨點', 'SL INPUT': 'SL 參數',
+    'SL ANCHOR': 'SL 錨點', 'SL INPUT': 'SL 參數', 'LONG SL': '多單 SL',
     'TP ANCHOR': 'TP 錨點', 'FIXED RATIO': '固定比例', 'LADDER RATIO': '階梯比例',
     'TP INPUT': 'TP 參數', 'LADDER INPUT': '階梯參數', '(engine fixed)': '(引擎固定)',
     'TRAIL SL': '移動停損',

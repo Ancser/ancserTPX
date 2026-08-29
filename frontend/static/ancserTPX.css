@@ -1872,12 +1872,39 @@
 .action-row.action-row-split { display: flex; gap: 6px; }
 .action-row.action-row-split > * { flex: 1 1 50%; min-width: 0; }
 .form-mult {
-    flex: 0 0 auto;
-    padding: 0 6px 7px;
+    /* Preserve the old middle-column footprint so the two selects do not move,
+       while centering a larger glyph inside that fixed space. */
+    flex: 0 0 26px;
+    width: 26px;
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    padding: calc(.6875rem + 4px) 0 12px;
     color: var(--muted, #64748b);
-    font-size: .75rem;
+    font-size: 1.5rem;
     line-height: 1;
+    overflow: visible;
     user-select: none;
+}
+
+/* PI has one shared anchor but separate long/short SL values.  Keep the anchor
+   full-width, then give both directional values exactly half of the next row.
+   The high-specificity form preserves this layout under the glass skin's
+   default single-column sidebar rule. */
+.factor-sl-row.pi-dual-sl,
+:root[data-tpx-glass-skin="on"] .sidebar .form-row.factor-sl-row.pi-dual-sl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 8px;
+}
+.factor-sl-row.pi-dual-sl > .factor-sl-anchor-group {
+    grid-column: 1 / -1;
+}
+:root[data-tpx-glass-skin="on"] .sidebar .form-row.factor-sl-row.pi-dual-sl > .form-group {
+    width: auto;
+    min-width: 0;
 }
 
 /* 1.0.10: Sweep keeps its action and scope trigger on one row.  The scope
