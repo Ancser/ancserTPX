@@ -7,11 +7,7 @@
     紫色系 紫圈 / 粉π            → 做空
 
 標的對應:QQQ → MNQ、SPY → MES。
-
-⚠️ 認證:`.env` 的 DISCORD_TOKEN 實測是**使用者 token**(`Bot {token}` 回 401)。
-以個人 token 讀取屬於 self-botting,違反 Discord ToS。這是既有設定,本模組沿用
-但**只做讀取**,不發訊息、不加反應。
-
+
 ⚠️ 速率:使用者指定上限 30 次/分。內建 token bucket,預設輪詢 **30 秒**
 (= 2 次/分),並完整處理 429 的 retry_after。
 
