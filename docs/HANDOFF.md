@@ -1,12 +1,12 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-08-30. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-08-31. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            463 pytest passing + 8 subtests + browser interaction coverage
-invariants       65 documented / 63 active / 2 explicitly retired
+tests            472 pytest passing + 8 subtests + real-Chrome interaction coverage
+invariants       70 documented / 68 active / 2 explicitly retired
 strategies       factor · momentum · betafib · pi · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
@@ -18,6 +18,7 @@ presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MN
 | Which strategies exist | `tests/test_strategy_pipeline_classification.py` |
 | Parameter defaults | `backend/db/models.py::StrategyParams` (routes reads `_PARAM_DEFAULTS`) |
 | PI historical signals | `backend/data/pi_history.py::load_rows` — the **only** reader |
+| Local Web security boundary | `backend/web_security.py` + WEB-001..005 |
 | Behavioural invariants | `docs/INVARIANTS.md` |
 
 Do not infer architecture from `README.md` or from `docs/1.0.x_*.md`.
@@ -82,6 +83,9 @@ remains `America/Chicago` 17:00; PI replay filtering remains Los Angeles 07:00.
 Old derived sweep/backtest results are retained as evidence but are not loaded
 as current results unless tagged `america-new-york-v1`; rerun them. Presets were
 versioned in place. Legacy non-null BETAFIB summer-UTC hours migrate once to ET.
+Raw candles, broker fills, `live_exits`, and historical research reports are not
+rewritten. Pre-clock-version research reports remain historical evidence and
+must be regenerated before making a current winter/cross-year comparison.
 
 Manual/untracked positions are observe-only: they block new bot entries, but the
 engine does not launch a guardian, add/cancel exits, run trailing/max-hold, or
@@ -89,6 +93,27 @@ session-close flatten them. When flat, strategy evaluation resumes. Bot-owned
 positions retain attached Auto OCO monitoring and fail-safe flatten behavior.
 The exact ownership matrix, unchanged OCO flow, broker caveat, and regression
 gates are recorded in `docs/LIVE_ORDER_OWNERSHIP.md`.
+
+Current script dependency audit:
+
+- Direct close-window users now call the shared clock:
+  `best_reopen_carry_study.py`, `emapmo_best_threshold_study.py`,
+  `pi_exit_study.py`, `pi_hypothesis_tests.py`, `pi_long_only_study.py`, and
+  `pi_purple_exit_study.py`.
+- PI studies importing `pi_exit_study.simulate` inherit the new clock:
+  `pi_asymmetric_config.py`, `pi_level_breakdown.py`, and
+  `pi_per_marker_config.py`.
+- Backtest/strategy consumers can produce different EST/cross-year results even
+  without source edits, including `best_mes_parity_study.py`,
+  `best_regime_diagnosis.py`, `clamp_cap_study.py`, `emapmo_adaptive_ab.py`,
+  `hold_window_ab.py`, `pf_attribution.py`, `preset_stability_baseline.py`,
+  `public_strategy_research.py`, and `stability_sweep_2026.py`, plus the EMAPMO
+  factor/session diagnostic scripts.
+
+All 42 files under `scripts/` passed an import-smoke after the migration. This
+proves interface/import compatibility, not that their old numeric reports remain
+valid; rerun any study containing EST months. `MOMENTUM`'s researched UTC
+`entry_hour` remains unchanged; Topstep day accounting remains DST-aware CT.
 
 ### R2 — Zone-age gate
 
@@ -102,18 +127,22 @@ A gate is a *proposal*, not a regression to restore.
 a parity contract. Exact decision equivalence (separate from execution/slippage
 parity) does not exist yet.
 
-### R4 — Account and Web control boundary is not enforced
+### R4 — Local Web boundary enforced; Practice-only retired (2026-08-31)
 
-`verify_practice_account()` exists but is not wired into Web start, terminal
-start, or `place_order()`. It is therefore not an active Practice-only gate.
-Blindly wiring it would also block the currently intended main/Express workflow;
-choose Practice-only mode versus an explicit armed-account allowlist first.
+Main/Express live trading is the intended workflow. The user explicitly retired
+Practice-only enforcement, so `verify_practice_account()` remains an unwired
+helper and must not be inserted into Web start, terminal, or `place_order()`.
 
-The Web server binds `0.0.0.0:8001`, allows arbitrary CORS origins, and the
-start/stop/flatten/config routes have no inbound authentication. Treat it as a
-trusted-local-network tool only. Immediate deployment mitigation is loopback
-binding/firewalling; application authentication remains an open behavior/design
-decision.
+The Web control plane is now same-origin and loopback-only: production entry
+points bind `127.0.0.1`, wildcard CORS is removed, unexpected Host/Origin values
+are rejected, and every mutating `/api` request requires a process-local
+HttpOnly session plus a port-scoped CSRF cookie/header pair. Security headers are
+applied globally and API docs are disabled unless `ANCSERTPX_DEV_DOCS=true` is
+deliberately set for local development. This protects the browser control plane;
+root/API/static responses use `Cache-Control: no-store`, so one refresh on the
+same port loads the current process and asset set. This protects the browser
+control plane; it is not a defence against malware already running as the same
+OS user.
 
 ---
 
@@ -151,9 +180,9 @@ Provisional — re-derive from current evidence rather than following blindly.
 6. **LiveTradingEngine decomposition** — session clock → risk gates → order/
    protection → position/recovery → strategy runtime → thin coordinator.
    No strategy-math changes during extraction.
-7. **Glass/frontend** — UI-002..005. Needs a node test harness first
-   (`ancserTPX.js` 9,333 lines + `tpx-glass.js` 3,395 lines, currently 0 tests;
-   only `node --check` in CI). Prefer structural assertions over screenshots.
+7. **Glass/frontend** — UI-002..005. Keep the Playwright browser contracts in
+   `tests/ui/` running alongside structural Python assertions and `node --check`.
+   The production JS remains large; prefer structural assertions over screenshots.
    Do not start this merely to raise a coverage number.
 
 ## Recently fixed (2026-08-08) — do not "re-fix"

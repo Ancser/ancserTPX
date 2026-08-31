@@ -159,6 +159,14 @@ Run the matching files for your operating system:
 - Web app: double-click `ancserTPX web win.bat`
 - Terminal-only LIVE: double-click `ancserTPX terminal win.bat`
 
+The Web control plane listens on local `127.0.0.1` only. Open the
+`http://localhost:<port>` URL printed by the launcher on this computer; do not
+change the bind address back to `0.0.0.0` or port-forward it. Same-origin
+session/CSRF protection is automatic. If the first control action after a
+backend restart returns 403, refresh the local page. HTML/JS/CSS are served with
+no-store, so changing ports is not required to load a new build. API docs are off
+by default.
+
 > If Windows shows a SmartScreen warning, click **More info → Run anyway**.
 
 ### macOS

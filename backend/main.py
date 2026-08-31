@@ -29,9 +29,10 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+
+from backend.web_security import install_local_web_security
 
 # 載入 .env（從專案根目錄）
 _project_root = Path(__file__).parent.parent
@@ -77,21 +78,22 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    dev_docs = str(os.getenv("ANCSERTPX_DEV_DOCS", "")).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
     app = FastAPI(
         title="ancserTPX",
         description="TopstepX NQ futures automated trading system",
         version="1.0.10",
         lifespan=lifespan,
+        docs_url="/docs" if dev_docs else None,
+        redoc_url="/redoc" if dev_docs else None,
+        openapi_url="/openapi.json" if dev_docs else None,
     )
 
-    # CORS — 允許前端 localhost 連接
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # The UI is served by this same process. Cross-origin access is neither
+    # needed nor allowed; all API mutations require a local session + CSRF.
+    install_local_web_security(app)
 
     # 掛載路由
     from backend.api.routes import router
@@ -127,6 +129,6 @@ if __name__ == "__main__":
     log_config["formatters"]["default"]["fmt"] = '%(asctime)s %(message)s'
     log_config["formatters"]["default"]["datefmt"] = '%H:%M:%S'
     uvicorn.run(
-        "backend.main:app", host="0.0.0.0", port=8001,
+        "backend.main:app", host="127.0.0.1", port=8001,
         log_config=log_config,
     )

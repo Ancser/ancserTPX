@@ -20,7 +20,7 @@ import argparse
 import json
 import sys
 from collections import defaultdict
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,8 +28,13 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from backend.data.pi_history import load_rows  # noqa: E402
+from backend.strategy.session_filter import (  # noqa: E402
+    MARKET_PHASE_FLATTEN,
+    market_close_phase,
+)
 from pi_exit_study import (  # noqa: E402
-    build, at_or_after, SYMBOL_MAP, POINT_VALUE, RT_COST, DIRECTION, _utc, FLATTEN_UTC,
+    build, at_or_after, SYMBOL_MAP, POINT_VALUE, RT_COST, DIRECTION, _utc,
 )
 
 
@@ -56,7 +61,7 @@ def simulate_long(i0, bars, times, width, sl_k, rr, hold_min, purple_ts):
             return b.close - entry, "PURPLE"
         if deadline and t >= deadline:
             return b.close - entry, "TIME"
-        if t.timetz().replace(tzinfo=None) >= FLATTEN_UTC and t.hour == FLATTEN_UTC.hour:
+        if market_close_phase(t) == MARKET_PHASE_FLATTEN:
             return b.close - entry, "FLAT"
     return bars[min(i0 + 2999, len(bars) - 1)].close - entry, "EOD"
 

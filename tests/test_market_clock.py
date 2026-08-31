@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import runpy
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -162,3 +164,16 @@ def test_old_sweep_results_are_preserved_on_disk_but_hidden_until_rerun(
     assert response["market_clock_version"] == MARKET_CLOCK_VERSION
     assert "rerun required" in response["stale_reason"]
     assert json.loads(path.read_text(encoding="utf-8")) == old_payload
+
+
+def test_pi_purple_study_imports_shared_close_clock_and_history_loader():
+    root = Path(__file__).resolve().parents[1]
+    namespace = runpy.run_path(
+        str(root / "scripts" / "pi_purple_exit_study.py"),
+        run_name="_market_clock_import_test",
+    )
+
+    assert callable(namespace["simulate_long"])
+    assert callable(namespace["market_close_phase"])
+    assert callable(namespace["load_rows"])
+    assert "FLATTEN_UTC" not in namespace

@@ -66,7 +66,7 @@ elif command -v xdg-open &>/dev/null; then
     xdg-open "http://localhost:$PORT"
 fi
 
-$PY -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+$PY -m uvicorn backend.main:app --host 127.0.0.1 --port $PORT
 
 echo ""
 echo "  ancserTPX web stopped."

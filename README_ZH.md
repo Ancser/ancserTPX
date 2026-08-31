@@ -147,6 +147,12 @@ API 保護契約：
 - Web 版：雙擊 `ancserTPX web win.bat`
 - Terminal-only LIVE：雙擊 `ancserTPX terminal win.bat`
 
+Web 控制台只監聽本機 `127.0.0.1`，只能在這台電腦用啟動器顯示的
+`http://localhost:<port>` 開啟。請勿改回 `0.0.0.0` 或做路由器 port-forward。
+瀏覽器的同源 session／CSRF 由程式自動處理；後端重啟後若第一個操作顯示
+403，重新整理本機頁面即可。HTML／JS／CSS 不使用舊快取，因此不需要靠換
+端口取得新版；API docs 預設關閉。
+
 > 若 Windows 跳出 SmartScreen 警告，點 **「其他資訊」→「仍要執行」**。
 
 ### macOS

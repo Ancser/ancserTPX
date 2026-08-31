@@ -26,7 +26,7 @@
 |---|---|---|
 | EXEC-001 | 內部 `side 1=Buy/2=Sell` → API `0=Bid/1=Ask`;兩個方向**不得映射到同一個值**。寫反不會拋例外,會用正確價格下反方向的單 | `test_broker_order_mapping.py` |
 | EXEC-002 | 內部 `type 3=Stop` → API `type 4`。API **沒有 type 3**,不得送出 | `test_broker_order_mapping.py` |
-| ~~EXEC-003~~ | `verify_practice_account()` helper 能辨識 Practice 並 fail-closed，但目前 **live start、terminal 與 `place_order()` 都沒有呼叫它**，所以它不是生效中的帳戶閘門。現有 test 只證明 helper 本身；在決定「Practice-only」或「明確 live allowlist」前不得宣稱已受保護 | `test_broker_order_mapping.py`（helper only） |
+| ~~EXEC-003~~ | **2026-08-31 使用者明確決定退休 Practice-only 限制：Main／Express 實盤就是預期用途。** `verify_practice_account()` 僅保留為未接線 helper；live start、terminal 與 `place_order()` 不得突然接入它並阻擋實盤帳戶 | `test_broker_order_mapping.py`（helper only） |
 | EXEC-004 | 每筆 live limit / market entry **必須同一個 request 附帶**策略的 `stopLossBracket` 與 `takeProfitBracket`,使用相對 entry 的有號 tick offset;不得等成交後才嘗試新增 Position bracket | `test_exec_protection_invariants.py` |
 | EXEC-005 | 成交後只掃描 attached Auto OCO 建立的子單 ID,再以 `modify_order()` 校準到策略絕對價位;**不得另開第二組**獨立 SL/TP | `test_exec_protection_invariants.py` |
 | EXEC-006 | 沒有市價參考時**必須拒絕下單**(return),不是只記 WARN | `test_exec_protection_invariants.py` |
@@ -56,6 +56,16 @@
 | CLOCK-001 | Candle／order／trade timestamp 保存 UTC instant；ASIA/EURO/PRE/RTH/AH 的牆上時間必須用 `America/New_York` + `zoneinfo` 換算，不得寫死夏令 UTC 偏移 | `test_market_clock.py` + `tests/ui/market-clock.spec.js` |
 | CLOCK-002 | Pending cancel 固定 15:30 ET、Bot-owned flatten 固定 15:45–18:00 ET；EST/EDT、12/31→1/1 都必須得到相同紐約規則 | `test_market_clock.py` |
 | CLOCK-003 | 市場盤段時鐘不得改變其他來源的日界線：Topstep 風控日仍是 `America/Chicago` 17:00，PI replay filter 仍是 `America/Los_Angeles` 07:00 | `test_live_daily_locks.py` + `test_pi_pre_session_filter.py` |
+
+## WEB — 本機控制平面
+
+| ID | 不變量 | Test |
+|---|---|---|
+| WEB-001 | Production `backend.main` 與 Windows/macOS Web launcher 只可 bind `127.0.0.1`；不得監聽 `0.0.0.0` 或 LAN interface | `test_web_security.py` |
+| WEB-002 | Web UI 與 API 是 same-origin；不得恢復 `CORS *`。非 localhost／loopback Host 必須在 route 前拒絕，production 白名單不得為測試 host 放寬 | `test_web_security.py` |
+| WEB-003 | 所有 `/api` POST/PUT/PATCH/DELETE 必須同時具備 process-local HttpOnly session cookie、port-scoped CSRF cookie 及相同 CSRF header；跨 Origin 或缺 token 不得執行 route | `test_web_security.py` + `tests/ui/web-security.spec.js` |
+| WEB-004 | Web 回應必須拒絕 framing、禁止 MIME sniff、限制 referrer/resource；OpenAPI/Swagger 預設關閉，只能以本機 development env 明確啟用 | `test_web_security.py` |
+| WEB-005 | Root、API 與 `/static/` 前端資產必須回傳 `Cache-Control: no-store`；後端重啟後重新整理同一端口即可取得目前程式，不得依賴換 port 逃避舊快取 | `test_web_security.py` + `tests/ui/web-security.spec.js` |
 
 ## PI — 外部訊號
 

@@ -237,10 +237,16 @@ def test_robustness_endpoint_returns_every_field_the_panel_reads():
          "pnl": p, "size": 1, "symbol": "MNQ"}
         for i, p in enumerate([50, -20, 40, -10, 60, -30, 25, -15, 35, -5, 45, -25])
     ]
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        from backend.web_security import CSRF_HEADER, csrf_cookie_name
+        client.get("/api/health")
+        control_headers = {
+            CSRF_HEADER: client.cookies.get(csrf_cookie_name(80)),
+        }
         resp = client.post("/api/research/robustness",
                            json={"trades": trades, "iters": 200,
-                                 "slip_levels": [1, 2, 4, 8]})
+                                 "slip_levels": [1, 2, 4, 8]},
+                           headers=control_headers)
     assert resp.status_code == 200
     body = resp.json()
 
@@ -262,10 +268,20 @@ def test_robustness_endpoint_survives_an_empty_or_pnl_less_request():
     from fastapi.testclient import TestClient
     from backend.main import app
 
-    with TestClient(app) as client:
-        empty = client.post("/api/research/robustness", json={"trades": []})
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        from backend.web_security import CSRF_HEADER, csrf_cookie_name
+        client.get("/api/health")
+        control_headers = {
+            CSRF_HEADER: client.cookies.get(csrf_cookie_name(80)),
+        }
+        empty = client.post(
+            "/api/research/robustness",
+            json={"trades": []},
+            headers=control_headers,
+        )
         no_pnl = client.post("/api/research/robustness",
-                             json={"trades": [{"entry_time": "2026-06-01T00:00:00Z"}]})
+                             json={"trades": [{"entry_time": "2026-06-01T00:00:00Z"}]},
+                             headers=control_headers)
     for resp in (empty, no_pnl):
         assert resp.status_code == 200
         assert resp.json()["trades"] == 0

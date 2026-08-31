@@ -5,6 +5,49 @@
 // Auto-detect port from current page URL (supports dynamic launcher ports)
 const API = window.location.origin + '/api';
 const MARKET_CLOCK_VERSION = 'america-new-york-v1';
+
+// Same-origin Web control protection. The backend sets a port-scoped,
+// SameSite=Strict CSRF cookie on GET; only this origin can read it and copy it
+// into the custom header required by every mutating /api request.
+const ANCSERTPX_CSRF_HEADER = 'X-AncserTPX-CSRF';
+const ANCSERTPX_WEB_PORT = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+const ANCSERTPX_CSRF_COOKIE = 'ancsertpx_csrf_' + ANCSERTPX_WEB_PORT;
+const _ancserNativeFetch = window.fetch.bind(window);
+
+function _ancserCookie(name) {
+    const prefix = encodeURIComponent(name) + '=';
+    for (const item of String(document.cookie || '').split(';')) {
+        const value = item.trim();
+        if (value.startsWith(prefix)) return decodeURIComponent(value.slice(prefix.length));
+    }
+    return '';
+}
+
+window.fetch = function ancserSecureFetch(input, init) {
+    const options = init ? { ...init } : {};
+    const requestMethod = String(
+        options.method || (input && input.method) || 'GET'
+    ).toUpperCase();
+    const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(requestMethod);
+    let target = null;
+    try {
+        target = new URL(
+            (input && input.url) ? input.url : String(input),
+            window.location.href,
+        );
+    } catch (e) {}
+    if (mutating && target && target.origin === window.location.origin &&
+            target.pathname.startsWith('/api/')) {
+        const headers = new Headers(
+            options.headers || ((input && input.headers) ? input.headers : undefined)
+        );
+        const csrf = _ancserCookie(ANCSERTPX_CSRF_COOKIE);
+        if (csrf) headers.set(ANCSERTPX_CSRF_HEADER, csrf);
+        options.headers = headers;
+        options.credentials = 'same-origin';
+    }
+    return _ancserNativeFetch(input, options);
+};
 // Far-past anchor for full-range fetches. The paginated backend walks back from
 // today to the contract's earliest bar; this just has to predate any NQ/MNQ data.
 const FULL_RANGE_START = '2008-01-01';
