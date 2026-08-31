@@ -19,7 +19,7 @@ import sys
 import time
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from datetime import date, datetime, time as dt_time, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -38,7 +38,12 @@ from backend.db.models import (
     get_fees_rt,
 )
 from backend.strategy.factor import FactorSignalStrategy, _topstep_trade_date, _utc
-from backend.strategy.session_filter import is_allowed_session
+from backend.strategy.session_filter import (
+    MARKET_CLOCK_VERSION,
+    MARKET_PHASE_FLATTEN,
+    is_allowed_session,
+    market_close_phase,
+)
 from backend.terminal_live import _build_strategy_params
 
 
@@ -52,8 +57,6 @@ DAILY_POLICIES = (
     ("retry_after_one_loss", 3, 2),
     ("no_loss_lock", 3, 0),
 )
-FLATTEN_START = dt_time(19, 45)
-SESSION_START = dt_time(22, 0)
 UTC = timezone.utc
 
 
@@ -379,8 +382,7 @@ def _run_batch(pool, jobs: list[dict[str, Any]], label: str) -> list[dict[str, A
 
 
 def _is_flatten_window(ts: datetime) -> bool:
-    current = _utc(ts).time()
-    return FLATTEN_START <= current < SESSION_START
+    return market_close_phase(ts) == MARKET_PHASE_FLATTEN
 
 
 def _raw_signal_stats_all(
@@ -615,7 +617,8 @@ def main() -> int:
             "max_trades_day": 3,
             "daily_loss_stop": 1,
             "max_hold_bars": 0,
-            "daily_flatten_utc": "19:45",
+            "market_clock_version": MARKET_CLOCK_VERSION,
+            "daily_flatten_et": "15:45",
         },
         "parity": {
             "passed": True,

@@ -48,7 +48,8 @@ from backend.data.candle_store import (
 )
 from backend.strategy.volume_profile import VolumeProfileCalculator
 from backend.strategy.session_filter import (
-    DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, normalize_allowed_sessions,
+    DEFAULT_ALLOWED_SESSIONS, MARKET_CLOCK_VERSION, allowed_sessions_label,
+    as_new_york, normalize_allowed_sessions, rth_session_date,
 )
 from backend.strategy.factor import (
     FACTOR_EMAPMO_HISTORY_BARS,
@@ -1193,23 +1194,23 @@ def _collect_betafib_levels(bars: List[Candle], cutoff: Optional[datetime],
     """SESSFIB 疊圖 —— 每個 session day 的 fib 掛單位,畫成夜盤區間的水平線。
 
     與 research_lab.BetaFibRetrace 相同的推動腿定義:
-      session day 以 RTH 開盤(13:30 UTC)為界 —— 夜盤等單會跨過 UTC 午夜,
+      session day 以 09:30 America/New_York RTH 開盤為界,
       用日曆日切會把掛單價在半夜清掉(那是 1.0.9 修掉的 bug)。
       上漲日推動腿 = 「最高點之前」的最低點 → 最高點;下跌日鏡像。
 
     回傳每晚一筆,含 anchor0 / anchor1 / 掛單價與夜盤時間範圍,
-    讓前端在 20:00 UTC → 隔日 13:30 UTC 這段畫水平線。
+    讓前端在 16:00 ET → 隔日 09:30 ET 這段畫水平線。
     """
-    RTH_OPEN, RTH_CLOSE = (13, 30), (20, 0)
+    RTH_OPEN, RTH_CLOSE = (9, 30), (16, 0)
 
     def _sday(ts: datetime):
-        d = ts.date()
-        return d - timedelta(days=1) if (ts.hour, ts.minute) < RTH_OPEN else d
+        return rth_session_date(ts)
 
     days: Dict[Any, Dict[str, Any]] = {}
     for bar in bars:
         ts = _candle_time(bar)
-        hm = (ts.hour, ts.minute)
+        local = as_new_york(ts)
+        hm = (local.hour, local.minute)
         d = _sday(ts)
         slot = days.setdefault(d, {"rth": [], "night": []})
         slot["rth" if RTH_OPEN <= hm < RTH_CLOSE else "night"].append(bar)
@@ -1686,6 +1687,7 @@ class BacktestResponse(BaseModel):
     # Number of in-range Live PI audit marks replayed for this run.  These are
     # transient inputs only; the immutable historical file is unchanged.
     pi_replay_count: int = 0
+    market_clock_version: str = MARKET_CLOCK_VERSION
 
 
 # ── 路由 ──────────────────────────────────────────────
@@ -2747,6 +2749,7 @@ def _remember_backtest_summary(result: Any) -> None:
     """Retain bounded scalar summaries, never full trades/zones/equity graphs."""
     metrics = result.metrics
     _backtest_results.append({
+        "market_clock_version": MARKET_CLOCK_VERSION,
         "total_trades": metrics.total_trades,
         "win_rate": metrics.win_rate,
         "total_pnl": metrics.total_pnl,
@@ -3100,6 +3103,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         zones=zones_resp,
         equity_curve=equity,
         pi_replay_count=len(pi_replay_rows),
+        market_clock_version=MARKET_CLOCK_VERSION,
     )
     _update_bt_progress("done", len(candles), len(candles), "Complete", status="done")
     return response
@@ -3254,6 +3258,7 @@ async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
                 qualified_by_model.setdefault(model, []).append(r)
         payload = {
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "market_clock_version": MARKET_CLOCK_VERSION,
             "candles": len(candles),
             "range": [
                 candles[0].timestamp.isoformat(),
@@ -3281,6 +3286,7 @@ async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
             top = results[0] if results else {}
             hist = {
                 "created_at": payload["created_at"], "stamp": stamp,
+                "market_clock_version": MARKET_CLOCK_VERSION,
                 "candles": len(candles), "range": payload["range"],
                 "variants": len(results),
                 "accepted": sum(len(v) for v in qualified_by_model.values()),
@@ -3329,7 +3335,18 @@ async def get_backtest_sweep_results():
     """回傳最近一次 sweep 結果(啟動時 SWEEP 分頁自動載入)。"""
     try:
         if _SWEEP_RESULTS_FILE.exists():
-            return json.loads(_SWEEP_RESULTS_FILE.read_text(encoding="utf-8"))
+            payload = json.loads(_SWEEP_RESULTS_FILE.read_text(encoding="utf-8"))
+            if payload.get("market_clock_version") == MARKET_CLOCK_VERSION:
+                return payload
+            return {
+                "results": [],
+                "qualified_by_model": {
+                    "DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": [], "PI": [],
+                },
+                "created_at": None,
+                "market_clock_version": MARKET_CLOCK_VERSION,
+                "stale_reason": "saved sweep predates the New York market clock; rerun required",
+            }
     except Exception as e:
         logger.warning(f"read sweep results failed: {e}")
     return {
@@ -3338,6 +3355,7 @@ async def get_backtest_sweep_results():
         # TREND sat here long after its sweep stopped existing.
         "qualified_by_model": {"DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": [], "PI": []},
         "created_at": None,
+        "market_clock_version": MARKET_CLOCK_VERSION,
     }
 
 
@@ -3501,6 +3519,7 @@ def _write_backtest_csv(req, config, strategy_params, method, tf_combo,
     wk = metrics_resp.weekly_stats or {}
     summary = {
         "generated": stamp,
+        "market_clock_version": MARKET_CLOCK_VERSION,
         "method": method,
         "timeframes": tf_label,
         "rr_ratio": rr,
@@ -4866,9 +4885,10 @@ _PRESETS_FILE = os.path.join(
     "data", "presets.json"
 )
 
-_PRESET_SCHEMA_VERSION = "2026-07-03-sigma-resting"
+_PRESET_SCHEMA_VERSION = "2026-08-30-new-york-market-clock-v1"
 _DEFAULT_PRESET_NAME = "TREND MNQx1 DEFAULT"
 _DEFAULT_PRESET_PARAMS = {
+    "market_clock_version": MARKET_CLOCK_VERSION,
     "strategy": "factor",
     "tp_ticks": 200,
     "sl_ticks": 50,
@@ -4949,6 +4969,22 @@ _BUILTIN_PRESETS = {}
 _FIXED_PRESET_NAMES = ()
 
 
+def _migrate_preset_market_clock(params: dict) -> bool:
+    """Convert legacy summer-UTC BETAFIB hours to canonical New York hours."""
+    if params.get("market_clock_version") == MARKET_CLOCK_VERSION:
+        return False
+    for key in ("betafib_entry_start_hour", "betafib_entry_end_hour"):
+        value = params.get(key)
+        if value is None:
+            continue
+        try:
+            params[key] = (int(value) - 4) % 24
+        except (TypeError, ValueError):
+            params[key] = None
+    params["market_clock_version"] = MARKET_CLOCK_VERSION
+    return True
+
+
 def _preset_name_uses_allowed_model(name: str) -> bool:
     parts = str(name or "").split()
     if len(parts) < 2:
@@ -4994,6 +5030,8 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
     for name, params in list(presets.items()):
         if not isinstance(params, dict):
             continue
+        if _migrate_preset_market_clock(params):
+            changed = True
         strategy = str(params.get("strategy") or "").lower()
         # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend;+fade 放行
         # 1.0.9: TREND 已移除,未知/舊值一律落到 factor
@@ -5119,7 +5157,9 @@ class PresetSaveRequest(BaseModel):
 async def save_preset(req: PresetSaveRequest):
     """儲存 preset"""
     data = _load_presets_file()
-    data["presets"][req.name] = req.params
+    params = dict(req.params)
+    _migrate_preset_market_clock(params)
+    data["presets"][req.name] = params
     _save_presets_file(data)
     return {"success": True, "name": req.name}
 

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, Optional
 
 from backend.db.models import Candle, Direction, StrategyType, TradeSignal
+from backend.strategy.session_filter import market_session
 
 
 TICK_SIZE = 0.25
@@ -44,19 +45,7 @@ def _weighted_median(values: list[float], weights: list[float]) -> float:
 
 
 def _session_for(ts: datetime) -> tuple[str, datetime]:
-    ts = _utc(ts)
-    d = ts.date()
-    tod = ts.time()
-    if tod >= time(22, 0) or tod < time(7, 0):
-        start_day = d if tod >= time(22, 0) else d - timedelta(days=1)
-        return "ASIA", datetime.combine(start_day, time(22, 0), tzinfo=timezone.utc)
-    if time(7, 0) <= tod < time(11, 0):
-        return "EURO", datetime.combine(d, time(7, 0), tzinfo=timezone.utc)
-    if time(11, 0) <= tod < time(13, 30):
-        return "PRE", datetime.combine(d, time(11, 0), tzinfo=timezone.utc)
-    if time(13, 30) <= tod < time(20, 0):
-        return "RTH", datetime.combine(d, time(13, 30), tzinfo=timezone.utc)
-    return "AH", datetime.combine(d, time(20, 0), tzinfo=timezone.utc)
+    return market_session(ts)
 
 
 class RollingSigmaFade:

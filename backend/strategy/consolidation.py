@@ -49,6 +49,7 @@ from backend.db.models import (
     BreakoutAnalysis
 )
 from backend.strategy.volume_profile import VolumeProfileCalculator
+from backend.strategy.session_filter import market_session_id
 
 
 # ── Zone 事件（通知上層模組）────────────────────────────
@@ -78,11 +79,11 @@ class SessionZoneDetector:
     Penta-session zone detector — 亞盤 (ASIA) + 歐盤 (EURO) + 盤前 (PRE) + 早盤 (RTH) + 盤後 (AH).
 
     五段 Session (每天 5 個區間):
-      - 亞盤 (ASIA): 22:00 UTC (18:00 ET) → 07:00 UTC (03:00 ET)
-      - 歐盤 (EURO): 07:00 UTC (03:00 ET) → 11:00 UTC (07:00 ET / 04:00 PT)
-      - 盤前 (PRE):  11:00 UTC (07:00 ET / 04:00 PT) → 13:30 UTC (09:30 ET / 06:30 PT)
-      - 早盤 (RTH):  13:30 UTC (09:30 ET) → 20:00 UTC (16:00 ET)
-      - 盤後 (AH):   20:00 UTC (16:00 ET) → 22:00 UTC (18:00 ET)
+      - ASIA: 18:00 → 03:00 America/New_York
+      - EURO: 03:00 → 07:00 America/New_York
+      - PRE:  07:00 → 09:30 America/New_York
+      - RTH:  09:30 → 16:00 America/New_York
+      - AH:   16:00 → 18:00 America/New_York
 
     算法:
       1. 每段 session 開始收集 K 線
@@ -92,14 +93,6 @@ class SessionZoneDetector:
     Zone 每 5 根 K 線重新計算 VP (POC / VAH / VAL)
     high_100 / low_100 會持續更新 (反映整個 session 範圍)
     """
-
-    # Session boundaries (all UTC)
-    ASIA_START_HOUR = 22            # 18:00 ET = 22:00 UTC — 亞盤開始
-    EURO_START_HOUR = 7              # 03:00 ET = 07:00 UTC — 歐盤開始
-    PRE_START_HOUR = 11             # 07:00 ET / 04:00 PT = 11:00 UTC — NY 盤前開始
-    RTH_START_HOUR = 13             # 09:30 ET = 13:30 UTC — 早盤開始
-    RTH_START_MINUTE = 30
-    AH_START_HOUR = 20              # 16:00 ET = 20:00 UTC — 盤後開始
 
     # Maturity: all sessions require 60 minutes development
     VP_RECALC_INTERVAL = 5         # 每 5 根重算 VP
@@ -248,44 +241,8 @@ class SessionZoneDetector:
     # ── 內部方法 ──
 
     def _get_session_id(self, candle: Candle) -> str:
-        """
-        Penta-session ID:
-          - 22:00 UTC → 06:59 UTC  = "YYYY-MM-DD-ASIA" (亞盤)
-          - 07:00 UTC → 10:59 UTC  = "YYYY-MM-DD-EURO" (歐盤)
-          - 11:00 UTC → 13:29 UTC  = "YYYY-MM-DD-PRE"  (NY 盤前)
-          - 13:30 UTC → 19:59 UTC  = "YYYY-MM-DD-RTH"  (早盤)
-          - 20:00 UTC → 21:59 UTC  = "YYYY-MM-DD-AH"   (盤後)
-
-        ASIA date = date when 22:00 UTC occurs
-        """
-        ts = candle.timestamp
-        h, m = ts.hour, ts.minute
-
-        # 22:00+ UTC → ASIA of today's date
-        if h >= self.ASIA_START_HOUR:
-            return ts.strftime("%Y-%m-%d") + "-ASIA"
-
-        # 20:00 ~ 21:59 UTC → AH of today
-        if h >= self.AH_START_HOUR:
-            return ts.strftime("%Y-%m-%d") + "-AH"
-
-        # 13:30 ~ 19:59 UTC → RTH of today
-        if h > self.RTH_START_HOUR or (
-            h == self.RTH_START_HOUR and m >= self.RTH_START_MINUTE
-        ):
-            return ts.strftime("%Y-%m-%d") + "-RTH"
-
-        # 11:00 ~ 13:29 UTC → NY PRE of today
-        if h >= self.PRE_START_HOUR:
-            return ts.strftime("%Y-%m-%d") + "-PRE"
-
-        # 07:00 ~ 10:59 UTC → EURO of today
-        if h >= self.EURO_START_HOUR:
-            return ts.strftime("%Y-%m-%d") + "-EURO"
-
-        # 00:00 ~ 06:59 UTC → still ASIA of PREVIOUS date
-        prev = ts - timedelta(days=1)
-        return prev.strftime("%Y-%m-%d") + "-ASIA"
+        """DST-aware penta-session ID based on New York wall time."""
+        return market_session_id(candle.timestamp)
 
     def _end_session(self, candle: Candle) -> Optional[ZoneEvent]:
         """Close current session zone."""

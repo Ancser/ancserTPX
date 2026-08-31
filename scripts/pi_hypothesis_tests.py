@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import sys
 from collections import defaultdict
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,12 +33,15 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from backend.data.pi_history import load_rows  # noqa: E402
 from backend.data import candle_store              # noqa: E402
+from backend.strategy.session_filter import (  # noqa: E402
+    MARKET_PHASE_FLATTEN,
+    market_close_phase,
+)
 
 SYMBOL_MAP = {"QQQ": "MNQ", "SPY": "MES"}
 POINT_VALUE = {"MNQ": 2.0, "MES": 5.0}
 TICK = 0.25
 RT_COST = {"MNQ": 14 * TICK * 2.0, "MES": 7.0}
-FLATTEN_UTC = dtime(19, 45)
 LONG_KINDS = ("青π", "深蓝圈", "淡蓝圈")
 SHORT_KINDS = ("粉π", "紫圈")
 DIRN = {k: +1 for k in LONG_KINDS} | {k: -1 for k in SHORT_KINDS}
@@ -106,8 +109,8 @@ def simulate(i0, d, bars, times, width, *, sl_k, rr, hold_min,
     """回傳 (點數, 出場原因, 出場時間)。d=+1 多 / −1 空。
 
     flatten:
-      'session'  第一個 19:45 UTC 強平(現行 bot 行為)
-      'nextday'  跳過第一個,在**第二個** 19:45 UTC 才強平(過夜一晚)
+      'session'  第一個 15:45 ET 強平(現行 bot 行為)
+      'nextday'  跳過第一個,在**第二個** 15:45 ET 才強平(過夜一晚)
       'none'     完全不強平,只靠 SL/TP/時間
     cut_at: 更強的訊號搶倉 —— 到這個時間就以市價平掉。
     """
@@ -128,10 +131,13 @@ def simulate(i0, d, bars, times, width, *, sl_k, rr, hold_min,
             return d * (tp - entry), "TP", t
         if deadline and t >= deadline:
             return d * (b.close - entry), "TIME", t
-        if flatten != "none" and t.hour == FLATTEN_UTC.hour and \
-                t.timetz().replace(tzinfo=None) >= FLATTEN_UTC:
-            seen_close += 1 if (j == i0 + 1 or times[j - 1].hour != FLATTEN_UTC.hour
-                                or times[j - 1].timetz().replace(tzinfo=None) < FLATTEN_UTC) else 0
+        in_close = market_close_phase(t) == MARKET_PHASE_FLATTEN
+        if flatten != "none" and in_close:
+            previous_in_close = (
+                j > i0 + 1
+                and market_close_phase(times[j - 1]) == MARKET_PHASE_FLATTEN
+            )
+            seen_close += 0 if previous_in_close else 1
             need = 1 if flatten == "session" else 2
             if seen_close >= need:
                 return d * (b.close - entry), "FLAT", t

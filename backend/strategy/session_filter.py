@@ -1,42 +1,116 @@
-"""Market-segment entry filter shared by live, backtest, and presets.
+"""New-York market clock shared by live, backtest, charts, and research.
 
-Segments match the penta-session buckets used by the zone detector:
+Stored candle timestamps remain UTC instants.  Market labels and risk windows
+are defined in ``America/New_York`` so EST/EDT and year boundaries are handled
+by the timezone database instead of fixed UTC offsets.
 
-- ASIA: 22:00-06:59 UTC
-- EURO: 07:00-10:59 UTC
-- PRE:  11:00-13:29 UTC
-- RTH:  13:30-19:59 UTC
-- AH:   20:00-21:59 UTC
-
-``None`` / empty / ALL means no filter.  A list such as ``["ASIA", "PRE"]``
-means new entries are allowed only in those market segments.
+``None`` / empty / ALL means no entry filter.  A list such as
+``["ASIA", "PRE"]`` allows new entries only in those market segments.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Iterable, Optional
+from zoneinfo import ZoneInfo
 
 
 SESSION_CODES = ("ASIA", "EURO", "PRE", "RTH", "AH")
 DEFAULT_ALLOWED_SESSIONS = ("ASIA",)
+MARKET_TIMEZONE = ZoneInfo("America/New_York")
+MARKET_CLOCK_VERSION = "america-new-york-v1"
+
+MARKET_PHASE_OPEN = "open"
+MARKET_PHASE_PRE_FLATTEN = "pre_flatten"
+MARKET_PHASE_FLATTEN = "flatten"
+
+_SESSION_STARTS = {
+    "ASIA": time(18, 0),
+    "EURO": time(3, 0),
+    "PRE": time(7, 0),
+    "RTH": time(9, 30),
+    "AH": time(16, 0),
+}
+_PRE_FLATTEN = time(15, 30)
+_FLATTEN = time(15, 45)
+_REOPEN = time(18, 0)
+
+
+def as_utc(ts: datetime) -> datetime:
+    """Normalize an aware timestamp or a legacy naive-UTC timestamp to UTC."""
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
+def as_new_york(ts: datetime) -> datetime:
+    """Return the same instant in the New York market timezone."""
+    return as_utc(ts).astimezone(MARKET_TIMEZONE)
 
 
 def market_session_code(ts: datetime) -> str:
-    """Return ASIA/EURO/PRE/RTH/AH for a UTC-aware or naive-UTC timestamp."""
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    ts = ts.astimezone(timezone.utc)
-    h, m = ts.hour, ts.minute
-    if h >= 22 or h < 7:
+    """Return ASIA/EURO/PRE/RTH/AH using New York local wall time."""
+    local = as_new_york(ts)
+    tod = local.time().replace(tzinfo=None)
+    if tod >= _SESSION_STARTS["ASIA"] or tod < _SESSION_STARTS["EURO"]:
         return "ASIA"
-    if h < 11:
+    if tod < _SESSION_STARTS["PRE"]:
         return "EURO"
-    if h < 13 or (h == 13 and m < 30):
+    if tod < _SESSION_STARTS["RTH"]:
         return "PRE"
-    if h < 20:
+    if tod < _SESSION_STARTS["AH"]:
         return "RTH"
     return "AH"
+
+
+def market_session(ts: datetime) -> tuple[str, datetime]:
+    """Return the market segment and its DST-aware UTC start instant."""
+    local = as_new_york(ts)
+    code = market_session_code(ts)
+    start_day = local.date()
+    if code == "ASIA" and local.time().replace(tzinfo=None) < _SESSION_STARTS["EURO"]:
+        start_day -= timedelta(days=1)
+    start_local = datetime.combine(
+        start_day,
+        _SESSION_STARTS[code],
+        tzinfo=MARKET_TIMEZONE,
+    )
+    return code, start_local.astimezone(timezone.utc)
+
+
+def market_session_id(ts: datetime) -> str:
+    """Return ``YYYY-MM-DD-CODE`` keyed by the segment's New York start date."""
+    code, start_utc = market_session(ts)
+    start_day = start_utc.astimezone(MARKET_TIMEZONE).date()
+    return f"{start_day.isoformat()}-{code}"
+
+
+def rth_session_date(ts: datetime) -> date:
+    """Date of the RTH open governing this candle's RTH/overnight cycle."""
+    local = as_new_york(ts)
+    day = local.date()
+    if local.time().replace(tzinfo=None) < _SESSION_STARTS["RTH"]:
+        day -= timedelta(days=1)
+    return day
+
+
+def market_close_phase(ts: datetime) -> str:
+    """Classify the 15:30/15:45 ET pending-cancel and flatten windows."""
+    tod = as_new_york(ts).time().replace(tzinfo=None)
+    if _FLATTEN <= tod < _REOPEN:
+        return MARKET_PHASE_FLATTEN
+    if _PRE_FLATTEN <= tod < _FLATTEN:
+        return MARKET_PHASE_PRE_FLATTEN
+    return MARKET_PHASE_OPEN
+
+
+def is_market_reopen(ts: datetime) -> bool:
+    """True during the post-maintenance ASIA segment beginning at 18:00 ET."""
+    local = as_new_york(ts)
+    return (
+        market_session_code(ts) == "ASIA"
+        and local.time().replace(tzinfo=None) >= _REOPEN
+    )
 
 
 def normalize_allowed_sessions(value) -> Optional[tuple[str, ...]]:

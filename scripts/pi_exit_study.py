@@ -11,7 +11,7 @@
 
 進場:訊號時間戳當根 1m 收盤(市價進場的保守近似)。
       QQQ → MNQ、SPY → MES。
-出場:逐根 1m 前進,先觸發者為準;盤末(19:45 UTC 強平)一律平倉。
+出場:逐根 1m 前進,先觸發者為準;盤末(15:45 ET 強平)一律平倉。
 
 用法:
     python scripts/pi_exit_study.py
@@ -24,7 +24,7 @@ import json
 import statistics as st
 import sys
 from collections import defaultdict
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,13 +33,16 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from backend.data.pi_history import load_rows  # noqa: E402
 from backend.data import candle_store  # noqa: E402
+from backend.strategy.session_filter import (  # noqa: E402
+    MARKET_PHASE_FLATTEN,
+    market_close_phase,
+)
 
 SYMBOL_MAP = {"QQQ": "MNQ", "SPY": "MES"}
 POINT_VALUE = {"MNQ": 2.0, "MES": 5.0}
 TICK = 0.25
 # 每口每趟往返成本(佣金+手續+滑價),與其他研究同口徑
 RT_COST = {"MNQ": 14 * TICK * 2.0, "MES": 7.0}
-FLATTEN_UTC = dtime(19, 45)          # 盤末強平(與 bot 一致)
 
 DIRECTION = {"淡蓝圈": +1, "深蓝圈": +1, "青π": +1, "紫圈": -1, "粉π": -1}
 
@@ -129,7 +132,7 @@ def simulate(i0, d, bars, times, width, mode, sl_k, rr, hold_min):
         if deadline and t >= deadline:
             return d * (b.close - entry), "TIME"
         # 盤末強平(所有模式都套用,C 模式的「自動停止」就是這個)
-        if t.timetz().replace(tzinfo=None) >= FLATTEN_UTC and t.hour == FLATTEN_UTC.hour:
+        if market_close_phase(t) == MARKET_PHASE_FLATTEN:
             return d * (b.close - entry), "FLAT"
     return d * (bars[min(i0 + 2999, len(bars) - 1)].close - entry), "EOD"
 

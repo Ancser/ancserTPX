@@ -26,7 +26,7 @@
 |---|---|---|
 | EXEC-001 | 內部 `side 1=Buy/2=Sell` → API `0=Bid/1=Ask`;兩個方向**不得映射到同一個值**。寫反不會拋例外,會用正確價格下反方向的單 | `test_broker_order_mapping.py` |
 | EXEC-002 | 內部 `type 3=Stop` → API `type 4`。API **沒有 type 3**,不得送出 | `test_broker_order_mapping.py` |
-| EXEC-003 | 非 Practice 帳戶必須拒絕;帳號查不到時**拒絕而非放行** | `test_broker_order_mapping.py` |
+| ~~EXEC-003~~ | `verify_practice_account()` helper 能辨識 Practice 並 fail-closed，但目前 **live start、terminal 與 `place_order()` 都沒有呼叫它**，所以它不是生效中的帳戶閘門。現有 test 只證明 helper 本身；在決定「Practice-only」或「明確 live allowlist」前不得宣稱已受保護 | `test_broker_order_mapping.py`（helper only） |
 | EXEC-004 | 每筆 live limit / market entry **必須同一個 request 附帶**策略的 `stopLossBracket` 與 `takeProfitBracket`,使用相對 entry 的有號 tick offset;不得等成交後才嘗試新增 Position bracket | `test_exec_protection_invariants.py` |
 | EXEC-005 | 成交後只掃描 attached Auto OCO 建立的子單 ID,再以 `modify_order()` 校準到策略絕對價位;**不得另開第二組**獨立 SL/TP | `test_exec_protection_invariants.py` |
 | EXEC-006 | 沒有市價參考時**必須拒絕下單**(return),不是只記 WARN | `test_exec_protection_invariants.py` |
@@ -47,6 +47,15 @@
 | LIVE-008 | `/live/stop` 未確認成功時不得顯示 STOPPED 或清除 live loop;舊 RUNNING response 不得越過 stop generation,失敗必須標示 STATUS STALE 並恢復 bounded polling | `test_live_status_frontend_contract.py` |
 | LIVE-009 | 歷史資料 fetch 不得 disconnect/replace 已被 running 或 starting live engine 擁有的 client/contract;每個 start reservation 必須 ref-counted,history-only client 必須關閉 | `test_historical_range_cache.py` |
 | LIVE-010 | 同一帳號跨 web/terminal 只能有一個 live engine；啟動競態必須在產生第二個 PI callback 前拒絕 | `test_engine_lease.py` + `test_historical_range_cache.py` |
+| LIVE-011 | 手動／未追蹤倉位屬於外部所有權：只阻擋 Bot 新開倉；Bot 不得替它掛、改、撤 SL/TP，不得因盤末、max-hold、trailing 或缺 Auto OCO 自動平倉。倉位消失後可恢復訊號；明確 `/live/flatten` 仍由使用者控制 | `test_live_manual_guardian_integration.py` |
+
+## CLOCK — 市場時鐘
+
+| ID | 不變量 | Test |
+|---|---|---|
+| CLOCK-001 | Candle／order／trade timestamp 保存 UTC instant；ASIA/EURO/PRE/RTH/AH 的牆上時間必須用 `America/New_York` + `zoneinfo` 換算，不得寫死夏令 UTC 偏移 | `test_market_clock.py` + `tests/ui/market-clock.spec.js` |
+| CLOCK-002 | Pending cancel 固定 15:30 ET、Bot-owned flatten 固定 15:45–18:00 ET；EST/EDT、12/31→1/1 都必須得到相同紐約規則 | `test_market_clock.py` |
+| CLOCK-003 | 市場盤段時鐘不得改變其他來源的日界線：Topstep 風控日仍是 `America/Chicago` 17:00，PI replay filter 仍是 `America/Los_Angeles` 07:00 | `test_live_daily_locks.py` + `test_pi_pre_session_filter.py` |
 
 ## PI — 外部訊號
 

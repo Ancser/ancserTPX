@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from backend.db.models import Candle, Direction, StrategyType, TradeSignal, get_tick_size
+from backend.strategy.session_filter import as_new_york, rth_session_date
 
 _UTC = timezone.utc
 
@@ -358,8 +359,8 @@ class GapFade(_ResearchBase):
     """RTH 開盤相對前一日 RTH 收盤的跳空,達門檻後反向做回補。"""
     NAME = "GAPFADE"
 
-    RTH_OPEN = (13, 30)     # UTC
-    RTH_CLOSE = (20, 0)
+    RTH_OPEN = (9, 30)      # America/New_York
+    RTH_CLOSE = (16, 0)
 
     def __init__(self, params):
         super().__init__(params)
@@ -371,18 +372,19 @@ class GapFade(_ResearchBase):
 
     def _track(self, candle) -> None:
         ts = _utc(candle.timestamp)
+        local = as_new_york(ts)
         d = self._trade_date(ts)
         if d != self._day:
             self._day, self._fired = d, False
             self._prev_close = self._last_rth_close
-        if (ts.hour, ts.minute) >= self.RTH_CLOSE:
+        if (local.hour, local.minute) >= self.RTH_CLOSE:
             self._last_rth_close = candle.close
 
     def evaluate(self, candle, zones=None, is_mature=True):
         self._roll(candle)
         self._track(candle)
-        ts = _utc(candle.timestamp)
-        hm = (ts.hour, ts.minute)
+        local = as_new_york(candle.timestamp)
+        hm = (local.hour, local.minute)
         if self._fired or self._prev_close is None:
             return None
         if hm < self.RTH_OPEN or hm > (self.RTH_OPEN[0], self.RTH_OPEN[1] + 15):
@@ -404,9 +406,8 @@ class MomentumContinuation(_ResearchBase):
     """交易日開頭第一段的報酬方向 → 同向進場(日內動能延續)。
 
     ⚠️ 命名沿用文獻的 Market Intraday Momentum,但**實際量測的不是 RTH 開盤
-    後 30 分鐘**。這裡的「開盤」是 Topstep 交易日邊界(22:00 UTC = 3pm PT,
-    夜盤開盤),因為 _trade_date() 用的是 17:00 CT 換日。實測 MNQ 的進場時刻
-    絕大多數落在 **22:30 UTC**(= 交易日開始後 30 分鐘)。
+    後 30 分鐘**。這裡的「開盤」是 Topstep 17:00 CT 交易日邊界
+    (夏令 22:00 UTC、冬令 23:00 UTC),不是 RTH 開盤。
 
     entry_hour 只在「該交易日 22:00 沒有 K 棒」(週末/假日順延)時才會真正
     生效 —— 那時 30 分鐘標記會落在更晚,才需要等到指定小時。所以密網格裡
@@ -515,9 +516,9 @@ class OvernightContinuation(_ResearchBase):
     """白天(RTH)漲跌定方向,夜盤開盤進場。
 
     時區(夏令 PDT = UTC-7):
-        13:30 UTC = 6:30 PT   RTH 開盤,記錄開盤價
-        20:00 UTC = 1:00 PT   RTH 收盤 → 白天方向定案
-        22:00 UTC = 3:00 PT   夜盤(ASIA)開盤 → 進場
+        09:30 ET   RTH 開盤,記錄開盤價
+        16:00 ET   RTH 收盤 → 白天方向定案
+        18:00 ET   夜盤(ASIA)開盤 → 進場
 
     ⚠️ 結構限制:週五 21:00 UTC 收盤後到週日才開市,**週五沒有當晚夜盤**,
     所以本策略每週只有週一~週四 4 個機會,樣本天生比別的策略少 20%。
@@ -528,9 +529,9 @@ class OvernightContinuation(_ResearchBase):
     """
     NAME = "ONCONT"
 
-    RTH_OPEN = (13, 30)
-    RTH_CLOSE = (20, 0)
-    NIGHT_OPEN = (22, 0)
+    RTH_OPEN = (9, 30)
+    RTH_CLOSE = (16, 0)
+    NIGHT_OPEN = (18, 0)
 
     def __init__(self, params):
         super().__init__(params)
@@ -555,9 +556,9 @@ class OvernightContinuation(_ResearchBase):
         return sum(self._day_ranges) / len(self._day_ranges)
 
     def _track(self, candle: Candle) -> None:
-        ts = _utc(candle.timestamp)
-        hm = (ts.hour, ts.minute)
-        d = ts.date()
+        local = as_new_york(candle.timestamp)
+        hm = (local.hour, local.minute)
+        d = local.date()
         if d != self._day:
             # 換日:把昨天的 RTH 幅度存進 ATR 樣本
             if self._rth_hi is not None and self._rth_lo is not None:
@@ -576,8 +577,8 @@ class OvernightContinuation(_ResearchBase):
     def evaluate(self, candle: Candle, zones=None, is_mature: bool = True):
         self._roll(candle)
         self._track(candle)
-        ts = _utc(candle.timestamp)
-        hm = (ts.hour, ts.minute)
+        local = as_new_york(candle.timestamp)
+        hm = (local.hour, local.minute)
         if self.RTH_OPEN <= hm < self.RTH_CLOSE:
             return None
 
@@ -615,7 +616,7 @@ class BetaFibRetrace(_ResearchBase):
 
     與 INTRAMOM 的差別(這是使用者原本想要的版本):
       INTRAMOM  量夜盤前 30 分鐘 → 到時間就市價進場
-      本策略    量**整個 RTH**(13:30–20:00 UTC)→ 在 0.8 回撤位**掛單等**
+      本策略    量**整個 RTH**(09:30–16:00 ET)→ 在 0.8 回撤位**掛單等**
 
     規則:
       1. RTH 收盤定案 move = rth_close - rth_open
@@ -623,7 +624,7 @@ class BetaFibRetrace(_ResearchBase):
       3. 掛單價 = rth_close - retrace_frac × move
          retrace_frac=0.2 → 守住 fib 0.8(價格回吐 20% 漲幅);
          這正是「回踩到 0.8 支撐」的口語說法。
-      4. 夜盤(20:00 → 隔日 13:30 UTC)內價格觸及該價位才成交,順 session 方向:
+      4. 夜盤(16:00 ET → 隔日 09:30 ET)內價格觸及該價位才成交,順 session 方向:
          session 漲 → 回踩到位做多;session 跌 → 反彈到位做空
       5. 沒觸及就當天作廢(限價單的本質:不追價,寧可漏單)
 
@@ -633,8 +634,8 @@ class BetaFibRetrace(_ResearchBase):
     """
     NAME = "BETAFIB"
 
-    RTH_OPEN = (13, 30)
-    RTH_CLOSE = (20, 0)
+    RTH_OPEN = (9, 30)
+    RTH_CLOSE = (16, 0)
 
     def __init__(self, params):
         super().__init__(params)
@@ -676,9 +677,8 @@ class BetaFibRetrace(_ResearchBase):
         # 只有下限的話兩者會被混在同一個統計裡。0 = 無上限。
         self.max_move_pct = float(
             getattr(params, "betafib_max_move_pct", 0.0) or 0.0)
-        # 1.0.10: 進場時窗(UTC 小時)。推動腿一律在 RTH 量測(13:30–20:00 UTC
-        # = 加州 6:30am–1pm),但掛單等回撤的時段可以另外限定。
-        # 例:加州 3pm–6pm = UTC 22–01(跨午夜)。None = 不限制。
+        # Entry-window hours are New York local wall time; ZoneInfo resolves
+        # EST/EDT per candle. None keeps the full overnight window.
         self.entry_start_h = getattr(params, "betafib_entry_start_hour", None)
         self.entry_end_h = getattr(params, "betafib_entry_end_hour", None)
         # 1.0.9: fib 錨點。使用者圖表確認實際是後者。
@@ -700,7 +700,7 @@ class BetaFibRetrace(_ResearchBase):
         self._fired = False
 
     def _in_entry_window(self, ts: datetime) -> bool:
-        """1.0.10: 是否落在允許進場的 UTC 小時區間(可跨午夜)。
+        """是否落在允許進場的 New York 小時區間（可跨午夜）。
 
         兩端任一為 None = 不限制,維持原本整個夜盤都能進場的行為。
         22→1 這種跨午夜的區間是 [22,24) ∪ [0,1),所以用 or 而不是 and。
@@ -708,7 +708,7 @@ class BetaFibRetrace(_ResearchBase):
         a, b = self.entry_start_h, self.entry_end_h
         if a is None or b is None:
             return True
-        h = ts.hour
+        h = as_new_york(ts).hour
         return (a <= h < b) if a < b else (h >= a or h < b)
 
     def _daily_atr(self) -> Optional[float]:
@@ -717,21 +717,19 @@ class BetaFibRetrace(_ResearchBase):
         return sum(self._day_ranges) / len(self._day_ranges)
 
     def _session_day(self, ts: datetime):
-        """1.0.9 BUG FIX:以 RTH 開盤(13:30 UTC)為界的交易日,不是 UTC 日曆日。
+        """以 09:30 America/New_York RTH 開盤為界的 session day。
 
-        原本用 `ts.date()` 分日 —— 但夜盤等單視窗是 20:00 UTC → 隔日 13:30 UTC,
+        原本用 UTC `ts.date()` 分日,夜盤跨 UTC 午夜時會過早清掉掛單。
         中途會跨過 UTC 00:00。日曆日一換 `_level` 就被清成 None,等於掛單只在
         20:00–23:59(4 小時)有效,而不是文件寫的 17.5 小時。訊號量被砍掉七成,
         這正是先前 SESSFIB 在 MES 上湊不到 15 筆的原因。
         """
-        d = ts.date()
-        if (ts.hour, ts.minute) < self.RTH_OPEN:
-            d = d - timedelta(days=1)
-        return d
+        return rth_session_date(ts)
 
     def _track(self, candle: Candle) -> None:
+        local = as_new_york(candle.timestamp)
+        hm = (local.hour, local.minute)
         ts = _utc(candle.timestamp)
-        hm = (ts.hour, ts.minute)
         d = self._session_day(ts)
         if d != self._day:
             if self._rth_hi is not None and self._rth_lo is not None:

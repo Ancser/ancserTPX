@@ -23,7 +23,7 @@ import argparse
 import json
 import sys
 from collections import defaultdict
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,12 +32,15 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from backend.data.pi_history import load_rows  # noqa: E402
 from backend.data import candle_store              # noqa: E402
+from backend.strategy.session_filter import (  # noqa: E402
+    MARKET_PHASE_FLATTEN,
+    market_close_phase,
+)
 
 SYMBOL_MAP = {"QQQ": "MNQ", "SPY": "MES"}
 POINT_VALUE = {"MNQ": 2.0, "MES": 5.0}
 TICK = 0.25
 RT_COST = {"MNQ": 14 * TICK * 2.0, "MES": 7.0}     # 往返成本,與其他 PI 研究同口徑
-FLATTEN_UTC = dtime(19, 45)
 
 LONG_SETS = {
     "long_pi_only": ("青π", "深蓝圈"),
@@ -110,7 +113,7 @@ def simulate(i0, bars, times, width, *, sl_k, rr, hold_min, trail_trig, trail_lo
     hold_min=0 → 不設時間出場
     trail_trig>0 → 價格走到 entry→TP 距離的 trail_trig 時,SL 上移到
                    entry + trail_lock×TP距離(專案既有語意,見 CLAUDE.md)
-    盤末 19:45 UTC 一律強平 —— 「抱到自動停止」指的就是這個。
+    盤末 15:45 ET 一律強平 —— 「抱到自動停止」指的就是這個。
     """
     entry = bars[i0].close
     w = width[i0]
@@ -133,8 +136,7 @@ def simulate(i0, bars, times, width, *, sl_k, rr, hold_min, trail_trig, trail_lo
             armed = True
         if deadline and t >= deadline:
             return b.close - entry, "TIME", t
-        if t.hour == FLATTEN_UTC.hour and \
-                t.timetz().replace(tzinfo=None) >= FLATTEN_UTC:
+        if market_close_phase(t) == MARKET_PHASE_FLATTEN:
             return b.close - entry, "FLAT", t
     _last = min(i0 + 2999, len(bars) - 1)
     return bars[_last].close - entry, "EOD", times[_last]

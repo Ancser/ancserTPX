@@ -5,7 +5,7 @@ import json
 import logging
 import sys
 from collections import Counter
-from datetime import datetime, time, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -19,13 +19,17 @@ from backend.data import candle_store
 from backend.db.models import BacktestConfig, Direction, ExitReason, StrategyParams, TradeSignal
 from backend.db.models import _extract_symbol, get_commission_rt, get_fees_rt
 from backend.terminal_live import _build_strategy_params
+from backend.strategy.session_filter import (
+    MARKET_CLOCK_VERSION,
+    MARKET_PHASE_FLATTEN,
+    MARKET_PHASE_PRE_FLATTEN,
+    is_market_reopen,
+    market_close_phase,
+)
 
 
 PT = ZoneInfo("America/Los_Angeles")
 UTC = timezone.utc
-SESSION_START = time(22, 0)      # 15:00 PT in July
-PRE_FLATTEN = time(19, 30)       # 12:30 PT
-FLATTEN = time(19, 45)           # 12:45 PT
 
 
 def _load_best_params() -> StrategyParams:
@@ -66,12 +70,11 @@ def _reason_name(reason: Any) -> str:
 class NoFlattenBestEngine(BacktestEngine):
     """Upper-bound check: let BEST ignore the 12:45-15:00 close window."""
 
-    FLATTEN_TIME_UTC = time(23, 59)
-    PRE_FLATTEN_UTC = time(23, 58)
+    CLOSE_WINDOW_ENABLED = False
 
 
 class CarryLateBestEngine(BacktestEngine):
-    """BEST only: detect signals in the close window and enter at next 22:00 UTC open."""
+    """BEST only: detect close-window signals and enter at the next 18:00 ET open."""
 
     MAX_REOPEN_GAP_R: float | None = None
 
@@ -86,13 +89,14 @@ class CarryLateBestEngine(BacktestEngine):
 
     @staticmethod
     def _in_flatten_window(ts: datetime) -> bool:
-        cur = ts.time()
-        return FLATTEN <= cur < SESSION_START
+        return market_close_phase(ts) == MARKET_PHASE_FLATTEN
 
     @staticmethod
     def _in_late_window(ts: datetime) -> bool:
-        cur = ts.time()
-        return PRE_FLATTEN <= cur < SESSION_START
+        return market_close_phase(ts) in {
+            MARKET_PHASE_PRE_FLATTEN,
+            MARKET_PHASE_FLATTEN,
+        }
 
     def _arm_carry(self, signal: TradeSignal, candle) -> None:
         if self._carry_signal is None:
@@ -148,7 +152,7 @@ class CarryLateBestEngine(BacktestEngine):
             signal.tp_price = _round_tick(entry - tp_dist, self.TICK_SIZE)
         signal.entry_price = entry
         signal.timestamp = candle.timestamp
-        signal.reason = f"{signal.reason} | CARRY_REOPEN_22UTC"
+        signal.reason = f"{signal.reason} | CARRY_REOPEN_18ET"
         signal.meta = dict(signal.meta or {})
         signal.meta.update({
             "carry_reopen": True,
@@ -189,9 +193,9 @@ class CarryLateBestEngine(BacktestEngine):
         if self._breakout_trackers:
             self._update_breakout_trackers(candle)
 
-        candle_time = candle.timestamp.time()
-        in_flatten = FLATTEN <= candle_time < SESSION_START
-        in_late = PRE_FLATTEN <= candle_time < SESSION_START
+        close_phase = market_close_phase(candle.timestamp)
+        in_flatten = close_phase == MARKET_PHASE_FLATTEN
+        in_late = close_phase in {MARKET_PHASE_PRE_FLATTEN, MARKET_PHASE_FLATTEN}
 
         # Keep Topstep-compatible handling for already-open trades.
         if in_flatten:
@@ -234,7 +238,7 @@ class CarryLateBestEngine(BacktestEngine):
             self._reset_trend_session_state()
             return
 
-        if self._carry_signal is not None and candle_time >= SESSION_START:
+        if self._carry_signal is not None and is_market_reopen(candle.timestamp):
             if self._enter_carried_signal(candle):
                 return
 
@@ -364,14 +368,15 @@ def main() -> int:
             "end": candles[-1].timestamp.isoformat(),
         },
         "rule_tested": {
-            "baseline": "production BEST behavior: cancel pending 19:30 UTC, flatten/block new entries 19:45-22:00 UTC",
-            "carry_reopen": "BEST only: if a BEST factor signal appears 19:30-22:00 UTC while flat, defer it and enter market at first 22:00+ UTC candle open; SL/TP distances from original signal are re-anchored to reopen entry",
+            "market_clock_version": MARKET_CLOCK_VERSION,
+            "baseline": "production BEST behavior: cancel pending 15:30 ET, flatten/block new entries 15:45-18:00 ET",
+            "carry_reopen": "BEST only: if a BEST factor signal appears 15:30-18:00 ET while flat, defer it and enter at the first 18:00 ET ASIA candle; SL/TP distances from the original signal are re-anchored",
             "carry_reopen_gap_guard": "same as carry_reopen, but skip if absolute reopen gap is greater than 0.25R from the original signal entry",
             "no_flatten_upper_bound": "BEST only upper-bound: remove close-window flatten/block entirely",
         },
         "summary": [
             _summarize("BEST baseline", baseline),
-            _summarize("BEST carry late signal to 22:00 UTC reopen", carry),
+            _summarize("BEST carry late signal to 18:00 ET reopen", carry),
             _summarize("BEST carry reopen with gap <= 0.25R", carry_guard),
             _summarize("BEST no close-window flatten upper-bound", no_flat),
         ],

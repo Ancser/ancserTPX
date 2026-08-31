@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -59,7 +60,9 @@ class FakeClient:
         return SimpleNamespace(success=True, error_code=None, error_message=None)
 
 
-def make_engine(client: FakeClient) -> LiveTradingEngine:
+def make_engine(
+    client: FakeClient, *, guardian_enabled: bool = True,
+) -> LiveTradingEngine:
     params = StrategyParams(
         strategy="factor",
         contract_id=CONTRACT,
@@ -77,10 +80,49 @@ def make_engine(client: FakeClient) -> LiveTradingEngine:
     )
     item._open_position = dict(POSITION)
     item._last_market_price = 101.0
+    if guardian_enabled:
+        # The legacy guardian remains testable as a dormant recovery path, but
+        # production defaults to observe-only ownership for manual positions.
+        item.MANUAL_POSITION_POLICY = "guardian"
     item.trend_follow._risk_width = (
         lambda rule, value: 10.0 if float(value) == 2.5 else 30.0
     )
     return item
+
+
+def _prepare_close_window_tick(item: LiveTradingEngine, monkeypatch) -> None:
+    class FixedDateTime(datetime):
+        @classmethod
+        def utcnow(cls):
+            return cls(2026, 1, 15, 20, 45)
+
+    monkeypatch.setattr(engine_module, "datetime", FixedDateTime)
+    item._today = "2026-01-15"
+    item._get_topstep_trade_date = Mock(return_value="2026-01-15")
+    item._sync_position = AsyncMock()
+    item._last_account_refresh = time.time()
+    item._monitor_auto_oco_protection = AsyncMock(return_value=False)
+    item._fetch_latest_candles = AsyncMock(return_value=[
+        engine_module.Candle(
+            timestamp=datetime(2026, 1, 15, 20, 44, tzinfo=timezone.utc),
+            open=100.0,
+            high=101.0,
+            low=99.0,
+            close=100.0,
+            volume=10,
+        )
+    ])
+    item._last_candle_time = None
+    item._last_status_log_minute = 45
+    item._candles_processed = 0
+    item.detector = Mock()
+    item.confluence = None
+    item._append_history = Mock()
+    item._update_tf_breakout = Mock()
+    item.trend_follow.observe = Mock()
+    item._save_zones = Mock()
+    item._pending_order_id = None
+    item.flatten_now = AsyncMock()
 
 
 def snapshot(
@@ -189,6 +231,80 @@ def test_best_factor_plan_uses_entry_centered_atr_blend_geometry():
     assert plan["tp_price"] == 130.0
     assert plan["market_safe"] is True
     assert plan["source"] == "factor atr_blend:2.5/atr_blend:7.5"
+
+
+def test_default_manual_position_policy_never_inspects_launches_or_closes(monkeypatch):
+    client = FakeClient(positions=[POSITION])
+    item = make_engine(client, guardian_enabled=False)
+    inspected = []
+    launched = []
+    monkeypatch.setattr(
+        engine_module,
+        "inspect_manual_position_guardian",
+        lambda *args, **kwargs: inspected.append(args),
+    )
+    monkeypatch.setattr(
+        engine_module,
+        "launch_manual_position_guardian",
+        lambda *args, **kwargs: launched.append(args),
+    )
+
+    asyncio.run(item._ensure_manual_position_guardian())
+
+    assert inspected == []
+    assert launched == []
+    assert client.open_order_reads == 0
+    assert client.close_calls == []
+    assert item._manual_guardian_status["status"] == "manual_position_observed"
+
+
+def test_observe_only_startup_never_reads_legacy_guardian_state(monkeypatch):
+    item = make_engine(FakeClient(positions=[POSITION]), guardian_enabled=False)
+    reads = []
+    monkeypatch.setattr(
+        engine_module,
+        "list_manual_position_guardians",
+        lambda account_id: reads.append(account_id) or [],
+    )
+
+    item._resume_persisted_manual_guardian()
+
+    assert reads == []
+    assert item._manual_guardian_status["policy"] == "observe_only"
+
+
+def test_missing_auto_oco_timeout_applies_only_to_bot_owned_position():
+    item = make_engine(FakeClient(positions=[POSITION]), guardian_enabled=False)
+    item._position_open_ts = time.time() - item.AUTO_OCO_FAILSAFE_SECONDS - 1
+    item._sl_order_id = None
+    item._tp_order_id = None
+
+    item._active_signal = None
+    assert item._auto_oco_missing_timed_out() is False
+
+    item._active_signal = bot_signal()
+    assert item._auto_oco_missing_timed_out() is True
+
+
+def test_session_close_does_not_flatten_manual_position(monkeypatch):
+    item = make_engine(FakeClient(positions=[POSITION]), guardian_enabled=False)
+    item._active_signal = None
+    _prepare_close_window_tick(item, monkeypatch)
+
+    asyncio.run(item._tick())
+
+    item.flatten_now.assert_not_awaited()
+    assert item._open_position == POSITION
+
+
+def test_session_close_still_flattens_bot_owned_position(monkeypatch):
+    item = make_engine(FakeClient(positions=[POSITION]), guardian_enabled=False)
+    item._active_signal = bot_signal()
+    _prepare_close_window_tick(item, monkeypatch)
+
+    asyncio.run(item._tick())
+
+    item.flatten_now.assert_awaited_once()
 
 
 def test_fresh_unprotected_position_launches_detached_guardian(monkeypatch):

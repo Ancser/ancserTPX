@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from backend.db.models import Candle, Direction, StrategyType, TradeSignal, get_tick_size
 from backend.strategy.volume_profile import VolumeProfileCalculator
+from backend.strategy.session_filter import market_session_id
 
 
 _UTC = timezone.utc
@@ -44,20 +45,7 @@ def _topstep_trade_date(ts: datetime) -> str:
 
 
 def _session_id(ts: datetime) -> str:
-    ts = _utc(ts)
-    h, m = ts.hour, ts.minute
-    if h >= 22:
-        return ts.strftime("%Y-%m-%d") + "-ASIA"
-    if h >= 20:
-        return ts.strftime("%Y-%m-%d") + "-AH"
-    if h > 13 or (h == 13 and m >= 30):
-        return ts.strftime("%Y-%m-%d") + "-RTH"
-    if h >= 11:
-        return ts.strftime("%Y-%m-%d") + "-PRE"
-    if h >= 7:
-        return ts.strftime("%Y-%m-%d") + "-EURO"
-    prev = ts - timedelta(days=1)
-    return prev.strftime("%Y-%m-%d") + "-ASIA"
+    return market_session_id(ts)
 
 
 class _DevelopingSessionVa:

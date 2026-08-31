@@ -1,5 +1,5 @@
 {
-  "preset_schema": "2026-07-03-sigma-resting",
+  "preset_schema": "2026-08-30-new-york-market-clock-v1",
   "presets": {
     "BEST": {
       "strategy": "factor",
@@ -63,7 +63,8 @@
       "factor_tp_value": 7.5,
       "factor_max_hold_bars": 0,
       "factor_max_trades_per_day": 3,
-      "factor_warmup_bars": 320
+      "factor_warmup_bars": 320,
+      "market_clock_version": "america-new-york-v1"
     },
     "MOMENTUM BEST": {
       "strategy": "momentum",
@@ -134,7 +135,8 @@
       "factor_max_trades_per_day": 1,
       "factor_warmup_bars": 320,
       "momentum_first_minutes": 60,
-      "momentum_entry_hour": 18
+      "momentum_entry_hour": 18,
+      "market_clock_version": "america-new-york-v1"
     },
     "BETAFIB BEST": {
       "strategy": "betafib",
@@ -207,7 +209,8 @@
       "betafib_entry_fib": 0.382,
       "betafib_anchor": "hl",
       "betafib_risk_basis": "atr_blend",
-      "betafib_min_move_pct": 0.0
+      "betafib_min_move_pct": 0.0,
+      "market_clock_version": "america-new-york-v1"
     },
     "PI BEST": {
       "strategy": "pi",
@@ -282,7 +285,8 @@
       "pi_signal_set": "long_pi_only",
       "pi_max_signal_age_min": 5,
       "pi_short_sl_value": 2.5,
-      "pi_short_hold_min": 60
+      "pi_short_hold_min": 60,
+      "market_clock_version": "america-new-york-v1"
     },
     "PI BEST 2MNQ": {
       "strategy": "pi",
@@ -357,7 +361,8 @@
       "pi_signal_set": "long_pi_only",
       "pi_max_signal_age_min": 5,
       "pi_short_sl_value": 2.5,
-      "pi_short_hold_min": 60
+      "pi_short_hold_min": 60,
+      "market_clock_version": "america-new-york-v1"
     },
     "PI 2MNQ BOTH BEST": {
       "strategy": "pi",
@@ -439,7 +444,8 @@
       "factor_tp_value": 12,
       "factor_max_hold_bars": 0,
       "factor_max_trades_per_day": 3,
-      "factor_warmup_bars": 320
+      "factor_warmup_bars": 320,
+      "market_clock_version": "america-new-york-v1"
     }
   },
   "last_used_bt": "PI 2MNQ BOTH BEST",

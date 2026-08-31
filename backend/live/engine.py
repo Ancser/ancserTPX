@@ -17,7 +17,7 @@ import logging
 import math
 import os
 import time as time_mod
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -32,7 +32,9 @@ from backend.db.models import (
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.session_filter import (
-    DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
+    DEFAULT_ALLOWED_SESSIONS, MARKET_CLOCK_VERSION, MARKET_PHASE_FLATTEN,
+    MARKET_PHASE_PRE_FLATTEN, allowed_sessions_label, is_allowed_session,
+    market_close_phase,
 )
 from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.factor import FactorSignalStrategy
@@ -75,7 +77,6 @@ def _conf_ev_floor(val) -> Optional[float]:
 class LiveTradingEngine:
     """即時交易引擎 — Session 模式 (1m K 線, 晚盤 overnight zone)"""
 
-    # 加州 12:45 PT = 15:45 ET = 14:45 CT = 19:45 UTC
     TRAIL_TICK_STEP = 5
     MIN_STOP_BRACKET_TICKS = 4
     MIN_TP_BRACKET_TICKS = 1
@@ -88,8 +89,11 @@ class LiveTradingEngine:
     # Diagnostic/UI convenience only; this setting is not a protection source.
     # Every API entry must carry attached brackets per EXEC-004.
     AUTO_OCO_SETTINGS_URL = "https://topstepx.com/settings?tab=risk-settings"
-    FLATTEN_TIME_UTC = time(19, 45)     # UTC 19:45 = PT 12:45 flatten
-    PRE_FLATTEN_UTC = time(19, 30)      # UTC 19:30 = PT 12:30 cancel pending
+    # Order-ownership boundary. Production must stay observe-only unless the
+    # behaviour, tests, and docs/LIVE_ORDER_OWNERSHIP.md are deliberately
+    # changed together. "guardian" remains only as a dormant compatibility
+    # path exercised by legacy tests; no Web/Terminal setting enables it.
+    MANUAL_POSITION_POLICY = "observe_only"
 
     def __init__(
         self,
@@ -278,9 +282,10 @@ class LiveTradingEngine:
         self._protection_synced: bool = False     # Auto OCO child orders moved to strategy prices
         self._auto_oco_fail_safe_triggered: bool = False
         self._last_auto_oco_retry_ts: float = 0.0
-        # Manual/restart positions are protected by a detached, cross-process
-        # singleton.  The engine only performs a bounded launch hand-off; it
-        # never owns or polls the software-OCO orders itself.
+        # Legacy detached-guardian state remains readable for compatibility,
+        # but production policy is observe-only. A position without this
+        # process's `_active_signal` is external: it blocks entries, while the
+        # engine must not inspect, create, modify, cancel, or flatten its exits.
         self._manual_guardian_last_attempt_ts: float = 0.0
         self._manual_guardian_last_position_id: Optional[int] = None
         self._manual_guardian_last_log: Optional[str] = None
@@ -1001,6 +1006,7 @@ class LiveTradingEngine:
             active = self.detector.get_active_zone()
             data = {
                 "saved_at": datetime.utcnow().isoformat(),
+                "market_clock_version": MARKET_CLOCK_VERSION,
                 "active_zone_id": active.zone_id if active else None,
                 "zones": [],
             }
@@ -1035,6 +1041,10 @@ class LiveTradingEngine:
                 return False
             with open(self._zone_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
+
+            if data.get("market_clock_version") != MARKET_CLOCK_VERSION:
+                self._log_event("Zone snapshot uses an older market clock; rebuilding")
+                return False
 
             # Check freshness — only use if saved within last 6 hours
             saved_at = datetime.fromisoformat(data["saved_at"])
@@ -3058,7 +3068,7 @@ class LiveTradingEngine:
 
     def _auto_oco_missing_timed_out(self) -> bool:
         """True when an engine-filled position stayed without SL/TP past the grace period."""
-        if not self._open_position:
+        if not self._open_position or self._active_signal is None:
             return False
         if self._sl_order_id and self._tp_order_id:
             return False
@@ -3120,7 +3130,14 @@ class LiveTradingEngine:
     # ── Auto OCO fail-safe ─────────────────────────────────
 
     def _resume_persisted_manual_guardian(self) -> None:
-        """Restart one account-owned guardian, including flat orphan cleanup."""
+        """Compatibility-only guardian resume; observe-only returns untouched."""
+        if self.MANUAL_POSITION_POLICY != "guardian":
+            self._manual_guardian_status = {
+                "status": "manual_position_observed" if self._open_position else "inactive",
+                "running": False,
+                "policy": "observe_only",
+            }
+            return
         self._manual_guardian_last_recovery_scan_ts = time_mod.monotonic()
         try:
             snapshots = list_manual_position_guardians(self.account_id)
@@ -3199,17 +3216,29 @@ class LiveTradingEngine:
         )
 
     async def _ensure_manual_position_guardian(self) -> None:
-        """Launch/resume the detached protector for one untracked position.
+        """Observe an untracked position, or run the dormant legacy guardian.
 
-        Fresh protection is created only when there are no unknown close-side
-        exits. Persisted owned exits are resumed by exact state IDs. No broker
-        order is placed or cancelled by this engine method.
+        Production exits at the observe-only branch before any broker-order
+        read or guardian launch. The code below that branch is retained solely
+        for compatibility/recovery tests and is not enabled by Web or Terminal.
         """
         if (
             not self._open_position
             or self._active_signal is not None
             or self._pending_order_id is not None
         ):
+            return
+        if self.MANUAL_POSITION_POLICY != "guardian":
+            identity = self._manual_position_identity(self._open_position) or {}
+            self._manual_guardian_status = {
+                "status": "manual_position_observed",
+                "running": False,
+                "policy": "observe_only",
+                "position_id": identity.get("position_id"),
+            }
+            self._log_manual_guardian_once(
+                "[MANUAL POSITION] observed only; bot orders and automatic closes are disabled"
+            )
             return
         identity = self._manual_position_identity(self._open_position)
         if identity is None or identity["contract_id"] != self.contract_id:
@@ -3425,8 +3454,15 @@ class LiveTradingEngine:
             )
 
     async def _monitor_auto_oco_protection(self) -> bool:
-        """Retry Auto OCO sync every loop and fail-safe flatten when protection is missing."""
+        """Manage attached Auto OCO only for this process's active bot signal.
+
+        Manual and post-restart untracked positions have no `_active_signal`;
+        they are observed only and can never enter the missing-OCO fail-safe.
+        See docs/LIVE_ORDER_OWNERSHIP.md before changing this boundary.
+        """
         if not self._open_position:
+            if self.MANUAL_POSITION_POLICY != "guardian":
+                return False
             now_ts = time_mod.monotonic()
             if (
                 not self._manual_guardian_last_recovery_scan_ts
@@ -3612,14 +3648,10 @@ class LiveTradingEngine:
                 f"{phase}{separator}ORDER: {self._get_order_short()}"
             )
 
-        # Use UTC directly for time checks
-        utc_time = now.time()
+        close_phase = market_close_phase(now)
 
-        # ── Flatten time (PT 12:45 = UTC 19:45) ──
-        # Only flatten between 19:45-21:59 UTC (22:00+ is new session)
-        from datetime import time as _time
-        session_start = _time(22, 0)
-        if utc_time >= self.FLATTEN_TIME_UTC and utc_time < session_start:
+        # ── Flatten time (15:45 ET, DST-aware) ──
+        if close_phase == MARKET_PHASE_FLATTEN:
             if (
                 self.strategy_mode in FACTOR_PIPELINE_STRATEGIES
                 and not self._open_position
@@ -3627,16 +3659,20 @@ class LiveTradingEngine:
             ):
                 # Keep completed-bar factor indicators warm while orders are blocked.
                 self.trend_follow.observe(candle, [], True)
-            if self._open_position:
-                self._log_event("PT 12:45 session-close flatten")
+            if self._open_position and self._active_signal is not None:
+                self._log_event("ET 15:45 session-close flatten")
                 await self.flatten_now()
+            elif self._open_position:
+                self._log_manual_guardian_once(
+                    "[MANUAL POSITION] session close observed; external position preserved"
+                )
             if self._pending_order_id:
                 await self._cancel_pending(release_breakout_lock=True)
             return  # no new trades during flatten, but detector already updated
 
-        # ── Pre-flatten: cancel pending (PT 12:30 = UTC 19:30) ──
-        if utc_time >= self.PRE_FLATTEN_UTC and utc_time < session_start and self._pending_order_id:
-            self._log_event("PT 12:30 pre-close pending-order cancellation")
+        # ── Pre-flatten: cancel bot pending entry (15:30 ET, DST-aware) ──
+        if close_phase == MARKET_PHASE_PRE_FLATTEN and self._pending_order_id:
+            self._log_event("ET 15:30 pre-close pending-order cancellation")
             await self._cancel_pending(release_breakout_lock=True)
 
         # ── Check if pending order filled ──
@@ -3681,7 +3717,8 @@ class LiveTradingEngine:
         if self._open_position:
             self._position_age += 1   # track for display only
             if (
-                self.strategy_mode in FACTOR_PIPELINE_STRATEGIES
+                self._active_signal is not None
+                and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES
                 and self._pmo_max_hold_minutes > 0
                 and self._entry_time is not None
             ):
@@ -3690,7 +3727,7 @@ class LiveTradingEngine:
                     self._log_event(f"{self.strategy_mode.upper()} max hold {self._pmo_max_hold_minutes}m reached -> flatten")
                     await self.flatten_now()
                     return
-            if self._last_market_price:
+            if self._active_signal is not None and self._last_market_price:
                 await self._check_trailing_sl_live()
             return
 

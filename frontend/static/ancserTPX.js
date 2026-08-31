@@ -4,6 +4,7 @@
 
 // Auto-detect port from current page URL (supports dynamic launcher ports)
 const API = window.location.origin + '/api';
+const MARKET_CLOCK_VERSION = 'america-new-york-v1';
 // Far-past anchor for full-range fetches. The paginated backend walks back from
 // today to the contract's earliest bar; this just has to predate any NQ/MNQ data.
 const FULL_RANGE_START = '2008-01-01';
@@ -75,6 +76,7 @@ document.addEventListener('DOMContentLoaded', refreshContractOptions);
 document.addEventListener('DOMContentLoaded', _restoreOfflineMode);
 
 const DEFAULT_STRATEGY_PARAMS = {
+    market_clock_version: MARKET_CLOCK_VERSION,
     // 1.0.9: TREND 已移除,預設策略改為 factor
     strategy: 'factor',
     tp_ticks: 200,
@@ -922,9 +924,8 @@ function onBetafibBasisChange(mode) {
     if (row) row.style.display = (basis === 'fib') ? '' : 'none';
 }
 
-// 1.0.10: BETAFIB 進場時窗。單一 select 的值是 "start,end"(UTC 小時),
-// 空字串 = 不限制(整個夜盤,原本的行為)。idx 0 取起點、1 取終點。
-// 回傳 null 而不是 0 —— 0 是合法的 UTC 小時,不能被當成「沒設定」。
+// BETAFIB entry window stores "start,end" in New York wall-clock hours.
+// Empty means the full overnight window; midnight (0) remains a valid hour.
 function _betafibWin(mode, idx) {
     const el = document.getElementById('betafib-window-' + mode);
     const raw = el ? String(el.value || '') : '';
@@ -1295,6 +1296,7 @@ function collectStrategyParams(mode) {
         ? _piMatrixPayload(mode)
         : { pi_long_kinds: null, pi_short_kinds: null };
     const params = {
+        market_clock_version: MARKET_CLOCK_VERSION,
         strategy: strategy,
         method: method,
         tf_combo: tfCombo,
@@ -1366,7 +1368,7 @@ function collectStrategyParams(mode) {
         pi_short_sl_value: _float('pi-short-sl-' + mode, 2.5),
         pi_short_hold_min: _int('pi-short-hold-' + mode, 60),
         // 1.0.10: 腿幅上限 + 進場時窗 + fib 基準的 SL/TP 層級。
-        // 時窗用單一 select,值是 "start,end"(UTC 小時);空字串 = 不限制。
+        // The single select stores New York-local "start,end" hours.
         betafib_max_move_pct: _float('betafib-maxpct-' + mode, 0),
         betafib_entry_start_hour: _betafibWin(mode, 0),
         betafib_entry_end_hour: _betafibWin(mode, 1),
@@ -3171,19 +3173,10 @@ function getMarketSession() {
     //   維護: 17:00 - 18:00 ET
     //   休市: Fri 17:00 - Sun 18:00
     const now = new Date();
-    const utcH = now.getUTCHours();
-    const utcM = now.getUTCMinutes();
-    const utcDay = now.getUTCDay(); // 0=Sun
-    const month = now.getUTCMonth(); // 0=Jan
-
-    // EDT: Mar(2)-Oct(9), EST: Nov(10)-Feb(1)
-    const isDST = (month >= 2 && month <= 9);
-    const etOffset = isDST ? 4 : 5; // UTC-4 or UTC-5
-
-    // Convert to ET minutes since midnight
-    let etMinutes = (utcH * 60 + utcM) - etOffset * 60;
-    let etDay = utcDay;
-    if (etMinutes < 0) { etMinutes += 1440; etDay = (etDay - 1 + 7) % 7; }
+    const local = _newYorkParts(now.getTime());
+    const dayCodes = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    const etMinutes = local.hour * 60 + local.minute;
+    const etDay = dayCodes[local.weekday];
 
     // Weekend: Sat all day, Sun before 18:00 ET, Fri after 17:00 ET
     if (etDay === 6) return { label: 'CLOSED', color: 'var(--text3)' };
@@ -4475,17 +4468,17 @@ function createSessionDividerCanvas() {
     return canvas;
 }
 
-// Session boundaries in UTC (hour, minute, label)
-// ASIA 22:00 → EURO 07:00 → PRE 11:00 → RTH 13:30 → AH 20:00 → ASIA 22:00
+// Session boundaries in America/New_York local wall time. nyLocalToUtcMs()
+// resolves EST/EDT separately for each date.
 const SESSION_BOUNDARIES = [
-    { h: 22, m: 0,  label: 'ASIA' },
-    { h: 7,  m: 0,  label: 'EURO' },
-    { h: 11, m: 0,  label: 'PRE'  },
-    { h: 13, m: 30, label: 'RTH'  },
-    { h: 20, m: 0,  label: 'AH'   },
+    { h: 18, m: 0,  label: 'ASIA' },
+    { h: 3,  m: 0,  label: 'EURO' },
+    { h: 7,  m: 0,  label: 'PRE'  },
+    { h: 9,  m: 30, label: 'RTH'  },
+    { h: 16, m: 0,  label: 'AH'   },
 ];
-const NO_TRADE_WINDOWS_UTC = [
-    { startH: 19, startM: 30, endH: 22, endM: 0, label: 'NO TRADE' },
+const NO_TRADE_WINDOWS_ET = [
+    { startH: 15, startM: 30, endH: 18, endM: 0, label: 'NO TRADE' },
 ];
 const NY_OPEN_ZONE_WINDOWS = [
     {
@@ -4554,6 +4547,24 @@ function nyLocalToUtcMs(year, month, day, hour, minute) {
     return utc;
 }
 
+function _newYorkParts(utcMs) {
+    const parts = new Intl.DateTimeFormat('en-US-u-ca-gregory', {
+        timeZone: 'America/New_York',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        weekday: 'short', hour: '2-digit', minute: '2-digit',
+        hourCycle: 'h23',
+    }).formatToParts(new Date(utcMs));
+    const value = type => (parts.find(p => p.type === type) || {}).value;
+    return {
+        year: parseInt(value('year'), 10),
+        month: parseInt(value('month'), 10),
+        day: parseInt(value('day'), 10),
+        hour: parseInt(value('hour'), 10) % 24,
+        minute: parseInt(value('minute'), 10),
+        weekday: value('weekday'),
+    };
+}
+
 // Chart time values are local-wall-clock encoded as UTC seconds (see
 // utcMsToChartTime), so format them with getUTC* to read back the wall clock.
 function _chartStampFull(time) {
@@ -4598,11 +4609,11 @@ function getNextSessionBoundaryMs(isoStr) {
     for (let d = startDay.getTime(); d <= formedMs + 2 * dayMs; d += dayMs) {
         const day = new Date(d);
         SESSION_BOUNDARIES.forEach(b => {
-            const boundaryMs = Date.UTC(
+            const boundaryMs = nyLocalToUtcMs(
                 day.getUTCFullYear(),
                 day.getUTCMonth(),
                 day.getUTCDate(),
-                b.h, b.m, 0
+                b.h, b.m
             );
             if (boundaryMs > formedMs + 1000 && (best === null || boundaryMs < best)) {
                 best = boundaryMs;
@@ -4796,11 +4807,11 @@ function drawSessionDividers() {
     for (let d = startDay.getTime(); d <= endMs; d += dayMs) {
         const day = new Date(d);
         SESSION_BOUNDARIES.forEach(b => {
-            const boundary = new Date(Date.UTC(
+            const boundary = new Date(nyLocalToUtcMs(
                 day.getUTCFullYear(),
                 day.getUTCMonth(),
                 day.getUTCDate(),
-                b.h, b.m, 0
+                b.h, b.m
             ));
             const bMs = boundary.getTime();
             if (bMs < fromMs - dayMs || bMs > toMs + dayMs) return;
@@ -4884,9 +4895,9 @@ function _noTradeXRanges() {
     const out = [];
     for (let d = start.getTime(); d <= toMs + dayMs; d += dayMs) {
         const day = new Date(d);
-        NO_TRADE_WINDOWS_UTC.forEach(w => {
-            const a = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.startH, w.startM, 0);
-            const b = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.endH, w.endM, 0);
+        NO_TRADE_WINDOWS_ET.forEach(w => {
+            const a = nyLocalToUtcMs(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.startH, w.startM);
+            const b = nyLocalToUtcMs(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.endH, w.endM);
             if (b < fromMs || a > toMs) return;
             const x1 = chart.timeScale().timeToCoordinate(utcMsToChartTime(a));
             const x2 = chart.timeScale().timeToCoordinate(utcMsToChartTime(b));
@@ -4911,9 +4922,9 @@ function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
 
     for (let d = startDayMs; d <= endMs; d += dayMs) {
         const day = new Date(d);
-        NO_TRADE_WINDOWS_UTC.forEach(w => {
-            const startMs = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.startH, w.startM, 0);
-            const endWindowMs = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.endH, w.endM, 0);
+        NO_TRADE_WINDOWS_ET.forEach(w => {
+            const startMs = nyLocalToUtcMs(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.startH, w.startM);
+            const endWindowMs = nyLocalToUtcMs(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.endH, w.endM);
             if (endWindowMs < fromMs || startMs > toMs) return;
             const x1 = chart.timeScale().timeToCoordinate(utcMsToChartTime(startMs));
             const x2 = chart.timeScale().timeToCoordinate(utcMsToChartTime(endWindowMs));
@@ -6273,6 +6284,15 @@ async function loadSweepResults() {
         const resp = await fetch(API + '/backtest/sweep/results');
         if (!resp.ok) return;
         const data = await resp.json();
+        if (data && data.stale_reason) {
+            _sweepData = null;
+            const wrap = document.getElementById('sweep-results-wrap');
+            const meta = document.getElementById('sweep-meta');
+            if (wrap) wrap.innerHTML = '<div style="color:var(--amber);padding:16px;">' +
+                'Saved sweep used the old fixed-UTC clock. Run SWEEP again.</div>';
+            if (meta) meta.textContent = 'MARKET CLOCK UPDATED · RERUN REQUIRED';
+            return;
+        }
         if (data && data.results && data.results.length) {
             _sweepData = data;
             renderSweepTable();
@@ -7625,12 +7645,13 @@ function liveDisplayedDailyPnl(st) {
 
 function getSessionCodeFromDate(d) {
     if (!d || isNaN(d.getTime())) return null;
-    const h = d.getUTCHours();
-    const m = d.getUTCMinutes();
-    if (h >= 22 || h < 7) return 'ASIA';
-    if (h < 11) return 'EURO';
-    if (h < 13 || (h === 13 && m < 30)) return 'PRE';
-    if (h < 20) return 'RTH';
+    const local = _newYorkParts(d.getTime());
+    const h = local.hour;
+    const m = local.minute;
+    if (h >= 18 || h < 3) return 'ASIA';
+    if (h < 7) return 'EURO';
+    if (h < 9 || (h === 9 && m < 30)) return 'PRE';
+    if (h < 16) return 'RTH';
     return 'AH';
 }
 
@@ -9628,6 +9649,7 @@ function _saveBacktestCache(d) {
     if (!d || !d.metrics) return;
     try {
         localStorage.setItem(_BT_CACHE_KEY, JSON.stringify({
+            market_clock_version: d.market_clock_version || MARKET_CLOCK_VERSION,
             metrics: d.metrics,
             trades: d.trades || [],
             daily_pnl: d.daily_pnl || null,
@@ -9644,6 +9666,10 @@ function _restoreBacktestCache() {
     let d;
     try { d = JSON.parse(raw); } catch (e) { return; }
     if (!d || !d.metrics) return;
+    if (d.market_clock_version !== MARKET_CLOCK_VERSION) {
+        try { log('Cached backtest used the old fixed-UTC clock; rerun required.', 'warning'); } catch (e) {}
+        return;
+    }
     backtestData = d;                       // feeds the Data calendar (uses .trades)
     try { renderMetrics(d.metrics, d.trades || []); } catch (e) {}
     try { renderTrades(d.trades || []); } catch (e) {}
@@ -10006,11 +10032,12 @@ const I18N_ZH = {
     '0.382 (G5 CROSS-SYMBOL WINNER)': '0.382 (G5 雙商品勝出)',
     'FIB ANCHOR': 'Fib 錨點', '(how the impulse leg is measured)': '(推動腿怎麼量)',
     'SWING LOW → HIGH': '擺動低 → 高', 'RTH OPEN → CLOSE (MES FAILS)': 'RTH open → close (MES 全崩)',
-    'ENTRY WINDOW': '進場時窗', '(PT · pullback limit-order window)': '(PT · 掛單等回撤的時段)',
-    'FULL OVERNIGHT (1pm → next day 6:30am)': '整個夜盤 (1pm → 隔日 6:30am)',
-    '6pm – MIDNIGHT': '6pm – 午夜',
-    '3pm – MIDNIGHT (FULL ASIA)': '3pm – 午夜 (ASIA 全段)',
-    'MIDNIGHT – 6am (EURO)': '午夜 – 6am (EURO)',
+    'ENTRY WINDOW': '進場時窗', '(ET · pullback limit-order window)': '(紐約時間 · 掛單等回撤的時段)',
+    'FULL OVERNIGHT (4pm → next day 9:30am ET)': '整個夜盤 (紐約 4pm → 隔日 9:30am)',
+    '6pm – 9pm ET': '紐約 6pm – 9pm', '6pm – MIDNIGHT ET': '紐約 6pm – 午夜',
+    '9pm – 3am ET': '紐約 9pm – 3am',
+    '6pm – 3am ET (FULL ASIA)': '紐約 6pm – 3am (ASIA 全段)',
+    '3am – 9am ET (EURO + PRE)': '紐約 3am – 9am (EURO + PRE)',
     'Longs use SL/TP ANCHOR above · shorts use independent settings (longer holds perform worse)':
         '多單沿用上方 SL/TP ANCHOR · 空單獨立設定(抱久會變差)',
     'SHORT SL': '空單 SL', 'SHORT TIME EXIT': '空單時間出場',

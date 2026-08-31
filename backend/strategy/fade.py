@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional
 from backend.db.models import (
     Candle, Direction, StrategyType, TradeSignal,
 )
+from backend.strategy.session_filter import as_new_york
 
 logger = logging.getLogger(__name__)
 
@@ -205,8 +206,8 @@ class OpeningRangeFade:
     MIN_TARGET_TICKS = 4
     PENDING_TIMEOUT_CANDLES = 1
 
-    OR_START_MIN = 13 * 60 + 30    # 13:30 UTC(含)
-    OR_END_MIN = 13 * 60 + 45      # 13:45 UTC(不含)— OR 完成
+    OR_START_MIN = 9 * 60 + 30     # 09:30 ET (inclusive)
+    OR_END_MIN = 9 * 60 + 45       # 09:45 ET (exclusive)
     SL_FRAC = 0.20                 # SL = 0.2 × 前日VA幅(研究最佳)
     TP_FRAC_RNG = 1.0              # TP = 1.0 × 前日VA幅(full_1r)
 
@@ -283,15 +284,12 @@ class OpeningRangeFade:
 
     # ── OR 追蹤 ──
     @staticmethod
-    def _utc_minutes(ts) -> int:
-        from datetime import timezone
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        ts = ts.astimezone(timezone.utc)
-        return ts.hour * 60 + ts.minute
+    def _market_minutes(ts) -> int:
+        local = as_new_york(ts)
+        return local.hour * 60 + local.minute
 
     def _track_or(self, candle: Candle) -> None:
-        mins = self._utc_minutes(candle.timestamp)
+        mins = self._market_minutes(candle.timestamp)
         if self.OR_START_MIN <= mins < self.OR_END_MIN:
             self._or_high = candle.high if self._or_high is None else max(self._or_high, candle.high)
             self._or_low = candle.low if self._or_low is None else min(self._or_low, candle.low)
@@ -303,7 +301,7 @@ class OpeningRangeFade:
         lv = self._levels
         if not lv or self._state == "in_trade":
             return None
-        if self._utc_minutes(candle.timestamp) < self.OR_END_MIN:
+        if self._market_minutes(candle.timestamp) < self.OR_END_MIN:
             return None
         if self._or_high is None or self._or_low is None:
             return None

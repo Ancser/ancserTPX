@@ -359,6 +359,7 @@ class StrategyParams:
     # Contract & sizing (v1.0.6) — preferred default 3 × Micro NQ
     contract_id: str = "CON.F.US.MNQ.M26"  # full contractId (NQ=ENQ, MNQ=MNQ)
     contract_size: int = 3                 # number of contracts per order (1..N)
+    market_clock_version: str = "america-new-york-v1"
     # Full TP lock: 0=OFF, 1/2/3 = stop new entries after N full TP exits. Resets next Topstep session.
     full_tp_lock: int = 0
     # One session, one direction, one order attempt. Keeps live behavior aligned with backtest.
@@ -451,10 +452,8 @@ class StrategyParams:
     # 1.0.10: 門檻改成**區間**。「漲超過 1%」跟「漲 1~4%」是不同的假設 ——
     # 暴漲日(>4%)的回撤行為與溫和上漲日不同,能排除才測得出來。0 = 無上限。
     betafib_max_move_pct: float = 0.0
-    # 1.0.10: 進場時窗(UTC 小時)。推動腿一律在 RTH(13:30–20:00 UTC =
-    # 加州 6:30am–1pm)量測,但**掛單等回撤的時段**現在可以單獨限定。
-    # 例:加州 3pm–6pm = UTC 22–01(跨午夜,程式會處理繞回)。
-    # 兩者皆 None = 不限制,維持原本的整個夜盤視窗(20:00 → 隔日 13:30)。
+    # BETAFIB entry-window hours are New York local wall-clock hours. None keeps
+    # the full overnight window. ZoneInfo resolves EST/EDT at each candle.
     betafib_entry_start_hour: Optional[int] = None
     betafib_entry_end_hour: Optional[int] = None
     # 1.0.10: risk_basis="fib" 時的 SL/TP 層級。先前寫死 0.75/0.90 且無 UI,

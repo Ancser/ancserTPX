@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 import logging
 import math
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -27,7 +27,9 @@ from backend.db.models import (
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.session_filter import (
-    DEFAULT_ALLOWED_SESSIONS, allowed_sessions_label, is_allowed_session,
+    DEFAULT_ALLOWED_SESSIONS, MARKET_PHASE_FLATTEN,
+    MARKET_PHASE_PRE_FLATTEN, allowed_sessions_label, is_allowed_session,
+    market_close_phase,
 )
 from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.factor import FactorSignalStrategy
@@ -62,9 +64,7 @@ class BacktestEngine:
     POINT_VALUE = 20.0
     TICK_SIZE = 0.25
     TRAIL_TICK_STEP = 5
-    # PT 12:45 = UTC 19:45
-    FLATTEN_TIME_UTC = time(19, 45)
-    PRE_FLATTEN_UTC = time(19, 30)
+    CLOSE_WINDOW_ENABLED = True
 
     def __init__(self, config: Optional[BacktestConfig] = None,
                  strategy_params: Optional[StrategyParams] = None,
@@ -530,14 +530,12 @@ class BacktestEngine:
         # Full TP lock counts reset on the Topstep session boundary.
         self._reset_full_tp_counts_for_session(candle.timestamp)
 
-        # Flatten time (UTC 19:45 = PT 12:45)
-        # Only flatten between 19:45-21:59 UTC (not after 22:00 = new session)
-        candle_time = candle.timestamp.time()
-        SESSION_START = time(22, 0)  # 22:00 UTC = new session
-
-        in_flatten_window = (
-            candle_time >= self.FLATTEN_TIME_UTC and candle_time < SESSION_START
+        close_phase = (
+            market_close_phase(candle.timestamp)
+            if self.CLOSE_WINDOW_ENABLED
+            else None
         )
+        in_flatten_window = close_phase == MARKET_PHASE_FLATTEN
         if (
             in_flatten_window
             and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES
@@ -553,10 +551,8 @@ class BacktestEngine:
                 self._cancel_pending_order()
             return  # no new trades during flatten, but detector already updated
 
-        # Pre-flatten: cancel pending (UTC 19:30 = PT 12:30)
-        in_pre_flatten = (
-            candle_time >= self.PRE_FLATTEN_UTC and candle_time < SESSION_START
-        )
+        # Cancel pending orders from 15:30 ET; DST is resolved by ZoneInfo.
+        in_pre_flatten = close_phase == MARKET_PHASE_PRE_FLATTEN
         if in_pre_flatten and self._pending_order:
             logger.debug("Cancelling pending order before session close")
             self._cancel_pending_order()

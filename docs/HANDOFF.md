@@ -1,14 +1,14 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-08-27. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-08-30. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            418 pytest passing + 8 subtests + browser interaction coverage
-invariants       60 total / 60 automated / 0 unprotected
+tests            463 pytest passing + 8 subtests + browser interaction coverage
+invariants       65 documented / 63 active / 2 explicitly retired
 strategies       factor · momentum · betafib · pi · fade · sigma  (+ confluence, live-only)
-presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ
+presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
 
 ## Where truth lives
@@ -72,6 +72,24 @@ clicking Backtest, while leaving `data/research/pi_signals.json` and the Live
 listener untouched. A normal historical run still uses the immutable history
 file only.
 
+### R0.5 — New York market clock + manual-position ownership (2026-08-30)
+
+Raw candle/order/trade timestamps remain UTC instants. Market segments and the
+15:30/15:45 close window now use `America/New_York`, so EST/EDT and year
+boundaries do not depend on fixed summer UTC hours. Topstep trade-day accounting
+remains `America/Chicago` 17:00; PI replay filtering remains Los Angeles 07:00.
+
+Old derived sweep/backtest results are retained as evidence but are not loaded
+as current results unless tagged `america-new-york-v1`; rerun them. Presets were
+versioned in place. Legacy non-null BETAFIB summer-UTC hours migrate once to ET.
+
+Manual/untracked positions are observe-only: they block new bot entries, but the
+engine does not launch a guardian, add/cancel exits, run trailing/max-hold, or
+session-close flatten them. When flat, strategy evaluation resumes. Bot-owned
+positions retain attached Auto OCO monitoring and fail-safe flatten behavior.
+The exact ownership matrix, unchanged OCO flow, broker caveat, and regression
+gates are recorded in `docs/LIVE_ORDER_OWNERSHIP.md`.
+
 ### R2 — Zone-age gate
 
 There is **no** zone-age trading block. The 0.17.0 code some notes refer to was
@@ -83,6 +101,19 @@ A gate is a *proposal*, not a regression to restore.
 `shadow_replay.py` matches with ±12min / ±120tick tolerance — a diagnostic, not
 a parity contract. Exact decision equivalence (separate from execution/slippage
 parity) does not exist yet.
+
+### R4 — Account and Web control boundary is not enforced
+
+`verify_practice_account()` exists but is not wired into Web start, terminal
+start, or `place_order()`. It is therefore not an active Practice-only gate.
+Blindly wiring it would also block the currently intended main/Express workflow;
+choose Practice-only mode versus an explicit armed-account allowlist first.
+
+The Web server binds `0.0.0.0:8001`, allows arbitrary CORS origins, and the
+start/stop/flatten/config routes have no inbound authentication. Treat it as a
+trusted-local-network tool only. Immediate deployment mitigation is loopback
+binding/firewalling; application authentication remains an open behavior/design
+decision.
 
 ---
 
