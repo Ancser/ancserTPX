@@ -3716,15 +3716,27 @@ class LiveTradingEngine:
         # Auto OCO protection is monitored before the candle gate; trailing still needs price.
         if self._open_position:
             self._position_age += 1   # track for display only
+            _hold = self._pmo_max_hold_minutes
+            if self.strategy_mode == "pi" and self._active_signal is not None:
+                _hold_field = (
+                    "pi_long_hold_min"
+                    if self._active_signal.direction == Direction.BUY
+                    else "pi_short_hold_min"
+                )
+                _hold = max(0, int(getattr(
+                    self.strategy_params, _hold_field, 0) or 0))
             if (
                 self._active_signal is not None
                 and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES
-                and self._pmo_max_hold_minutes > 0
+                and _hold > 0
                 and self._entry_time is not None
             ):
                 held = (datetime.utcnow() - self._entry_time).total_seconds() / 60.0
-                if held >= self._pmo_max_hold_minutes:
-                    self._log_event(f"{self.strategy_mode.upper()} max hold {self._pmo_max_hold_minutes}m reached -> flatten")
+                if held >= _hold:
+                    direction = self._active_signal.direction.value.upper()
+                    self._log_event(
+                        f"{self.strategy_mode.upper()} {direction} max hold {_hold}m reached -> flatten"
+                    )
                     await self.flatten_now()
                     return
             if self._active_signal is not None and self._last_market_price:

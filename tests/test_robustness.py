@@ -82,10 +82,21 @@ def test_monte_carlo_brackets_the_observed_result():
     pnls = [50, -20, 40, -10, 60, -30, 25, -15, 35, -5, 45, -25]
     mc = monte_carlo(pnls, iters=500, seed=DEFAULT_SEED)
     assert mc["n"] == len(pnls)
-    assert mc["pnl_p5"] < mc["pnl_p50"] < mc["pnl_p95"], "distribution collapsed"
-    assert mc["dd_p50"] <= mc["dd_p95"]
+    assert mc["pnl_p5"] <= mc["pnl_p25"] <= mc["pnl_p50"] <= mc["pnl_p75"] <= mc["pnl_p95"], "distribution collapsed"
+    assert mc["dd_p5"] <= mc["dd_p25"] <= mc["dd_p50"] <= mc["dd_p75"] <= mc["dd_p95"]
     assert 0.0 <= mc["p_loss"] <= 1.0
     assert mc["pf_p5"] > 0
+    for key in ("pnl_curve", "dd_curve"):
+        curve = mc[key]
+        assert len(curve) == len(pnls) + 1
+        assert curve[0]["step"] == 0
+        assert all(set(("step", "p5", "p25", "p50", "p75", "p95"))
+                   <= set(point) for point in curve)
+        assert all(point["p5"] <= point["p25"] <= point["p50"]
+                   <= point["p75"] <= point["p95"] for point in curve)
+    assert any(point["p50"] != 0 for point in mc["pnl_curve"][1:])
+    assert all(a["p50"] <= b["p50"]
+               for a, b in zip(mc["dd_curve"], mc["dd_curve"][1:]))
 
 
 def test_monte_carlo_pass_requires_all_three_gates():
@@ -201,8 +212,16 @@ def test_evaluate_returns_every_panel_field_in_one_call():
     assert result["stats"]["n"] == 12
     assert result["monte_carlo"] is not None
     assert result["walk_forward"] is not None
+    assert len(result["walk_forward"]["curve"]) == 13
+    assert result["walk_forward"]["curve"][0]["segment"] == 0
+    assert result["walk_forward"]["curve"][-1]["pnl"] == pytest.approx(150.0)
     assert result["monthly_pnl"] is not None
     assert isinstance(result["monte_carlo_pass"], bool)
+    assert len(result["slip"]["base_curve"]) == 13
+    assert all(len(row["curve"]) == 13 for row in result["slip"]["levels"])
+    assert result["slip"]["base_curve"][-1]["pnl"] == pytest.approx(150.0)
+    assert all(row["curve"][-1]["pnl"] == pytest.approx(row["stats"]["pnl"])
+               for row in result["slip"]["levels"])
 
 
 # ── the frontend must stop computing this itself ────────────────────────
@@ -253,14 +272,18 @@ def test_robustness_endpoint_returns_every_field_the_panel_reads():
     assert body["trades"] == 12
     for key in ("pnl", "pf", "max_dd", "win", "n"):
         assert key in body["stats"]
-    for key in ("pnl_p5", "pnl_p50", "pnl_p95", "p_loss",
-                "dd_p50", "dd_p95", "p_dd_breach", "pf_p5"):
+    for key in ("pnl_p5", "pnl_p25", "pnl_p50", "pnl_p75", "pnl_p95", "p_loss",
+                "dd_p5", "dd_p25", "dd_p50", "dd_p75", "dd_p95",
+                "p_dd_breach", "pf_p5", "pnl_curve", "dd_curve"):
         assert key in body["monte_carlo"], key
     assert isinstance(body["monte_carlo_pass"], bool)
     assert len(body["walk_forward"]["segments"]) == 3
+    assert len(body["walk_forward"]["curve"]) == 13
     assert body["span_months"] is not None
     assert body["monthly_pnl"] is not None
     assert [row["level"] for row in body["slip"]["levels"]] == [1, 2, 4, 8]
+    assert len(body["slip"]["base_curve"]) == 13
+    assert all(len(row["curve"]) == 13 for row in body["slip"]["levels"])
     assert body["slip"]["tick_value"] == pytest.approx(0.5)   # MNQ: $2 x 0.25
 
 

@@ -244,6 +244,7 @@ class PiListener:
         self._messages_duplicates = 0
         self._messages_pre_session = 0
         self._messages_unparsed = 0
+        self._messages_multi_signal_skipped = 0
         self._callbacks = 0
         self._callback_errors = 0
         self._last_cursor: Optional[str] = None
@@ -306,6 +307,7 @@ class PiListener:
             "messages_duplicates": self._messages_duplicates,
             "messages_pre_session": self._messages_pre_session,
             "messages_unparsed": self._messages_unparsed,
+            "messages_multi_signal_skipped": self._messages_multi_signal_skipped,
             "callbacks": self._callbacks,
             "callback_errors": self._callback_errors,
             "last_cursor": self._last_cursor,
@@ -675,6 +677,27 @@ class PiListener:
                     self._messages_unparsed += 1
                     if not append_message_event(msg, event="unparsed"):
                         self._audit_write_errors += 1
+            if len(sigs) >= 2:
+                # A single Discord post containing several marks is an
+                # aggregate/opening-summary message, not an atomic trade
+                # signal.  The user-approved rule is message-level: discard
+                # every parsed mark before the audit/callback boundary, even
+                # if one of the marks would later have made money.  Keep one
+                # diagnostic row so restart dedup and the audit trail know
+                # that the source message was intentionally rejected.
+                self._messages_multi_signal_skipped += 1
+                if not append_message_event(
+                    msg,
+                    event="multi_signal_skip",
+                    error=f"{len(sigs)} supported marks in one message",
+                ):
+                    self._audit_write_errors += 1
+                logger.warning(
+                    "[PI] 略過單一訊息的多標記訊號 %s (%d marks)",
+                    msg_id,
+                    len(sigs),
+                )
+                continue
             for sig in sigs:
                 received_at = datetime.now(timezone.utc)
                 sig.received_at = received_at
@@ -725,6 +748,7 @@ class PiListener:
             messages_seen=self._messages_seen,
             messages_pre_session=self._messages_pre_session,
             messages_unparsed=self._messages_unparsed,
+            messages_multi_signal_skipped=self._messages_multi_signal_skipped,
             signals_audited=self._signals_audited,
             callbacks=self._callbacks,
             callback_errors=self._callback_errors,

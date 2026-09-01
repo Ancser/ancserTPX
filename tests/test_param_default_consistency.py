@@ -34,7 +34,7 @@ ROUTES = ROOT / "backend" / "api" / "routes.py"
 # 否則「改預設」這個動作會靜默失效。
 BEHAVIOUR_PARAMS = {
     "pi_long_only", "pi_signal_set", "pi_max_signal_age_min",
-    "pi_short_sl_value", "pi_short_hold_min",
+    "pi_short_sl_value", "pi_long_hold_min", "pi_short_hold_min",
     "factor_sl_value", "factor_max_hold_bars", "rr_ratio",
     "trail_enabled", "trail_trigger_pct", "trail_lock_pct",
     "tr_daily_loss_stop", "tr_daily_win_stop", "tr_daily_profit_stop",
@@ -154,7 +154,44 @@ def test_pi_defaults_agree_across_all_three_layers():
     assert dc.pi_long_only is True
     assert _PARAM_DEFAULTS.pi_long_only is dc.pi_long_only
     assert _PARAM_DEFAULTS.pi_signal_set == dc.pi_signal_set
+    assert _PARAM_DEFAULTS.pi_long_hold_min == dc.pi_long_hold_min == 0
+    assert _PARAM_DEFAULTS.pi_short_hold_min == dc.pi_short_hold_min == 60
+    assert strat.pi_long_hold == 0
+    assert strat.pi_short_hold == 60
     assert strat.pi_short_kinds == (), "策略層仍然允許做空"
+
+
+def test_pi_time_exit_explicit_zero_survives_route_construction():
+    """0 means OFF; request normalization must not replace it with 60."""
+    from types import SimpleNamespace
+
+    from backend.api.routes import _build_strategy_params_from_request
+
+    params = _build_strategy_params_from_request(
+        SimpleNamespace(
+            strategy="pi",
+            pi_long_hold_min=0,
+            pi_short_hold_min=0,
+        ),
+        contract_size=1,
+    )
+
+    assert params.pi_long_hold_min == 0
+    assert params.pi_short_hold_min == 0
+
+
+def test_shipped_pi_presets_keep_long_time_exit_off():
+    import json
+
+    presets = json.loads((ROOT / "data" / "presets.json").read_text(encoding="utf-8"))
+    pi_presets = {
+        name: values
+        for name, values in presets["presets"].items()
+        if values.get("strategy") == "pi"
+    }
+
+    assert pi_presets
+    assert all(values.get("pi_long_hold_min") == 0 for values in pi_presets.values())
 
 
 class TestTimeExitStaysOff:

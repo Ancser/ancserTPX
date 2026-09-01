@@ -24,6 +24,9 @@ rows = [r for r in rows if not (r.get("pre_session") or is_pre_session(...))]
   實盤、圖表、研究看到的**是同一組訊號**
 
 過濾規則本身住在 `backend.live.pi_listener.is_pre_session`(實盤也用同一個)。
+單一 Discord 訊息若解析出兩個以上支援的 PI 標記,整則被視為開盤總結/聚合
+訊息而不是原子訊號;正常 loader 也會整則排除。`include_pre_session=True` 是
+明確的原始資料研究模式,保留這些列供稽核,不代表可拿去交易。
 """
 from __future__ import annotations
 
@@ -59,10 +62,27 @@ def row_is_pre_session(row: dict) -> bool:
         return False
 
 
-def load_rows(include_pre_session: bool = False, path: Path | None = None) -> list[dict]:
-    """讀 pi_signals.json。預設**濾掉開盤前重播**。
+def row_has_multiple_signals(row: dict) -> bool:
+    """Return whether one source message contains 2+ supported PI marks.
 
-    include_pre_session=True 只有在研究「重播本身」時才該用。
+    ``marks`` is the parser's per-message list.  Count marks, rather than a
+    presentation ``count`` field such as ``×2``: the live parser emits one
+    ``PiSignal`` for each matched mark and the message-level rejection must
+    use the same unit.
+    """
+    if not isinstance(row, dict):
+        return False
+    return sum(
+        1
+        for mark in (row.get("marks") or [])
+        if isinstance(mark, dict) and mark.get("kind") in DIRECTION
+    ) >= 2
+
+
+def load_rows(include_pre_session: bool = False, path: Path | None = None) -> list[dict]:
+    """讀 pi_signals.json。預設濾掉重播及單訊息多標記聚合。
+
+    include_pre_session=True 只有在研究原始重播/聚合資料時才該用。
     """
     p = path or HIST_PATH
     try:
@@ -77,10 +97,25 @@ def load_rows(include_pre_session: bool = False, path: Path | None = None) -> li
 
     if include_pre_session:
         return rows
-    kept = [r for r in rows if not row_is_pre_session(r)]
+    kept = []
+    dropped_pre_session = 0
+    dropped_multi_signal = 0
+    for row in rows:
+        if row_is_pre_session(row):
+            dropped_pre_session += 1
+            continue
+        if row_has_multiple_signals(row):
+            dropped_multi_signal += 1
+            continue
+        kept.append(row)
     dropped = len(rows) - len(kept)
     if dropped:
-        logger.info("[PI] 濾除開盤前重播 %d 則 → 保留 %d 則", dropped, len(kept))
+        logger.info(
+            "[PI] 濾除開盤前重播 %d 則、多標記訊息 %d 則 → 保留 %d 則",
+            dropped_pre_session,
+            dropped_multi_signal,
+            len(kept),
+        )
     return kept
 
 

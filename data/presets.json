@@ -285,6 +285,7 @@
       "pi_signal_set": "long_pi_only",
       "pi_max_signal_age_min": 5,
       "pi_short_sl_value": 2.5,
+      "pi_long_hold_min": 0,
       "pi_short_hold_min": 60,
       "market_clock_version": "america-new-york-v1"
     },
@@ -361,6 +362,7 @@
       "pi_signal_set": "long_pi_only",
       "pi_max_signal_age_min": 5,
       "pi_short_sl_value": 2.5,
+      "pi_long_hold_min": 0,
       "pi_short_hold_min": 60,
       "market_clock_version": "america-new-york-v1"
     },
@@ -431,6 +433,7 @@
       ],
       "pi_max_signal_age_min": 5,
       "pi_short_sl_value": 1.5,
+      "pi_long_hold_min": 0,
       "pi_short_hold_min": 60,
       "betafib_max_move_pct": 0,
       "betafib_entry_start_hour": null,
@@ -449,7 +452,7 @@
     }
   },
   "last_used_bt": "PI 2MNQ BOTH BEST",
-  "last_used_live": "default",
+  "last_used_live": "PI 2MNQ BOTH BEST",
   "fixed_presets": [],
   "latest_sweep_presets": [
     "0709 FACTOR #1 EMAPMO long_only early atr_blend SL2.5 TP2 HOFF PF3.80",

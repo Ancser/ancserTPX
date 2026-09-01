@@ -473,6 +473,7 @@ class StrategyParams:
     pi_short_kinds: Optional[List[str]] = None
     pi_max_signal_age_min: int = 5        # 超過即丟棄(BLOCK 不是 WARN)
     pi_short_sl_value: float = 2.5        # 空單 SL(×atr_blend)
+    pi_long_hold_min: int = 0             # 多單時間出場(分鐘);0 = 不用
     pi_short_hold_min: int = 60           # 空單時間出場(分鐘);0 = 不用
     betafib_sl_fib: float = 0.75
     betafib_tp_fib: float = 0.90

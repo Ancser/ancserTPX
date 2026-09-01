@@ -69,6 +69,32 @@ def test_precision_source_role_survives_copy_replacement():
     assert replace.count("template.cloneNode(true)") == 1
 
 
+def test_form_control_live_properties_are_mirrored_without_secret_values():
+    """Precision must show current UI state, not cloneNode markup defaults."""
+    js = _source(GLASS_JS)
+    state = _slice(
+        js,
+        "function mirrorFormControlState",
+        "/* Clone a live sampling source",
+    )
+    bind = _slice(js, "function bindCloneState", "/* key → 該滑桿")
+    sync = _slice(js, "function syncOpticalSurfaces", "function scheduleOpticalSync")
+
+    assert "source.selectedIndex" in state
+    assert "source.options[index]?.selected" in state
+    assert "copy.replaceChildren" in state
+    assert "sourceSignature.length !== copySignature.length" in state
+    assert "source.checked" in state
+    assert "source.indeterminate" in state
+    assert '["password", "hidden", "file"]' in state
+    assert 'copy.removeAttribute("value")' in state
+    assert 'copy.value = ""' in state
+    assert "surface.mainFormPairs = formMirrorPairs" in bind
+    assert "surface.contentFormPairs = formMirrorPairs" in bind
+    assert "mirrorFormState(surface.mainFormPairs)" in sync
+    assert "mirrorFormState(surface.contentFormPairs)" in sync
+
+
 def test_only_tier_one_fallbacks_are_reexposed_to_precision():
     js = _source(GLASS_JS)
     css = _source(GLASS_CSS)

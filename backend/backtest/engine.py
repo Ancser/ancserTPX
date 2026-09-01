@@ -561,14 +561,17 @@ class BacktestEngine:
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
-                # 1.0.10: PI 策略的持倉上限**依方向不同** —— 實測多單抱越久越好
-                # (240m PF 2.80)、空單抱越久越差(240m PF 0.79)。空單用 60m
-                # 時間出場的 PF 是純 SL/TP 的 2.28 vs 1.89(總額幾乎相同,
-                # 差在時間出場會把一部分虧損單提早砍掉)。
+                # PI 持倉上限依方向讀取。多單預設 0=OFF,空單預設 60m;
+                # 兩側都從同一份 StrategyParams 進來,避免 UI 顯示有值但引擎沒讀。
                 _hold = self._pmo_max_hold_minutes
-                if self.strategy_mode == "pi" and self._open_position.direction == Direction.SELL:
+                if self.strategy_mode == "pi":
+                    _hold_field = (
+                        "pi_long_hold_min"
+                        if self._open_position.direction == Direction.BUY
+                        else "pi_short_hold_min"
+                    )
                     _hold = max(0, int(getattr(
-                        self.strategy_params, "pi_short_hold_min", 0) or 0))
+                        self.strategy_params, _hold_field, 0) or 0))
                 if _hold > 0 and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES:
                     held = (candle.timestamp - self._open_position.entry_time).total_seconds() / 60.0
                     if held >= _hold:

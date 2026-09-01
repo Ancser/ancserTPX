@@ -180,9 +180,10 @@ class PiSignalStrategy(_ResearchBase):
         # 沒有這一條的話,選了 pi_only 之類含空方的 set 就會繞過它。
         if self.pi_long_only:
             self.pi_short_kinds = ()
-        # 空單專屬出場(多單沿用 factor_sl_value / rr_ratio)——
-        # 多單抱越久越好、空單抱越久越差,兩邊不能共用同一組。
+        # 多空方向出場不能共用同一組。多單沿用 factor_sl_value / rr_ratio,
+        # 時間出場預設 OFF;空單保留獨立 SL 與 60m 時間出場。
         self.pi_short_sl = float(getattr(params, "pi_short_sl_value", 2.5) or 2.5)
+        self.pi_long_hold = int(getattr(params, "pi_long_hold_min", 0) or 0)
         self.pi_short_hold = int(getattr(params, "pi_short_hold_min", 60) or 0)
         # 1.0.10: 回測用的歷史訊號。live 走 push() 佇列,回測走這條 ——
         # 否則回測時佇列永遠是空的,結果一定 0 筆。

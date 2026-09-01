@@ -199,6 +199,60 @@ def load_recent_events(limit: int = 200, *, path: Path | None = None,
     return rows
 
 
+def filter_multi_signal_events(events: Iterable[dict]) -> list[dict]:
+    """Remove signal rows belonging to a message with 2+ parsed marks.
+
+    Live rows are written once per parsed mark, with a later callback row for
+    that same mark.  Therefore the filter counts each distinct
+    ``(kind, symbol, source timestamp, size, position)`` mark and collapses
+    ``received``/``recorded``/callback variants with ``max`` before deciding.
+    Two identical marks still count as two because their event rows are
+    counted twice.  Raw audit storage is intentionally left untouched; this
+    policy is for chart/replay consumers and protects old audit rows produced
+    before the live listener gained the message-level guard.
+    """
+    rows = list(events)
+    signal_events = {"received", "recorded", "callback", "callback_error"}
+    by_message: dict[str, dict[tuple[str, str, str, str, str, str], dict[str, int]]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or row.get("event") not in signal_events:
+            continue
+        message_id = str(row.get("message_id") or "")
+        kind = str(row.get("kind") or "")
+        if not message_id or not kind:
+            continue
+        mark_key = (
+            kind,
+            str(row.get("equity") or "").upper(),
+            str(row.get("future") or "").upper(),
+            str(row.get("ts") or ""),
+            str(row.get("size") or ""),
+            str(row.get("pos") or ""),
+        )
+        counts = by_message.setdefault(message_id, {}).setdefault(
+            mark_key,
+            {event: 0 for event in signal_events},
+        )
+        counts[str(row.get("event"))] += 1
+
+    blocked: set[str] = set()
+    for message_id, marks in by_message.items():
+        mark_count = sum(max(counts.values()) for counts in marks.values())
+        if mark_count >= 2:
+            blocked.add(message_id)
+
+    if not blocked:
+        return rows
+    return [
+        row for row in rows
+        if not (
+            isinstance(row, dict)
+            and str(row.get("message_id") or "") in blocked
+            and row.get("event") in signal_events
+        )
+    ]
+
+
 def load_replay_rows(
     start: datetime,
     end: datetime,
@@ -234,8 +288,10 @@ def load_replay_rows(
     seen: set[tuple[str, str, str]] = set()
     # Filter in the reader, not here: heartbeat rows would otherwise consume
     # the whole window and the replay would silently see almost no signals.
-    for event in load_recent_events(limit, path=path,
-                                    events=("received", "recorded")):
+    audit_events = filter_multi_signal_events(
+        load_recent_events(limit, path=path, events=("received", "recorded"))
+    )
+    for event in audit_events:
         if event.get("event") not in {"received", "recorded"}:
             continue
         kind = str(event.get("kind") or "")
@@ -317,7 +373,7 @@ def load_message_ids(*, path: Path | None = None) -> set[str]:
             # Live engine's seed.
             if row.get("event") not in {
                 "received", "recorded", "callback", "callback_error",
-                "pre_session_skip", "unparsed", "parse_error",
+                "pre_session_skip", "multi_signal_skip", "unparsed", "parse_error",
             }:
                 continue
             message_id = str(row.get("message_id") or "")
@@ -344,7 +400,7 @@ def load_message_timestamps(*, path: Path | None = None) -> set[str]:
     timestamps: set[str] = set()
     allowed = {
         "received", "recorded", "callback", "callback_error",
-        "pre_session_skip", "unparsed", "parse_error",
+        "pre_session_skip", "multi_signal_skip", "unparsed", "parse_error",
     }
     try:
         for line in handle:

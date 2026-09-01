@@ -161,6 +161,29 @@ class TestBacktestPath:
         assert len(out) == 1, "只有 10:12 PT 那筆該留下"
         assert not any(is_pre_session(ts) for ts, _ in out)
 
+    def test_loader_filters_multi_mark_messages_even_after_session(self, monkeypatch, tmp_path):
+        import json
+
+        from backend.data import pi_history
+
+        rows = [
+            {"id": "single", "ts": "2026-07-15T17:12:44+00:00",
+             "symbol": "QQQ", "marks": [{"kind": "青π", "count": 1}]},
+            {"id": "aggregate", "ts": "2026-07-15T17:12:45+00:00",
+             "symbol": "QQQ", "marks": [
+                 {"kind": "淡蓝圈", "count": 1},
+                 {"kind": "青π", "count": 1},
+             ]},
+        ]
+        f = tmp_path / "pi_signals.json"
+        f.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+        assert len(pi_history.load_rows(path=f)) == 1
+        assert pi_history.load_rows(path=f)[0]["id"] == "single"
+        assert [row["id"] for row in pi_history.load_rows(
+            include_pre_session=True, path=f
+        )] == ["single", "aggregate"]
+
     def test_live_replay_rows_are_run_scoped_and_do_not_mutate_history_cache(self, tmp_path, monkeypatch):
         import json
 

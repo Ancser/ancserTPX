@@ -154,6 +154,7 @@
     let scrollSeq = 0;
     let sliderSeq = 0;
     let switchSeq = 0;
+    let formControlSeq = 0;
 
     /* Generated PNG kernels are pure functions of component geometry.
        Rebuilding the same 450x94 dock map on every theme/page resize was
@@ -663,6 +664,62 @@
         });
     }
 
+    /* Form controls keep their live state in DOM properties, not attributes.
+       cloneNode() therefore recreates the markup default (first option,
+       unchecked box, initial input value) even after the app has loaded a
+       preset/account. Precision would look geometrically current while showing
+       stale values. Mirror properties explicitly; never copy secret/hidden
+       input values into optical DOM. */
+    function mirrorFormControlState(source, copy) {
+        if (!source || !copy) return;
+        if (source instanceof HTMLSelectElement && copy instanceof HTMLSelectElement) {
+            const signature = (select) => [...select.options].map((option) => (
+                `${option.value}\u0000${option.textContent}\u0000${option.disabled}`
+            ));
+            const sourceSignature = signature(source);
+            const copySignature = signature(copy);
+            if (
+                sourceSignature.length !== copySignature.length
+                || sourceSignature.some((value, index) => value !== copySignature[index])
+            ) {
+                /* Presets/accounts are populated after first paint. A property
+                   sync cannot select an option the boot-time clone never had,
+                   so refresh this small control subtree before selecting. */
+                copy.replaceChildren(
+                    ...[...source.childNodes].map((node) => node.cloneNode(true))
+                );
+            }
+            [...copy.options].forEach((option, index) => {
+                option.selected = Boolean(source.options[index]?.selected);
+            });
+            copy.selectedIndex = source.selectedIndex;
+            copy.disabled = source.disabled;
+            return;
+        }
+        if (source instanceof HTMLInputElement && copy instanceof HTMLInputElement) {
+            const type = String(source.type || "text").toLowerCase();
+            if (!["password", "hidden", "file"].includes(type)) {
+                copy.value = source.value;
+            } else {
+                copy.removeAttribute("value");
+                copy.value = "";
+            }
+            copy.checked = source.checked;
+            copy.indeterminate = source.indeterminate;
+            copy.disabled = source.disabled;
+            return;
+        }
+        if (source instanceof HTMLTextAreaElement && copy instanceof HTMLTextAreaElement) {
+            copy.value = source.value;
+            copy.textContent = source.value;
+            copy.disabled = source.disabled;
+            return;
+        }
+        if (source instanceof HTMLOptionElement && copy instanceof HTMLOptionElement) {
+            copy.selected = source.selected;
+        }
+    }
+
     /* Clone a live sampling source without ever cloning an optical layer.
 
        Removing .optical-layer after cloneNode(true) is too late: once a
@@ -691,6 +748,9 @@
             const childCopy = cloneSourceTree(child);
             if (childCopy) copy.appendChild(childCopy);
         });
+        if (source.nodeType === Node.ELEMENT_NODE) {
+            mirrorFormControlState(source, copy);
+        }
         return copy;
     }
 
@@ -723,6 +783,7 @@
     }
 
     function cloneOpticalSource(source, roleClasses = []) {
+        markFormSources(source);
         markCloneDisplay(source);
         const copy = cloneSourceTree(source);
         sanitizeClone(copy);
@@ -777,6 +838,10 @@
         surface.contentScrollPairs = scrollMirrorPairs(
             surface.contentStage, surface.contentStageCopy
         );
+        surface.mainFormPairs = formMirrorPairs(surface.stage, surface.stageCopy);
+        surface.contentFormPairs = formMirrorPairs(
+            surface.contentStage, surface.contentStageCopy
+        );
         surface.mainPins = surface.stageCopy
             ? [...surface.stageCopy.querySelectorAll('[data-optical-pin="viewport"]')]
             : [];
@@ -789,6 +854,12 @@
         (pairs || []).forEach(([source, copy]) => {
             copy.scrollLeft = source.scrollLeft;
             copy.scrollTop = source.scrollTop;
+        });
+    }
+
+    function mirrorFormState(pairs) {
+        (pairs || []).forEach(([source, copy]) => {
+            mirrorFormControlState(source, copy);
         });
     }
 
@@ -816,6 +887,38 @@
                 track.dataset.switchKey = `switch-${switchSeq++}`;
             }
         });
+        markFormSources(document);
+    }
+
+    function markFormSources(root) {
+        if (!root) return;
+        const controls = [];
+        if (root.matches?.("input, select, textarea")) controls.push(root);
+        controls.push(...root.querySelectorAll?.("input, select, textarea") || []);
+        controls
+            .filter((control) => !control.closest(".optical-layer"))
+            .forEach((control) => {
+                if (!control.dataset.opticalFormKey) {
+                    control.dataset.opticalFormKey = `form-${formControlSeq++}`;
+                }
+            });
+    }
+
+    function formMirrorPairs(sourceRoot, copyRoot) {
+        if (!sourceRoot || !copyRoot) return [];
+        const sources = [];
+        if (sourceRoot.matches?.("[data-optical-form-key]")) sources.push(sourceRoot);
+        sources.push(...sourceRoot.querySelectorAll("[data-optical-form-key]"));
+        return sources
+            .filter((source) => !source.closest(".optical-layer"))
+            .map((source) => {
+                const key = source.dataset.opticalFormKey;
+                const copy = copyRoot.matches?.(`[data-optical-form-key="${key}"]`)
+                    ? copyRoot
+                    : copyRoot.querySelector(`[data-optical-form-key="${key}"]`);
+                return copy ? [source, copy] : null;
+            })
+            .filter(Boolean);
     }
 
     /* Glass surfaces are sampled before their optical layers are mounted, so
@@ -1133,6 +1236,8 @@
             if (component && surface.component !== component) return;
             syncSliderFillsIn(surface.stageCopy);            // 1.0.10 #2
             if (surface.contentStageCopy) syncSliderFillsIn(surface.contentStageCopy);
+            mirrorFormState(surface.mainFormPairs);
+            mirrorFormState(surface.contentFormPairs);
             if (surface.syncSample) {
                 surface.syncSample(surface.stageCopy);
                 if (surface.contentStageCopy) surface.syncSample(surface.contentStageCopy);
@@ -3376,6 +3481,18 @@
             scheduleOpticalSync(false);
         });
         document.addEventListener("scroll", () => scheduleOpticalSync(false), true);
+        /* User-driven form changes schedule a state-only sync. Programmatic
+           values are also refreshed on every Precision pointer sample. */
+        ["input", "change"].forEach((eventName) => {
+            document.addEventListener(eventName, (event) => {
+                if (
+                    event.target?.matches?.("input, select, textarea")
+                    && !event.target.closest(".optical-layer")
+                ) {
+                    scheduleOpticalSync(false);
+                }
+            }, true);
+        });
 
         startMirrorHeartbeat();
         document.addEventListener("visibilitychange", () => {

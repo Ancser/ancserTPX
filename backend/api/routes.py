@@ -583,9 +583,16 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         pi_short_sl_value=max(0.1, float(
             getattr(req, "pi_short_sl_value", None)
             or _PARAM_DEFAULTS.pi_short_sl_value)),
+        # 0 is an intentional OFF value. Do not use `or default` here or a
+        # saved OFF preset silently becomes the non-zero default on execution.
+        pi_long_hold_min=max(0, int(
+            _PARAM_DEFAULTS.pi_long_hold_min
+            if getattr(req, "pi_long_hold_min", None) is None
+            else getattr(req, "pi_long_hold_min"))),
         pi_short_hold_min=max(0, int(
-            getattr(req, "pi_short_hold_min", None)
-            or _PARAM_DEFAULTS.pi_short_hold_min or 0)),
+            _PARAM_DEFAULTS.pi_short_hold_min
+            if getattr(req, "pi_short_hold_min", None) is None
+            else getattr(req, "pi_short_hold_min"))),
         betafib_sl_fib=min(1.5, max(-0.5, float(
             getattr(req, "betafib_sl_fib", 0.75) or 0.75))),
         betafib_tp_fib=min(1.5, max(-0.5, float(
@@ -1515,6 +1522,7 @@ class BacktestRequest(BaseModel):
     pi_short_kinds: Optional[List[str]] = None
     pi_max_signal_age_min: int = 5
     pi_short_sl_value: float = 2.5
+    pi_long_hold_min: int = 0
     pi_short_hold_min: int = 60
     betafib_sl_fib: float = 0.75
     betafib_tp_fib: float = 0.90
@@ -3940,6 +3948,7 @@ class LiveStartRequest(BaseModel):
     pi_short_kinds: Optional[List[str]] = None
     pi_max_signal_age_min: int = 5
     pi_short_sl_value: float = 2.5
+    pi_long_hold_min: int = 0
     pi_short_hold_min: int = 60
     contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     contract_size: int = 3
@@ -5260,10 +5269,14 @@ async def pi_signal_audit(limit: int = 200, events: Optional[str] = None):
     chart passes ``received,recorded``: without it the listener's per-poll
     heartbeat fills the window and older signals fall off within hours.
     """
-    from backend.data.pi_live_audit import load_recent_events
+    from backend.data.pi_live_audit import filter_multi_signal_events, load_recent_events
 
     wanted = [e.strip() for e in str(events).split(",") if e.strip()] if events else None
-    return {"events": load_recent_events(limit, events=wanted)}
+    return {
+        "events": filter_multi_signal_events(
+            load_recent_events(limit, events=wanted)
+        )
+    }
 
 
 @router.get("/pi/recorder/status")

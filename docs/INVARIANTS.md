@@ -82,6 +82,8 @@
 | PI-009 | Web/terminal startup may backfill today/yesterday into the separate audit stream, but every parsed mark is record-only (no strategy callback); pre-session rows stay diagnostic-only and chart visibility ignores preset acceptance | `test_live_status_health.py` |
 | PI-010 | The single active Discord listener's `received`/`recorded` audit rows may overlay both Live and Backtest charts; chart rendering never mutates the immutable history file | `test_ui_glass_repair_contracts.py` |
 | PI-011 | An explicit PI Backtest may merge in-range audit rows into that run only (deduped and pre-session filtered); it never appends to `pi_history`, changes Live callbacks, or creates an order | `test_pi_live_audit.py` + `test_pi_pre_session_filter.py` |
+| PI-012 | A single Discord message that parses to 2+ supported PI marks is an invalid aggregate/summary: no mark from it may reach the live callback, normal history loader, replay input, or chart audit overlay; the raw source may remain audit-only | `test_live_status_health.py` + `test_pi_live_audit.py` + `test_pi_pre_session_filter.py` |
+| PI-013 | PI 的多／空時間出場必須各讀自己的參數並保持 live/backtest 一致:多單預設 `0=OFF`,空單預設 `60m`,明確的 `0` 不得被 API fallback 改回非零。Live 只可對 `_active_signal` 所有的 bot 倉位觸發既有 `flatten_now()`;不得碰手動倉位或另造 OCO 路徑 | `test_pi_directional_exits.py` + `test_param_default_consistency.py` |
 
 ## DATA — 蠟燭庫
 
@@ -133,14 +135,17 @@
 | UI-015 | **拇指就是鏡片,任何情況都不可以被遮蔽。** `visibility` 會繼承,遮住 `.switch-thumb` 等於一起關掉裡面那層 `.optical-layer` —— 開關照樣能拖能點,但 active 狀態整個消失(只剩一顆綠藥丸) | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 | UI-016 | Stage 複本沒有 `.optical-layer`(複本在 `buildOpticalSurfaces()` 掛 layer **之前**就做好了),但 class 與 inline style 會被原樣鏡射進去。所以複本**永遠只能畫靜止材質**,不得繼承 lens-up 狀態,否則 Precision 會在活的拇指上蓋一顆純 `--bg` 藥丸。同理,控制項自己舉起鏡片時 Precision 必須讓開 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 | UI-017 | lens-up 材質是一組**成對**的東西(`--bg` 底 + `.optical-layer`),兩半都必須由 `--switch-glass` 驅動。綁到 `.interacting` class 上就會變成兩個時鐘:`apply()` 在拇指停止移動那一幀就拿掉 class,彈簧卻還要再跑 ~70ms,結果鏡片已經淡出、底色還停在 `--bg` —— 每次放手都閃一下黑 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| UI-018 | Precision／光學複本必須鏡像表單控制項的**目前 property 狀態**與動態 options，不可停在 `cloneNode()` 複製到的初始 HTML attribute；`password`、`hidden`、`file` 的值永遠不得複製進光學 DOM | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
+| UI-019 | RESEARCH robustness 的 Monte Carlo 百分位只能來自後端同一個 seeded bootstrap，並完整呈現 P5/P25/P50/P75/P95；摘要六欄等寬、Monte Carlo 必須排第一、P25–P75 內帶與外帶必須可區分，風險警示與動態 `?` 說明不得退回長篇行內文字 | `test_robustness.py` + `tests/ui/research-robustness.spec.js` |
+| UI-020 | Research robustness charts use the backend's seeded path data: Monte Carlo exposes P5/P25/P50/P75/P95 at every replay step, Walk-Forward exposes one chronological cumulative/maxDD path, and Slippage exposes original plus every injected level for both curves. The Topstep/XFA tables show sizes 1/2/3/5/10. Calendar BT/LIVE labels stay in normal HTML rows so responsive SVG scaling cannot squash the text. | `test_robustness.py` + `tests/ui/research-robustness.spec.js` |
 | RES-001 | **走查分段只能有一份定義。** `sweep.py` 的評分與 RESEARCH 面板的走查必須呼叫同一個 `robustness.segment_index()`。1.0.8g 起 `sweep.py` 內嵌一份、1.1 又在 `robustness.py` 寫了第二份,兩者只靠一個「比對原始碼字串」的測試宣稱一致 —— 從未拿實際數字對過。同一個詞在兩條路徑上可能是兩件事 | `test_robustness.py` |
 
 ---
 
 ## 目前的覆蓋缺口(誠實版)
 
-**60 條目前都已有自動化保護。** UI-002…017 的 paint/timing 行為由
-`tests/ui/glass-ui.spec.js` 在 Chromium 驗證;小型架構接縫另由 pytest static
+**72 條 active invariant 目前都已有自動化保護。** UI-002…019 的 paint/timing／表單鏡像／Research 呈現行為由
+`tests/ui/glass-ui.spec.js` 與 `tests/ui/research-robustness.spec.js` 在 Chromium 驗證;小型架構接縫另由 pytest static
 contracts 快速擋回歸。CI 的 browser job 以 `--lifespan off` 啟動 app,不得啟動
 candle accumulator / shadow replay / broker 連線。
 

@@ -1,12 +1,12 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-08-31. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-01. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            472 pytest passing + 8 subtests + real-Chrome interaction coverage
-invariants       70 documented / 68 active / 2 explicitly retired
+tests            489 pytest passing + 8 subtests + 32 Chromium interaction tests
+invariants       74 documented / 72 active / 2 explicitly retired
 strategies       factor · momentum · betafib · pi · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
@@ -71,7 +71,13 @@ When the user explicitly runs a PI Backtest, the route now adds any in-range
 This makes a signal received today visible to the calculation immediately after
 clicking Backtest, while leaving `data/research/pi_signals.json` and the Live
 listener untouched. A normal historical run still uses the immutable history
-file only.
+file only. Since 2026-08-31, one Discord message that parses to two or more
+supported PI marks is rejected as an aggregate/opening-summary message. The
+live listener writes only a diagnostic `multi_signal_skip` row, while the
+normal history loader, same-day replay loader, and audit API filter legacy
+multi-mark rows as well. This is message-level and independent of whether a
+candidate mark would have been accepted or profitable; raw audit backups remain
+for investigation and actual broker/execution records are not rewritten.
 
 ### R0.5 — New York market clock + manual-position ownership (2026-08-30)
 
@@ -114,6 +120,50 @@ All 42 files under `scripts/` passed an import-smoke after the migration. This
 proves interface/import compatibility, not that their old numeric reports remain
 valid; rerun any study containing EST months. `MOMENTUM`'s researched UTC
 `entry_hour` remains unchanged; Topstep day accounting remains DST-aware CT.
+
+### R0.6 — PI directional exits + current-form Lens (2026-08-31)
+
+PI now has separate, end-to-end time exits: `pi_long_hold_min` defaults to
+`0` (OFF), while `pi_short_hold_min` defaults to `60`. An explicit zero
+survives request normalization. Backtest and Live select the limit by the
+position/signal direction; Live applies it only while `_active_signal` proves
+the position is bot-owned, then calls the existing `flatten_now()` path.
+Attached Auto OCO creation/synchronization was not changed. That existing
+flatten path cancels known bot orders, flattens, and performs the residual
+broker-order sweep; manual/untracked positions remain observe-only.
+
+The PI exit form presents the same `1` through `4` ATR choices (0.5 steps) on
+both sides, with `LONG SL | LONG TIME EXIT` and
+`SHORT SL | SHORT TIME EXIT` as equal-width rows. Label-to-control spacing is
+the normal 4px used by the rest of the form.
+
+Precision Lens previously cloned initial markup attributes, so later
+JavaScript changes to `select.value`, selected options, account lists, preset
+lists, checkboxes, and text inputs could remain stale inside the lens. Optical
+clones now carry stable form keys and synchronize live DOM properties before
+paint, including late option-list changes. Password, hidden, and file values
+are deliberately blank in optical DOM. If a future regression ever shows a
+Lens/source disagreement, the real source control remains authoritative.
+
+### R0.7 — Research robustness presentation (2026-09-01)
+
+The Research panel now starts with six equal-width baseline cards (TRADES,
+CONTRACT, DATE, PF, PNL/MO, MAXDD), followed by Monte Carlo, Walk-Forward,
+Slippage, then Topstep/XFA. The long combined heading and repeated baseline
+sentence were removed. Topstep program explanations are available through the
+same dynamic `?` tooltip mechanism as parameter help.
+
+Monte Carlo P5/P25/P50/P75/P95 values come from the existing seeded backend
+bootstrap; the browser does not compute a second distribution. PNL/MO and
+maxDD now show the full point-by-point P5–P95 replay envelope: P25–P75 is the
+lighter inner band and P5–P95 is the lower-opacity outer band, with all five
+percentile lines visible. Walk-Forward shows its chronological cumulative
+curve and running maxDD; Slippage shows original plus every injected level on
+both curves. The scalar stat lines remain below each chart and wrap one row per
+result. PNL/MO below zero gets the Performance-style amber warning; maxDD uses
+the existing risk meaning: over $1,000 amber, over $2,000 red. Topstep/XFA now
+show 1, 2, 3, 5, and 10 MNQ results. No live engine, order, OCO, signal, or
+preset behavior changed.
 
 ### R2 — Zone-age gate
 

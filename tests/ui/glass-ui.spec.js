@@ -497,6 +497,119 @@ test.beforeEach(async ({ page }) => {
   await openApp(page);
 });
 
+test("Precision Lens mirrors current preset, account, and PI exit values", async ({ page }) => {
+  // Apply the exact Backtest preset without POSTing /presets/use.  This keeps
+  // the browser contract deterministic without rewriting last_used_bt in the
+  // developer's real data/presets.json.
+  await page.evaluate(() => {
+    const name = "PI 2MNQ BOTH BEST";
+    const preset = document.querySelector("#preset-bt");
+    preset.value = name;
+    applyStrategyParams("bt", _presetsCache.presets[name]);
+    const probeHost = document.querySelector("#factor-exit-bt");
+    for (const [id, type, value] of [
+      ["optical-password-probe", "password", "never-copy-password"],
+      ["optical-hidden-probe", "hidden", "never-copy-hidden-value"],
+    ]) {
+      const secret = document.createElement("input");
+      secret.id = id;
+      secret.type = type;
+      secret.setAttribute("value", value);
+      secret.value = value;
+      probeHost.appendChild(secret);
+    }
+    window.TpxGlass.resample();
+    window.TpxGlass.sync(false);
+  });
+  await settleTwoFrames(page);
+
+  const readMirrors = (ids) => page.evaluate((sourceIds) => {
+    const mirrored = (id) => {
+      const source = document.getElementById(id);
+      const key = source?.dataset.opticalFormKey;
+      const copies = key ? [...document.querySelectorAll(
+        `.chart-lens[data-optical="precision"] .optical-stage-copy.optical-tier-2-source [data-optical-form-key="${key}"]`,
+      )] : [];
+      const read = (select) => ({
+        value: select.value,
+        text: select.selectedOptions?.[0]?.textContent.trim() || "",
+      });
+      return { source: read(source), copies: copies.map(read) };
+    };
+    return Object.fromEntries(sourceIds.map((id) => [id, mirrored(id)]));
+  }, ids);
+
+  const exitState = await readMirrors([
+    "preset-bt",
+    "factor-sl-value-bt",
+    "pi-short-sl-bt",
+    "pi-long-hold-bt",
+    "pi-short-hold-bt",
+  ]);
+
+  expect(exitState["preset-bt"].source.value).toBe("PI 2MNQ BOTH BEST");
+  expect(exitState["factor-sl-value-bt"].source.value).toBe("4");
+  expect(exitState["pi-short-sl-bt"].source.value).toBe("1.5");
+  expect(exitState["pi-long-hold-bt"].source.value).toBe("0");
+  expect(exitState["pi-short-hold-bt"].source.value).toBe("60");
+
+  const secretCopies = await page.evaluate(() => [
+    "optical-password-probe",
+    "optical-hidden-probe",
+  ].map((id) => {
+    const source = document.getElementById(id);
+    const key = source.dataset.opticalFormKey;
+    const copies = [...document.querySelectorAll(
+      `.optical-stage-copy [data-optical-form-key="${key}"]`,
+    )];
+    return {
+      id,
+      sourceValue: source.value,
+      copies: copies.map((copy) => ({
+        value: copy.value,
+        valueAttribute: copy.getAttribute("value"),
+      })),
+    };
+  }));
+  expect(secretCopies.every((item) => item.sourceValue.startsWith("never-copy-"))).toBe(true);
+  expect(secretCopies.reduce((total, item) => total + item.copies.length, 0)).toBeGreaterThan(0);
+  expect(secretCopies.every((item) => item.copies.every((copy) => (
+    copy.value === "" && (copy.valueAttribute === null || copy.valueAttribute === "")
+  ))), JSON.stringify(secretCopies)).toBe(true);
+
+  // Account controls are visible only in Live.  Add an option after the
+  // optical template already exists so this also proves that late broker
+  // options are copied, not just their selectedIndex.
+  await page.locator(
+    '.header-tabs.glass-dock:not(.optical-stage-copy) > .tab[data-tab="live"]',
+  ).click();
+  await page.evaluate(() => {
+    const account = document.querySelector("#live-acct-select-1");
+    if (![...account.options].some((option) => option.value === "987654")) {
+      account.add(new Option("LENS ACCOUNT [EXPRESS] $2,201", "987654"));
+    }
+  });
+  await page.locator("#live-acct-select-1").selectOption("987654");
+  await page.locator("#live-acct-preset-1").selectOption("PI 2MNQ BOTH BEST");
+  await page.evaluate(() => window.TpxGlass.sync(false));
+  await settleTwoFrames(page);
+
+  const liveState = await readMirrors([
+    "live-acct-select-1",
+    "live-acct-preset-1",
+  ]);
+
+  expect(liveState["live-acct-select-1"].source.value).toBe("987654");
+  expect(liveState["live-acct-preset-1"].source.value).toBe("PI 2MNQ BOTH BEST");
+
+  for (const item of [...Object.values(exitState), ...Object.values(liveState)]) {
+    expect(item.copies.length).toBeGreaterThan(0);
+    expect(item.copies.every((copy) => (
+      copy.value === item.source.value && copy.text === item.source.text
+    ))).toBe(true);
+  }
+});
+
 test("model identities and language state have one presentation truth", async ({ page }) => {
   for (const id of ["strategy-bt", "strategy-live"]) {
     const options = await page.locator(`#${id} option`).evaluateAll((nodes) => (
@@ -630,9 +743,11 @@ test("model identities and language state have one presentation truth", async ({
 test("English parameter chrome is canonical and round-trips to Chinese", async ({ page }) => {
   await page.evaluate(() => {
     for (const mode of ["bt", "live"]) {
-      const select = document.querySelector(`#strategy-${mode}`);
-      select.value = "pi";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+      applyStrategyParams(mode, {
+        strategy: "pi",
+        pi_signal_set: "long_pi_only",
+        pi_long_only: true,
+      });
     }
   });
 
@@ -694,15 +809,21 @@ test("English parameter chrome is canonical and round-trips to Chinese", async (
 
 test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset payloads", async ({ page }) => {
   await page.evaluate(() => {
-    const strategy = document.querySelector("#strategy-bt");
-    strategy.value = "pi";
-    strategy.dispatchEvent(new Event("change", { bubbles: true }));
+    applyStrategyParams("bt", {
+      strategy: "pi",
+      pi_signal_set: "long_pi_only",
+      pi_long_only: true,
+    });
   });
 
   const matrix = page.locator('#pi-params-bt [data-pi-matrix="bt"]').first();
   await expect(matrix).toBeVisible();
   await expect(matrix.locator(".pi-matrix-column")).toHaveText(["LONG", "SHORT"]);
   await expect(matrix.locator(".pi-matrix-row-label")).toHaveText(["PI", "LEVEL 2", "LEVEL 1"]);
+  await expect(matrix.locator(".pi-matrix-note")).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText(
+    "SHORT LEVEL 1/2 bubbles are recorded only",
+  );
   await expect(matrix.locator('.pi-matrix-grid > .pi-matrix-cell > .glass-switch')).toHaveCount(6);
   await expect(matrix.locator('.pi-matrix-grid > .pi-matrix-cell > .glass-switch > .switch-thumb.optical-surface[data-optical="switch"]')).toHaveCount(6);
   const thumbStyles = await matrix.locator('.pi-matrix-grid > .pi-matrix-cell > .glass-switch > .switch-thumb').evaluateAll((nodes) => nodes.map((node) => {
@@ -713,24 +834,50 @@ test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset p
   expect(thumbStyles.every((thumb) => thumb.position === "absolute" && thumb.width > 0 && thumb.height > 0 && thumb.opacity > 0)).toBe(true);
   await expect(page.locator("#factor-params-bt")).toBeHidden();
   await expect(page.locator("#factor-sl-value-label-bt")).toHaveText("LONG SL");
+  await expect(page.locator("#pi-long-hold-group-bt")).toBeVisible();
   await expect(page.locator("#pi-short-sl-group-bt")).toBeVisible();
+  await expect(page.locator("#pi-short-hold-group-bt")).toBeVisible();
 
   const slGeometry = await page.evaluate(() => {
     const box = (selector) => {
       const rect = document.querySelector(selector).getBoundingClientRect();
       return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     };
+    const gap = (selector) => {
+      const control = document.querySelector(selector);
+      const label = control.closest(".form-group").querySelector("label");
+      return control.getBoundingClientRect().top - label.getBoundingClientRect().bottom;
+    };
     return {
       anchor: box("#factor-sl-rule-bt"),
-      long: box("#factor-sl-value-bt"),
-      short: box("#pi-short-sl-bt"),
+      longSl: box("#factor-sl-value-bt"),
+      longTime: box("#pi-long-hold-bt"),
+      shortSl: box("#pi-short-sl-bt"),
+      shortTime: box("#pi-short-hold-bt"),
+      gaps: [
+        gap("#factor-sl-value-bt"), gap("#pi-long-hold-bt"),
+        gap("#pi-short-sl-bt"), gap("#pi-short-hold-bt"),
+      ],
     };
   });
-  expect(Math.abs(slGeometry.long.y - slGeometry.short.y)).toBeLessThanOrEqual(1);
-  expect(Math.abs(slGeometry.long.width - slGeometry.short.width)).toBeLessThanOrEqual(1);
-  expect(slGeometry.anchor.width).toBeGreaterThan(slGeometry.long.width * 1.9);
+  expect(Math.abs(slGeometry.longSl.y - slGeometry.longTime.y)).toBeLessThanOrEqual(1);
+  expect(Math.abs(slGeometry.shortSl.y - slGeometry.shortTime.y)).toBeLessThanOrEqual(1);
+  expect(slGeometry.shortSl.y).toBeGreaterThan(slGeometry.longSl.y);
+  for (const box of [slGeometry.longTime, slGeometry.shortSl, slGeometry.shortTime]) {
+    expect(Math.abs(slGeometry.longSl.width - box.width)).toBeLessThanOrEqual(1);
+  }
+  expect(slGeometry.anchor.width).toBeGreaterThan(slGeometry.longSl.width * 1.9);
+  expect(slGeometry.gaps.every((gap) => gap >= 3 && gap <= 5)).toBe(true);
+
+  const atrLabels = ["1 x ATR", "1.5 x ATR", "2 x ATR", "2.5 x ATR", "3 x ATR", "3.5 x ATR", "4 x ATR"];
+  await expect(page.locator("#factor-sl-value-bt option")).toHaveText(atrLabels);
+  await expect(page.locator("#pi-short-sl-bt option")).toHaveText(atrLabels);
+  await expect(page.locator("#pi-long-hold-bt")).toHaveValue("0");
+  await expect(page.locator("#pi-short-hold-bt")).toHaveValue("60");
 
   let payload = await page.evaluate(() => collectStrategyParams("bt"));
+  expect(payload.pi_long_hold_min).toBe(0);
+  expect(payload.pi_short_hold_min).toBe(60);
   expect(payload.pi_signal_set).toBe("long_pi_only");
   expect(payload.pi_long_only).toBe(true);
   expect(payload.pi_long_kinds).toEqual(["青π", "深蓝圈"]);

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.db.models import StrategyParams
 from backend.live.engine import LiveTradingEngine
-from backend.live.pi_listener import BOT_ID, PiSignal, PiListener
+from backend.live.pi_listener import BOT_ID, PiSignal, PiListener, parse_message
 
 
 CONTRACT = "CON.F.US.MNQ.U26"
@@ -441,6 +441,40 @@ def test_pi_dispatch_skips_bad_messages_and_delivers_later_valid_signal(monkeypa
     assert delivered[0].received_at is not None
     assert [event[1]["event"] for event in audited] == ["received", "callback"]
     assert listener._last_id == "123456789"
+
+
+def test_pi_dispatch_rejects_multi_mark_message_before_callback(monkeypatch):
+    """A profitable mark cannot rescue an invalid aggregate message."""
+    delivered = []
+    audited = []
+    message_events = []
+    monkeypatch.setattr(
+        "backend.live.pi_listener.append_signal_event",
+        lambda sig, **kwargs: audited.append((sig, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        "backend.live.pi_listener.append_message_event",
+        lambda msg, **kwargs: message_events.append((msg, kwargs)) or True,
+    )
+    listener = PiListener("token", delivered.append)
+    multi = {
+        "id": "123456790",
+        "author": {"id": BOT_ID},
+        "timestamp": "2026-08-10T17:00:00+00:00",
+        "content": (
+            "@everyone 🚨 π信号出现（QQQ）\n"
+            "• 淡蓝圈 ×1（大）\n"
+            "• 青π ×1（中）"
+        ),
+    }
+
+    asyncio.run(listener._dispatch_messages([multi]))
+
+    assert len(parse_message(multi)) == 2  # positive parser assertion
+    assert delivered == []
+    assert audited == []
+    assert [kwargs["event"] for _, kwargs in message_events] == ["multi_signal_skip"]
+    assert listener.get_health()["messages_multi_signal_skipped"] == 1
 
 
 def test_pi_run_recovers_after_an_unexpected_poll_cycle_exception():

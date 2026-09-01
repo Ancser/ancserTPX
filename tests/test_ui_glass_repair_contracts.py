@@ -252,6 +252,7 @@ def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
         "MAX SIGNAL AGE",
         "MOVE MIN",
         "ENTRY FIB",
+        "LONG TIME EXIT",
         "SHORT TIME EXIT",
         "PI π / CIRCLES",
         "BETAFIB LEVELS",
@@ -261,8 +262,9 @@ def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
 
 def test_pi_matrix_is_two_column_glass_switch_ui_and_keeps_legacy_wire_fields():
     for mode in ("bt", "live"):
-        matrix = HTML[HTML.index(f'data-pi-matrix="{mode}"'):]
-        matrix = matrix[:matrix.index("</div>", matrix.index("pi-matrix-note"))]
+        start = HTML.index(f'data-pi-matrix="{mode}"')
+        end = HTML.index('class="pi-legacy-controls"', start)
+        matrix = HTML[start:end]
         assert f'id="pi-matrix-{mode}-long-pi"' in matrix
         assert f'id="pi-matrix-{mode}-short-pi"' in matrix
         assert f'id="pi-matrix-{mode}-long-level2"' in matrix
@@ -272,7 +274,8 @@ def test_pi_matrix_is_two_column_glass_switch_ui_and_keeps_legacy_wire_fields():
         assert "class=\"glass-switch pi-matrix-switch" in matrix
         assert "LONG" in matrix and "SHORT" in matrix
         assert "LEVEL 2" in matrix and "LEVEL 1" in matrix
-        assert "SHORT LEVEL 1/2 bubbles are recorded only" in matrix
+        assert "pi-matrix-note" not in matrix
+        assert "SHORT LEVEL 1/2 bubbles are recorded only" not in matrix
         assert f'id="pi-signal-set-{mode}"' in HTML
         assert f'id="pi-long-only-{mode}"' in HTML
 
@@ -294,21 +297,61 @@ def test_requested_control_geometry_is_explicit_and_consistent():
     assert "height: 2.625rem" in tuner
 
 
-def test_pi_sl_values_are_named_by_side_and_share_one_two_column_row():
+def test_pi_directional_exits_use_matching_atr_options_and_two_half_column_rows():
+    expected_atr = [
+        ("1", "1 x ATR"), ("1.5", "1.5 x ATR"),
+        ("2", "2 x ATR"), ("2.5", "2.5 x ATR"),
+        ("3", "3 x ATR"), ("3.5", "3.5 x ATR"), ("4", "4 x ATR"),
+    ]
+
+    def options(select_id: str) -> list[tuple[str, str]]:
+        match = re.search(
+            rf'<select id="{re.escape(select_id)}"[^>]*>(.*?)</select>',
+            HTML,
+            flags=re.DOTALL,
+        )
+        assert match, f"missing select #{select_id}"
+        return re.findall(
+            r'<option value="([^"]+)"[^>]*>([^<]+)</option>',
+            match.group(1),
+        )
+
     for mode in ("bt", "live"):
         row_start = HTML.index(f'id="factor-sl-row-{mode}"')
-        row_end = HTML.index("</div>\n                    </div>", row_start)
+        row_end = HTML.index(f'id="factor-hold-{mode}"', row_start)
         row = HTML[row_start:row_end]
         assert f'id="factor-sl-value-label-{mode}">SL INPUT<' in row
+        assert f'id="pi-long-hold-group-{mode}"' in row
+        assert f'id="pi-long-hold-{mode}"' in row
         assert f'id="pi-short-sl-group-{mode}"' in row
         assert f'id="pi-short-sl-{mode}"' in row
+        assert f'id="pi-short-hold-group-{mode}"' in row
+        assert f'id="pi-short-hold-{mode}"' in row
+        assert options(f"factor-sl-value-{mode}") == expected_atr
+        assert options(f"pi-short-sl-{mode}") == expected_atr
+        assert options(f"pi-long-hold-{mode}") == [
+            ("0", "0 (OFF)"), ("60", "60"), ("120", "120"), ("240", "240"),
+        ]
+        assert options(f"pi-short-hold-{mode}") == [
+            ("0", "0 (OFF)"), ("60", "60"), ("120", "120"), ("240", "240"),
+        ]
+        assert re.search(
+            rf'<select id="pi-long-hold-{mode}">\s*<option value="0" selected>',
+            HTML,
+        )
         assert HTML.count(f'id="pi-short-sl-{mode}"') == 1
+        assert HTML.count(f'id="pi-long-hold-{mode}"') == 1
+        assert HTML.count(f'id="pi-short-hold-{mode}"') == 1
 
     assert "slRow.classList.toggle('pi-dual-sl', isPi)" in JS
     assert "longSlLabel.textContent = isPi ? 'LONG SL' : 'SL INPUT'" in JS
     assert "'LONG SL': '多單 SL'" in JS
+    assert "pi_long_hold_min: _int('pi-long-hold-' + mode, 0)" in JS
+    assert "pi_short_hold_min: _int('pi-short-hold-' + mode, 60)" in JS
     assert ".factor-sl-row.pi-dual-sl" in CSS
     assert "grid-template-columns: repeat(2, minmax(0, 1fr))" in CSS
+    assert '"long-sl long-time"' in CSS
+    assert '"short-sl short-time"' in CSS
 
 
 def test_retired_auto_center_is_absent_but_other_chart_tools_remain():

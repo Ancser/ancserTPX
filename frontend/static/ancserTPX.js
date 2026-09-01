@@ -188,6 +188,9 @@ const DEFAULT_STRATEGY_PARAMS = {
     factor_max_hold_bars: 0,   // 1.0.9: HOLD 5m system removed → SL/TP-only exits
     factor_max_trades_per_day: 3,
     factor_warmup_bars: 150,
+    pi_short_sl_value: 2.5,
+    pi_long_hold_min: 0,
+    pi_short_hold_min: 60,
     // 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 };
 
@@ -771,6 +774,8 @@ function updateStrategyParamVisibility(mode) {
     show('pi-params-' + mode, isPi);
     show('pi-exit-' + mode, isPi);
     show('pi-short-sl-group-' + mode, isPi);
+    show('pi-long-hold-group-' + mode, isPi);
+    show('pi-short-hold-group-' + mode, isPi);
     const slRow = document.getElementById('factor-sl-row-' + mode);
     if (slRow) slRow.classList.toggle('pi-dual-sl', isPi);
     const longSlLabel = document.getElementById('factor-sl-value-label-' + mode);
@@ -908,8 +913,12 @@ function _factorRiskOptionList(rule, kind) {
     if (rule === 'fib') {
         return [['0', t('Determined by SL fib')]];
     }
-    // DAILY ATR 與 ATR/ATR BLEND 同樣是倍數,共用同一組
-    return [['1', '1 x ATR'], ['1.5', '1.5 x ATR'], ['2', '2 x ATR'], ['2.5', '2.5 x ATR'], ['3', '3 x ATR']];
+    // DAILY ATR 與 ATR/ATR BLEND 同樣是倍數。PI 多空兩側共用 1–4、0.5 step。
+    return [
+        ['1', '1 x ATR'], ['1.5', '1.5 x ATR'],
+        ['2', '2 x ATR'], ['2.5', '2.5 x ATR'],
+        ['3', '3 x ATR'], ['3.5', '3.5 x ATR'], ['4', '4 x ATR'],
+    ];
 }
 
 function onFactorRiskAnchorChange(mode, kind) {
@@ -930,7 +939,9 @@ function onFactorRiskAnchorChange(mode, kind) {
     if (!found && current !== '') {
         const opt = document.createElement('option');
         opt.value = current;
-        opt.textContent = current;
+        opt.textContent = ['atr', 'atr_blend', 'daily'].includes(ruleEl.value)
+            ? current + ' x ATR'
+            : current;
         valEl.appendChild(opt);
     }
     if (current !== '') valEl.value = current;
@@ -1409,6 +1420,7 @@ function collectStrategyParams(mode) {
         pi_short_kinds: piMatrix.pi_short_kinds,
         pi_max_signal_age_min: _int('pi-max-age-' + mode, 5),
         pi_short_sl_value: _float('pi-short-sl-' + mode, 2.5),
+        pi_long_hold_min: _int('pi-long-hold-' + mode, 0),
         pi_short_hold_min: _int('pi-short-hold-' + mode, 60),
         // 1.0.10: 腿幅上限 + 進場時窗 + fib 基準的 SL/TP 層級。
         // The single select stores New York-local "start,end" hours.
@@ -1584,8 +1596,10 @@ function applyStrategyParams(mode, params) {
         _piMatrixSyncFromLegacy(mode);
     }
     _set('pi-max-age-' + mode, String(p.pi_max_signal_age_min != null ? p.pi_max_signal_age_min : 5));
-    _set('pi-short-sl-' + mode, String(p.pi_short_sl_value != null ? p.pi_short_sl_value : 2.5));
-    _set('pi-short-hold-' + mode, String(p.pi_short_hold_min != null ? p.pi_short_hold_min : 60));
+    const piShortSl = String(p.pi_short_sl_value != null ? p.pi_short_sl_value : 2.5);
+    _setChoice('pi-short-sl-' + mode, piShortSl, piShortSl + ' x ATR');
+    _setChoice('pi-long-hold-' + mode, String(p.pi_long_hold_min != null ? p.pi_long_hold_min : 0));
+    _setChoice('pi-short-hold-' + mode, String(p.pi_short_hold_min != null ? p.pi_short_hold_min : 60));
     // 1.0.10
     _set('betafib-maxpct-' + mode, String(p.betafib_max_move_pct != null ? p.betafib_max_move_pct : 0));
     _set('betafib-window-' + mode,
@@ -1604,6 +1618,7 @@ function applyStrategyParams(mode, params) {
         _setChoice('factor-sl-rule-' + mode, _factorRuleValue(p.factor_sl_rule, 'atr_blend'));
     }
     _setChoice('factor-sl-value-' + mode, String(p.factor_sl_value != null ? p.factor_sl_value : 2.5));
+    syncFactorRiskControls(mode);
     _setChoice('factor-hold-' + mode, '0');   // 1.0.9: HOLD 5m system removed → always OFF (SL/TP-only)
     _setChoice('factor-max-trades-' + mode, String(p.factor_max_trades_per_day != null ? p.factor_max_trades_per_day : (p.pmo_max_trades_per_day != null ? p.pmo_max_trades_per_day : 3)));
 
@@ -9025,16 +9040,18 @@ function renderWeeklyIncomeCurve(btMap, liveMap) {
     const livePath = _svgPath(liveSeries, x, y);
     const btLast = btSeries.length ? btSeries[btSeries.length - 1].value : 0;
     const liveLast = liveSeries.length ? liveSeries[liveSeries.length - 1].value : 0;
-    wrap.innerHTML = `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    wrap.innerHTML = `<div class="cal-curve-legend">
+        <div class="cal-curve-legend-row bt"><i class="cal-curve-legend-swatch"></i><span>BT ${_calFmtMoney(btLast)}</span></div>
+        <div class="cal-curve-legend-row live"><i class="cal-curve-legend-swatch"></i><span>LIVE ${_calFmtMoney(liveLast)}</span></div>
+    </div>
+    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
         <rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>
         ${weekLines.join('')}
         <line x1="${l}" y1="${zeroY.toFixed(1)}" x2="${w - r}" y2="${zeroY.toFixed(1)}" stroke="rgba(247,239,224,0.18)"/>
         <path d="${btPath}" fill="none" stroke="rgba(0,229,160,0.95)" stroke-width="2.4"/>
         <path d="${livePath}" fill="none" stroke="rgba(255,176,32,0.95)" stroke-width="2.4"/>
-        <text x="${l}" y="11" fill="rgba(0,229,160,0.95)" font-size="10" font-family="IBM Plex Mono">BT ${_calFmtMoney(btLast)}</text>
-        <text x="${w - 190}" y="11" fill="rgba(255,176,32,0.95)" font-size="10" font-family="IBM Plex Mono">LIVE ${_calFmtMoney(liveLast)}</text>
-        <text x="${l}" y="${h - 6}" fill="rgba(247,239,224,0.35)" font-size="9" font-family="IBM Plex Mono">daily cumulative, week separators shown</text>
-    </svg>`;
+    </svg>
+    <div class="cal-curve-foot">daily cumulative, week separators shown</div>`;
     if (status) {
         status.textContent = 'BT ' + _calFmtMoney(btLast) + ' | LIVE ' + _calFmtMoney(liveLast) + ' | visible month';
     }
@@ -9196,6 +9213,233 @@ function _robUsd(value) {
 
 // 1.0.10: _robTopstepOutcomeText 隨「Observed sequence」文字區塊一併移除。
 
+function _robHelpDot(text) {
+    const value = String(text || '');
+    return '<button type="button" class="help-dot rob-help-dot"'
+        + ' aria-expanded="false" aria-describedby="global-help-tooltip"'
+        + ' data-tip-en="' + _attr(value) + '" data-tip-zh="' + _attr(value) + '">?</button>';
+}
+
+function _robAlert(severity, tip) {
+    const cls = severity === 'danger' ? 'tpx-danger' : 'tpx-warn';
+    return '<span class="' + cls + '" title="' + _attr(tip)
+        + '"><span class="tpx-alert-mark" aria-hidden="true">&#9888;</span></span>';
+}
+
+function _robMaxDdAlert(value, source) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '';
+    const label = source || 'Max DD';
+    if (n > 2000) {
+        return _robAlert('danger', label + ' is $' + Math.round(n)
+            + ', above the $2,000 risk threshold.');
+    }
+    if (n > 1000) {
+        return _robAlert('warn', label + ' is $' + Math.round(n)
+            + ', above the $1,000 caution threshold.');
+    }
+    return '';
+}
+
+function _robPnlAlert(value, source) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n >= 0) return '';
+    return _robAlert('warn', (source || 'PnL/mo') + ' P5 is below $0.');
+}
+
+function _robChartPct(value, min, max) {
+    if (!Number.isFinite(value) || max <= min) return 50;
+    return Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+}
+
+function _robPercentileChart(title, values, options) {
+    const opts = options || {};
+    const keys = ['p5', 'p25', 'p50', 'p75', 'p95'];
+    const nums = keys.map(key => Number(values && values[key]));
+    if (nums.some(value => !Number.isFinite(value))) {
+        return '<div class="institution-status">No percentile data.</div>';
+    }
+    let min = opts.min == null ? Math.min.apply(Math, nums) : Number(opts.min);
+    let max = opts.max == null ? Math.max.apply(Math, nums) : Number(opts.max);
+    if (opts.includeZero !== false) {
+        min = Math.min(min, 0);
+        max = Math.max(max, 0);
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+        return '<div class="institution-status">No percentile data.</div>';
+    }
+    if (max <= min) { min -= 1; max += 1; }
+    const pct = key => _robChartPct(Number(values[key]), min, max);
+    const p5 = pct('p5'), p25 = pct('p25'), p50 = pct('p50');
+    const p75 = pct('p75'), p95 = pct('p95');
+    const format = typeof opts.format === 'function' ? opts.format : _researchNum;
+    const tone = opts.tone || (nums[2] >= 0 ? 'chart-positive' : 'chart-negative');
+    const zero = min <= 0 && max >= 0
+        ? '<span class="rob-chart-zero" style="left:' + _robChartPct(0, min, max).toFixed(2) + '%"></span>'
+        : '';
+    const label = _attr(title + ' percentile chart');
+    const itemHtml = keys.map((key, i) => '<span><b>P' + [5, 25, 50, 75, 95][i]
+        + '</b><em>' + format(nums[i]) + '</em></span>').join('');
+    return '<div class="rob-chart ' + tone + '" data-rob-chart="percentile">'
+        + '<div class="rob-chart-title"><span>' + _attr(title) + '</span>'
+        + (opts.alertHtml || '') + '</div>'
+        + '<div class="rob-chart-track" role="img" aria-label="' + label + '">'
+        + '<span class="rob-band rob-band-outer" style="left:' + p5.toFixed(2)
+        + '%;width:' + Math.max(0, p25 - p5).toFixed(2) + '%"></span>'
+        + '<span class="rob-band rob-band-inner" style="left:' + p25.toFixed(2)
+        + '%;width:' + Math.max(0, p75 - p25).toFixed(2) + '%"></span>'
+        + '<span class="rob-band rob-band-outer" style="left:' + p75.toFixed(2)
+        + '%;width:' + Math.max(0, p95 - p75).toFixed(2) + '%"></span>'
+        + zero
+        + '<span class="rob-chart-median" style="left:' + p50.toFixed(2) + '%"></span>'
+        + '</div>'
+        + '<div class="rob-chart-axis"><span>' + format(min) + '</span><span>'
+        + format(max) + '</span></div>'
+        + '<div class="rob-percentile-values">' + itemHtml + '</div>'
+        + '</div>';
+}
+
+function _robSeriesChart(title, points, options) {
+    const opts = options || {};
+    const rows = Array.isArray(points) ? points : [];
+    const numeric = rows
+        .filter(point => point && point.value != null && Number.isFinite(Number(point.value)))
+        .map(point => Number(point.value));
+    if (!numeric.length) return '<div class="institution-status">No chart data.</div>';
+    const positiveOnly = !!opts.positiveOnly;
+    const scale = Math.max(1, ...numeric.map(value => Math.abs(value)));
+    const format = typeof opts.format === 'function' ? opts.format : _researchNum;
+    const rowsHtml = rows.map(point => {
+        const value = Number(point.value);
+        const valid = point && point.value != null && Number.isFinite(value);
+        const fraction = valid ? Math.min(1, Math.abs(value) / scale) : 0;
+        const width = positiveOnly ? fraction * 100 : fraction * 50;
+        const left = positiveOnly ? 0 : (valid && value < 0 ? 50 - width : 50);
+        const barClass = positiveOnly ? 'risk' : (value < 0 ? 'neg' : 'pos');
+        const used = point.used ? ' rob-series-used' : '';
+        return '<div class="rob-series-row' + used + '">'
+            + '<span class="rob-series-label">' + _attr(point.label) + '</span>'
+            + '<span class="rob-series-track ' + (positiveOnly ? 'rob-series-positive' : 'rob-series-diverging') + '">'
+            + (valid ? '<i class="rob-series-bar ' + barClass + '" style="left:' + left.toFixed(2)
+                + '%;width:' + width.toFixed(2) + '%"></i>' : '')
+            + '</span>'
+            + '<span class="rob-series-value">' + (valid ? format(value) : '--') + '</span>'
+            + '</div>';
+    }).join('');
+    return '<div class="rob-series-chart ' + (opts.tone || '') + '" data-rob-chart="series">'
+        + '<div class="rob-chart-title"><span>' + _attr(title) + '</span>'
+        + (opts.alertHtml || '') + '</div>'
+        + '<div class="rob-series-rows">' + rowsHtml + '</div>'
+        + '</div>';
+}
+
+function _robPercentileCurveSeries(curve, transform) {
+    const keys = ['p5', 'p25', 'p50', 'p75', 'p95'];
+    const rows = Array.isArray(curve) ? curve : [];
+    return keys.map(key => ({
+        key: key,
+        label: key.toUpperCase(),
+        points: rows.map(point => {
+            const step = Number(point && point.step);
+            const raw = Number(point && point[key]);
+            const value = typeof transform === 'function' ? transform(raw) : raw;
+            return { step: step, value: value };
+        }).filter(point => Number.isFinite(point.step) && Number.isFinite(point.value)),
+    })).filter(row => row.points.length);
+}
+
+function _robObservedCurveSeries(curve, valueKey, label, transform) {
+    const rows = Array.isArray(curve) ? curve : [];
+    const points = rows.map(point => {
+        const step = Number(point && point.step);
+        const raw = Number(point && point[valueKey]);
+        const value = typeof transform === 'function' ? transform(raw) : raw;
+        return { step: step, value: value };
+    }).filter(point => Number.isFinite(point.step) && Number.isFinite(point.value));
+    return points.length ? [{ key: 'observed', label: label || 'observed', points: points }] : [];
+}
+
+function _robLineChart(title, series, options) {
+    const opts = options || {};
+    const rows = (Array.isArray(series) ? series : []).map((line, index) => {
+        const points = (Array.isArray(line.points) ? line.points : [])
+            .filter(point => point && Number.isFinite(Number(point.step))
+                && Number.isFinite(Number(point.value)))
+            .map(point => ({ step: Number(point.step), value: Number(point.value) }))
+            .sort((a, b) => a.step - b.step);
+        return Object.assign({}, line, { points: points, index: index });
+    }).filter(line => line.points.length);
+    if (!rows.length) return '<div class="institution-status">No chart data.</div>';
+
+    const values = rows.reduce((all, line) => all.concat(line.points.map(point => point.value)), []);
+    let lo = opts.min == null ? Math.min.apply(Math, values) : Number(opts.min);
+    let hi = opts.max == null ? Math.max.apply(Math, values) : Number(opts.max);
+    if (opts.includeZero !== false) {
+        lo = Math.min(lo, 0);
+        hi = Math.max(hi, 0);
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+        return '<div class="institution-status">No chart data.</div>';
+    }
+    const rawRange = hi - lo;
+    const pad = rawRange > 0 ? rawRange * 0.08 : Math.max(1, Math.abs(hi) * 0.08);
+    lo -= pad;
+    hi += pad;
+    const minStep = Math.min.apply(Math, rows.reduce(
+        (all, line) => all.concat(line.points.map(point => point.step)), []));
+    const maxStep = Math.max.apply(Math, rows.reduce(
+        (all, line) => all.concat(line.points.map(point => point.step)), []));
+    const w = 720, h = 150, l = 8, r = 8, top = 8, bottom = 8;
+    const x = step => l + (step - minStep) * ((w - l - r) / Math.max(1, maxStep - minStep));
+    const y = value => top + (hi - value) * ((h - top - bottom) / Math.max(1, hi - lo));
+    const pathFor = points => points.map((point, index) => (index ? 'L' : 'M')
+        + x(point.step).toFixed(1) + ' ' + y(point.value).toFixed(1)).join(' ');
+    const areaFor = (lower, upper) => {
+        if (!lower || !upper || !lower.points.length || !upper.points.length) return '';
+        const lowerPath = lower.points.map((point, index) => (index ? 'L' : 'M')
+            + x(point.step).toFixed(1) + ' ' + y(point.value).toFixed(1)).join(' ');
+        const upperPath = upper.points.slice().reverse().map(point => 'L'
+            + x(point.step).toFixed(1) + ' ' + y(point.value).toFixed(1)).join(' ');
+        return lowerPath + ' ' + upperPath + ' Z';
+    };
+    const palette = opts.palette || ['var(--red)', 'var(--cyan)', 'var(--white)', 'var(--green)', 'var(--amber)'];
+    const colorFor = (line, index) => line.color || palette[index % palette.length];
+    const lineClass = line => String(line.key || 'line').replace(/[^a-z0-9_-]/gi, '-');
+    const byKey = new Map(rows.map(line => [String(line.key), line]));
+    const bands = [];
+    const outer = areaFor(byKey.get('p5'), byKey.get('p95'));
+    const inner = areaFor(byKey.get('p25'), byKey.get('p75'));
+    if (outer) bands.push('<path class="rob-line-band outer" d="' + outer + '"></path>');
+    if (inner) bands.push('<path class="rob-line-band inner" d="' + inner + '"></path>');
+    const zero = lo <= 0 && hi >= 0
+        ? '<line class="rob-line-zero" x1="' + l + '" y1="' + y(0).toFixed(1)
+            + '" x2="' + (w - r) + '" y2="' + y(0).toFixed(1) + '"></line>' : '';
+    const paths = rows.map((line, index) => '<path class="rob-line-path ' + lineClass(line)
+        + '" d="' + pathFor(line.points) + '" stroke="' + colorFor(line, index) + '"></path>').join('');
+    const legend = rows.map((line, index) => '<span class="rob-line-key"><i style="background:'
+        + colorFor(line, index) + '"></i>' + _attr(line.label || line.key || 'series') + '</span>').join('');
+    const format = typeof opts.format === 'function' ? opts.format : _researchNum;
+    const aria = _attr(title + ' curve');
+    return '<div class="rob-line-chart ' + (opts.tone || '') + '" data-rob-chart="curve">'
+        + '<div class="rob-chart-title"><span>' + _attr(title) + '</span>'
+        + (opts.alertHtml || '') + '</div>'
+        + '<div class="rob-line-legend">' + legend + '</div>'
+        + '<div class="rob-line-canvas" role="img" aria-label="' + aria + '">'
+        + '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">'
+        + '<rect x="0" y="0" width="' + w + '" height="' + h + '" fill="transparent"></rect>'
+        + bands.join('') + zero + paths + '</svg></div>'
+        + '<div class="rob-line-axis"><span>' + format(lo) + '</span><span>'
+        + format(hi) + '</span><span>trade 0–' + Math.round(maxStep) + '</span></div>'
+        + '</div>';
+}
+
+function _robStatLines(items) {
+    return '<div class="rob-stat-lines">' + (items || []).map(item =>
+        '<span>' + _attr(item.label) + ' <b class="' + (item.cls || '') + '">'
+        + String(item.value == null ? '--' : item.value) + '</b></span>').join('')
+        + '</div>';
+}
+
 function _robTopstepRow(result, contracts, limit) {
     return result && Array.isArray(result.rows)
         ? result.rows.find(r => r.contracts === contracts && r.consistencyLimit === limit)
@@ -9219,7 +9463,7 @@ function _robTopstepAnalysis(trades, slipPerContract, force) {
         iterations: 10000,
         horizonDays: 60,
         maxLossLimit: 2000,
-        sizes: [1, 2],
+        sizes: [1, 2, 3, 5, 10],
         slippagePerContract: Number(slipPerContract) || 0,
     };
     const source = api.buildActiveDays(trades);
@@ -9257,22 +9501,11 @@ function _robTopstepHtml(analysis, slipTicks) {
 
     const combine = analysis.combine;
     const xfa = analysis.xfa;
-    const c1 = _robTopstepRow(combine, 1, 0.5);
-    const c2 = _robTopstepRow(combine, 2, 0.5);
-    const x1 = _robTopstepRow(xfa, 1, 0.4);
-    const x2 = _robTopstepRow(xfa, 2, 0.4);
+    const sizes = [1, 2, 3, 5, 10];
+    const combineRows = sizes.map(size => _robTopstepRow(combine, size, 0.5));
+    const xfaRows = sizes.map(size => _robTopstepRow(xfa, size, 0.4));
     const winner = combine.recommendation ? combine.recommendation.contracts : 1;
     const xfaWinner = xfa.recommendation ? xfa.recommendation.contracts : 1;
-    const winRow = winner === 1 ? c1 : c2;
-    const loseRow = winner === 1 ? c2 : c1;
-    const passEdge = winRow && loseRow ? Math.abs(winRow.passRate - loseRow.passRate) * 100 : 0;
-    const faster = c1 && c2 && c1.medianPassDays != null && c2.medianPassDays != null
-        ? Math.abs(c1.medianPassDays - c2.medianPassDays) : null;
-    const fasterSize = c1 && c2 && c1.medianPassDays <= c2.medianPassDays ? 1 : 2;
-    const xfaWinRow = xfaWinner === 1 ? x1 : x2;
-    const xfaLoseRow = xfaWinner === 1 ? x2 : x1;
-    const xfaEdge = xfaWinRow && xfaLoseRow
-        ? Math.abs(xfaWinRow.passRate - xfaLoseRow.passRate) * 100 : 0;
     const daysText = row => row && row.medianPassDays != null && row.p90PassDays != null
         ? row.medianPassDays + ' / ' + row.p90PassDays : '—';
 
@@ -9301,29 +9534,32 @@ function _robTopstepHtml(analysis, slipTicks) {
     };
 
     const source = combine.source || {};
-    const slipLabel = Number(slipTicks || 0) > 0
-        ? Math.round(slipTicks) + 't (' + _robUsd(analysis.slipPerContract) + '/contract) entry-slip stress'
+    const sourceDays = Array.isArray(source.days) ? source.days.length : 0;
+    const slipText = Number(slipTicks || 0) > 0
+        ? Math.round(slipTicks) + ' ticks (' + _robUsd(analysis.slipPerContract) + '/contract)'
         : 'no added slippage';
+    const topstepHelp = 'Topstep 50K simulation. The highlighted row is the recommended size. '
+        + 'Trading Combine uses the 50% consistency rule and the XFA table is the '
+        + 'post-Combine first-payout eligibility path. Results use 10,000 replays, '
+        + slipText + ', the $2,000 max-loss limit, ' + source.tradeCount + ' source trades, and '
+        + sourceDays + ' active days.';
     return '<div class="institution-card institution-wide rob-topstep-card">'
-        + '<h3>TOPSTEP 50K · PAIRED EVALUATION MONTE CARLO · 10,000×</h3>'
-        + '<div class="rob-topstep-verdict"><strong>COMBINE · ' + winner + ' MNQ = HIGHER PASS ODDS</strong>'
-        + '<span>within 60 active days · +' + passEdge.toFixed(2) + ' percentage points vs ' + (winner === 1 ? 2 : 1) + ' MNQ'
-        + (faster != null && faster > 0 ? ' · ' + fasterSize + ' MNQ is ' + faster + ' active day(s) faster at median' : '')
-        + '</span></div>'
+        + '<h3>TOPSTEP 50K' + _robHelpDot(topstepHelp) + '</h3>'
+        + '<div class="rob-topstep-verdict"><strong>COMBINE · ' + winner + ' MNQ</strong></div>'
         + '<div class="rob-topstep-rules">'
-        + '<section class="rob-topstep-rule"><h4>TRADING COMBINE · 50% <span>pass evaluation</span></h4>'
+        + '<section class="rob-topstep-rule"><h4>TRADING COMBINE · 50%'
+        + _robHelpDot('Trading Combine: simulated pass rate within 60 active days. '
+            + 'The green row is the higher simulated outcome; it is not a guarantee.') + '</h4>'
         + '<table class="institution-table"><thead><tr><th>SIZE</th><th>PASS</th><th>MLL FAIL</th><th>OPEN@60</th><th>DAYS P50/P90</th><th>TARGET ↑</th><th>REQ P50</th></tr></thead><tbody>'
-        + combineRow(c1) + combineRow(c2) + '</tbody></table>'
+         + combineRows.map(combineRow).join('') + '</tbody></table>'
         + '</section>'
-        + '<section class="rob-topstep-rule"><h4>XFA CONSISTENCY · 40% <span>after pass · first payout eligibility</span></h4>'
-        + '<div class="rob-topstep-program-verdict"><strong>' + xfaWinner + ' MNQ</strong> = higher first-payout eligibility within 60 active days · +'
-        + xfaEdge.toFixed(2) + ' percentage points</div>'
+        + '<section class="rob-topstep-rule"><h4>XFA CONSISTENCY · 40%'
+        + _robHelpDot('XFA is evaluated after the Combine. Eligible means the simulated '
+            + 'account reaches the first-payout path within 60 active days while staying '
+            + 'inside the 40% consistency rule.') + '</h4>'
         + '<table class="institution-table"><thead><tr><th>SIZE</th><th>ELIGIBLE</th><th>MLL FAIL</th><th>OPEN@60</th><th>DAYS P50/P90</th><th>MIN PAYOUT BAL P50</th></tr></thead><tbody>'
-        + xfaRow(x1) + xfaRow(x2) + '</tbody></table>'
+         + xfaRows.map(xfaRow).join('') + '</tbody></table>'
         + '</section></div>'
-        // 1.0.10: 只留一行來源摘要,長篇規則說明移除(規則見 docs/TOPSTEP_RULES_PLAYBOOK.md)
-        + '<div class="rob-note">' + source.tradeCount + ' trades · ' + source.days.length
-        + ' active days · ' + slipLabel + ' · MLL replayed from closed-trade P&amp;L only</div>'
         + '</div>';
 }
 
@@ -9369,7 +9605,8 @@ function _robMeasureSlip() {
     return out;
 }
 
-// 1.0.10: _robHistogram 隨蒙地卡羅的圖形區塊移除,只留 P5/P50/P95 表格。
+// The old histogram/table pair was replaced by deterministic path charts fed
+// by the backend's P5/P25/P50/P75/P95 ladder.
 
 function _robBadge(pass, passText, failText) {
     return '<span class="rob-badge ' + (pass ? 'institution-pos' : 'institution-neg') + '">'
@@ -9420,14 +9657,7 @@ async function renderResearchRobustness(force) {
     // 1.0.10: 月均是主要數字,總額退居括號 —— 不同長度的回測用總額比較沒有意義。
     const spanMonths = rob.span_months;
     const monthly = rob.monthly_pnl;
-    status.textContent = trades.length + ' ' + t('trades') + ' · '
-        + String((trades[0] || {}).symbol || '')
-        + (d0 ? (' · ' + d0.toISOString().slice(0, 10) + ' → ' + d1.toISOString().slice(0, 10)
-                 + (spanMonths ? ' (' + _researchNum(spanMonths, 1) + ' ' + t('months') + ')' : '')) : '')
-        + ' · PF ' + _researchNum(base.pf, 2)
-        + ' · ' + t('PnL/mo') + ' $' + (monthly == null ? '—' : Math.round(monthly))
-        + ' (' + t('total') + ' $' + Math.round(base.pnl) + ')'
-        + ' · maxDD $' + Math.round(base.maxDd);
+    status.textContent = t('Latest backtest · metrics shown below.');
 
     const topstepSlipPerContract = Math.max(0, Number(slip.usedTicks) || 0) * tickVal;
     const topstep = _robTopstepAnalysis(trades, topstepSlipPerContract, !!force);
@@ -9439,9 +9669,13 @@ async function renderResearchRobustness(force) {
     const _mcRaw = rob.monte_carlo;
     const mc = _mcRaw && {
         iters: _mcRaw.iters,
-        pnlP5: _mcRaw.pnl_p5, pnlP50: _mcRaw.pnl_p50, pnlP95: _mcRaw.pnl_p95,
+        pnlP5: _mcRaw.pnl_p5, pnlP25: _mcRaw.pnl_p25,
+        pnlP50: _mcRaw.pnl_p50, pnlP75: _mcRaw.pnl_p75, pnlP95: _mcRaw.pnl_p95,
         pLoss: _mcRaw.p_loss,
-        ddP50: _mcRaw.dd_p50, ddP95: _mcRaw.dd_p95,
+        ddP5: _mcRaw.dd_p5, ddP25: _mcRaw.dd_p25,
+        ddP50: _mcRaw.dd_p50, ddP75: _mcRaw.dd_p75, ddP95: _mcRaw.dd_p95,
+        pnlCurve: Array.isArray(_mcRaw.pnl_curve) ? _mcRaw.pnl_curve : [],
+        ddCurve: Array.isArray(_mcRaw.dd_curve) ? _mcRaw.dd_curve : [],
         pDd2k: _mcRaw.p_dd_breach,
         pfP5: _mcRaw.pf_p5,
         pass: rob.monte_carlo_pass,
@@ -9450,29 +9684,38 @@ async function renderResearchRobustness(force) {
     if (!mc) {
         mcHtml = '<div class="institution-status">' + t('Not enough trades (need ≥10).') + '</div>';
     } else {
-        const row = (k, v, cls) => '<tr><td>' + t(k) + '</td><td class="' + (cls || '') + '">' + v + '</td></tr>';
         const perMo = (v) => (spanMonths && spanMonths > 0)
-            ? '$' + Math.round(v / spanMonths) : '—';
-        mcHtml =
-            '<table class="institution-table"><tbody>'
-            + row('PnL/mo P5 / P50 / P95',
-                perMo(mc.pnlP5) + ' / ' + perMo(mc.pnlP50) + ' / ' + perMo(mc.pnlP95),
-                _researchClass(mc.pnlP5))
-            + row('Total PnL P5 / P50 / P95',
-                '$' + Math.round(mc.pnlP5) + ' / $' + Math.round(mc.pnlP50) + ' / $' + Math.round(mc.pnlP95),
-                _researchClass(mc.pnlP5))
-            + row('P(total loss)', _researchNum(mc.pLoss * 100, 1) + '%', mc.pLoss > 0.05 ? 'institution-neg' : 'institution-pos')
-            + row('maxDD P50 / P95', '$' + Math.round(mc.ddP50) + ' / $' + Math.round(mc.ddP95),
-                mc.ddP95 >= 2000 ? 'institution-neg' : 'institution-pos')
-            + row('P(maxDD > $2k)', _researchNum(mc.pDd2k * 100, 1) + '%', mc.pDd2k > 0.05 ? 'institution-neg' : 'institution-pos')
-            + row('PF P5', _researchNum(mc.pfP5, 2), mc.pfP5 > 1 ? 'institution-pos' : 'institution-neg')
-            + '</tbody></table>';
+            ? _robUsd(v / spanMonths) : '—';
+        const perMoValue = (v) => (spanMonths && spanMonths > 0)
+            ? v / spanMonths : NaN;
+        const mcPnlSeries = _robPercentileCurveSeries(mc.pnlCurve, perMoValue);
+        const mcDdSeries = _robPercentileCurveSeries(mc.ddCurve);
+        mcHtml = '<div class="rob-charts">'
+            + _robLineChart('PNL / MO', mcPnlSeries, {
+                format: perMo,
+                alertHtml: _robPnlAlert(
+                    spanMonths && spanMonths > 0 ? mc.pnlP5 / spanMonths : null,
+                    'Monte Carlo'),
+            })
+            + _robLineChart('MAX DD', mcDdSeries, {
+                format: _robUsd,
+                tone: 'chart-risk',
+                alertHtml: _robMaxDdAlert(mc.ddP95, 'Monte Carlo P95 maxDD'),
+            })
+            + '</div>'
+            + _robStatLines([
+                { label: 'TOTAL PNL P5 / P50 / P95', value: _robUsd(mc.pnlP5) + ' / ' + _robUsd(mc.pnlP50) + ' / ' + _robUsd(mc.pnlP95), cls: _researchClass(mc.pnlP5) },
+                { label: 'P(total loss)', value: _robPct(mc.pLoss), cls: mc.pLoss > 0.05 ? 'institution-neg' : 'institution-pos' },
+                { label: 'P(maxDD > $2k)', value: _robPct(mc.pDd2k), cls: mc.pDd2k > 0.05 ? 'institution-neg' : 'institution-pos' },
+                { label: 'PF P5', value: _researchNum(mc.pfP5, 2), cls: mc.pfP5 > 1 ? 'institution-pos' : 'institution-neg' },
+            ]);
     }
 
     // ── Walk-forward ─────────────────────────────────────────
     const _wfRaw = rob.walk_forward;
     const wf = _wfRaw && {
         pass: _wfRaw.pass,
+        curve: Array.isArray(_wfRaw.curve) ? _wfRaw.curve : [],
         stats: _wfRaw.segments.map(s => ({
             n: s.n, pnl: s.pnl, pf: s.pf, win: s.win, maxDd: s.max_dd,
         })),
@@ -9483,22 +9726,43 @@ async function renderResearchRobustness(force) {
     } else {
         // 每段長度相同(依時間三等分),所以段月數 = 總月數 / 3
         const segMonths = spanMonths ? spanMonths / 3 : null;
-        wfHtml = '<table class="institution-table"><thead><tr><th>' + t('Segment')
-            + '</th><th>N</th><th>' + t('PnL/mo') + '</th><th>PnL</th><th>PF</th><th>'
-            + t('Win%') + '</th></tr></thead><tbody>'
-            + wf.stats.map((s, i) => {
+        const wfPoints = wf.stats.map((s, i) => ({
+            label: (i + 1) + '/3', value: _robMonthlyOf(s.pnl, segMonths),
+        }));
+        const wfDdPoints = wf.stats.map((s, i) => ({
+            label: (i + 1) + '/3', value: s.maxDd,
+        }));
+        const wfPnlSeries = _robObservedCurveSeries(
+            wf.curve, 'pnl', 'PnL / mo', value => segMonths ? value / segMonths : NaN);
+        const wfDdSeries = _robObservedCurveSeries(wf.curve, 'max_dd', 'maxDD');
+        const wfPnlValues = wfPoints
+            .filter(point => point.value != null && Number.isFinite(Number(point.value)))
+            .map(point => Number(point.value));
+        const wfWorstPnl = wfPnlValues.length ? Math.min.apply(Math, wfPnlValues) : null;
+        const wfWorstDd = Math.max.apply(Math, wfDdPoints.map(point => Number(point.value)));
+        wfHtml = '<div class="rob-charts">'
+            + _robLineChart('PNL / MO', wfPnlSeries, {
+                format: _robUsd,
+                alertHtml: _robPnlAlert(wfWorstPnl, 'Walk-forward'),
+            })
+            + _robLineChart('MAX DD', wfDdSeries, {
+                format: _robUsd,
+                tone: 'chart-risk',
+                alertHtml: _robMaxDdAlert(wfWorstDd, 'Walk-forward'),
+            })
+            + '</div>'
+            + _robStatLines(wf.stats.map((s, i) => {
                 const mo = _robMonthlyOf(s.pnl, segMonths);
-                return '<tr>'
-                    + '<td>' + (i + 1) + '/3</td>'
-                    + '<td>' + s.n + '</td>'
-                    + '<td class="' + _researchClass(s.pnl) + '">'
-                    + (mo == null ? '—' : '$' + Math.round(mo)) + '</td>'
-                    + '<td class="' + _researchClass(s.pnl) + '">$' + Math.round(s.pnl) + '</td>'
-                    + '<td class="' + (s.pf > 1 ? 'institution-pos' : 'institution-neg') + '">' + _researchNum(s.pf, 2) + '</td>'
-                    + '<td>' + _researchNum(s.win * 100, 1) + '%</td>'
-                    + '</tr>';
-            }).join('')
-            + '</tbody></table>';
+                return {
+                    label: (i + 1) + '/3',
+                    value: 'n=' + s.n + ' · PnL ' + _robUsd(s.pnl)
+                        + ' · PF ' + _researchNum(s.pf, 2)
+                        + ' · Win ' + _robPct(s.win)
+                        + ' · maxDD ' + _robUsd(s.maxDd)
+                        + (mo == null ? '' : ' · ' + _robUsd(mo) + '/mo'),
+                    cls: s.pnl >= 0 && s.pf > 1 ? 'institution-pos' : 'institution-neg',
+                };
+            }));
     }
 
     // ── Slippage injection ───────────────────────────────────
@@ -9509,37 +9773,98 @@ async function renderResearchRobustness(force) {
             row => [row.level, {
                 pnl: row.stats.pnl, pf: row.stats.pf,
                 maxDd: row.stats.max_dd, win: row.stats.win, n: row.stats.n,
+                curve: Array.isArray(row.curve) ? row.curve : [],
             }]));
-    const slipRow = (lvl, stats, highlight) =>
-        '<tr' + (highlight ? ' class="rob-slip-used"' : '') + '>'
-        + '<td>' + (lvl === 0 ? t('original') : lvl + 't' + (highlight ? ' ★' : '')) + '</td>'
-        + '<td class="' + _researchClass(stats.pnl) + '">$' + Math.round(stats.pnl) + '</td>'
-        + '<td class="' + (stats.pf >= 1.5 ? 'institution-pos' : 'institution-neg') + '">' + _researchNum(stats.pf, 2) + '</td>'
-        + '<td>' + (lvl === 0 ? '—' : _researchNum((stats.pf / Math.max(base.pf, 1e-9) - 1) * 100, 1) + '%') + '</td>'
-        + '<td>$' + Math.round(stats.maxDd) + '</td>'
-        + '</tr>';
-    let slipHtml = '<div class="institution-status" style="margin-bottom:6px;">'
-        + used + 't · n=' + slip.n + ' · 1t = $' + _researchNum(tickVal, 2) + '/ct'
+    const slipPoints = [{ label: 'original', level: 0, value: spanMonths ? base.pnl / spanMonths : base.pnl, pnl: base.pnl, stats: base }]
+        .concat(slipLevels.filter(lvl => slipByLevel.has(lvl)).map(lvl => {
+            const stats = slipByLevel.get(lvl);
+            return {
+                label: lvl + 't' + (lvl === used ? ' ★' : ''), level: lvl,
+                value: spanMonths ? stats.pnl / spanMonths : stats.pnl,
+                pnl: stats.pnl, stats: stats, used: lvl === used,
+            };
+        }));
+    const slipCurveRows = [{
+        key: 'original', label: 'original', curve: rob.slip && rob.slip.base_curve,
+    }].concat(slipLevels.filter(lvl => slipByLevel.has(lvl)).map(lvl => {
+        const row = slipByLevel.get(lvl);
+        return {
+            key: String(lvl) + 't',
+            label: String(lvl) + 't' + (lvl === used ? ' â˜…' : ''),
+            curve: row.curve,
+        };
+    }));
+    const slipPnlSeries = slipCurveRows.map(row => _robObservedCurveSeries(
+        row.curve, 'pnl', row.label,
+        value => spanMonths ? value / spanMonths : value)[0]).filter(Boolean);
+    const slipDdSeries = slipCurveRows.map(row => _robObservedCurveSeries(
+        row.curve, 'max_dd', row.label)[0]).filter(Boolean);
+    const slipPnlPoints = slipPoints.map(point => ({
+        label: point.label, value: point.value, used: point.used,
+    }));
+    const slipDdPoints = slipPoints.map(point => ({
+        label: point.label, value: point.stats.maxDd, used: point.used,
+    }));
+    const slipWorstPnl = Math.min.apply(Math, slipPnlPoints.map(point => Number(point.value)));
+    const slipWorstDd = Math.max.apply(Math, slipDdPoints.map(point => Number(point.value)));
+    let slipHtml = '<div class="rob-charts">'
+        + _robLineChart('PNL / MO', slipPnlSeries, {
+            format: _robUsd,
+            alertHtml: _robPnlAlert(slipWorstPnl, 'Slippage'),
+        })
+        + _robLineChart('MAX DD', slipDdSeries, {
+            format: _robUsd,
+            tone: 'chart-risk',
+            alertHtml: _robMaxDdAlert(slipWorstDd, 'Slippage'),
+        })
         + '</div>'
-        + '<table class="institution-table"><thead><tr><th>' + t('RT slip')
-        + '</th><th>PnL</th><th>PF</th><th>ΔPF</th><th>maxDD</th></tr></thead><tbody>'
-        + slipRow(0, base, false)
-        + slipLevels.filter(lvl => slipByLevel.has(lvl)).map(lvl => slipRow(
-            lvl, slipByLevel.get(lvl), lvl === used)).join('')
-        + '</tbody></table>';   // 1.0.10: 移除長篇滑價說明,只留表格
+        + _robStatLines(slipPoints.map(point => {
+            const stats = point.stats;
+            const delta = point.level === 0 ? '—'
+                : _researchNum((stats.pf / Math.max(base.pf, 1e-9) - 1) * 100, 1) + '%';
+            return {
+                label: point.label,
+                value: _robUsd(stats.pnl) + ' · PF ' + _researchNum(stats.pf, 2)
+                    + ' · ΔPF ' + delta + ' · maxDD ' + _robUsd(stats.maxDd),
+                cls: stats.pf >= 1.5 ? 'institution-pos' : 'institution-neg',
+            };
+        }));
 
     const usedStats = slipByLevel.get(used) || base;
-    content.innerHTML =
-        '<div class="institution-grid">'
-        + topstepHtml
-        + '<div class="institution-card"><h3>' + t('MONTE CARLO') + ' · 1000×'
+    const rawSymbol = String((trades[0] || {}).symbol || '').toUpperCase();
+    const contract = rawSymbol ? (rawSymbol.charAt(0) === '/' ? rawSymbol : '/' + rawSymbol) : '—';
+    const dateText = d0
+        ? d0.toISOString().slice(0, 10) + ' → ' + d1.toISOString().slice(0, 10)
+        : '—';
+    const dateSub = spanMonths ? _researchNum(spanMonths, 1) + ' months' : '';
+    const observedDdClass = base.maxDd > 2000 ? 'tpx-danger'
+        : (base.maxDd > 1000 ? 'tpx-warn' : '');
+    const summaryCard = (label, value, cls, sub) =>
+        '<div class="rob-summary-item"><span class="rob-summary-label">' + label
+        + '</span><strong class="rob-summary-value ' + (cls || '') + '">' + value
+        + '</strong>' + (sub ? '<small class="rob-summary-sub">' + sub + '</small>' : '')
+        + '</div>';
+    const summaryHtml = '<div class="rob-summary-grid">'
+        + summaryCard('TRADES', String(base.n), '', '')
+        + summaryCard('CONTRACT', contract, '', '')
+        + summaryCard('DATE', dateText, 'rob-summary-date', dateSub)
+        + summaryCard('PF', _researchNum(base.pf, 2), base.pf > 1 ? 'institution-pos' : 'institution-neg', '')
+        + summaryCard('PNL/MO', monthly == null ? '—' : _robUsd(monthly), _researchClass(monthly), 'total ' + _robUsd(base.pnl))
+        + summaryCard('MAXDD' + _robMaxDdAlert(base.maxDd, 'Observed maxDD'), _robUsd(base.maxDd), observedDdClass, '')
+        + '</div>';
+    content.innerHTML = summaryHtml
+        + '<div class="institution-grid">'
+        + '<div class="institution-card rob-mc-card"><h3>' + t('MONTE CARLO')
         + (mc ? ' ' + _robBadge(mc.pass, 'PASS', 'FAIL') : '') + '</h3>' + mcHtml + '</div>'
-        + '<div class="institution-card"><h3>' + t('WALK-FORWARD') + ' · 3 ' + t('segments')
+        + '<div class="institution-card rob-wf-card"><h3>' + t('WALK-FORWARD')
         + (wf ? ' ' + _robBadge(wf.pass, 'PASS', 'FAIL') : '') + '</h3>' + wfHtml + '</div>'
-        + '<div class="institution-card institution-wide"><h3>' + t('SLIPPAGE INJECTION')
+        + '<div class="institution-card institution-wide rob-slip-card"><h3>' + t('SLIPPAGE')
         + ' ' + _robBadge(usedStats.pf >= 1.5, 'PF OK AFTER SLIP', 'PF DEGRADES BELOW 1.5') + '</h3>'
         + slipHtml + '</div>'
+        + topstepHtml
         + '</div>';
+    content.querySelectorAll('.help-dot').forEach(_configureHelpDot);
+    if (typeof glassResample === 'function') glassResample('#institution-panel');
 }
 
 function calShiftMonth(delta) {
@@ -10053,7 +10378,6 @@ const I18N_ZH = {
     'PI SIGNAL LEVELS': 'PI 訊號級別', 'PI SIGNAL LEVELS (SIGNAL SET)': '使用訊號 · PI 級別',
     'LONG': '做多', 'SHORT': '做空',
     'PI': 'π', 'LEVEL 2': '級別 2', 'LEVEL 1': '級別 1',
-    'SHORT LEVEL 2 is not published by the Discord source.': 'Discord 訊號沒有空方級別 2 泡泡。',
     'LONG ONLY · π LEVELS (RECOMMENDED)': '只做多 · π 級別 (推薦)',
     'LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)': '只做多 · 全部藍系 (含淡藍圈)',
     'π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)': 'π 級別 + 深藍圈 (含做空)',
@@ -10081,9 +10405,8 @@ const I18N_ZH = {
     '9pm – 3am ET': '紐約 9pm – 3am',
     '6pm – 3am ET (FULL ASIA)': '紐約 6pm – 3am (ASIA 全段)',
     '3am – 9am ET (EURO + PRE)': '紐約 3am – 9am (EURO + PRE)',
-    'Longs use SL/TP ANCHOR above · shorts use independent settings (longer holds perform worse)':
-        '多單沿用上方 SL/TP ANCHOR · 空單獨立設定(抱久會變差)',
-    'SHORT SL': '空單 SL', 'SHORT TIME EXIT': '空單時間出場',
+    'Directional PI exits · 0 = OFF for no time exit': 'PI 多空獨立出場 · 0 = 關閉時間出場',
+    'SHORT SL': '空單 SL', 'LONG TIME EXIT': '多單時間出場', 'SHORT TIME EXIT': '空單時間出場',
     '(minutes · 0=OFF)': '(分鐘 · 0=關閉)', '0 (OFF)': '0 (關閉)',
     '(must be < entry fib)': '(必須 < 進場 fib)',
     '0 (IMPULSE-LEG START)': '0 (推動腿起點)',
@@ -10144,14 +10467,18 @@ const I18N_ZH = {
     'ORDER COMPARISON': '訂單比對', 'Selected Preset vs Live Execution': '選定預設組 vs 實盤執行',
     'Historical live rows may not include preset names.': '歷史實盤列可能沒有預設組名稱。',
     'RESEARCH': '研究',
-    'Robustness — Topstep · Monte Carlo · Walk-Forward · Slippage': '穩健性 — Topstep · 蒙地卡羅 · 走查 · 滑價',
+    'Robustness': '穩健性',
+    'Latest backtest · metrics shown below.': '最近一次回測 · 指標如下。',
+    'TRADES': '交易數', 'DATE': '日期', 'PF': 'PF',
+    'PNL/MO': '月均損益', 'MAXDD': '最大回撤',
+    'PNL / MO': '月均損益', 'MAX DD': '最大回撤',
     'Refresh': '刷新',
     'Run a backtest first — analysis uses the latest backtest trades.': '先跑回測 — 分析使用最近一次回測交易。',
     'trades': '筆交易',
     'Not enough trades (need ≥10).': '交易數不足(需 ≥10)。',
     'Not enough trades (need ≥6).': '交易數不足(需 ≥6)。',
     'MONTE CARLO': '蒙地卡羅', 'WALK-FORWARD': '走查驗證', 'segments': '段',
-    'SLIPPAGE INJECTION': '滑價注入',
+    'SLIPPAGE': '滑價',
     'PASS': '通過', 'FAIL': '未過',
     'PF OK AFTER SLIP': '滑價後 PF 合格', 'PF DEGRADES BELOW 1.5': '滑價後 PF < 1.5',
     'Total PnL P5 / P50 / P95': '總損益 P5 / P50 / P95',

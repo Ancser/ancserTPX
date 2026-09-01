@@ -6,6 +6,7 @@ from backend.data.pi_live_audit import (
     append_message_event,
     append_signal_event,
     append_status_event,
+    filter_multi_signal_events,
     load_replay_rows,
     load_message_ids,
     load_message_timestamps,
@@ -127,6 +128,38 @@ def test_replay_rows_are_in_range_deduped_and_pre_session_filtered(tmp_path):
     assert rows[0]["id"] == "replay-1"
     assert rows[0]["symbol"] == "QQQ"
     assert rows[0]["marks"][0]["kind"] == "青π"
+
+
+def test_multi_mark_message_is_removed_from_audit_consumers(tmp_path):
+    path = tmp_path / "pi.jsonl"
+    first = _sig("multi-1", 1)
+    second = _sig("multi-1", 2)
+    for signal in (first, second):
+        assert append_signal_event(signal, event="received", path=path)
+        assert append_signal_event(signal, event="callback", accepted=True, path=path)
+
+    filtered = filter_multi_signal_events(load_recent_events(path=path))
+    assert filtered == []
+
+    # The same rule is applied to the explicit same-day replay input too.
+    rows = load_replay_rows(
+        datetime(2026, 8, 10, 16, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 10, 17, 0, tzinfo=timezone.utc),
+        future="MNQ",
+        path=path,
+    )
+    assert rows == []
+
+
+def test_multi_signal_skip_is_a_restart_boundary_event(tmp_path):
+    path = tmp_path / "pi.jsonl"
+    message = {
+        "id": "multi-2",
+        "timestamp": "2026-08-10T16:00:00+00:00",
+    }
+    assert append_message_event(message, event="multi_signal_skip", path=path)
+    assert load_message_ids(path=path) == {"multi-2"}
+    assert load_message_timestamps(path=path) == {"2026-08-10T16:00:00+00:00"}
 
 
 def _sig(message_id: str, minute: int) -> PiSignal:

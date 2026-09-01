@@ -33,8 +33,9 @@ from typing import Iterable, List, Optional, Sequence
 # months of $5,000 and two months of $5,000 are different things.
 DAYS_PER_MONTH = 30.44
 
-# Percentile ladder reported for every bootstrap.
-_PCTS = (0.05, 0.50, 0.95)
+# Percentile ladder reported for every bootstrap.  The middle band is kept
+# explicit because the Research panel renders P25–P75 as the light band.
+_PCTS = (0.05, 0.25, 0.50, 0.75, 0.95)
 
 # A profit factor with zero losing trades is unbounded; the frontend reports
 # this sentinel rather than infinity so the value stays JSON-serialisable.
@@ -81,6 +82,33 @@ def _quantile(ordered: List[float], p: float) -> float:
     return ordered[min(len(ordered) - 1, max(0, int(idx)))]
 
 
+def _equity_curve(pnls: Sequence[float]) -> List[dict]:
+    """Return the cumulative P&L and running max drawdown for a sequence."""
+    equity = peak = drawdown = 0.0
+    curve = [{"step": 0, "pnl": 0.0, "max_dd": 0.0}]
+    for step, raw in enumerate(pnls, 1):
+        equity += float(raw or 0.0)
+        peak = max(peak, equity)
+        drawdown = max(drawdown, peak - equity)
+        curve.append({"step": step, "pnl": equity, "max_dd": drawdown})
+    return curve
+
+
+def _percentile_curve(paths: Sequence[Sequence[float]]) -> List[dict]:
+    """Collapse bootstrap paths into a P5/P25/P50/P75/P95 point per step."""
+    if not paths:
+        return []
+    length = max(len(path) for path in paths)
+    curve = []
+    for step in range(length):
+        values = sorted(path[step] for path in paths if step < len(path))
+        point = {"step": step}
+        for pct in _PCTS:
+            point[f"p{int(pct * 100)}"] = _quantile(values, pct)
+        curve.append(point)
+    return curve
+
+
 def monte_carlo(
     pnls: Sequence[float],
     iters: int = DEFAULT_ITERS,
@@ -104,8 +132,12 @@ def monte_carlo(
     totals: List[float] = []
     dds: List[float] = []
     pfs: List[float] = []
+    pnl_paths: List[List[float]] = []
+    dd_paths: List[List[float]] = []
     for _ in range(int(iters)):
         eq = peak = dd = gain = loss = 0.0
+        pnl_path = [0.0]
+        dd_path = [0.0]
         for _ in range(n):
             p = values[rng.randrange(n)]
             if p > 0:
@@ -115,9 +147,13 @@ def monte_carlo(
             eq += p
             peak = max(peak, eq)
             dd = max(dd, peak - eq)
+            pnl_path.append(eq)
+            dd_path.append(dd)
         totals.append(eq)
         dds.append(dd)
         pfs.append(_pf(gain, loss))
+        pnl_paths.append(pnl_path)
+        dd_paths.append(dd_path)
     totals.sort()
     dds.sort()
     pfs.sort()
@@ -126,14 +162,23 @@ def monte_carlo(
         "seed": seed,
         "n": n,
         "pnl_p5": _quantile(totals, 0.05),
+        "pnl_p25": _quantile(totals, 0.25),
         "pnl_p50": _quantile(totals, 0.50),
+        "pnl_p75": _quantile(totals, 0.75),
         "pnl_p95": _quantile(totals, 0.95),
         "p_loss": sum(1 for v in totals if v <= 0) / len(totals),
+        "dd_p5": _quantile(dds, 0.05),
+        "dd_p25": _quantile(dds, 0.25),
         "dd_p50": _quantile(dds, 0.50),
+        "dd_p75": _quantile(dds, 0.75),
         "dd_p95": _quantile(dds, 0.95),
         "p_dd_breach": sum(1 for v in dds if v > dd_threshold) / len(dds),
         "dd_threshold": dd_threshold,
         "pf_p5": _quantile(pfs, 0.05),
+        # Keep the scalar fields above for gates and reports; these paths are
+        # the same seeded replays, collapsed point-by-point for the UI chart.
+        "pnl_curve": _percentile_curve(pnl_paths),
+        "dd_curve": _percentile_curve(dd_paths),
     }
 
 
@@ -201,9 +246,23 @@ def walk_forward(trades: Iterable[dict], segments: int = 3) -> Optional[dict]:
         buckets[segment_index(stamp - t0, span, segments)].append(
             float(trade.get("pnl") or 0.0))
     stats = [series_stats(b) for b in buckets]
+    equity = peak = drawdown = 0.0
+    curve = [{"step": 0, "segment": 0, "pnl": 0.0, "max_dd": 0.0}]
+    for step, (trade, stamp) in enumerate(
+            sorted(zip(rows, stamps), key=lambda item: item[1]), 1):
+        equity += float(trade.get("pnl") or 0.0)
+        peak = max(peak, equity)
+        drawdown = max(drawdown, peak - equity)
+        curve.append({
+            "step": step,
+            "segment": segment_index(stamp - t0, span, segments) + 1,
+            "pnl": equity,
+            "max_dd": drawdown,
+        })
     return {
         "segments": stats,
         "pass": all(s["n"] > 0 and s["pnl"] > 0 and s["pf"] > 1.0 for s in stats),
+        "curve": curve,
     }
 
 
@@ -268,8 +327,10 @@ def slip_injection(trades: Sequence[dict],
     out = []
     for level in sorted({int(v) for v in levels}):
         charged = [p - level * tick * s for p, s in zip(pnls, sizes)]
-        out.append({"level": level, "stats": series_stats(charged)})
-    return {"tick_value": tick, "symbol": sym, "levels": out}
+        out.append({"level": level, "stats": series_stats(charged),
+                    "curve": _equity_curve(charged)})
+    return {"tick_value": tick, "symbol": sym, "base_curve": _equity_curve(pnls),
+            "levels": out}
 
 
 def evaluate(trades: Sequence[dict], *, iters: int = DEFAULT_ITERS,
