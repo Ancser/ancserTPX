@@ -123,6 +123,8 @@ def test_walk_forward_splits_by_date_span_not_by_trade_count():
     wf = walk_forward(rows)
     assert [s["n"] for s in wf["segments"]] == [8, 0, 1]
     assert wf["pass"] is False
+    assert all("segment_pnl" in point and "segment_max_dd" in point
+               for point in wf["curve"])
 
 
 def test_walk_forward_passes_only_when_every_segment_is_profitable():
@@ -215,6 +217,12 @@ def test_evaluate_returns_every_panel_field_in_one_call():
     assert len(result["walk_forward"]["curve"]) == 13
     assert result["walk_forward"]["curve"][0]["segment"] == 0
     assert result["walk_forward"]["curve"][-1]["pnl"] == pytest.approx(150.0)
+    for segment, stats in enumerate(result["walk_forward"]["segments"], 1):
+        points = [point for point in result["walk_forward"]["curve"]
+                  if point["segment"] == segment]
+        if points:
+            assert points[-1]["segment_pnl"] == pytest.approx(stats["pnl"])
+            assert points[-1]["segment_max_dd"] == pytest.approx(stats["max_dd"])
     assert result["monthly_pnl"] is not None
     assert isinstance(result["monte_carlo_pass"], bool)
     assert len(result["slip"]["base_curve"]) == 13

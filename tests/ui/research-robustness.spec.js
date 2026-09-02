@@ -72,14 +72,31 @@ test("robustness panel renders from the endpoint", async ({ page }) => {
         .map((el) => el.textContent.trim()) : [],
       mcCharts: content ? content.querySelectorAll(".rob-mc-card [data-rob-chart]").length : 0,
       mcBands: content ? content.querySelectorAll(".rob-mc-card .rob-line-band.inner").length : 0,
-      mcPercentiles: content ? content.querySelectorAll(".rob-mc-card .rob-line-key").length : 0,
+      mcPercentiles: content ? content.querySelectorAll(
+        ".rob-mc-card .rob-line-key:not(.rob-threshold-key)",
+      ).length : 0,
       mcPaths: content ? content.querySelectorAll(".rob-mc-card .rob-line-path").length : 0,
       mcPathPointCounts: content ? [...content.querySelectorAll(".rob-mc-card .rob-line-path")]
         .map((path) => (path.getAttribute("d") || "").split("L").length) : [],
       wfCharts: content ? content.querySelectorAll(".rob-wf-card [data-rob-chart]").length : 0,
+      wfPaths: content ? content.querySelectorAll(".rob-wf-card .rob-line-path").length : 0,
+      wfSegmentLabels: content ? [...content.querySelectorAll(
+        ".rob-wf-card .rob-line-key:not(.rob-threshold-key)",
+      )].map((el) => el.textContent.trim()) : [],
+      wfThresholds: content ? content.querySelectorAll(
+        ".rob-wf-card .rob-line-threshold",
+      ).length : 0,
+      mcThresholds: content ? content.querySelectorAll(
+        ".rob-mc-card .rob-line-threshold",
+      ).length : 0,
       slipCharts: content ? content.querySelectorAll(".rob-slip-card [data-rob-chart]").length : 0,
+      slipRows: content ? content.querySelectorAll(".rob-slip-card .rob-slip-table tbody tr").length : 0,
+      slipColumns: content ? content.querySelectorAll(".rob-slip-card .rob-slip-table thead th").length : 0,
       topstepSizes: content ? [...content.querySelectorAll(".rob-topstep-card tbody tr td:first-child")]
         .map((el) => el.textContent.trim()) : [],
+      topstepHighlightedRows: content ? content.querySelectorAll(
+        ".rob-topstep-card .rob-size-winner",
+      ).length : 0,
       questionDots: content ? content.querySelectorAll(".rob-help-dot").length : 0,
       text: content ? content.textContent : "",
     };
@@ -99,12 +116,19 @@ test("robustness panel renders from the endpoint", async ({ page }) => {
   expect(rendered.mcPercentiles).toBe(10);
   expect(rendered.mcPaths).toBe(10);
   expect(Math.min(...rendered.mcPathPointCounts)).toBeGreaterThan(10);
+  expect(rendered.mcThresholds).toBe(2);
   expect(rendered.wfCharts).toBe(2);
-  expect(rendered.slipCharts).toBe(2);
+  expect(rendered.wfPaths).toBe(6);
+  expect(rendered.wfSegmentLabels).toEqual(["1/3", "2/3", "3/3", "1/3", "2/3", "3/3"]);
+  expect(rendered.wfThresholds).toBe(2);
+  expect(rendered.slipCharts).toBe(0);
+  expect(rendered.slipRows).toBeGreaterThan(4);
+  expect(rendered.slipColumns).toBe(8);
   expect(rendered.topstepSizes).toEqual([
     "1 MNQ", "2 MNQ", "3 MNQ", "5 MNQ", "10 MNQ",
     "1 MNQ", "2 MNQ", "3 MNQ", "5 MNQ", "10 MNQ",
   ]);
+  expect(rendered.topstepHighlightedRows).toBe(0);
   expect(rendered.questionDots).toBeGreaterThan(0);
   expect(rendered.text.toLowerCase()).not.toContain("pass evaluation");
   expect(rendered.text).not.toContain("Robustness — Topstep");

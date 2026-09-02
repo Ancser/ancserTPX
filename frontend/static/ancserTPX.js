@@ -9359,6 +9359,28 @@ function _robObservedCurveSeries(curve, valueKey, label, transform) {
     return points.length ? [{ key: 'observed', label: label || 'observed', points: points }] : [];
 }
 
+function _robSegmentCurveSeries(curve, valueKey, transform) {
+    const rows = Array.isArray(curve) ? curve : [];
+    const grouped = new Map();
+    rows.forEach(point => {
+        const segment = Number(point && point.segment);
+        const step = Number(point && point.step);
+        const raw = Number(point && point[valueKey]);
+        const value = typeof transform === 'function' ? transform(raw) : raw;
+        if (!Number.isInteger(segment) || segment < 1 || !Number.isFinite(step)
+            || !Number.isFinite(value)) return;
+        if (!grouped.has(segment)) grouped.set(segment, []);
+        grouped.get(segment).push({ step: step, value: value });
+    });
+    return Array.from(grouped.keys()).sort((a, b) => a - b).map(segment => {
+        const points = grouped.get(segment).sort((a, b) => a.step - b.step);
+        if (points.length) {
+            points.unshift({ step: Math.max(0, points[0].step - 1), value: 0 });
+        }
+        return { key: 'segment-' + segment, label: segment + '/3', points: points };
+    });
+}
+
 function _robLineChart(title, series, options) {
     const opts = options || {};
     const rows = (Array.isArray(series) ? series : []).map((line, index) => {
@@ -9377,6 +9399,12 @@ function _robLineChart(title, series, options) {
     if (opts.includeZero !== false) {
         lo = Math.min(lo, 0);
         hi = Math.max(hi, 0);
+    }
+    const thresholdValues = (Array.isArray(opts.thresholds) ? opts.thresholds : [])
+        .map(Number).filter(Number.isFinite);
+    if (thresholdValues.length) {
+        lo = Math.min.apply(Math, [lo].concat(thresholdValues));
+        hi = Math.max.apply(Math, [hi].concat(thresholdValues));
     }
     if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
         return '<div class="institution-status">No chart data.</div>';
@@ -9414,20 +9442,25 @@ function _robLineChart(title, series, options) {
     const zero = lo <= 0 && hi >= 0
         ? '<line class="rob-line-zero" x1="' + l + '" y1="' + y(0).toFixed(1)
             + '" x2="' + (w - r) + '" y2="' + y(0).toFixed(1) + '"></line>' : '';
+    const thresholdLines = thresholdValues.map(value => '<line class="rob-line-threshold"'
+        + ' data-threshold="' + value + '" x1="' + l + '" y1="' + y(value).toFixed(1)
+        + '" x2="' + (w - r) + '" y2="' + y(value).toFixed(1) + '"></line>').join('');
     const paths = rows.map((line, index) => '<path class="rob-line-path ' + lineClass(line)
         + '" d="' + pathFor(line.points) + '" stroke="' + colorFor(line, index) + '"></path>').join('');
     const legend = rows.map((line, index) => '<span class="rob-line-key"><i style="background:'
         + colorFor(line, index) + '"></i>' + _attr(line.label || line.key || 'series') + '</span>').join('');
+    const thresholdLegend = thresholdValues.map(value => '<span class="rob-line-key rob-threshold-key"><i></i>'
+        + _attr(_robUsd(value)) + '</span>').join('');
     const format = typeof opts.format === 'function' ? opts.format : _researchNum;
     const aria = _attr(title + ' curve');
     return '<div class="rob-line-chart ' + (opts.tone || '') + '" data-rob-chart="curve">'
         + '<div class="rob-chart-title"><span>' + _attr(title) + '</span>'
         + (opts.alertHtml || '') + '</div>'
-        + '<div class="rob-line-legend">' + legend + '</div>'
+        + '<div class="rob-line-legend">' + legend + thresholdLegend + '</div>'
         + '<div class="rob-line-canvas" role="img" aria-label="' + aria + '">'
         + '<svg viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">'
         + '<rect x="0" y="0" width="' + w + '" height="' + h + '" fill="transparent"></rect>'
-        + bands.join('') + zero + paths + '</svg></div>'
+        + bands.join('') + thresholdLines + zero + paths + '</svg></div>'
         + '<div class="rob-line-axis"><span>' + format(lo) + '</span><span>'
         + format(hi) + '</span><span>trade 0–' + Math.round(maxStep) + '</span></div>'
         + '</div>';
@@ -9505,13 +9538,30 @@ function _robTopstepHtml(analysis, slipTicks) {
     const combineRows = sizes.map(size => _robTopstepRow(combine, size, 0.5));
     const xfaRows = sizes.map(size => _robTopstepRow(xfa, size, 0.4));
     const winner = combine.recommendation ? combine.recommendation.contracts : 1;
-    const xfaWinner = xfa.recommendation ? xfa.recommendation.contracts : 1;
     const daysText = row => row && row.medianPassDays != null && row.p90PassDays != null
         ? row.medianPassDays + ' / ' + row.p90PassDays : '—';
+    const topstepHead = (label, tip) => '<th>' + _attr(label) + _robHelpDot(tip) + '</th>';
+    const combineHeaders = [
+        topstepHead('SIZE', 'Contracts traded per signal in this replay.'),
+        topstepHead('PASS', 'Percentage of replays reaching the $3,000 objective within 60 active days without an MLL or consistency failure.'),
+        topstepHead('MLL FAIL', 'Percentage of replays breaching the $2,000 max-loss limit.'),
+        topstepHead('OPEN@60', 'Percentage of replays still open after the 60-day horizon: neither pass nor fail.'),
+        topstepHead('DAYS P50/P90', 'Median / 90th-percentile active days among passing replays.'),
+        topstepHead('TARGET UP', 'Percentage of passing replays where the consistency rule raised the required target above $3,000.'),
+        topstepHead('REQ P50', 'Median required target among passing replays.'),
+    ].join('');
+    const xfaHeaders = [
+        topstepHead('SIZE', 'Contracts traded per signal in this replay.'),
+        topstepHead('ELIGIBLE', 'Percentage of replays reaching the first-payout eligibility path within 60 active days.'),
+        topstepHead('MLL FAIL', 'Percentage of replays breaching the $2,000 max-loss limit.'),
+        topstepHead('OPEN@60', 'Percentage of replays still open after the 60-day horizon: neither eligible nor failed.'),
+        topstepHead('DAYS P50/P90', 'Median / 90th-percentile active days among eligible replays.'),
+        topstepHead('MIN PAYOUT BAL P50', 'Median required balance/target among eligible replays.'),
+    ].join('');
 
     const combineRow = row => {
         if (!row) return '';
-        return '<tr class="' + (row.contracts === winner ? 'rob-size-winner' : '') + '">'
+        return '<tr>'
             + '<td>' + row.contracts + ' MNQ</td>'
             + '<td class="institution-pos">' + _robPct(row.passRate, 2) + '</td>'
             + '<td class="' + (row.failRate > 0.02 ? 'institution-neg' : '') + '">' + _robPct(row.failRate, 2) + '</td>'
@@ -9523,7 +9573,7 @@ function _robTopstepHtml(analysis, slipTicks) {
     };
     const xfaRow = row => {
         if (!row) return '';
-        return '<tr class="' + (row.contracts === xfaWinner ? 'rob-size-winner' : '') + '">'
+        return '<tr>'
             + '<td>' + row.contracts + ' MNQ</td>'
             + '<td class="institution-pos">' + _robPct(row.passRate, 2) + '</td>'
             + '<td class="' + (row.failRate > 0.02 ? 'institution-neg' : '') + '">' + _robPct(row.failRate, 2) + '</td>'
@@ -9538,7 +9588,8 @@ function _robTopstepHtml(analysis, slipTicks) {
     const slipText = Number(slipTicks || 0) > 0
         ? Math.round(slipTicks) + ' ticks (' + _robUsd(analysis.slipPerContract) + '/contract)'
         : 'no added slippage';
-    const topstepHelp = 'Topstep 50K simulation. The highlighted row is the recommended size. '
+    const topstepHelp = 'Topstep 50K simulation. Rows compare contract sizes; the table-column question marks '
+        + 'define each metric. '
         + 'Trading Combine uses the 50% consistency rule and the XFA table is the '
         + 'post-Combine first-payout eligibility path. Results use 10,000 replays, '
         + slipText + ', the $2,000 max-loss limit, ' + source.tradeCount + ' source trades, and '
@@ -9549,16 +9600,18 @@ function _robTopstepHtml(analysis, slipTicks) {
         + '<div class="rob-topstep-rules">'
         + '<section class="rob-topstep-rule"><h4>TRADING COMBINE · 50%'
         + _robHelpDot('Trading Combine: simulated pass rate within 60 active days. '
-            + 'The green row is the higher simulated outcome; it is not a guarantee.') + '</h4>'
-        + '<table class="institution-table"><thead><tr><th>SIZE</th><th>PASS</th><th>MLL FAIL</th><th>OPEN@60</th><th>DAYS P50/P90</th><th>TARGET ↑</th><th>REQ P50</th></tr></thead><tbody>'
+            + 'Use the column definitions for the exact meaning of each result; no row color implies a guarantee.') + '</h4>'
+        + '<div class="rob-table-scroll"><table class="institution-table"><thead><tr>' + combineHeaders + '</tr></thead><tbody>'
          + combineRows.map(combineRow).join('') + '</tbody></table>'
+        + '</div>'
         + '</section>'
         + '<section class="rob-topstep-rule"><h4>XFA CONSISTENCY · 40%'
         + _robHelpDot('XFA is evaluated after the Combine. Eligible means the simulated '
             + 'account reaches the first-payout path within 60 active days while staying '
             + 'inside the 40% consistency rule.') + '</h4>'
-        + '<table class="institution-table"><thead><tr><th>SIZE</th><th>ELIGIBLE</th><th>MLL FAIL</th><th>OPEN@60</th><th>DAYS P50/P90</th><th>MIN PAYOUT BAL P50</th></tr></thead><tbody>'
+        + '<div class="rob-table-scroll"><table class="institution-table"><thead><tr>' + xfaHeaders + '</tr></thead><tbody>'
          + xfaRows.map(xfaRow).join('') + '</tbody></table>'
+        + '</div>'
         + '</section></div>'
         + '</div>';
 }
@@ -9700,6 +9753,7 @@ async function renderResearchRobustness(force) {
             + _robLineChart('MAX DD', mcDdSeries, {
                 format: _robUsd,
                 tone: 'chart-risk',
+                thresholds: [1000, 2000],
                 alertHtml: _robMaxDdAlert(mc.ddP95, 'Monte Carlo P95 maxDD'),
             })
             + '</div>'
@@ -9732,9 +9786,9 @@ async function renderResearchRobustness(force) {
         const wfDdPoints = wf.stats.map((s, i) => ({
             label: (i + 1) + '/3', value: s.maxDd,
         }));
-        const wfPnlSeries = _robObservedCurveSeries(
-            wf.curve, 'pnl', 'PnL / mo', value => segMonths ? value / segMonths : NaN);
-        const wfDdSeries = _robObservedCurveSeries(wf.curve, 'max_dd', 'maxDD');
+        const wfPnlSeries = _robSegmentCurveSeries(
+            wf.curve, 'segment_pnl', value => segMonths ? value / segMonths : NaN);
+        const wfDdSeries = _robSegmentCurveSeries(wf.curve, 'segment_max_dd');
         const wfPnlValues = wfPoints
             .filter(point => point.value != null && Number.isFinite(Number(point.value)))
             .map(point => Number(point.value));
@@ -9743,11 +9797,14 @@ async function renderResearchRobustness(force) {
         wfHtml = '<div class="rob-charts">'
             + _robLineChart('PNL / MO', wfPnlSeries, {
                 format: _robUsd,
+                palette: ['var(--cyan)', 'var(--green)', 'var(--amber)'],
                 alertHtml: _robPnlAlert(wfWorstPnl, 'Walk-forward'),
             })
             + _robLineChart('MAX DD', wfDdSeries, {
                 format: _robUsd,
                 tone: 'chart-risk',
+                palette: ['var(--cyan)', 'var(--green)', 'var(--amber)'],
+                thresholds: [1000, 2000],
                 alertHtml: _robMaxDdAlert(wfWorstDd, 'Walk-forward'),
             })
             + '</div>'
@@ -9773,7 +9830,6 @@ async function renderResearchRobustness(force) {
             row => [row.level, {
                 pnl: row.stats.pnl, pf: row.stats.pf,
                 maxDd: row.stats.max_dd, win: row.stats.win, n: row.stats.n,
-                curve: Array.isArray(row.curve) ? row.curve : [],
             }]));
     const slipPoints = [{ label: 'original', level: 0, value: spanMonths ? base.pnl / spanMonths : base.pnl, pnl: base.pnl, stats: base }]
         .concat(slipLevels.filter(lvl => slipByLevel.has(lvl)).map(lvl => {
@@ -9784,51 +9840,28 @@ async function renderResearchRobustness(force) {
                 pnl: stats.pnl, stats: stats, used: lvl === used,
             };
         }));
-    const slipCurveRows = [{
-        key: 'original', label: 'original', curve: rob.slip && rob.slip.base_curve,
-    }].concat(slipLevels.filter(lvl => slipByLevel.has(lvl)).map(lvl => {
-        const row = slipByLevel.get(lvl);
-        return {
-            key: String(lvl) + 't',
-            label: String(lvl) + 't' + (lvl === used ? ' â˜…' : ''),
-            curve: row.curve,
-        };
-    }));
-    const slipPnlSeries = slipCurveRows.map(row => _robObservedCurveSeries(
-        row.curve, 'pnl', row.label,
-        value => spanMonths ? value / spanMonths : value)[0]).filter(Boolean);
-    const slipDdSeries = slipCurveRows.map(row => _robObservedCurveSeries(
-        row.curve, 'max_dd', row.label)[0]).filter(Boolean);
-    const slipPnlPoints = slipPoints.map(point => ({
-        label: point.label, value: point.value, used: point.used,
-    }));
-    const slipDdPoints = slipPoints.map(point => ({
-        label: point.label, value: point.stats.maxDd, used: point.used,
-    }));
-    const slipWorstPnl = Math.min.apply(Math, slipPnlPoints.map(point => Number(point.value)));
-    const slipWorstDd = Math.max.apply(Math, slipDdPoints.map(point => Number(point.value)));
-    let slipHtml = '<div class="rob-charts">'
-        + _robLineChart('PNL / MO', slipPnlSeries, {
-            format: _robUsd,
-            alertHtml: _robPnlAlert(slipWorstPnl, 'Slippage'),
-        })
-        + _robLineChart('MAX DD', slipDdSeries, {
-            format: _robUsd,
-            tone: 'chart-risk',
-            alertHtml: _robMaxDdAlert(slipWorstDd, 'Slippage'),
-        })
-        + '</div>'
-        + _robStatLines(slipPoints.map(point => {
-            const stats = point.stats;
-            const delta = point.level === 0 ? '—'
-                : _researchNum((stats.pf / Math.max(base.pf, 1e-9) - 1) * 100, 1) + '%';
-            return {
-                label: point.label,
-                value: _robUsd(stats.pnl) + ' · PF ' + _researchNum(stats.pf, 2)
-                    + ' · ΔPF ' + delta + ' · maxDD ' + _robUsd(stats.maxDd),
-                cls: stats.pf >= 1.5 ? 'institution-pos' : 'institution-neg',
-            };
-        }));
+    const slipTableRows = slipPoints.map(point => {
+        const stats = point.stats;
+        const delta = point.level === 0 ? '—'
+            : _researchNum((stats.pf / Math.max(base.pf, 1e-9) - 1) * 100, 1) + '%';
+        const rowClass = point.used ? ' class="rob-slip-used"' : '';
+        return '<tr' + rowClass + '>'
+            + '<td>' + _attr(point.label) + '</td>'
+            + '<td class="' + (stats.pnl >= 0 ? 'institution-pos' : 'institution-neg') + '">'
+            + _robUsd(stats.pnl) + '</td>'
+            + '<td>' + _robUsd(point.value) + '</td>'
+            + '<td class="' + (stats.pf >= 1.5 ? 'institution-pos' : 'institution-neg') + '">'
+            + _researchNum(stats.pf, 2) + '</td>'
+            + '<td>' + delta + '</td>'
+            + '<td>' + _robUsd(stats.maxDd) + '</td>'
+            + '<td>' + _robPct(stats.win) + '</td>'
+            + '<td>' + stats.n + '</td>'
+            + '</tr>';
+    }).join('');
+    const slipHtml = '<div class="rob-table-scroll"><table class="institution-table rob-slip-table">'
+        + '<thead><tr><th>SLIP</th><th>PNL</th><th>PNL/MO</th><th>PF</th><th>ΔPF</th>'
+        + '<th>MAXDD</th><th>WIN%</th><th>N</th></tr></thead><tbody>'
+        + slipTableRows + '</tbody></table></div>';
 
     const usedStats = slipByLevel.get(used) || base;
     const rawSymbol = String((trades[0] || {}).symbol || '').toUpperCase();

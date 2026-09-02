@@ -6,7 +6,7 @@ Updated 2026-09-01. Current HEAD + the uncommitted fixes listed below.
 
 ```
 tests            489 pytest passing + 8 subtests + 32 Chromium interaction tests
-invariants       74 documented / 72 active / 2 explicitly retired
+invariants       75 documented / 73 active / 2 explicitly retired
 strategies       factor · momentum · betafib · pi · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
@@ -157,10 +157,10 @@ Monte Carlo P5/P25/P50/P75/P95 values come from the existing seeded backend
 bootstrap; the browser does not compute a second distribution. PNL/MO and
 maxDD now show the full point-by-point P5–P95 replay envelope: P25–P75 is the
 lighter inner band and P5–P95 is the lower-opacity outer band, with all five
-percentile lines visible. Walk-Forward shows its chronological cumulative
-curve and running maxDD; Slippage shows original plus every injected level on
-both curves. The scalar stat lines remain below each chart and wrap one row per
-result. PNL/MO below zero gets the Performance-style amber warning; maxDD uses
+percentile lines visible. Walk-Forward shows separate 1/3, 2/3, and 3/3 lines
+in both its cumulative PNL and running maxDD charts, with $1,000/$2,000 dashed
+guides on maxDD. Slippage is a compact organized table of original plus every
+injected level; its scalar rows no longer use charts. PNL/MO below zero gets the Performance-style amber warning; maxDD uses
 the existing risk meaning: over $1,000 amber, over $2,000 red. Topstep/XFA now
 show 1, 2, 3, 5, and 10 MNQ results. No live engine, order, OCO, signal, or
 preset behavior changed.

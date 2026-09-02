@@ -247,17 +247,29 @@ def walk_forward(trades: Iterable[dict], segments: int = 3) -> Optional[dict]:
             float(trade.get("pnl") or 0.0))
     stats = [series_stats(b) for b in buckets]
     equity = peak = drawdown = 0.0
-    curve = [{"step": 0, "segment": 0, "pnl": 0.0, "max_dd": 0.0}]
+    segment_equity = [0.0] * segments
+    segment_peak = [0.0] * segments
+    segment_drawdown = [0.0] * segments
+    curve = [{"step": 0, "segment": 0, "pnl": 0.0, "max_dd": 0.0,
+              "segment_pnl": 0.0, "segment_max_dd": 0.0}]
     for step, (trade, stamp) in enumerate(
             sorted(zip(rows, stamps), key=lambda item: item[1]), 1):
-        equity += float(trade.get("pnl") or 0.0)
+        pnl = float(trade.get("pnl") or 0.0)
+        segment = segment_index(stamp - t0, span, segments)
+        equity += pnl
         peak = max(peak, equity)
         drawdown = max(drawdown, peak - equity)
+        segment_equity[segment] += pnl
+        segment_peak[segment] = max(segment_peak[segment], segment_equity[segment])
+        segment_drawdown[segment] = max(
+            segment_drawdown[segment], segment_peak[segment] - segment_equity[segment])
         curve.append({
             "step": step,
-            "segment": segment_index(stamp - t0, span, segments) + 1,
+            "segment": segment + 1,
             "pnl": equity,
             "max_dd": drawdown,
+            "segment_pnl": segment_equity[segment],
+            "segment_max_dd": segment_drawdown[segment],
         })
     return {
         "segments": stats,
