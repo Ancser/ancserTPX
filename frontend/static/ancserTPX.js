@@ -70,8 +70,10 @@ let candleSeries = null;
 let volumeSeries = null;   // kept for live-update guard; no longer rendered
 let _rawCandleBuffer = []; // [{time(unix), open, high, low, close, volume}]
 let _chartHistoryLoading = false;
+let _chartHistoryApplying = false;
 let _chartHistoryExhausted = false;
 let _chartHistorySuppressUntil = 0;
+let _chartOverlayRafId = null;
 let zoneRectangles = [];
 let tradeMarkers = [];
 let backtestData = null;
@@ -4460,14 +4462,15 @@ async function loadOlderChartHistory() {
         const data = await response.json();
         const incoming = (data.candles || []).map(_chartHistoryCandleData).filter(Boolean);
         const oldRange = chart.timeScale().getVisibleLogicalRange();
-        const oldTimes = new Set(current.map(row => row.time));
-        const mergedByTime = new Map(current.map(row => [row.time, {
-            time: row.time, open: row.open, high: row.high, low: row.low,
-            close: row.close, volume: row.volume || 0,
-        }]));
-        incoming.forEach(row => mergedByTime.set(row.time, row));
-        const merged = [...mergedByTime.values()].sort((a, b) => a.time - b.time);
-        const added = merged.filter(row => !oldTimes.has(row.time)).length;
+        // `before` is exclusive, so only the incoming page needs deduping and
+        // sorting. Rebuilding a Map and sorting the entire accumulated chart on
+        // every left-edge page made each successive fetch slower than the last.
+        const olderByTime = new Map();
+        incoming.forEach(row => {
+            if (row.time < first.time) olderByTime.set(row.time, row);
+        });
+        const older = [...olderByTime.values()].sort((a, b) => a.time - b.time);
+        const added = older.length;
         if (!added) {
             // Older servers do not understand `before` and return the same
             // recent page. Stop retrying on every mousemove and surface the
@@ -4478,30 +4481,43 @@ async function loadOlderChartHistory() {
             return false;
         }
 
+        const currentRaw = (_rawCandleBuffer && _rawCandleBuffer.length === current.length)
+            ? _rawCandleBuffer
+            : current.map(row => ({
+                time: row.time, open: row.open, high: row.high, low: row.low,
+                close: row.close, volume: row.volume || 0,
+            }));
+        const merged = older.concat(currentRaw);
         window._lastChartData = merged.map(row => ({
             time: row.time, open: row.open, high: row.high, low: row.low, close: row.close,
         }));
         _rawCandleBuffer = merged;
-        candleSeries.setData(window._lastChartData);
-        if (oldRange) {
-            chart.timeScale().setVisibleLogicalRange({
-                from: oldRange.from + added,
-                to: oldRange.to + added,
-            });
+        // setData emits range-change callbacks while Lightweight Charts is
+        // rebuilding its time scale. Suppress canvas work until both the data
+        // and the restored viewport are stable, then paint exactly once.
+        _chartHistoryApplying = true;
+        try {
+            candleSeries.setData(window._lastChartData);
+            if (oldRange) {
+                chart.timeScale().setVisibleLogicalRange({
+                    from: oldRange.from + added,
+                    to: oldRange.to + added,
+                });
+            }
+        } finally {
+            _chartHistoryApplying = false;
         }
         if (data.has_more_before === false || incoming.length < CHART_HISTORY_PAGE_SIZE) {
             _chartHistoryExhausted = data.has_more_before === false;
         }
-        drawSessionDividers();
-        redrawAllOverlays();
-        refreshIndicatorSignalMarkers(false);
-        refreshPiSignalMarkers();
+        scheduleChartOverlayRedraw();
         log('Loaded ' + added + ' older chart candles (' + (data.source || 'history') + ')', 'info');
         return true;
     } catch (error) {
         log('Older chart history failed: ' + error.message, 'warn');
         return false;
     } finally {
+        _chartHistoryApplying = false;
         _chartHistoryLoading = false;
     }
 }
@@ -4565,28 +4581,13 @@ function initChart() {
             width: container.clientWidth,
             height: container.clientHeight
         });
-        // Redraw VP overlay on resize
-        renderTfZones();
-        redrawTradeDecisionOverlays();
-        drawSessionDividers();
-        drawIndicatorSignalOverlay();
-        drawOptionWallOverlay();
+        scheduleChartOverlayRedraw();
     }).observe(container);
 
     // Redraw VP overlay on scroll / zoom — continuous following via rAF
-    let _vpRafId = null;
     const _redrawOverlays = () => {
         try { maybeLoadOlderChartHistory(chart.timeScale().getVisibleLogicalRange()); } catch (_) {}
-        if (_vpRafId) return; // already scheduled
-        _vpRafId = requestAnimationFrame(() => {
-            _vpRafId = null;
-            renderTfZones();
-            redrawTradeDecisionOverlays();
-            drawSessionDividers();
-            drawIndicatorSignalOverlay();
-            drawOptionWallOverlay();
-            window.TpxGlass?.sync?.();
-        });
+        scheduleChartOverlayRedraw();
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(_redrawOverlays);
     // Vertical zoom (wheel on price scale or chart body)
@@ -4862,6 +4863,26 @@ function redrawAllOverlays() {
     try { if (_cachedVPZones) drawVolumeProfile(_cachedVPZones); } catch (e) {}
     try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
     try { drawPositionTools(backtestData && backtestData.trades ? backtestData.trades : []); } catch (e) {}
+}
+
+function scheduleChartOverlayRedraw() {
+    if (_chartHistoryApplying || _chartOverlayRafId) return;
+    _chartOverlayRafId = requestAnimationFrame(() => {
+        _chartOverlayRafId = null;
+        if (_chartHistoryApplying) return;
+        try { renderTfZones(); } catch (e) {}
+        try { redrawTradeDecisionOverlays(); } catch (e) {}
+        try { drawSessionDividers(); } catch (e) {}
+        try { drawIndicatorSignalOverlay(); } catch (e) {}
+        try { drawPiSignalOverlay(); } catch (e) {}
+        try { drawOptionWallOverlay(); } catch (e) {}
+        try {
+            if (_overlaySyncData && _overlaySyncData.zones) {
+                drawFadeDailyLevels(_overlaySyncData.zones);
+            }
+        } catch (e) {}
+        window.TpxGlass?.sync?.();
+    });
 }
 
 // 開關是靜態 HTML(玻璃引擎的 liveAll() 只掃一次,動態產生的抓不到),
@@ -7480,6 +7501,10 @@ let _optionWallSnapshots = [];
 let _optionWallPiSignals = [];
 let _optionWallLoading = false;
 let _optionWallMeta = null;
+const OPTION_WALL_SNAPSHOT_SEC = 5 * 60;
+const OPTION_WALL_MAX_GAP_SEC = 10 * 60;
+const OPTION_WALL_OVERLAP_TOLERANCE = 0.25;
+const OPTION_WALL_OVERLAP_OFFSET_PX = 1.5;
 
 function _createOptionWallCanvas() {
     if (_optionWallCanvas) return _optionWallCanvas;
@@ -7527,7 +7552,8 @@ async function refreshOptionWallLayer() {
         _optionWallSnapshots = (data.snapshots || []).map(row => ({
             ...row,
             chartTime: isoToChartTime(row.as_of),
-        })).filter(row => Number.isFinite(row.chartTime));
+        })).filter(row => Number.isFinite(row.chartTime))
+            .sort((a, b) => a.chartTime - b.chartTime);
         _optionWallPiSignals = (data.pi_signals || []).map(row => ({
             ...row,
             chartTime: isoToChartTime(row.ts),
@@ -7549,13 +7575,61 @@ async function refreshOptionWallLayer() {
     }
 }
 
-function _optionWallPriorSnapshot(chartTime) {
-    let found = null;
-    for (const row of _optionWallSnapshots) {
-        if (row.chartTime > chartTime) break;
-        found = row;
+function _optionWallLowerBound(chartTime) {
+    let lo = 0;
+    let hi = _optionWallSnapshots.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (_optionWallSnapshots[mid].chartTime < chartTime) lo = mid + 1;
+        else hi = mid;
     }
-    return found;
+    return lo;
+}
+
+function _optionWallPriorSnapshot(chartTime) {
+    const index = _optionWallLowerBound(chartTime);
+    if (index < _optionWallSnapshots.length
+        && _optionWallSnapshots[index].chartTime === chartTime) {
+        return _optionWallSnapshots[index];
+    }
+    return index > 0 ? _optionWallSnapshots[index - 1] : null;
+}
+
+function _optionWallSegmentEndTime(row, next) {
+    const gap = next ? Number(next.chartTime) - Number(row.chartTime) : NaN;
+    const rowDay = String(row.as_of || '').slice(0, 10);
+    const nextDay = String((next && next.as_of) || '').slice(0, 10);
+    let sessionClose = Infinity;
+    const asOfMs = Date.parse(String(row.as_of || ''));
+    if (Number.isFinite(asOfMs)) {
+        const ny = _newYorkParts(asOfMs);
+        const closeMs = nyLocalToUtcMs(ny.year, ny.month - 1, ny.day, 16, 0);
+        sessionClose = utcMsToChartTime(closeMs);
+    }
+    if (next && gap > 0 && gap <= OPTION_WALL_MAX_GAP_SEC && rowDay === nextDay) {
+        return Math.min(next.chartTime, sessionClose);
+    }
+    return Math.min(Number(row.chartTime) + OPTION_WALL_SNAPSHOT_SEC, sessionClose);
+}
+
+function _optionWallsOverlap(row) {
+    const call = Number(row && row.call_wall_mnq);
+    const put = Number(row && row.put_wall_mnq);
+    return Number.isFinite(call) && Number.isFinite(put)
+        && Math.abs(call - put) <= OPTION_WALL_OVERLAP_TOLERANCE;
+}
+
+function _optionWallVisibleWindow(visibleRange) {
+    if (!visibleRange || !Number.isFinite(Number(visibleRange.from))
+        || !Number.isFinite(Number(visibleRange.to))) {
+        return { start: 0, end: _optionWallSnapshots.length };
+    }
+    const start = Math.max(0, _optionWallLowerBound(Number(visibleRange.from)) - 1);
+    const end = Math.min(
+        _optionWallSnapshots.length,
+        _optionWallLowerBound(Number(visibleRange.to)) + 1,
+    );
+    return { start, end };
 }
 
 function drawOptionWallOverlay() {
@@ -7565,13 +7639,16 @@ function drawOptionWallOverlay() {
     const dpr = window.devicePixelRatio || 1;
     const W = container.clientWidth;
     const H = container.clientHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
+    const pixelW = Math.max(1, Math.round(W * dpr));
+    const pixelH = Math.max(1, Math.round(H * dpr));
+    if (canvas.width !== pixelW || canvas.height !== pixelH) {
+        canvas.width = pixelW;
+        canvas.height = pixelH;
+        canvas.style.width = W + 'px';
+        canvas.style.height = H + 'px';
+    }
     const ctx = canvas.getContext('2d');
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
     if (!layerOn('optionwall') || !_optionWallSnapshots.length) return;
 
@@ -7583,6 +7660,7 @@ function drawOptionWallOverlay() {
         { key: 'put_wall_mnq', color: 'rgba(255,93,115,0.96)', dash: [], label: 'PUT WALL' },
         { key: 'gamma_flip_mnq', color: 'rgba(255,181,71,0.92)', dash: [6, 4], label: 'GAMMA FLIP' },
     ];
+    const visibleWindow = _optionWallVisibleWindow(visibleRange);
 
     ctx.save();
     ctx.beginPath();
@@ -7593,19 +7671,24 @@ function drawOptionWallOverlay() {
         ctx.lineWidth = spec.key === 'gamma_flip_mnq' ? 1.2 : 1.7;
         ctx.setLineDash(spec.dash);
         ctx.beginPath();
-        let drawing = false;
-        for (let index = 0; index < _optionWallSnapshots.length; index++) {
+        for (let index = visibleWindow.start; index < visibleWindow.end; index++) {
             const row = _optionWallSnapshots[index];
             const value = Number(row[spec.key]);
-            if (!Number.isFinite(value)) { drawing = false; continue; }
+            if (!Number.isFinite(value)) continue;
             const next = _optionWallSnapshots[index + 1];
             const x1 = _indicatorTimeToX(row.chartTime, W, visibleRange);
-            const x2 = _indicatorTimeToX(next ? next.chartTime : row.chartTime + 300, W, visibleRange);
-            const y1 = candleSeries.priceToCoordinate(value);
-            if (x1 === null || x2 === null || y1 === null || y1 === undefined) { drawing = false; continue; }
-            if (!drawing) ctx.moveTo(x1, y1); else ctx.lineTo(x1, y1);
-            ctx.lineTo(x2, y1);
-            drawing = true;
+            const endTime = _optionWallSegmentEndTime(row, next);
+            const x2 = _indicatorTimeToX(endTime, W, visibleRange);
+            let y = candleSeries.priceToCoordinate(value);
+            if (x1 === null || x2 === null || y === null || y === undefined) continue;
+            if (_optionWallsOverlap(row)) {
+                if (spec.key === 'call_wall_mnq') y -= OPTION_WALL_OVERLAP_OFFSET_PX;
+                if (spec.key === 'put_wall_mnq') y += OPTION_WALL_OVERLAP_OFFSET_PX;
+            }
+            // Every snapshot is its own horizontal segment. A wall jump starts
+            // a new segment; there is deliberately no vertical connector.
+            ctx.moveTo(x1, y);
+            ctx.lineTo(x2, y);
         }
         ctx.stroke();
     }
@@ -7634,18 +7717,37 @@ function drawOptionWallOverlay() {
         ctx.fillText(text, boxX + 5, boxY + 2);
     });
 
-    const visibleRows = _optionWallSnapshots.filter(row => !visibleRange
-        || (row.chartTime >= visibleRange.from && row.chartTime <= visibleRange.to));
+    const visibleRows = _optionWallSnapshots
+        .slice(visibleWindow.start, visibleWindow.end)
+        .filter(row => !visibleRange
+            || (row.chartTime >= visibleRange.from && row.chartTime <= visibleRange.to));
     const last = visibleRows[visibleRows.length - 1];
     if (last) {
-        for (const spec of specs) {
-            const value = Number(last[spec.key]);
+        const overlap = _optionWallsOverlap(last);
+        const labelSpecs = overlap
+            ? [{
+                value: (Number(last.call_wall_mnq) + Number(last.put_wall_mnq)) / 2,
+                color: 'rgba(225,231,239,0.96)',
+                label: 'CALL+PUT WALL',
+                overlap: true,
+            }, { ...specs[2], value: Number(last[specs[2].key]) }]
+            : specs.map(spec => ({ ...spec, value: Number(last[spec.key]) }));
+        for (const spec of labelSpecs) {
+            const value = Number(spec.value);
             const y = Number.isFinite(value) ? candleSeries.priceToCoordinate(value) : null;
             if (y === null || y === undefined || y < 4 || y > plotH - 12) continue;
+            const labelW = Math.ceil(ctx.measureText(spec.label).width) + 12;
+            const boxX = W - labelW - 4;
             ctx.fillStyle = 'rgba(8,12,18,0.78)';
-            ctx.fillRect(W - 105, y - 7, 101, 14);
+            ctx.fillRect(boxX, y - 7, labelW, 14);
+            if (spec.overlap) {
+                ctx.fillStyle = 'rgba(40,209,124,0.96)';
+                ctx.fillRect(boxX, y - 7, 3, 7);
+                ctx.fillStyle = 'rgba(255,93,115,0.96)';
+                ctx.fillRect(boxX, y, 3, 7);
+            }
             ctx.fillStyle = spec.color;
-            ctx.fillText(spec.label, W - 101, y - 5);
+            ctx.fillText(spec.label, boxX + 7, y - 5);
         }
     }
     ctx.restore();
@@ -7770,14 +7872,7 @@ function startOverlaySync() {
         if (curY !== lastCheckY || curX !== lastCheckX) {
             lastCheckY = curY;
             lastCheckX = curX;
-            const zonesToDraw = _cachedVPZones || data.zones;
-            if (zonesToDraw) drawVolumeProfile(zonesToDraw);
-            drawFadeDailyLevels(data.zones);
-            redrawTradeDecisionOverlays();
-            drawSessionDividers();
-            drawIndicatorSignalOverlay();
-            drawOptionWallOverlay();
-            window.TpxGlass?.sync?.();
+            scheduleChartOverlayRedraw();
         }
     }
 

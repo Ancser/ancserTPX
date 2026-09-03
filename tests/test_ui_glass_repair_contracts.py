@@ -441,6 +441,32 @@ def test_option_wall_demo_is_an_opt_in_read_only_chart_layer():
     assert "gamma_flip_mnq" in draw
     assert "net_oi_gex_1pct" in draw
     assert "net_volume_gex_1pct" in draw
+    assert "_optionWallVisibleWindow(visibleRange)" in draw
+    assert "_optionWallSegmentEndTime(row, next)" in draw
+    assert "ctx.moveTo(x1, y)" in draw
+    assert "ctx.lineTo(x2, y)" in draw
+    assert "let drawing" not in draw
+    assert "CALL+PUT WALL" in draw
+    assert "_optionWallsOverlap(row)" in draw
+    assert "OPTION_WALL_MAX_GAP_SEC = 10 * 60" in JS
+    assert "OPTION_WALL_OVERLAP_TOLERANCE = 0.25" in JS
+
+
+def test_left_history_paging_does_not_recompute_signals_or_duplicate_canvas_work():
+    history = _function_source("loadOlderChartHistory")
+    assert "older.concat(currentRaw)" in history
+    assert "_chartHistoryApplying = true" in history
+    assert "scheduleChartOverlayRedraw()" in history
+    assert "refreshIndicatorSignalMarkers" not in history
+    assert "refreshPiSignalMarkers" not in history
+    assert "drawSessionDividers()" not in history
+
+    init = _function_source("initChart")
+    assert "scheduleChartOverlayRedraw()" in init
+    assert "_vpRafId" not in init
+    sync = _function_source("startOverlaySync")
+    assert "scheduleChartOverlayRedraw()" in sync
+    assert "drawOptionWallOverlay()" not in sync
 
 
 def test_switch_lens_material_and_backdrop_share_one_clock():

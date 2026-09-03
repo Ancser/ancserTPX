@@ -29,7 +29,7 @@ function bars(startMs, count) {
 }
 
 async function openWithStubbedCandles(page, {
-  storeFrom, storeCount, liveFrom, liveCount, onBeforeRequest,
+  storeFrom, storeCount, liveFrom, liveCount, onBeforeRequest, optionWallData,
 }) {
   await page.addInitScript(() => {
     localStorage.setItem("ancserTPX.uiLang", "en");
@@ -75,6 +75,13 @@ async function openWithStubbedCandles(page, {
       await route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({ candles: bars(liveFrom, liveCount), count: liveCount }),
+      });
+      return;
+    }
+    if (url.pathname === "/api/options-wall/demo" && optionWallData) {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(optionWallData),
       });
       return;
     }
@@ -241,6 +248,15 @@ test("panning to the left edge prepends an older chart page", async ({ page }) =
   const now = Math.floor(Date.now() / MIN) * MIN;
   const initialFrom = now - 180 * MIN;
   const requests = [];
+  const signalRequestsDuringPaging = [];
+  let capturePagingRequests = false;
+  page.on("request", (request) => {
+    if (!capturePagingRequests) return;
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/data/mnq-signals" || path.startsWith("/api/pi/signals")) {
+      signalRequestsDuringPaging.push(path);
+    }
+  });
 
   await openWithStubbedCandles(page, {
     storeFrom: initialFrom, storeCount: 181,
@@ -268,8 +284,10 @@ test("panning to the left edge prepends an older chart page", async ({ page }) =
   // This is the same callback used by Lightweight Charts when the visible
   // logical range reaches the left edge during a drag.
   await page.waitForTimeout(600);
+  capturePagingRequests = true;
   await page.evaluate(() => window.maybeLoadOlderChartHistory({ from: 0, to: 120 }));
   await page.waitForFunction(() => (window._lastChartData || []).length > 181);
+  capturePagingRequests = false;
 
   const after = await page.evaluate(() => {
     const rows = window._lastChartData || [];
@@ -285,4 +303,112 @@ test("panning to the left edge prepends an older chart page", async ({ page }) =
   expect(after.count).toBeGreaterThan(181);
   expect(before.first - after.first).toBe(requests.length * 60 * MIN);
   expect(after.widestGapMin).toBeLessThanOrEqual(1);
+  expect(signalRequestsDuringPaging).toEqual([]);
+});
+
+test("option-wall jumps are separate horizontal segments and overlaps stay visible", async ({ page }) => {
+  test.setTimeout(120000);
+  const now = Math.floor(Date.now() / MIN) * MIN;
+  const storeFrom = now - 180 * MIN;
+  const at = (offsetMin) => new Date(storeFrom + offsetMin * MIN).toISOString();
+  const snapshot = (offsetMin, call, put, flip) => ({
+    as_of: at(offsetMin),
+    call_wall_mnq: call,
+    put_wall_mnq: put,
+    gamma_flip_mnq: flip,
+    net_oi_gex_1pct: 100000000,
+    net_volume_gex_1pct: -200000000,
+  });
+
+  await page.addInitScript(() => {
+    window.__optionWallSegments = [];
+    window.__optionWallTexts = [];
+    const proto = CanvasRenderingContext2D.prototype;
+    const moveTo = proto.moveTo;
+    const lineTo = proto.lineTo;
+    const fillText = proto.fillText;
+    proto.moveTo = function(x, y) {
+      if (this.canvas && this.canvas.id === "option-wall-overlay") {
+        this.__wallLastPoint = { x, y };
+      }
+      return moveTo.call(this, x, y);
+    };
+    proto.lineTo = function(x, y) {
+      if (this.canvas && this.canvas.id === "option-wall-overlay" && this.__wallLastPoint) {
+        window.__optionWallSegments.push({
+          x1: this.__wallLastPoint.x,
+          y1: this.__wallLastPoint.y,
+          x2: x,
+          y2: y,
+          stroke: String(this.strokeStyle),
+        });
+        this.__wallLastPoint = { x, y };
+      }
+      return lineTo.call(this, x, y);
+    };
+    proto.fillText = function(text, ...args) {
+      if (this.canvas && this.canvas.id === "option-wall-overlay") {
+        window.__optionWallTexts.push(String(text));
+      }
+      return fillText.call(this, text, ...args);
+    };
+  });
+
+  await openWithStubbedCandles(page, {
+    storeFrom,
+    storeCount: 181,
+    liveFrom: now - 60 * MIN,
+    liveCount: 60,
+    optionWallData: {
+      available: true,
+      date: "test",
+      paid_cost_usd: 0,
+      snapshots: [
+        snapshot(120, 102, 98, 100),
+        snapshot(125, 102, 98, 100),
+        snapshot(135, 97, 103, 100),
+        snapshot(140, 100, 100, 99),
+      ],
+      pi_signals: [],
+    },
+  });
+  await page.evaluate((initial) => window.showCandleData(initial), bars(storeFrom, 181));
+
+  await page.evaluate(() => window.toggleChartLayer("optionwall", true));
+  await page.waitForTimeout(1500);
+  const painted = await page.evaluate(() => ({
+    segments: window.__optionWallSegments,
+    texts: window.__optionWallTexts,
+    layerOn: window.layerOn("optionwall"),
+    snapshotCount: _optionWallSnapshots.length,
+    canvas: !!document.getElementById("option-wall-overlay"),
+    crossDayEnd: window._optionWallSegmentEndTime(
+      { chartTime: 1000, as_of: "2026-08-03T20:00:00Z" },
+      { chartTime: 87400, as_of: "2026-08-04T13:35:00Z" },
+    ),
+    closeEnd: window._optionWallSegmentEndTime({
+      chartTime: window.isoToChartTime("2026-08-03T20:00:00Z"),
+      as_of: "2026-08-03T20:00:00Z",
+    }, null),
+    closeStart: window.isoToChartTime("2026-08-03T20:00:00Z"),
+  }));
+
+  expect(painted.layerOn).toBe(true);
+  expect(painted.snapshotCount).toBe(4);
+  expect(painted.canvas).toBe(true);
+  expect(painted.segments.length).toBeGreaterThan(0);
+  expect(painted.segments.every((s) => Math.abs(s.y2 - s.y1) < 0.01)).toBe(true);
+  expect(painted.texts).toContain("CALL+PUT WALL");
+  expect(painted.crossDayEnd).toBe(1300); // one snapshot only, never overnight
+  expect(painted.closeEnd).toBe(painted.closeStart); // stop exactly at 16:00 ET
+
+  const green = painted.segments.filter((s) => s.stroke.includes("40, 209, 124"));
+  const red = painted.segments.filter((s) => s.stroke.includes("255, 93, 115"));
+  expect(green.length).toBeGreaterThan(0);
+  expect(red.length).toBeGreaterThan(0);
+  expect(green.some((g) => red.some((r) =>
+    Math.abs(g.x1 - r.x1) < 0.01
+      && Math.abs(g.x2 - r.x2) < 0.01
+      && Math.abs(g.y1 - r.y1) >= 2.5,
+  ))).toBe(true);
 });
