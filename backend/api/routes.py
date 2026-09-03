@@ -1754,36 +1754,122 @@ async def save_config(body: dict):
     return {"success": True}
 
 
-@router.get("/data/candles")
-async def get_stored_candles(limit: int = 60000):
-    """返回已載入的歷史 K 線數據 (用於前端圖表顯示)。
+_CHART_HISTORY_PAGE_MAX = 10_000
 
-    limit 只限制「回傳給前端畫圖」的最近 K 線數量，避免全範圍 (數十萬根)
-    一次送出造成瀏覽器主執行緒卡死。回測 / 機器學習仍使用完整的
-    _historical_candles，不受此上限影響。limit<=0 表示不限制。
-    """
+
+def _chart_rows_from_memory(before: Optional[datetime], after: Optional[datetime]):
+    """Return the in-memory chart rows when the requested range is contained."""
     if not _historical_candles:
-        return {"candles": [], "count": 0}
+        return None
+    ordered = _historical_candles
+    first = _candle_time(ordered[0])
+    last = _candle_time(ordered[-1])
+    if before is not None and before <= first:
+        return None
+    if after is not None and after >= last:
+        return None
+    return ordered
 
-    rows = _historical_candles
+
+def _chart_page(rows, limit: int, before: Optional[datetime], after: Optional[datetime]):
+    """Select a bounded chart page from an already sorted Candle collection."""
+    if not rows:
+        return [], False, False
+    lo = 0
+    hi = len(rows)
+    if before is not None:
+        hi = bisect_left(rows, before, key=_candle_time)
+    if after is not None:
+        lo = bisect_right(rows, after, lo=0, hi=hi, key=_candle_time)
+    if hi < lo:
+        return [], False, False
+    page_lo = max(lo, hi - limit)
+    page_hi = min(hi, page_lo + limit)
+    selected = list(rows[page_lo:page_hi])
+    return selected, page_lo > lo, page_hi < hi
+
+
+def _chart_row_dict(candle: Candle) -> Dict[str, Any]:
+    return {
+        "time": candle.timestamp.isoformat(),
+        "open": candle.open,
+        "high": candle.high,
+        "low": candle.low,
+        "close": candle.close,
+        "volume": candle.volume,
+    }
+
+
+@router.get("/data/candles")
+async def get_stored_candles(
+    limit: int = 60000,
+    before: str = "",
+    after: str = "",
+):
+    """Return chart candles, with optional cursor pagination for left-panning.
+
+    The initial request keeps the historical 60k chart cap for compatibility.
+    ``before`` and ``after`` are exclusive ISO-8601 cursors; paged requests are
+    bounded to ``_CHART_HISTORY_PAGE_MAX`` rows and may transparently read the
+    append-only store when CONNECT's warm in-memory set no longer reaches the
+    requested boundary.  Backtests continue to use the complete workset.
+    """
+    before_dt = _parse_iso_utc(before) if before else None
+    after_dt = _parse_iso_utc(after) if after else None
+    if before and before_dt is None:
+        raise HTTPException(status_code=400, detail="before must be an ISO timestamp")
+    if after and after_dt is None:
+        raise HTTPException(status_code=400, detail="after must be an ISO timestamp")
+    if before_dt is not None and after_dt is not None and after_dt >= before_dt:
+        raise HTTPException(status_code=400, detail="after must be earlier than before")
+
+    try:
+        requested_limit = int(limit)
+    except (TypeError, ValueError):
+        requested_limit = 60000
+    if requested_limit <= 0:
+        requested_limit = 60000
+    # Paged requests are intentionally small.  Keep the historical initial
+    # request behaviour (up to 60k rows) so existing chart boot remains intact.
+    paged = before_dt is not None or after_dt is not None
+    page_limit = min(requested_limit, _CHART_HISTORY_PAGE_MAX) if paged else requested_limit
+
+    rows = _chart_rows_from_memory(before_dt, after_dt)
+    source = "working_set"
+    if rows is None:
+        # CONNECT commonly keeps only a 14-day working set in memory.  The
+        # append-only candle store is the chart's offline history source, so a
+        # left-pan request can continue without credentials or a new broker
+        # fetch.  ENQ/NQ share the MNQ store's price coordinate in this app.
+        symbols = [_extract_symbol(_live_contract_id or "MNQ"), "MNQ"]
+        snapshot = None
+        for symbol in dict.fromkeys(symbols):
+            candidate = await asyncio.to_thread(_store_load_snapshot, symbol)
+            if candidate.bars:
+                snapshot = candidate
+                break
+        rows = snapshot.bars if snapshot is not None else []
+        source = "persistent_store" if snapshot is not None else "working_set"
+
     total = len(rows)
-    if limit and limit > 0 and total > limit:
-        rows = rows[-limit:]
+    if before_dt is None and after_dt is None:
+        selected = list(rows[-page_limit:]) if total > page_limit else list(rows)
+        has_more_before = len(selected) < total
+        has_more_after = False
+    else:
+        selected, has_more_before, has_more_after = _chart_page(
+            rows, page_limit, before_dt, after_dt,
+        )
 
     return {
-        "candles": [
-            {
-                "time": c.timestamp.isoformat(),
-                "open": c.open,
-                "high": c.high,
-                "low": c.low,
-                "close": c.close,
-                "volume": c.volume,
-            }
-            for c in rows
-        ],
+        "candles": [_chart_row_dict(candle) for candle in selected],
         "count": total,
-        "shown": len(rows),
+        "shown": len(selected),
+        "first": selected[0].timestamp.isoformat() if selected else None,
+        "last": selected[-1].timestamp.isoformat() if selected else None,
+        "has_more_before": has_more_before,
+        "has_more_after": has_more_after,
+        "source": source,
     }
 
 
@@ -5255,6 +5341,24 @@ async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
                        "count": m.get("count", 1)} for m in (r.get("marks") or [])],
         })
     return {"signals": out, "total": len(out)}
+
+
+@router.get("/options-wall/demo")
+async def options_wall_demo(date: str = "", symbol: str = "MNQ"):
+    """Serve a local, read-only QQQ option-wall research layer for MNQ charts."""
+    wanted = (symbol or "MNQ").upper()
+    if not wanted.startswith("MNQ"):
+        return {"available": False, "symbol": wanted, "reason": "QQQ demo maps only to MNQ"}
+
+    from backend.data.option_wall_demo import load_option_wall_demo
+
+    try:
+        payload = await asyncio.to_thread(load_option_wall_demo, date or None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if payload is None:
+        return {"available": False, "symbol": "MNQ", "date": date or None, "snapshots": []}
+    return payload
 
 
 @router.get("/pi/signals/audit")

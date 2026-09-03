@@ -148,6 +148,57 @@ class BacktestRetentionTests(unittest.TestCase):
         self.assertEqual(compact[-1], curve[-1])
 
 
+class ChartHistoryPaginationTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.original_candles = routes._historical_candles
+        self.original_contract = routes._live_contract_id
+        routes._historical_candles = _bars(20)
+        routes._live_contract_id = CONTRACT
+
+    def tearDown(self):
+        routes._historical_candles = self.original_candles
+        routes._live_contract_id = self.original_contract
+
+    async def test_before_returns_bounded_older_page_and_flags_more(self):
+        cutoff = routes._historical_candles[12].timestamp
+        response = await routes.get_stored_candles(
+            limit=5, before=cutoff.isoformat(),
+        )
+
+        returned = [row["time"] for row in response["candles"]]
+        expected = [
+            routes._historical_candles[index].timestamp.isoformat()
+            for index in range(7, 12)
+        ]
+        self.assertEqual(returned, expected)
+        self.assertTrue(response["has_more_before"])
+        self.assertFalse(response["has_more_after"])
+        self.assertEqual(response["source"], "working_set")
+
+    async def test_before_falls_back_to_persistent_store_at_memory_boundary(self):
+        from types import SimpleNamespace
+
+        memory = routes._historical_candles
+        persistent = _bars(
+            40, start=datetime(2026, 7, 1, tzinfo=UTC),
+        )
+        routes._historical_candles = memory[-5:]
+        cutoff = routes._historical_candles[0].timestamp
+        snapshot = SimpleNamespace(bars=tuple(persistent))
+        with patch.object(routes, "_store_load_snapshot", return_value=snapshot):
+            response = await routes.get_stored_candles(
+                limit=3, before=cutoff.isoformat(),
+            )
+
+        returned = [row["time"] for row in response["candles"]]
+        expected = [
+            persistent[index].timestamp.isoformat()
+            for index in range(37, 40)
+        ]
+        self.assertEqual(returned, expected)
+        self.assertEqual(response["source"], "persistent_store")
+
+
 class TerminalProgressTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.original_candles = routes._historical_candles

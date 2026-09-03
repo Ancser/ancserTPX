@@ -393,18 +393,17 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     assert 'data-glass-scene="chart"' in popup
     assert 'data-glass-tier="1"' in popup
     assert 'data-glass-material="popup"' in popup
-    assert popup.count('data-glass-material="local"') == 10
+    assert popup.count('data-glass-material="local"') == 11
     # Repeated rows use the PI matrix's real optical thumb path, with the
     # ordinary switch geometry AND the ordinary switch optics.  1.0.10p: a
     # per-surface data-glass-shrink="0.20" override made these the only
     # switches on the page with their own sampling; the brief was parity with
     # the parameter switches, so shrink comes from settings.switch alone.
     assert 'data-glass-sampling="material-only"' not in popup
-    assert popup.count('data-optical="switch"') == 10
+    assert popup.count('data-optical="switch"') == 11
     assert "data-glass-shrink" not in popup
     assert "dataset.glassShrink" not in _code(GLASS_JS)
     assert "const config = settings[surface.component];" in GLASS_JS
-
     assert "#chart-layer-pop" not in CSS
     assert ".chart-layer-pop {" in CSS
     assert ':root[data-glass-edge-debug="on"] .chart-layer-pop' in CSS
@@ -430,6 +429,18 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     layer_sync = _function_source("buildChartLayerMenu")
     assert "const current = tr.getAttribute('aria-checked') === 'true';" in layer_sync
     assert layer_sync.index("if (current === on) return;") < layer_sync.index("tr.tpxSetState(on)")
+
+
+def test_option_wall_demo_is_an_opt_in_read_only_chart_layer():
+    assert "{ key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false }" in JS
+    assert 'data-switch-proxy="lp-optionwall" aria-checked="false"' in HTML
+    assert "API + '/options-wall/demo?symbol=MNQ'" in _function_source("refreshOptionWallLayer")
+    draw = _function_source("drawOptionWallOverlay")
+    assert "call_wall_mnq" in draw
+    assert "put_wall_mnq" in draw
+    assert "gamma_flip_mnq" in draw
+    assert "net_oi_gex_1pct" in draw
+    assert "net_volume_gex_1pct" in draw
 
 
 def test_switch_lens_material_and_backdrop_share_one_clock():

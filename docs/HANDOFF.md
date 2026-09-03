@@ -1,12 +1,12 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-01. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-03. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            489 pytest passing + 8 subtests + 32 Chromium interaction tests
-invariants       75 documented / 73 active / 2 explicitly retired
+tests            493 pytest passing + 8 subtests + 33 Chromium interaction tests
+invariants       76 documented / 74 active / 2 explicitly retired
 strategies       factor · momentum · betafib · pi · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
@@ -164,6 +164,16 @@ injected level; its scalar rows no longer use charts. PNL/MO below zero gets the
 the existing risk meaning: over $1,000 amber, over $2,000 red. Topstep/XFA now
 show 1, 2, 3, 5, and 10 MNQ results. No live engine, order, OCO, signal, or
 preset behavior changed.
+
+### R0.8 — Native lower navigation restored (2026-09-03)
+
+Liquid Glass remains on the upper Research/Backtest/Live workspace dock only.
+The lower PRESETS/BACKTEST TRADES/EXECUTE TRADES/PNL CURVE/SYSTEM LOG bar now
+uses the original `.bottom-tabs` / `.bottom-tab` flat underline styling. The
+skin no longer wraps those labels or inserts a segment lens/container, and a
+browser contract protects both halves of that decision: upper stays Glass,
+lower stays native. The skin asset cache key was advanced so a normal reload
+does not reuse the older lower-nav transformation.
 
 ### R2 — Zone-age gate
 

@@ -47,6 +47,39 @@ async function openApp(page) {
   await settleTwoFrames(page);
 }
 
+test("lower navigation keeps the native pre-Glass tab bar", async ({ page }) => {
+  await openApp(page);
+
+  const topNavigation = page.locator(".glass-topbar > .header-tabs");
+  const lowerNavigation = page.locator("#bottom-panel > .bottom-tabs");
+  const activeLowerTab = lowerNavigation.locator(".bottom-tab.active");
+
+  // Only the upper workspace navigation is a Liquid Glass dock. The lower
+  // panel intentionally keeps the original flat underline-tab treatment.
+  await expect(topNavigation).toHaveClass(/glass-dock/);
+  await expect(lowerNavigation).not.toHaveClass(/glass-segment/);
+  await expect(lowerNavigation.locator(":scope > .segment-indicator")).toHaveCount(0);
+  await expect(lowerNavigation.locator(":scope > .control-container-glass")).toHaveCount(0);
+  await expect(lowerNavigation.locator(".bottom-tab > .control-source-content")).toHaveCount(0);
+
+  const style = await activeLowerTab.evaluate((tab) => {
+    const tabStyle = getComputedStyle(tab);
+    const barStyle = getComputedStyle(tab.parentElement);
+    return {
+      barDisplay: barStyle.display,
+      barRadius: barStyle.borderRadius,
+      tabBorderWidth: tabStyle.borderBottomWidth,
+      tabBorderStyle: tabStyle.borderBottomStyle,
+    };
+  });
+  expect(style).toEqual({
+    barDisplay: "flex",
+    barRadius: "0px",
+    tabBorderWidth: "2px",
+    tabBorderStyle: "solid",
+  });
+});
+
 test("Execute Trades refreshes broker truth when the tab is opened", async ({ page }) => {
   await openApp(page);
 
@@ -1034,6 +1067,7 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
   expect(await popup.locator(".layer-name").allTextContents()).toEqual([
     "EMAPMO ▲▼",
     "PI π / CIRCLES",
+    "QQQ OPTION WALL / GEX",
     "TRADE BOXES SL/TP",
     "MREV BUBBLES",
     "KDJMA DOTS",
@@ -1048,7 +1082,7 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
   await expect(popupSwitches.first()).toHaveAttribute("data-glass-material", "local");
   await expect(popup.locator(
     '.layer-row > .glass-switch > .switch-thumb.optical-surface[data-optical="switch"]',
-  )).toHaveCount(10);
+  )).toHaveCount(11);
   // 1.0.10p: no per-popup optics override — these sample exactly like the
   // parameter switches do.
   await expect(popup.locator(

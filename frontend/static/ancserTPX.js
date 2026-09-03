@@ -60,10 +60,18 @@ const CONNECT_WARMUP_DAYS = 14;
 // hundreds of thousands of bars; rendering them all blocks the main thread and
 // freezes the tab. Backtest / ML use the complete backend dataset regardless.
 const CHART_MAX_CANDLES = 60000;
+// The chart starts with a recent slice, then asks the append-only local store
+// for an older page when the user pans to the left edge.  This keeps CONNECT
+// fast without making the visible history stop at the warm-up window.
+const CHART_HISTORY_PAGE_SIZE = 5000;
+const CHART_HISTORY_TRIGGER_BARS = 120;
 let chart = null;
 let candleSeries = null;
 let volumeSeries = null;   // kept for live-update guard; no longer rendered
 let _rawCandleBuffer = []; // [{time(unix), open, high, low, close, volume}]
+let _chartHistoryLoading = false;
+let _chartHistoryExhausted = false;
+let _chartHistorySuppressUntil = 0;
 let zoneRectangles = [];
 let tradeMarkers = [];
 let backtestData = null;
@@ -4404,6 +4412,110 @@ function updateAccountBadge() {
 
 // -- Chart -----------------------------------------
 
+function _chartHistoryCandleData(row) {
+    if (!row) return null;
+    const rawTime = row.time || row.timestamp;
+    if (!rawTime) return null;
+    let time = null;
+    try { time = isoToChartTime(String(rawTime)); } catch (_) { return null; }
+    if (!Number.isFinite(time)) return null;
+    const open = Number(row.open);
+    const high = Number(row.high);
+    const low = Number(row.low);
+    const close = Number(row.close);
+    if (![open, high, low, close].every(Number.isFinite)) return null;
+    return {
+        time,
+        open,
+        high,
+        low,
+        close,
+        volume: Number(row.volume) || 0,
+    };
+}
+
+/**
+ * Prepend one page of older candles when the visible range reaches the left
+ * edge.  The backend reads the append-only local store, so this works even
+ * when CONNECT intentionally kept only its recent warm-up window in memory.
+ * The logical range is shifted by the number of newly prepended bars, which
+ * keeps the candle under the user's cursor in the same screen position.
+ */
+async function loadOlderChartHistory() {
+    if (_chartHistoryLoading || _chartHistoryExhausted || !chart || !candleSeries) return false;
+    const current = window._lastChartData || [];
+    if (!current.length) return false;
+    const first = current[0];
+    const beforeMs = chartTimeToUtcMs(first.time);
+    if (!Number.isFinite(beforeMs)) return false;
+
+    _chartHistoryLoading = true;
+    try {
+        const before = new Date(beforeMs).toISOString();
+        const response = await fetch(
+            API + '/data/candles?before=' + encodeURIComponent(before)
+                + '&limit=' + CHART_HISTORY_PAGE_SIZE,
+        );
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json();
+        const incoming = (data.candles || []).map(_chartHistoryCandleData).filter(Boolean);
+        const oldRange = chart.timeScale().getVisibleLogicalRange();
+        const oldTimes = new Set(current.map(row => row.time));
+        const mergedByTime = new Map(current.map(row => [row.time, {
+            time: row.time, open: row.open, high: row.high, low: row.low,
+            close: row.close, volume: row.volume || 0,
+        }]));
+        incoming.forEach(row => mergedByTime.set(row.time, row));
+        const merged = [...mergedByTime.values()].sort((a, b) => a.time - b.time);
+        const added = merged.filter(row => !oldTimes.has(row.time)).length;
+        if (!added) {
+            // Older servers do not understand `before` and return the same
+            // recent page. Stop retrying on every mousemove and surface the
+            // reason in the chart log; a server restart activates the route.
+            _chartHistoryExhausted = data.has_more_before === false || incoming.length === 0;
+            if (!_chartHistoryExhausted) _chartHistoryExhausted = true;
+            log('No older chart candles returned; history pagination is exhausted', 'info');
+            return false;
+        }
+
+        window._lastChartData = merged.map(row => ({
+            time: row.time, open: row.open, high: row.high, low: row.low, close: row.close,
+        }));
+        _rawCandleBuffer = merged;
+        candleSeries.setData(window._lastChartData);
+        if (oldRange) {
+            chart.timeScale().setVisibleLogicalRange({
+                from: oldRange.from + added,
+                to: oldRange.to + added,
+            });
+        }
+        if (data.has_more_before === false || incoming.length < CHART_HISTORY_PAGE_SIZE) {
+            _chartHistoryExhausted = data.has_more_before === false;
+        }
+        drawSessionDividers();
+        redrawAllOverlays();
+        refreshIndicatorSignalMarkers(false);
+        refreshPiSignalMarkers();
+        log('Loaded ' + added + ' older chart candles (' + (data.source || 'history') + ')', 'info');
+        return true;
+    } catch (error) {
+        log('Older chart history failed: ' + error.message, 'warn');
+        return false;
+    } finally {
+        _chartHistoryLoading = false;
+    }
+}
+
+function maybeLoadOlderChartHistory(range) {
+    // setData()/setVisibleLogicalRange during a programmatic refresh can emit
+    // the same left-edge callback as a user drag.  Give that refresh a short
+    // quiet window; the next real pan still loads immediately.
+    if (Date.now() < _chartHistorySuppressUntil) return;
+    if (!range || _chartHistoryLoading || _chartHistoryExhausted) return;
+    if (Number(range.from) > CHART_HISTORY_TRIGGER_BARS) return;
+    loadOlderChartHistory();
+}
+
 function initChart() {
     const container = document.getElementById('chart-container');
     chart = LightweightCharts.createChart(container, {
@@ -4458,11 +4570,13 @@ function initChart() {
         redrawTradeDecisionOverlays();
         drawSessionDividers();
         drawIndicatorSignalOverlay();
+        drawOptionWallOverlay();
     }).observe(container);
 
     // Redraw VP overlay on scroll / zoom — continuous following via rAF
     let _vpRafId = null;
     const _redrawOverlays = () => {
+        try { maybeLoadOlderChartHistory(chart.timeScale().getVisibleLogicalRange()); } catch (_) {}
         if (_vpRafId) return; // already scheduled
         _vpRafId = requestAnimationFrame(() => {
             _vpRafId = null;
@@ -4470,6 +4584,7 @@ function initChart() {
             redrawTradeDecisionOverlays();
             drawSessionDividers();
             drawIndicatorSignalOverlay();
+            drawOptionWallOverlay();
             window.TpxGlass?.sync?.();
         });
     };
@@ -4701,6 +4816,7 @@ const CHART_LAYERS = [
     { key: 'sessva',   label: 'Session VA 發展',   on: false },
     { key: 'fib',      label: 'BETAFIB 水位線',    on: false },
     { key: 'dayzone',  label: 'DAY ZONE 前日水位', on: false },
+    { key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false },
 ];
 const CHART_OVERLAYS = Object.fromEntries(CHART_LAYERS.map(l => [l.key, l.on]));
 
@@ -4726,6 +4842,7 @@ const _SIGNAL_TYPE_LAYER = {
 function toggleChartLayer(key, on) {
     CHART_OVERLAYS[key] = !!on;
     if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
+    if (key === 'optionwall' && on && !_optionWallSnapshots.length) { refreshOptionWallLayer(); return; }
     try { redrawAllOverlays(); } catch (e) {}
 }
 
@@ -4741,6 +4858,7 @@ function redrawAllOverlays() {
     try { drawSessionDividers(); } catch (e) {}
     try { drawIndicatorSignalOverlay(); } catch (e) {}
     try { drawPiSignalOverlay(); } catch (e) {}
+    try { drawOptionWallOverlay(); } catch (e) {}
     try { if (_cachedVPZones) drawVolumeProfile(_cachedVPZones); } catch (e) {}
     try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
     try { drawPositionTools(backtestData && backtestData.trades ? backtestData.trades : []); } catch (e) {}
@@ -6041,6 +6159,9 @@ function showCandleData(candles) {
     chartData.sort((a, b) => a.time - b.time);
     rawBuf.sort((a, b) => a.time - b.time);
     _rawCandleBuffer = rawBuf;
+    _chartHistoryLoading = false;
+    _chartHistoryExhausted = false;
+    _chartHistorySuppressUntil = Date.now() + 500;
 
     candleSeries.setData(chartData);
     window._lastChartData = chartData;
@@ -6051,6 +6172,7 @@ function showCandleData(candles) {
     refreshTfZones(true);
     refreshIndicatorSignalMarkers(true);
     refreshPiSignalMarkers();
+    if (layerOn('optionwall')) refreshOptionWallLayer();
 }
 
 function applyDefaultChartView(chartData, zones) {
@@ -7350,6 +7472,185 @@ function drawPiSignalOverlay() {
     ctx.restore();
 }
 
+// Read-only QQQ 0DTE research layer. The API serves five-minute point-in-time
+// snapshots derived from actual OPRA one-minute data; price levels arrive
+// already mapped into the active MNQ coordinate. It never enters order state.
+let _optionWallCanvas = null;
+let _optionWallSnapshots = [];
+let _optionWallPiSignals = [];
+let _optionWallLoading = false;
+let _optionWallMeta = null;
+
+function _createOptionWallCanvas() {
+    if (_optionWallCanvas) return _optionWallCanvas;
+    const container = document.getElementById('chart-container');
+    if (!container) return null;
+    const canvas = document.createElement('canvas');
+    canvas.id = 'option-wall-overlay';
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
+    container.appendChild(canvas);
+    _optionWallCanvas = canvas;
+    return canvas;
+}
+
+function _clearOptionWallOverlay() {
+    const canvas = _optionWallCanvas || document.getElementById('option-wall-overlay');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+async function refreshOptionWallLayer() {
+    if (_optionWallLoading) return;
+    if (!layerOn('optionwall')) { _clearOptionWallOverlay(); return; }
+    const contract = String(document.getElementById('contract-id')?.value || 'CON.F.US.MNQ.U26');
+    const symbol = contract.split('.')[3] || 'MNQ';
+    if (!symbol.startsWith('MNQ')) {
+        _optionWallSnapshots = [];
+        _optionWallPiSignals = [];
+        _clearOptionWallOverlay();
+        return;
+    }
+    _optionWallLoading = true;
+    try {
+        const response = await fetch(API + '/options-wall/demo?symbol=MNQ');
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const data = await response.json();
+        if (!data.available) {
+            _optionWallSnapshots = [];
+            _optionWallPiSignals = [];
+            _optionWallMeta = null;
+            _clearOptionWallOverlay();
+            return;
+        }
+        _optionWallSnapshots = (data.snapshots || []).map(row => ({
+            ...row,
+            chartTime: isoToChartTime(row.as_of),
+        })).filter(row => Number.isFinite(row.chartTime));
+        _optionWallPiSignals = (data.pi_signals || []).map(row => ({
+            ...row,
+            chartTime: isoToChartTime(row.ts),
+        })).filter(row => Number.isFinite(row.chartTime));
+        _optionWallMeta = data;
+        drawOptionWallOverlay();
+        try {
+            log('Option Wall demo loaded: ' + data.date + ' · ' + _optionWallSnapshots.length
+                + ' snapshots · $' + Number(data.paid_cost_usd || 0).toFixed(2), 'info');
+        } catch (_) {}
+    } catch (error) {
+        _optionWallSnapshots = [];
+        _optionWallPiSignals = [];
+        _optionWallMeta = null;
+        _clearOptionWallOverlay();
+        console.error('[OPTION WALL] layer load failed:', error);
+    } finally {
+        _optionWallLoading = false;
+    }
+}
+
+function _optionWallPriorSnapshot(chartTime) {
+    let found = null;
+    for (const row of _optionWallSnapshots) {
+        if (row.chartTime > chartTime) break;
+        found = row;
+    }
+    return found;
+}
+
+function drawOptionWallOverlay() {
+    const canvas = _createOptionWallCanvas();
+    if (!canvas || !chart || !candleSeries) return;
+    const container = document.getElementById('chart-container');
+    const dpr = window.devicePixelRatio || 1;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+    if (!layerOn('optionwall') || !_optionWallSnapshots.length) return;
+
+    const plotH = H - _timeAxisHeight();
+    let visibleRange = null;
+    try { visibleRange = chart.timeScale().getVisibleRange(); } catch (_) {}
+    const specs = [
+        { key: 'call_wall_mnq', color: 'rgba(40,209,124,0.96)', dash: [], label: 'CALL WALL' },
+        { key: 'put_wall_mnq', color: 'rgba(255,93,115,0.96)', dash: [], label: 'PUT WALL' },
+        { key: 'gamma_flip_mnq', color: 'rgba(255,181,71,0.92)', dash: [6, 4], label: 'GAMMA FLIP' },
+    ];
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, plotH);
+    ctx.clip();
+    for (const spec of specs) {
+        ctx.strokeStyle = spec.color;
+        ctx.lineWidth = spec.key === 'gamma_flip_mnq' ? 1.2 : 1.7;
+        ctx.setLineDash(spec.dash);
+        ctx.beginPath();
+        let drawing = false;
+        for (let index = 0; index < _optionWallSnapshots.length; index++) {
+            const row = _optionWallSnapshots[index];
+            const value = Number(row[spec.key]);
+            if (!Number.isFinite(value)) { drawing = false; continue; }
+            const next = _optionWallSnapshots[index + 1];
+            const x1 = _indicatorTimeToX(row.chartTime, W, visibleRange);
+            const x2 = _indicatorTimeToX(next ? next.chartTime : row.chartTime + 300, W, visibleRange);
+            const y1 = candleSeries.priceToCoordinate(value);
+            if (x1 === null || x2 === null || y1 === null || y1 === undefined) { drawing = false; continue; }
+            if (!drawing) ctx.moveTo(x1, y1); else ctx.lineTo(x1, y1);
+            ctx.lineTo(x2, y1);
+            drawing = true;
+        }
+        ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // At the three actual PI times, label the latest point-in-time GEX state.
+    ctx.font = '500 10px "IBM Plex Mono", monospace';
+    ctx.textBaseline = 'top';
+    _optionWallPiSignals.forEach((signal, index) => {
+        const snapshot = _optionWallPriorSnapshot(signal.chartTime);
+        if (!snapshot) return;
+        const x = _indicatorTimeToX(signal.chartTime, W, visibleRange);
+        if (x === null || x < -10 || x > W + 10) return;
+        ctx.strokeStyle = signal.side === 'long' ? 'rgba(54,215,255,0.42)' : 'rgba(209,132,255,0.42)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, plotH); ctx.stroke();
+        const oi = Number(snapshot.net_oi_gex_1pct) / 1e9;
+        const vol = Number(snapshot.net_volume_gex_1pct) / 1e9;
+        const text = 'PI · OI ' + oi.toFixed(2) + 'B · VOL ' + vol.toFixed(1) + 'B';
+        const textW = ctx.measureText(text).width + 10;
+        const boxX = Math.max(4, Math.min(x + 5, W - textW - 4));
+        const boxY = 48 + (index % 3) * 18;
+        ctx.fillStyle = 'rgba(8,12,18,0.82)';
+        ctx.fillRect(boxX, boxY, textW, 15);
+        ctx.fillStyle = signal.side === 'long' ? 'rgba(54,215,255,0.98)' : 'rgba(209,132,255,0.98)';
+        ctx.fillText(text, boxX + 5, boxY + 2);
+    });
+
+    const visibleRows = _optionWallSnapshots.filter(row => !visibleRange
+        || (row.chartTime >= visibleRange.from && row.chartTime <= visibleRange.to));
+    const last = visibleRows[visibleRows.length - 1];
+    if (last) {
+        for (const spec of specs) {
+            const value = Number(last[spec.key]);
+            const y = Number.isFinite(value) ? candleSeries.priceToCoordinate(value) : null;
+            if (y === null || y === undefined || y < 4 || y > plotH - 12) continue;
+            ctx.fillStyle = 'rgba(8,12,18,0.78)';
+            ctx.fillRect(W - 105, y - 7, 101, 14);
+            ctx.fillStyle = spec.color;
+            ctx.fillText(spec.label, W - 101, y - 5);
+        }
+    }
+    ctx.restore();
+}
+
 async function refreshIndicatorSignalMarkers(logSummary) {
     if (!candleSeries || !window._lastChartData || window._lastChartData.length === 0) return;
     if (_indicatorSignalsLoading) {
@@ -7475,6 +7776,7 @@ function startOverlaySync() {
             redrawTradeDecisionOverlays();
             drawSessionDividers();
             drawIndicatorSignalOverlay();
+            drawOptionWallOverlay();
             window.TpxGlass?.sync?.();
         }
     }

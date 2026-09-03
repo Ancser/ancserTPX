@@ -28,7 +28,9 @@ function bars(startMs, count) {
   });
 }
 
-async function openWithStubbedCandles(page, { storeFrom, storeCount, liveFrom, liveCount }) {
+async function openWithStubbedCandles(page, {
+  storeFrom, storeCount, liveFrom, liveCount, onBeforeRequest,
+}) {
   await page.addInitScript(() => {
     localStorage.setItem("ancserTPX.uiLang", "en");
     localStorage.setItem("ancserTPXTheme", "dark");
@@ -42,6 +44,22 @@ async function openWithStubbedCandles(page, { storeFrom, storeCount, liveFrom, l
       return;
     }
     if (url.pathname === "/api/data/candles") {
+      const before = url.searchParams.get("before");
+      if (before && onBeforeRequest) {
+        const paged = onBeforeRequest(before);
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            candles: paged.candles,
+            count: paged.count ?? paged.candles.length,
+            shown: paged.candles.length,
+            has_more_before: paged.has_more_before,
+            has_more_after: false,
+            source: "persistent_store",
+          }),
+        });
+        return;
+      }
       // The store: complete and current, which is what the backend really had.
       await route.fulfill({
         contentType: "application/json",
@@ -216,4 +234,55 @@ test("chartTimeToUtcMs round-trips utcMsToChartTime", async ({ page }) => {
       window.chartTimeToUtcMs(window.utcMsToChartTime(ms)) - Math.floor(ms / 1000) * 1000));
   });
   for (const d of drift) expect(d).toBeLessThan(1000);
+});
+
+test("panning to the left edge prepends an older chart page", async ({ page }) => {
+  test.setTimeout(120000);
+  const now = Math.floor(Date.now() / MIN) * MIN;
+  const initialFrom = now - 180 * MIN;
+  const requests = [];
+
+  await openWithStubbedCandles(page, {
+    storeFrom: initialFrom, storeCount: 181,
+    liveFrom: now - 60 * MIN, liveCount: 60,
+    onBeforeRequest: (before) => {
+      requests.push(before);
+      const beforeMs = Date.parse(before);
+      const pageBars = bars(beforeMs - 60 * MIN, 60);
+      return { candles: pageBars, count: 600, has_more_before: true };
+    },
+  });
+  // The offline boot path has no broker workset, so seed the same recent slice
+  // that CONNECT would have supplied before the user starts dragging left.
+  await page.evaluate((initial) => window.showCandleData(initial), bars(initialFrom, 181));
+
+  const before = await page.evaluate(() => {
+    const rows = window._lastChartData || [];
+    return {
+      count: rows.length,
+      first: rows.length ? window.chartTimeToUtcMs(rows[0].time) : null,
+    };
+  });
+  expect(before.count).toBe(181);
+
+  // This is the same callback used by Lightweight Charts when the visible
+  // logical range reaches the left edge during a drag.
+  await page.waitForTimeout(600);
+  await page.evaluate(() => window.maybeLoadOlderChartHistory({ from: 0, to: 120 }));
+  await page.waitForFunction(() => (window._lastChartData || []).length > 181);
+
+  const after = await page.evaluate(() => {
+    const rows = window._lastChartData || [];
+    return {
+      count: rows.length,
+      first: rows.length ? window.chartTimeToUtcMs(rows[0].time) : null,
+      widestGapMin: rows.slice(1).reduce((max, row, i) => Math.max(
+        max, (row.time - rows[i].time) / 60,
+      ), 0),
+    };
+  });
+  expect(requests.length).toBeGreaterThanOrEqual(1);
+  expect(after.count).toBeGreaterThan(181);
+  expect(before.first - after.first).toBe(requests.length * 60 * MIN);
+  expect(after.widestGapMin).toBeLessThanOrEqual(1);
 });
