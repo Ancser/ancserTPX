@@ -5416,20 +5416,6 @@ async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
     return {"signals": out, "total": len(out)}
 
 
-@router.get("/astra/signals")
-async def astra_signals(symbol: str = "", start: str = "", end: str = ""):
-    """Read-only Astra research tape for the chart overlay.
-
-    Astra is not a new live strategy and this endpoint never feeds the
-    backtest/live engine.  It exposes the event source, option-feature
-    availability, and future reaction labels so the chart can be audited.
-    """
-    from backend.data.astra_signals import load_rows
-
-    rows, meta = await asyncio.to_thread(load_rows, symbol or "", start or "", end or "")
-    return {"signals": rows, **meta}
-
-
 @router.get("/options-wall/demo")
 async def options_wall_demo(date: str = "", symbol: str = "MNQ"):
     """Serve a local, read-only QQQ option-wall research layer for MNQ charts."""

@@ -3024,7 +3024,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 livePanel.classList.add('hidden');
                 liveTopBar.style.display = 'none';
                 refreshPiSignalMarkers();
-                refreshAstraSignalMarkers();
             } else if (tab === 'live') {
                 backtestPanels.classList.add('hidden');
                 try { refreshCapsForContract('live'); } catch (e) {}
@@ -3043,7 +3042,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Live PI audit rows are separate from the immutable history
                 // used by backtest.  Refresh them when this tab becomes visible.
                 refreshPiSignalMarkers();
-                refreshAstraSignalMarkers();
             }
         };
     });
@@ -3071,7 +3069,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const active = document.querySelector('.tab.active');
         if (active && (active.dataset.tab === 'live' || active.dataset.tab === 'backtest')) {
             refreshPiSignalMarkers();
-            refreshAstraSignalMarkers();
         }
         if (active && active.dataset.tab === 'live') {
             pollLiveStatus({ restart: true });
@@ -4458,7 +4455,6 @@ async function pollLiveCandle() {
             refreshTfZones(!(_tfAllZones && _tfAllZones.length));
             refreshIndicatorSignalMarkers(false);
             refreshPiSignalMarkers();
-            refreshAstraSignalMarkers();
             _refreshAllMarkers();
             log('Candle update: ' + newestC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');
         }
@@ -4876,7 +4872,6 @@ function getNextSessionBoundaryMs(isoStr) {
 const CHART_LAYERS = [
     { key: 'emapmo',   label: 'EMAPMO 三角',      on: true  },
     { key: 'pi',       label: 'PI 訊號 (圈/π)',    on: true  },
-    { key: 'astra',    label: 'ASTRA 研究訊號',    on: false },
     { key: 'trades',   label: '交易框 (SL/TP)',    on: true  },
     { key: 'mrev',     label: 'MREV 泡泡',         on: false },
     { key: 'kdjma',    label: 'KDJMA 圓點',        on: false },
@@ -4949,7 +4944,6 @@ function toggleChartLayer(key, on) {
     CHART_OVERLAYS[key] = !!on;
     _persistChartLayerPreferences();
     if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
-    if (key === 'astra' && on && !_astraSignalRows.length) { refreshAstraSignalMarkers(); return; }
     if (key === 'optionwall' && on && !_optionWallSnapshots.length) { refreshOptionWallLayer(); return; }
     try { redrawAllOverlays(); } catch (e) {}
 }
@@ -4966,7 +4960,6 @@ function redrawAllOverlays() {
     try { drawSessionDividers(); } catch (e) {}
     try { drawIndicatorSignalOverlay(); } catch (e) {}
     try { drawPiSignalOverlay(); } catch (e) {}
-    try { drawAstraSignalOverlay(); } catch (e) {}
     try { drawOptionWallOverlay(); } catch (e) {}
     try { if (_cachedVPZones) drawVolumeProfile(_cachedVPZones); } catch (e) {}
     try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
@@ -4983,7 +4976,6 @@ function scheduleChartOverlayRedraw() {
         try { drawSessionDividers(); } catch (e) {}
         try { drawIndicatorSignalOverlay(); } catch (e) {}
         try { drawPiSignalOverlay(); } catch (e) {}
-        try { drawAstraSignalOverlay(); } catch (e) {}
         try { drawOptionWallOverlay(); } catch (e) {}
         try {
             if (_overlaySyncData && _overlaySyncData.zones) {
@@ -6302,7 +6294,6 @@ function showCandleData(candles) {
     refreshTfZones(true);
     refreshIndicatorSignalMarkers(true);
     refreshPiSignalMarkers();
-    refreshAstraSignalMarkers();
     if (layerOn('optionwall')) refreshOptionWallLayer();
 }
 
@@ -7603,118 +7594,6 @@ function drawPiSignalOverlay() {
     ctx.restore();
 }
 
-// Astra is a read-only research tape: canonical PI history plus the local
-// Discord audit, with optional point-in-time option-wall fields.  It is kept
-// visually separate from PI so the user can inspect the raw research events
-// without changing live/backtest signal routing.
-let _astraSignalRows = [];
-let _astraSignalsLoading = false;
-let _astraSignalMeta = null;
-
-async function refreshAstraSignalMarkers() {
-    if (_astraSignalsLoading) return;
-    if (!layerOn('astra')) { _astraSignalRows = []; _astraSignalMeta = null; return; }
-    const rows = window._lastChartData;
-    if (!rows || !rows.length) return;
-    _astraSignalsLoading = true;
-    try {
-        const cid = String(document.getElementById('contract-id')?.value || 'CON.F.US.MNQ.U26');
-        const sym = String(cid.split('.')[3] || 'MNQ');
-        const resp = await fetch(API + '/astra/signals?symbol=' + encodeURIComponent(sym));
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        _astraSignalMeta = data;
-        _astraSignalRows = (data.signals || []).map(sig => ({
-            ...sig,
-            rawChartTime: utcMsToChartTime(Date.parse(sig.ts)),
-            chartTime: null,
-        })).filter(row => Number.isFinite(row.rawChartTime));
-        try {
-            log('Astra layer loaded: ' + (_astraSignalRows.length || 0)
-                + ' events (' + (data.canonical || 0) + ' canonical / '
-                + (data.discord_audit || 0) + ' audit; option='
-                + (data.option_feature_rows || 0) + ')', 'info');
-        } catch (_) {}
-    } catch (e) {
-        _astraSignalRows = [];
-        _astraSignalMeta = null;
-        console.error('[ASTRA] signal load failed:', e);
-        try { log('Astra layer load failed: ' + e.message, 'warn'); } catch (_) {}
-    } finally {
-        _astraSignalsLoading = false;
-    }
-    drawAstraSignalOverlay();
-}
-
-function _drawAstraMark(ctx, x, y, direction, color, optionAvailable) {
-    const r = optionAvailable ? 5.5 : 4;
-    ctx.save();
-    ctx.beginPath();
-    if (direction > 0) {
-        ctx.moveTo(x, y - r);
-        ctx.lineTo(x + r, y + r);
-        ctx.lineTo(x - r, y + r);
-    } else {
-        ctx.moveTo(x, y + r);
-        ctx.lineTo(x + r, y - r);
-        ctx.lineTo(x - r, y - r);
-    }
-    ctx.closePath();
-    ctx.fillStyle = color;
-    ctx.globalAlpha = optionAvailable ? 0.92 : 0.55;
-    ctx.fill();
-    ctx.lineWidth = optionAvailable ? 1.5 : 1;
-    ctx.strokeStyle = 'rgba(7, 11, 18, 0.9)';
-    ctx.stroke();
-    if (optionAvailable) {
-        ctx.beginPath();
-        ctx.arc(x, y, r + 2, 0, Math.PI * 2);
-        ctx.strokeStyle = color;
-        ctx.globalAlpha = 0.65;
-        ctx.stroke();
-    }
-    ctx.restore();
-}
-
-function drawAstraSignalOverlay() {
-    if (!chart || !candleSeries) return;
-    const canvas = document.getElementById('indicator-signal-overlay');
-    const container = document.getElementById('chart-container');
-    if (!canvas || !container) return;
-    if (!layerOn('astra') || !_astraSignalRows.length) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = container.clientWidth;
-    const H = container.clientHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, W, H - _timeAxisHeight());
-    ctx.clip();
-    let visibleRange = null;
-    try { visibleRange = chart.timeScale().getVisibleRange(); } catch (_) {}
-    for (const row of _astraSignalRows) {
-        // Resolve against the current candle buffer at draw time.  This lets
-        // Astra marks appear after the user pages left into older history.
-        const t = _snapToBarTime(Number(row.rawChartTime));
-        if (!Number.isFinite(t)) continue;
-        if (visibleRange && (t < visibleRange.from - 300 || t > visibleRange.to + 300)) continue;
-        const x = _indicatorTimeToX(t, W, visibleRange);
-        if (x === null || x < -40 || x > W + 40) continue;
-        const candle = _findCandleAtChartTime(t);
-        if (!candle) continue;
-        const direction = Number(row.direction) >= 0 ? 1 : -1;
-        const px = direction > 0 ? candle.low : candle.high;
-        let y = null;
-        try { y = candleSeries.priceToCoordinate(Number(px)); } catch (_) {}
-        if (y === null || y === undefined) continue;
-        const color = direction > 0 ? 'rgba(45, 226, 142, 1)' : 'rgba(255, 166, 78, 1)';
-        _drawAstraMark(ctx, x, y, direction, color, !!row.option_available);
-    }
-    ctx.restore();
-}
-
 // Read-only QQQ 0DTE research layer. The API serves five-minute point-in-time
 // snapshots derived from actual OPRA one-minute data; price levels arrive
 // already mapped into the active MNQ coordinate. It never enters order state.
@@ -8101,7 +7980,6 @@ async function refreshIndicatorSignalMarkers(logSummary) {
             _indicatorSignalsQueued = false;
             refreshIndicatorSignalMarkers(false);
             refreshPiSignalMarkers();
-            refreshAstraSignalMarkers();
         }
     }
 }
