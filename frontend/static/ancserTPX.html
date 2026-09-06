@@ -153,6 +153,7 @@
                         <option value="momentum">MOMENTUM</option>
                         <option value="betafib">BETAFIB</option>
                         <option value="pi">PI</option>
+                        <option value="optionwall">OPTION WALL</option>
                         <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
                     <div id="strategy-desc-bt" class="strategy-description" aria-live="polite">Previous-day value-area mean reversion.</div>
@@ -431,6 +432,66 @@
                     </div>
                 </div>
                 <!-- 1.0.10: BETAFIB 進場側 —— 白天 RTH 量推動腿 → 漲幅區間 → 進場時窗等回撤 -->
+                <div id="option-wall-params-bt" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>SUB MODEL</label>
+                            <select id="option-wall-submodel-bt">
+                                <option value="primary_strict" selected>PRIMARY STRICT</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>SIDE</label>
+                            <select id="option-wall-side-bt">
+                                <option value="all" selected>LONG + SHORT</option>
+                                <option value="long_only">LONG ONLY</option>
+                                <option value="short_only">SHORT ONLY</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>LONG SL <span class="lbl-hint">(5m ATR blend)</span></label>
+                            <select id="option-wall-long-sl-bt">
+                                <option value="3">3 x ATR</option>
+                                <option value="3.5">3.5 x ATR</option>
+                                <option value="4" selected>4 x ATR</option>
+                                <option value="4.5">4.5 x ATR</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>SHORT SL <span class="lbl-hint">(5m ATR blend)</span></label>
+                            <select id="option-wall-short-sl-bt">
+                                <option value="1">1 x ATR</option>
+                                <option value="1.5" selected>1.5 x ATR</option>
+                                <option value="2">2 x ATR</option>
+                                <option value="2.5">2.5 x ATR</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>TIME EXIT <span class="lbl-hint">(minutes)</span></label>
+                            <select id="option-wall-hold-bt">
+                                <option value="30">30</option>
+                                <option value="60" selected>60</option>
+                                <option value="90">90</option>
+                                <option value="120">120</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>DAILY MAX</label>
+                            <select id="option-wall-max-trades-bt">
+                                <option value="0">OFF</option>
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                                <option value="3" selected>3</option>
+                                <option value="4">4</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="note-sm">PRIMARY STRICT: ML direction + OI/volume Gamma agreement + causal VWAP/momentum alignment + target-wall room. RTH only · hard TP OFF · trailing OFF · MNQ historical replay.</div>
+                </div>
                                 <!-- 1.0.10: PI 進場側 —— 訊號級別與方向。實測(366 標記,成本已扣):
                      青π PF 3.05 $162/筆 · 深藍圈 PF 2.90 $96 · 粉π PF 2.28 $62
                      淡藍圈 PF 1.35 $32 · 紫圈 PF 1.18 $12(後兩者預設排除) -->
@@ -934,6 +995,7 @@
                             <option value="momentum">MOMENTUM</option>
                             <option value="betafib">BETAFIB</option>
                             <option value="pi">PI</option>
+                            <option value="optionwall" disabled>OPTION WALL</option>
                             <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
                         <div id="strategy-desc-live" class="strategy-description" aria-live="polite">Previous-day value-area mean reversion.</div>
@@ -1212,6 +1274,45 @@
                     </div>
                 </div>
                     <!-- 1.0.10: BETAFIB 進場側 —— 白天 RTH 量推動腿 → 漲幅區間 → 進場時窗等回撤 -->
+                <div id="option-wall-params-live" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>SUB MODEL</label>
+                            <select id="option-wall-submodel-live">
+                                <option value="primary_strict" selected>PRIMARY STRICT</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>SIDE</label>
+                            <select id="option-wall-side-live">
+                                <option value="all" selected>LONG + SHORT</option>
+                                <option value="long_only">LONG ONLY</option>
+                                <option value="short_only">SHORT ONLY</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>LONG SL <span class="lbl-hint">(5m ATR blend)</span></label>
+                            <select id="option-wall-long-sl-live"><option value="4" selected>4 x ATR</option></select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>SHORT SL <span class="lbl-hint">(5m ATR blend)</span></label>
+                            <select id="option-wall-short-sl-live"><option value="1.5" selected>1.5 x ATR</option></select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>TIME EXIT</label>
+                            <select id="option-wall-hold-live"><option value="60" selected>60 minutes</option></select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>DAILY MAX</label>
+                            <select id="option-wall-max-trades-live"><option value="3" selected>3</option></select>
+                        </div>
+                    </div>
+                    <div class="note-sm">Historical replay only. Live start remains blocked until a causal live QQQ option feed is connected.</div>
+                </div>
                                     <!-- 1.0.10: PI 進場側 —— 訊號級別與方向。實測(366 標記,成本已扣):
                      青π PF 3.05 $162/筆 · 深藍圈 PF 2.90 $96 · 粉π PF 2.28 $62
                      淡藍圈 PF 1.35 $32 · 紫圈 PF 1.18 $12(後兩者預設排除) -->
@@ -1704,6 +1805,7 @@
                 <!-- PI:π 級(青多/粉空)是策略真的在吃的訊號,圈級只是參考 -->
                 <div data-legend-layer="pi"><span style="color:rgb(34,211,238);">π</span><span style="color:rgb(244,114,182);">π</span> PI CYAN/PINK LONG/SHORT</div>
                 <div data-legend-layer="pi"><span style="color:rgba(37,99,235,0.95);font-size:13px;">●</span><span style="color:rgba(125,211,252,0.9);font-size:9px;">●</span> PI DARK BLUE=HIGH POWER / LIGHT BLUE=LOW POWER</div>
+                <div data-legend-layer="astra"><span style="color:rgb(45,226,142);">▲</span><span style="color:rgb(255,166,78);">▼</span> ASTRA RAW RESEARCH (圈=OPTION DATA)</div>
                 <div data-legend-layer="mrev"><span style="color:rgba(56,189,248,0.85);">●</span><span style="color:rgba(168,85,247,0.85);">●</span> MREV LONG/SHORT</div>
                 <div data-legend-layer="kdjma"><span style="color:rgba(250,204,21,0.9);">●</span><span style="color:rgba(244,63,94,0.9);">●</span> KDJMA LONG/SHORT</div>
                 <!-- 1.0.9: INTRAMOM 用白色箭頭,與三個因子的顏色明確區隔 -->
@@ -1744,6 +1846,16 @@
                     </button>
                     <button type="button" id="lp-pi" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('pi')"></button>
+                </div>
+                <div class="layer-row">
+                    <span class="layer-name">ASTRA RESEARCH SIGNALS</span>
+                    <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                             data-glass-material="local"
+                            data-switch-proxy="lp-astra" aria-checked="false">
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" id="lp-astra" class="glass-proxy-hidden" tabindex="-1"
+                            onclick="onLayerProxy('astra')"></button>
                 </div>
                 <div class="layer-row">
                     <span class="layer-name">QQQ OPTION WALL / GEX</span>

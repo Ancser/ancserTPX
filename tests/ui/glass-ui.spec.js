@@ -12,6 +12,7 @@ const canonicalModels = [
   ["momentum", "MOMENTUM"],
   ["betafib", "BETAFIB"],
   ["pi", "PI"],
+  ["optionwall", "OPTION WALL"],
 ];
 
 async function openApp(page) {
@@ -1598,4 +1599,46 @@ test("calendar grid owns each shared edge once and draws a complete today frame"
   expect(geometry.emptyBottom.every(({ width, color }) => (
     width === "1px" && color !== "rgba(0, 0, 0, 0)"
   ))).toBe(true);
+});
+
+test("chart layer choices survive a page reload", async ({ page }) => {
+  await openApp(page);
+
+  await page.evaluate(() => window.toggleChartLayerMenu(true));
+  const mrev = page.locator(
+    '#chart-layer-pop > .layer-row > [data-switch-proxy="lp-mrev"]',
+  );
+  await expect(mrev).toHaveAttribute("aria-checked", "false");
+  await mrev.click({ delay: 80 });
+  await expect(mrev).toHaveAttribute("aria-checked", "true");
+  await expect.poll(() => page.evaluate(() => {
+    try {
+      return JSON.parse(localStorage.getItem("ancserTPX.chartLayers") || "null")?.mrev;
+    } catch (_) {
+      return null;
+    }
+  })).toBe(true);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator('html[data-tpx-glass-skin="on"]')).toHaveCount(1);
+  await settleTwoFrames(page);
+  await page.evaluate(() => window.toggleChartLayerMenu(true));
+
+  const restored = page.locator(
+    '#chart-layer-pop > .layer-row > [data-switch-proxy="lp-mrev"]',
+  );
+  await expect(restored).toHaveAttribute("aria-checked", "true");
+  expect(await page.evaluate(() => window.layerOn("mrev"))).toBe(true);
+
+  // Restored markup must also seed the Glass controller's committed value:
+  // the first click after reload must turn it off, not silently stay on.
+  await restored.click({ delay: 80 });
+  await expect(restored).toHaveAttribute("aria-checked", "false");
+  await expect.poll(() => page.evaluate(() => {
+    try {
+      return JSON.parse(localStorage.getItem("ancserTPX.chartLayers") || "null")?.mrev;
+    } catch (_) {
+      return null;
+    }
+  })).toBe(false);
 });

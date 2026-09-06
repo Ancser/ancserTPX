@@ -326,10 +326,16 @@ class BreakoutAnalysis:
 #      zone detector。這兩個策略根本不看 zone,那是純浪費。
 #
 # backtest 與 live 兩個引擎共用這兩個常數,確保 live == backtest。
-FACTOR_PIPELINE_STRATEGIES = ("factor", "momentum", "betafib", "pi")
-ZONELESS_STRATEGIES = ("sigma", "fade", "factor", "momentum", "betafib", "pi")
+FACTOR_PIPELINE_STRATEGIES = (
+    "factor", "momentum", "betafib", "pi", "optionwall",
+)
+ZONELESS_STRATEGIES = (
+    "sigma", "fade", "factor", "momentum", "betafib", "pi", "optionwall",
+)
 # 不渲染 detector zone 的策略(fade 另有自己的前日 VA 水位,單獨處理)
-ZONELESS_ZONE_RENDER = ("sigma", "factor", "momentum", "betafib", "pi")
+ZONELESS_ZONE_RENDER = (
+    "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+)
 
 
 # ── 策略參數 ──────────────────────────────────────────
@@ -475,6 +481,14 @@ class StrategyParams:
     pi_short_sl_value: float = 2.5        # 空單 SL(×atr_blend)
     pi_long_hold_min: int = 0             # 多單時間出場(分鐘);0 = 不用
     pi_short_hold_min: int = 60           # 空單時間出場(分鐘);0 = 不用
+    # QQQ Option Wall → MNQ historical-replay model.  Entry gates are fixed by
+    # the selected causal sub-model; exits are deliberately separate from PI.
+    option_wall_submodel: str = "primary_strict"
+    option_wall_side_mode: str = "all"    # "all" | "long_only" | "short_only"
+    option_wall_long_sl_atr: float = 4.0
+    option_wall_short_sl_atr: float = 1.5
+    option_wall_max_hold_min: int = 60
+    option_wall_max_trades_per_day: int = 3
     betafib_sl_fib: float = 0.75
     betafib_tp_fib: float = 0.90
     # --- v1.0.6: explainable multi-timeframe confluence (ML scorer) ---

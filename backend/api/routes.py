@@ -249,7 +249,19 @@ def _normalize_strategy_name(value: str) -> str:
     # 1.0.9: 改名相容 —— 舊 preset 存的是 intramom / sessfib
     v = {"intramom": "momentum", "claudefib": "momentum", "sessfib": "betafib"}.get(v, v)
     # 1.0.9: TREND 已移除 —— 未知值一律落到 factor
-    return v if v in ("fade", "sigma", "factor", "momentum", "betafib", "pi") else "factor"
+    return v if v in (
+        "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+    ) else "factor"
+
+
+def _normalize_option_wall_submodel(value: object) -> str:
+    name = str(value or "").strip().lower().replace(" ", "_")
+    return name if name == "primary_strict" else "primary_strict"
+
+
+def _normalize_option_wall_side(value: object) -> str:
+    name = str(value or "").strip().lower()
+    return name if name in ("all", "long_only", "short_only") else "all"
 
 
 
@@ -473,8 +485,12 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         tr_trail_trigger_pct=tr["trail_trigger_pct"],
         tr_trail_enabled=tr["trail_enabled"],
         tr_full_tp_lock=tr["full_tp_lock"],
-        tr_allowed_sessions=_conf_allowed_sessions_list(
-            getattr(req, "tr_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+        # Option Wall's causal tape contains RTH snapshots only.  Treat that as
+        # model semantics rather than inheriting the platform's ASIA default.
+        tr_allowed_sessions=(
+            ["RTH"] if strategy == "optionwall" else _conf_allowed_sessions_list(
+                getattr(req, "tr_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
+            )
         ),
         candle_seconds=60,
         contract_id=normalize_contract_id_to_front(getattr(req, "contract_id", "") or current_quarterly_contract_id("MNQ")),  # 1.0.8: 自動換月
@@ -593,6 +609,25 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             _PARAM_DEFAULTS.pi_short_hold_min
             if getattr(req, "pi_short_hold_min", None) is None
             else getattr(req, "pi_short_hold_min"))),
+        option_wall_submodel=_normalize_option_wall_submodel(
+            getattr(req, "option_wall_submodel", _PARAM_DEFAULTS.option_wall_submodel)
+        ),
+        option_wall_side_mode=_normalize_option_wall_side(
+            getattr(req, "option_wall_side_mode", _PARAM_DEFAULTS.option_wall_side_mode)
+        ),
+        option_wall_long_sl_atr=max(0.1, float(getattr(
+            req, "option_wall_long_sl_atr", _PARAM_DEFAULTS.option_wall_long_sl_atr,
+        ) or _PARAM_DEFAULTS.option_wall_long_sl_atr)),
+        option_wall_short_sl_atr=max(0.1, float(getattr(
+            req, "option_wall_short_sl_atr", _PARAM_DEFAULTS.option_wall_short_sl_atr,
+        ) or _PARAM_DEFAULTS.option_wall_short_sl_atr)),
+        option_wall_max_hold_min=max(1, int(getattr(
+            req, "option_wall_max_hold_min", _PARAM_DEFAULTS.option_wall_max_hold_min,
+        ) or _PARAM_DEFAULTS.option_wall_max_hold_min)),
+        option_wall_max_trades_per_day=max(0, int(getattr(
+            req, "option_wall_max_trades_per_day",
+            _PARAM_DEFAULTS.option_wall_max_trades_per_day,
+        ) or 0)),
         betafib_sl_fib=min(1.5, max(-0.5, float(
             getattr(req, "betafib_sl_fib", 0.75) or 0.75))),
         betafib_tp_fib=min(1.5, max(-0.5, float(
@@ -1524,6 +1559,12 @@ class BacktestRequest(BaseModel):
     pi_short_sl_value: float = 2.5
     pi_long_hold_min: int = 0
     pi_short_hold_min: int = 60
+    option_wall_submodel: str = "primary_strict"
+    option_wall_side_mode: str = "all"
+    option_wall_long_sl_atr: float = 4.0
+    option_wall_short_sl_atr: float = 1.5
+    option_wall_max_hold_min: int = 60
+    option_wall_max_trades_per_day: int = 3
     betafib_sl_fib: float = 0.75
     betafib_tp_fib: float = 0.90
     contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
@@ -2942,8 +2983,27 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
     value_area_pct = _normalize_value_area_pct(req.value_area_pct)
     strategy_name = _normalize_strategy_name(req.strategy)
-
     bt_symbol = _extract_symbol(req.contract_id)
+
+    if strategy_name == "optionwall":
+        if bt_symbol != "MNQ":
+            raise HTTPException(400, "OPTION WALL v1 is calibrated for MNQ only")
+        from backend.data.option_wall_signals import primary_strict_status
+        try:
+            option_wall_status = await asyncio.to_thread(primary_strict_status)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(400, f"OPTION WALL data is invalid: {exc}") from exc
+        if not option_wall_status["available"]:
+            raise HTTPException(
+                400,
+                "OPTION WALL Primary Strict data is unavailable at "
+                f"{option_wall_status['path']}",
+            )
+        logger.info(
+            "[BACKTEST] OPTION WALL Primary Strict: %d causal replay signals | %s -> %s",
+            option_wall_status["signals"], option_wall_status["first"],
+            option_wall_status["last"],
+        )
     config = BacktestConfig(
         strategies=[strategy_name],
         initial_capital=req.initial_capital,
@@ -4036,6 +4096,12 @@ class LiveStartRequest(BaseModel):
     pi_short_sl_value: float = 2.5
     pi_long_hold_min: int = 0
     pi_short_hold_min: int = 60
+    option_wall_submodel: str = "primary_strict"
+    option_wall_side_mode: str = "all"
+    option_wall_long_sl_atr: float = 4.0
+    option_wall_short_sl_atr: float = 1.5
+    option_wall_max_hold_min: int = 60
+    option_wall_max_trades_per_day: int = 3
     contract_id: str = Field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     contract_size: int = 3
     value_area_pct: float = 0.80
@@ -4139,6 +4205,11 @@ class LiveStartRequest(BaseModel):
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
     """Reserve the client and account for the entire asynchronous start sequence."""
+    if _normalize_strategy_name(req.strategy) == "optionwall":
+        raise HTTPException(
+            400,
+            "OPTION WALL is historical replay only until a causal live option feed is connected",
+        )
     live_client = _topstepx_client
     if live_client is None:
         raise HTTPException(400, "TopstepX client not initialized — connect first")
@@ -5130,7 +5201,9 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         strategy = str(params.get("strategy") or "").lower()
         # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend;+fade 放行
         # 1.0.9: TREND 已移除,未知/舊值一律落到 factor
-        normalized_strategy = strategy if strategy in ("fade", "sigma", "factor", "momentum", "betafib", "pi") else "factor"
+        normalized_strategy = strategy if strategy in (
+            "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+        ) else "factor"
         # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         _cid_new = normalize_contract_id_to_front(params.get("contract_id") or "")
         if _cid_new != params.get("contract_id"):
@@ -5341,6 +5414,20 @@ async def pi_signals(symbol: str = "", start: str = "", end: str = ""):
                        "count": m.get("count", 1)} for m in (r.get("marks") or [])],
         })
     return {"signals": out, "total": len(out)}
+
+
+@router.get("/astra/signals")
+async def astra_signals(symbol: str = "", start: str = "", end: str = ""):
+    """Read-only Astra research tape for the chart overlay.
+
+    Astra is not a new live strategy and this endpoint never feeds the
+    backtest/live engine.  It exposes the event source, option-feature
+    availability, and future reaction labels so the chart can be audited.
+    """
+    from backend.data.astra_signals import load_rows
+
+    rows, meta = await asyncio.to_thread(load_rows, symbol or "", start or "", end or "")
+    return {"signals": rows, **meta}
 
 
 @router.get("/options-wall/demo")

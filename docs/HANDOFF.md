@@ -1,13 +1,13 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-03. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-05. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            493 pytest passing + 8 subtests + 33 Chromium interaction tests
-invariants       76 documented / 74 active / 2 explicitly retired
-strategies       factor · momentum · betafib · pi · fade · sigma  (+ confluence, live-only)
+tests            563 pytest passing + 8 subtests + 36 Chromium interaction tests
+invariants       79 documented / 77 active / 2 explicitly retired
+strategies       factor · momentum · betafib · pi · optionwall · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
 
@@ -18,12 +18,55 @@ presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MN
 | Which strategies exist | `tests/test_strategy_pipeline_classification.py` |
 | Parameter defaults | `backend/db/models.py::StrategyParams` (routes reads `_PARAM_DEFAULTS`) |
 | PI historical signals | `backend/data/pi_history.py::load_rows` — the **only** reader |
+| Option Wall replay signals | `backend/data/option_wall_signals.py::load_primary_strict_signals` — causal entry columns only |
 | Local Web security boundary | `backend/web_security.py` + WEB-001..005 |
 | Behavioural invariants | `docs/INVARIANTS.md` |
 
 Do not infer architecture from `README.md` or from `docs/1.0.x_*.md`.
 Standalone **PMO / TREND / DAY ZONE / DISTRIBUTION are removed**; `pmo` survives
 only as a FACTOR-family alias.
+
+### R0.9 - Option-wall Primary Strict historical replay (2026-09-05)
+
+`OPTION WALL` is now a registered Backtest model with one first-version
+sub-model, `PRIMARY STRICT`.  It reads a fixed causal signal tape from the
+external `ancserData/qqq_option_ml/` artifact, maps those QQQ hourly decisions
+onto MNQ 1-minute execution candles, and deliberately ignores every PnL and
+future-path column.  It is MNQ/RTH historical replay only: `/live/start`
+explicitly refuses the model until a real causal live option feed exists.
+
+The QQQ option-wall scripts under `scripts/option_wall_*` remain research tools
+and cannot route an order.  They cover the portable Gamma gate, book-rule
+abstention, nested acceptance models, frozen-wall risk transitions, and causal
+OI-wall recomputation 5/10/15 minutes after entry.  Intrahour Volume Walls
+remain unavailable because the purchased option volume is hourly; the code
+does not interpolate it.
+
+The chart feed prefers the 5-minute derived demos where they exist (23
+sessions, 2026-08-03 through 2026-09-02) and fills older dates from the same
+purchased point-in-time feature artifact at its honest hourly cadence (185
+sessions).  The aggregate therefore exposes 3,083 snapshots over 208 sessions,
+2025-11-04 through 2026-09-02.  Hourly rows are labelled
+`hourly_from_1m_cbbo_and_1h_volume`, use OI at 09:35 ET and completed hourly
+Volume GEX thereafter, and extend only to the next snapshot/session close.
+They are not interpolated or described as 5-minute data.
+
+The promoted entry definition remains `primary_model_confidence` plus the fixed
+Gamma/VWAP/wall gate.  The formal shared engine uses one MNQ, completed 5-minute
+ATR blend stops (long 4x, short 1.5x), no hard TP/trailing, a 60-minute maximum
+hold, and the platform's 15:45 ET flatten.  Over the available 2025-12-01 to
+2026-09-05 replay it produces 74 trades, $5,877.24 net, PF 2.818, 58.1% wins,
+and $476.66 max drawdown before any user-selected global daily locks.  The
+older independent-trade research simulator reports $6,584 / PF 2.91 / $526
+max drawdown; it remains evidence, not the app's displayed result.  Neither is
+a validated live expectancy.  The 5-minute OI monitor affects only four trades
+and is not worth live complexity yet.  Late-day Pin rules lose;
+Deep-V and wall-break ideas have fewer than 30 trades and remain hypotheses.
+An inspected-after-the-fact ensemble adds non-overlapping, long-only
+`side_article_state` entries whose target wall is not collapsing: 100 trades,
+$8,631 net, PF 2.84, and -$597 max drawdown.  It is a shadow/paper candidate,
+not a preset, because the long-only/no-collapse choice needs later untouched
+sessions.
 
 ---
 

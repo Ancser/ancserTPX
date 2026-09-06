@@ -54,6 +54,7 @@ EXPECTED = {
     "momentum":      (True,  True),   # 1.0.9 漏加過,PnL 差 33%
     "betafib":       (True,  True),   # 同上
     "pi":            (True,  True),   # 1.0.10 新增
+    "optionwall":    (True,  True),   # hourly tape + completed 5m ATR blend
     "fade":          (False, True),   # 用自己的前日 VA 水位,不需要 detector zone
     "sigma":         (False, True),   # 自己算 sigma 帶,不需要 detector zone
 }
@@ -158,6 +159,9 @@ def _build_strategy(mode: str, params):
     if mode == "pi":
         from backend.strategy.pi_signal import PiSignalStrategy
         return PiSignalStrategy(params=params)
+    if mode == "optionwall":
+        from backend.strategy.option_wall import OptionWallStrategy
+        return OptionWallStrategy(params=params, signals=[])
     if mode == "momentum":
         from backend.strategy.research_lab import MomentumContinuation
         return MomentumContinuation(params=params)

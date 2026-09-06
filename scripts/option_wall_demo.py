@@ -162,19 +162,66 @@ def _map_qqq_to_mnq(level: float | None, qqq_spot: float, mnq_spot: float, beta:
     return mnq_spot * (1.0 + beta * (level / qqq_spot - 1.0))
 
 
-def _gamma_flip(profile: pd.DataFrame, spot: float, years: float) -> float | None:
-    active = profile[(profile["oi"] > 0) & profile["iv"].notna()]
+def _gamma_price_profile(
+    profile: pd.DataFrame,
+    spot: float,
+    years: float,
+    weight_column: str = "oi",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return signed GEX over a fixed price grid for one position proxy.
+
+    ``oi`` is the defensible overnight position map.  ``volume`` is accepted
+    as an explicitly labelled intraday activity proxy; consolidated volume is
+    unsigned and must not be mistaken for observed dealer inventory.
+    """
+    if weight_column not in profile.columns:
+        return np.array([], dtype=float), np.array([], dtype=float)
+    weights = pd.to_numeric(profile[weight_column], errors="coerce")
+    active = profile[(weights > 0) & profile["iv"].notna()].copy()
     if active.empty:
-        return None
+        return np.array([], dtype=float), np.array([], dtype=float)
     strikes = active["strike"].to_numpy(dtype=float)
     ivs = active["iv"].to_numpy(dtype=float)
-    ois = active["oi"].to_numpy(dtype=float)
+    position_weights = active[weight_column].to_numpy(dtype=float)
     signs = active["sign"].to_numpy(dtype=float)
     grid = np.linspace(spot * 0.94, spot * 1.06, 241)
-    totals = []
-    for trial in grid:
-        gammas = np.array([_gamma(trial, k, years, iv) for k, iv in zip(strikes, ivs)])
-        totals.append(float(np.sum(signs * gammas * ois * 100.0 * trial * trial * 0.01)))
+    trials = grid[:, np.newaxis]
+    root_t = math.sqrt(years)
+    sigma_root_t = ivs[np.newaxis, :] * root_t
+    d1 = (
+        np.log(trials / strikes[np.newaxis, :])
+        + 0.5 * ivs[np.newaxis, :] ** 2 * years
+    ) / sigma_root_t
+    gammas = (
+        np.exp(-0.5 * d1 * d1)
+        / math.sqrt(2.0 * math.pi)
+        / (trials * sigma_root_t)
+    )
+    totals = np.sum(
+        signs[np.newaxis, :] * gammas * position_weights[np.newaxis, :]
+        * 100.0 * trials * trials * 0.01,
+        axis=1,
+    )
+    return grid, totals.astype(float)
+
+
+def _gamma_flip(
+    profile: pd.DataFrame,
+    spot: float,
+    years: float,
+    weight_column: str = "oi",
+) -> float | None:
+    grid, totals = _gamma_price_profile(profile, spot, years, weight_column)
+    return _gamma_flip_from_profile(grid, totals, spot)
+
+
+def _gamma_flip_from_profile(
+    grid: np.ndarray,
+    totals: np.ndarray,
+    spot: float,
+) -> float | None:
+    if not len(grid):
+        return None
     candidates = []
     for idx in range(1, len(grid)):
         left, right = totals[idx - 1], totals[idx]
@@ -479,7 +526,11 @@ def render_figure(payload: dict, mnq: pd.DataFrame, profiles: dict[str, pd.DataF
                               textcoords="offset points", fontsize=7.5, color=color,
                               bbox=dict(boxstyle="round,pad=0.25", fc="#111821", ec=color, alpha=0.88))
 
-    price_ax.set_title("2026-09-01 MNQ · actual QQQ 0DTE Wall/GEX demo", loc="left", fontsize=13)
+    price_ax.set_title(
+        f"{payload['date']} MNQ · actual QQQ 0DTE Wall/GEX demo",
+        loc="left",
+        fontsize=13,
+    )
     price_ax.set_ylabel("MNQ price")
     price_ax.legend(loc="upper right", ncols=3, frameon=False, fontsize=8)
     price_ax.grid(alpha=0.14, linewidth=0.6)

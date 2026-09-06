@@ -155,7 +155,9 @@ class LiveTradingEngine:
         # Strategy mode: trend/fade/sigma.  The trend-slot object is ALWAYS built
         # so legacy state/helpers keep working; fade/sigma replace that slot.
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "factor") or "factor").lower()
-        if self.strategy_mode not in ("fade", "sigma", "factor", "momentum", "betafib", "pi"):
+        if self.strategy_mode not in (
+            "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+        ):
             self.strategy_mode = "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
@@ -172,6 +174,9 @@ class LiveTradingEngine:
         elif self.strategy_mode == "pi":
             from backend.strategy.pi_signal import PiSignalStrategy
             self.trend_follow = PiSignalStrategy(params=self.strategy_params)
+        elif self.strategy_mode == "optionwall":
+            from backend.strategy.option_wall import OptionWallStrategy
+            self.trend_follow = OptionWallStrategy(params=self.strategy_params)
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
         # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
@@ -218,6 +223,10 @@ class LiveTradingEngine:
                 max(0, int(getattr(self.strategy_params, "factor_max_hold_bars", 0) or 0))
                 * max(1, int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5))
             )
+        elif self.strategy_mode == "optionwall":
+            self._pmo_max_hold_minutes = max(1, int(getattr(
+                self.strategy_params, "option_wall_max_hold_min", 60,
+            ) or 60))
         else:
             self._pmo_max_hold_minutes = 0
         if self.strategy_mode == "confluence":
@@ -3635,6 +3644,13 @@ class LiveTradingEngine:
                 self.trend_follow.observe(candle, [], True)
             elif not self._open_position and not self._pending_order_id:
                 self._reset_breakout_confirmation()
+        elif (
+            self.strategy_mode == "optionwall"
+            and not self._open_position
+            and not self._pending_order_id
+            and not self._trend_session_allowed(candle.timestamp)
+        ):
+            self.trend_follow.observe(candle, [], True)
         elif self.strategy_mode in FACTOR_PIPELINE_STRATEGIES and (self._open_position or self._pending_order_id):
             self.trend_follow.observe(candle, [], True)
 
@@ -3788,7 +3804,7 @@ class LiveTradingEngine:
         # 1.0.8: 移除「所有 TF 同方向突破」gate — live 與 backtest 對齊。
         # (回測未含此 gate;A/B 測試證實 gate 對 overlap preset #3 幾乎毀掉績效。
         #  突破判定改由 trend_follow.evaluate 對交易 zone 判斷,live == backtest。)
-        if self.strategy_mode in ("sigma", "factor", "fade"):
+        if self.strategy_mode in ("sigma", "factor", "fade", "optionwall"):
             eval_zones = []
             eval_mature = True
         else:
@@ -3806,8 +3822,10 @@ class LiveTradingEngine:
             strat.reset()
 
         signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
-        if signal and self.strategy_mode in ("sigma", "factor", "fade"):
-            signal.zone_source = self.strategy_mode
+        if signal and self.strategy_mode in ("sigma", "factor", "fade", "optionwall"):
+            signal.zone_source = (
+                "option_wall" if self.strategy_mode == "optionwall" else self.strategy_mode
+            )
 
         # Report the actionable indicator TradeSignal itself. This is before
         # broker/risk-gate I/O, and enqueue_from_live only copies bounded arrays
@@ -4319,6 +4337,8 @@ class LiveTradingEngine:
         1.0.8/1.0.10: tr_exit_mode="ladder" runs the multi-step ladder for
         TREND/FACTOR.
         """
+        if self.strategy_mode == "optionwall":
+            return
         if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
             await self._check_ladder_sl_live()
             return

@@ -201,6 +201,12 @@ const DEFAULT_STRATEGY_PARAMS = {
     pi_short_sl_value: 2.5,
     pi_long_hold_min: 0,
     pi_short_hold_min: 60,
+    option_wall_submodel: 'primary_strict',
+    option_wall_side_mode: 'all',
+    option_wall_long_sl_atr: 4.0,
+    option_wall_short_sl_atr: 1.5,
+    option_wall_max_hold_min: 60,
+    option_wall_max_trades_per_day: 3,
     // 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 };
 
@@ -570,6 +576,7 @@ function normalizeStrategyName(value) {
     // 與後端 _normalize_strategy_name 的行為一致。
     if (v === 'pmo') return 'factor';
     if (v === 'pi') return 'pi';          // 1.0.10: 外部 Discord 訊號
+    if (v === 'optionwall' || v === 'option_wall') return 'optionwall';
     if (v === 'sigma') return 'sigma';
     if (v === 'fade') return 'fade';   // 1.0.8: DAY ZONE 前日VA回歸
     if (v === 'factor') return 'factor';
@@ -625,6 +632,13 @@ const STRATEGY_PRESENTATION = Object.freeze({
         description: {
             en: 'External Discord signal routing.',
             zh: '外部 Discord 訊號路由。',
+        },
+    },
+    optionwall: {
+        displayName: 'OPTION WALL',
+        description: {
+            en: 'Causal QQQ Option Wall / Gamma signals mapped to MNQ (historical replay).',
+            zh: 'QQQ 期權牆與 Gamma 因果訊號映射至 MNQ（歷史重播）。',
         },
     },
 });
@@ -770,6 +784,7 @@ function updateStrategyParamVisibility(mode) {
     // 1.0.10: PI 沿用 FACTOR 區塊的 SL/TP/方向控制項(多單用),
     // 但 EMAPMO 專屬的族/訊號模式/VA 濾網對它無意義。
     const isPi = strategy === 'pi';
+    const isOptionWall = strategy === 'optionwall';
     // PI has its own directional signal matrix.  The FACTOR entry controls
     // (SIDE / SIGNAL MODE / VA FILTER) used to remain visible here as well,
     // which made PI show two overlapping direction controls.  PI still uses
@@ -783,6 +798,7 @@ function updateStrategyParamVisibility(mode) {
     show('factor-exit-' + mode, isFactor || isIntramom || isSessfib || isPi);
     show('pi-params-' + mode, isPi);
     show('pi-exit-' + mode, isPi);
+    show('option-wall-params-' + mode, isOptionWall);
     show('pi-short-sl-group-' + mode, isPi);
     show('pi-long-hold-group-' + mode, isPi);
     show('pi-short-hold-group-' + mode, isPi);
@@ -796,6 +812,10 @@ function updateStrategyParamVisibility(mode) {
         if (typeof _i18nTranslateTree === 'function') _i18nTranslateTree(longSlLabel);
     }
     show('betafib-exit-' + mode, isSessfib);
+    showControl('tp-cap-usd', !isOptionWall);
+    showControl('factor-max-trades', !isOptionWall);
+    showControl('tr-session-limit', !isOptionWall);
+    showControl('tr-allowed-sessions', !isOptionWall);
     ['factor-family-', 'factor-pmo-mode-', 'factor-va-filter-'].forEach((id) => {
         const el = document.getElementById(id + mode);
         const row = el && el.closest ? el.closest('.form-group') : null;
@@ -812,6 +832,8 @@ function updateStrategyParamVisibility(mode) {
         slText = 'DISTRIBUTION: preset rolling sigma SL / center TP';
     } else if (isFactor) {
         slText = 'FACTOR: completed 5m signal, market entry; side/signal/SL/TP use FACTOR controls';
+    } else if (isOptionWall) {
+        slText = 'OPTION WALL: hourly causal signal · completed 5m ATR blend · no hard TP · 60m max';
     } else {
         slText = 'TREND: POC↔VAH/VAL 間最低量節點 SL';
     }
@@ -826,6 +848,8 @@ function updateStrategyParamVisibility(mode) {
         slText = 'DISTRIBUTION: rolling distribution band timing; market entry after model signal';
     } else if (isFactor) {
         slText = 'FACTOR: completed 5m factor signal; live/backtest use last completed candle only';
+    } else if (isOptionWall) {
+        slText = 'OPTION WALL: PRIMARY STRICT hourly signal; market entry on MNQ historical replay';
     } else {
         slText = 'TREND: completed candle + value-area breakout confirmation; market entry';
     }
@@ -1079,21 +1103,34 @@ function updateMlParamSummary(mode) {
 // 用預設的 FULL_RANGE_START(2008)回測等於白掃 233 萬根、載入 10 秒起跳,
 // 而 2026-06 之前一筆訊號都沒有。切到 PI 時自動把起始日縮到訊號範圍。
 const PI_SIGNAL_FIRST_DATE = '2026-06-01';
+const OPTION_WALL_SIGNAL_FIRST_DATE = '2025-12-01';
 
 function _scopeDatesForStrategy(mode, strategy) {
     if (mode !== 'bt') return;
     const startEl = document.getElementById('start-date');
     if (!startEl) return;
-    if (strategy === 'pi') {
-        if (startEl.value < PI_SIGNAL_FIRST_DATE) {
-            startEl.dataset.piPrev = startEl.value;   // 記住原值,切回時還原
-            startEl.value = PI_SIGNAL_FIRST_DATE;
-            log('PI 訊號最早只到 ' + PI_SIGNAL_FIRST_DATE
-                + ' —— 起始日已自動縮短(避免白掃 200 萬根)', 'info');
+    const firstDate = strategy === 'pi'
+        ? PI_SIGNAL_FIRST_DATE
+        : (strategy === 'optionwall' ? OPTION_WALL_SIGNAL_FIRST_DATE : '');
+    const previousScope = startEl.dataset.signalScope || '';
+    const previousFirstDate = previousScope === 'pi'
+        ? PI_SIGNAL_FIRST_DATE
+        : (previousScope === 'optionwall' ? OPTION_WALL_SIGNAL_FIRST_DATE : '');
+    if (firstDate) {
+        const switchingFromAutoScopedDate = previousFirstDate
+            && previousScope !== strategy
+            && startEl.value === previousFirstDate;
+        if (startEl.value < firstDate || switchingFromAutoScopedDate) {
+            if (!startEl.dataset.signalPrev) startEl.dataset.signalPrev = startEl.value;
+            startEl.value = firstDate;
+            log(strategyDisplayName(strategy) + ' 訊號最早只到 ' + firstDate
+                + ' —— 起始日已自動縮短(避免掃描無訊號區間)', 'info');
         }
-    } else if (startEl.dataset.piPrev) {
-        startEl.value = startEl.dataset.piPrev;
-        delete startEl.dataset.piPrev;
+        startEl.dataset.signalScope = strategy;
+    } else if (startEl.dataset.signalPrev) {
+        startEl.value = startEl.dataset.signalPrev;
+        delete startEl.dataset.signalPrev;
+        delete startEl.dataset.signalScope;
     }
 }
 
@@ -1432,6 +1469,12 @@ function collectStrategyParams(mode) {
         pi_short_sl_value: _float('pi-short-sl-' + mode, 2.5),
         pi_long_hold_min: _int('pi-long-hold-' + mode, 0),
         pi_short_hold_min: _int('pi-short-hold-' + mode, 60),
+        option_wall_submodel: _mlSelectValue('option-wall-submodel-' + mode, 'primary_strict'),
+        option_wall_side_mode: _mlSelectValue('option-wall-side-' + mode, 'all'),
+        option_wall_long_sl_atr: _float('option-wall-long-sl-' + mode, 4.0),
+        option_wall_short_sl_atr: _float('option-wall-short-sl-' + mode, 1.5),
+        option_wall_max_hold_min: _int('option-wall-hold-' + mode, 60),
+        option_wall_max_trades_per_day: _int('option-wall-max-trades-' + mode, 3),
         // 1.0.10: 腿幅上限 + 進場時窗 + fib 基準的 SL/TP 層級。
         // The single select stores New York-local "start,end" hours.
         betafib_max_move_pct: _float('betafib-maxpct-' + mode, 0),
@@ -1610,6 +1653,12 @@ function applyStrategyParams(mode, params) {
     _setChoice('pi-short-sl-' + mode, piShortSl, piShortSl + ' x ATR');
     _setChoice('pi-long-hold-' + mode, String(p.pi_long_hold_min != null ? p.pi_long_hold_min : 0));
     _setChoice('pi-short-hold-' + mode, String(p.pi_short_hold_min != null ? p.pi_short_hold_min : 60));
+    _setChoice('option-wall-submodel-' + mode, String(p.option_wall_submodel || 'primary_strict'));
+    _setChoice('option-wall-side-' + mode, String(p.option_wall_side_mode || 'all'));
+    _setChoice('option-wall-long-sl-' + mode, String(p.option_wall_long_sl_atr != null ? p.option_wall_long_sl_atr : 4.0));
+    _setChoice('option-wall-short-sl-' + mode, String(p.option_wall_short_sl_atr != null ? p.option_wall_short_sl_atr : 1.5));
+    _setChoice('option-wall-hold-' + mode, String(p.option_wall_max_hold_min != null ? p.option_wall_max_hold_min : 60));
+    _setChoice('option-wall-max-trades-' + mode, String(p.option_wall_max_trades_per_day != null ? p.option_wall_max_trades_per_day : 3));
     // 1.0.10
     _set('betafib-maxpct-' + mode, String(p.betafib_max_move_pct != null ? p.betafib_max_move_pct : 0));
     _set('betafib-window-' + mode,
@@ -1711,7 +1760,7 @@ function isFixedPreset(name) {
 }
 
 const PRESET_MODEL_ORDER = [
-    'FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI',
+    'FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI', 'OPTION WALL',
     // Historical names remain sortable and parseable; new names never emit them.
     'TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO', 'BETA FIB',
 ];
@@ -1720,9 +1769,9 @@ function _presetNameMeta(name) {
     const raw = String(name || '');
     const fixed = /\s+\*$/.test(raw);
     const s = raw.replace(/\s+\*$/, '').replace(/^SWEEP\s+/i, '').trim();
-    const compactDated = s.match(/^(\d{4})\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
-    const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
-    const legacy = s.match(/^(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const compactDated = s.match(/^(\d{4})\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const legacy = s.match(/^(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
     if (compactDated) {
         return {
             fixed,
@@ -2032,6 +2081,19 @@ function _probToken(value) {
 
 function buildPresetParamToken(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
+    if (normalizeStrategyName(p.strategy) === 'optionwall') {
+        const side = String(p.option_wall_side_mode || 'all').toUpperCase();
+        return [
+            String(p.option_wall_submodel || 'primary_strict').toUpperCase(),
+            side,
+            'LSL' + Number(p.option_wall_long_sl_atr || 4),
+            'SSL' + Number(p.option_wall_short_sl_atr || 1.5),
+            'H' + Number(p.option_wall_max_hold_min || 60),
+            'D' + Number(p.option_wall_max_trades_per_day || 0),
+            'RTH',
+            _contractPresetToken(p),
+        ].join(' ');
+    }
     if (normalizeStrategyName(p.strategy) === 'sigma') {
         const market = allowedSessionsLabel(p.tr_allowed_sessions != null ? p.tr_allowed_sessions : ['RTH']);
         return [
@@ -2115,6 +2177,7 @@ function suggestedPresetPurpose(params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params || {});
     if (normalizeStrategyName(p.strategy) === 'sigma') return 'Distribution';
     if (normalizeStrategyName(p.strategy) === 'factor') return 'Icefishball';
+    if (normalizeStrategyName(p.strategy) === 'optionwall') return 'Primary Strict';
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = Number(p.conf_max_risk_ticks || 0);
         const prob = Number(p.conf_min_prob || 0);
@@ -2961,6 +3024,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 livePanel.classList.add('hidden');
                 liveTopBar.style.display = 'none';
                 refreshPiSignalMarkers();
+                refreshAstraSignalMarkers();
             } else if (tab === 'live') {
                 backtestPanels.classList.add('hidden');
                 try { refreshCapsForContract('live'); } catch (e) {}
@@ -2979,6 +3043,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Live PI audit rows are separate from the immutable history
                 // used by backtest.  Refresh them when this tab becomes visible.
                 refreshPiSignalMarkers();
+                refreshAstraSignalMarkers();
             }
         };
     });
@@ -3006,6 +3071,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const active = document.querySelector('.tab.active');
         if (active && (active.dataset.tab === 'live' || active.dataset.tab === 'backtest')) {
             refreshPiSignalMarkers();
+            refreshAstraSignalMarkers();
         }
         if (active && active.dataset.tab === 'live') {
             pollLiveStatus({ restart: true });
@@ -4392,6 +4458,7 @@ async function pollLiveCandle() {
             refreshTfZones(!(_tfAllZones && _tfAllZones.length));
             refreshIndicatorSignalMarkers(false);
             refreshPiSignalMarkers();
+            refreshAstraSignalMarkers();
             _refreshAllMarkers();
             log('Candle update: ' + newestC.close.toFixed(2) + ' (' + updated + ' bars)', 'info');
         }
@@ -4809,6 +4876,7 @@ function getNextSessionBoundaryMs(isoStr) {
 const CHART_LAYERS = [
     { key: 'emapmo',   label: 'EMAPMO 三角',      on: true  },
     { key: 'pi',       label: 'PI 訊號 (圈/π)',    on: true  },
+    { key: 'astra',    label: 'ASTRA 研究訊號',    on: false },
     { key: 'trades',   label: '交易框 (SL/TP)',    on: true  },
     { key: 'mrev',     label: 'MREV 泡泡',         on: false },
     { key: 'kdjma',    label: 'KDJMA 圓點',        on: false },
@@ -4819,7 +4887,43 @@ const CHART_LAYERS = [
     { key: 'dayzone',  label: 'DAY ZONE 前日水位', on: false },
     { key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false },
 ];
-const CHART_OVERLAYS = Object.fromEntries(CHART_LAYERS.map(l => [l.key, l.on]));
+const CHART_LAYER_STORAGE_KEY = 'ancserTPX.chartLayers';
+
+function _loadChartLayerPreferences() {
+    const state = Object.fromEntries(CHART_LAYERS.map(layer => [layer.key, layer.on]));
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(CHART_LAYER_STORAGE_KEY) || 'null'); } catch (e) {}
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return state;
+    CHART_LAYERS.forEach(layer => {
+        if (typeof saved[layer.key] === 'boolean') state[layer.key] = saved[layer.key];
+    });
+    return state;
+}
+
+const CHART_OVERLAYS = _loadChartLayerPreferences();
+
+function _persistChartLayerPreferences() {
+    const state = Object.fromEntries(
+        CHART_LAYERS.map(layer => [layer.key, CHART_OVERLAYS[layer.key] !== false]),
+    );
+    try { localStorage.setItem(CHART_LAYER_STORAGE_KEY, JSON.stringify(state)); } catch (e) {}
+}
+
+function _seedChartLayerMarkup() {
+    document.querySelectorAll('#chart-layer-pop .glass-switch').forEach(track => {
+        if (track.closest('.optical-stage-copy')) return;
+        const key = String(track.dataset.switchProxy || '').replace(/^lp-/, '');
+        if (!(key in CHART_OVERLAYS)) return;
+        const on = CHART_OVERLAYS[key] !== false;
+        track.classList.toggle('on', on);
+        track.setAttribute('aria-checked', String(on));
+    });
+}
+
+// The static markup is already present because this bundle loads at the end
+// of <body>. Seed it before tpx-glass.js boots so its internal committed value
+// starts from the restored choice, including the first click after a reload.
+_seedChartLayerMarkup();
 
 function _clearCanvas(id) {
     const c = document.getElementById(id);
@@ -4841,8 +4945,11 @@ const _SIGNAL_TYPE_LAYER = {
 };
 
 function toggleChartLayer(key, on) {
+    if (!(key in CHART_OVERLAYS)) return;
     CHART_OVERLAYS[key] = !!on;
+    _persistChartLayerPreferences();
     if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
+    if (key === 'astra' && on && !_astraSignalRows.length) { refreshAstraSignalMarkers(); return; }
     if (key === 'optionwall' && on && !_optionWallSnapshots.length) { refreshOptionWallLayer(); return; }
     try { redrawAllOverlays(); } catch (e) {}
 }
@@ -4859,6 +4966,7 @@ function redrawAllOverlays() {
     try { drawSessionDividers(); } catch (e) {}
     try { drawIndicatorSignalOverlay(); } catch (e) {}
     try { drawPiSignalOverlay(); } catch (e) {}
+    try { drawAstraSignalOverlay(); } catch (e) {}
     try { drawOptionWallOverlay(); } catch (e) {}
     try { if (_cachedVPZones) drawVolumeProfile(_cachedVPZones); } catch (e) {}
     try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
@@ -4875,6 +4983,7 @@ function scheduleChartOverlayRedraw() {
         try { drawSessionDividers(); } catch (e) {}
         try { drawIndicatorSignalOverlay(); } catch (e) {}
         try { drawPiSignalOverlay(); } catch (e) {}
+        try { drawAstraSignalOverlay(); } catch (e) {}
         try { drawOptionWallOverlay(); } catch (e) {}
         try {
             if (_overlaySyncData && _overlaySyncData.zones) {
@@ -6193,6 +6302,7 @@ function showCandleData(candles) {
     refreshTfZones(true);
     refreshIndicatorSignalMarkers(true);
     refreshPiSignalMarkers();
+    refreshAstraSignalMarkers();
     if (layerOn('optionwall')) refreshOptionWallLayer();
 }
 
@@ -7493,6 +7603,118 @@ function drawPiSignalOverlay() {
     ctx.restore();
 }
 
+// Astra is a read-only research tape: canonical PI history plus the local
+// Discord audit, with optional point-in-time option-wall fields.  It is kept
+// visually separate from PI so the user can inspect the raw research events
+// without changing live/backtest signal routing.
+let _astraSignalRows = [];
+let _astraSignalsLoading = false;
+let _astraSignalMeta = null;
+
+async function refreshAstraSignalMarkers() {
+    if (_astraSignalsLoading) return;
+    if (!layerOn('astra')) { _astraSignalRows = []; _astraSignalMeta = null; return; }
+    const rows = window._lastChartData;
+    if (!rows || !rows.length) return;
+    _astraSignalsLoading = true;
+    try {
+        const cid = String(document.getElementById('contract-id')?.value || 'CON.F.US.MNQ.U26');
+        const sym = String(cid.split('.')[3] || 'MNQ');
+        const resp = await fetch(API + '/astra/signals?symbol=' + encodeURIComponent(sym));
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        _astraSignalMeta = data;
+        _astraSignalRows = (data.signals || []).map(sig => ({
+            ...sig,
+            rawChartTime: utcMsToChartTime(Date.parse(sig.ts)),
+            chartTime: null,
+        })).filter(row => Number.isFinite(row.rawChartTime));
+        try {
+            log('Astra layer loaded: ' + (_astraSignalRows.length || 0)
+                + ' events (' + (data.canonical || 0) + ' canonical / '
+                + (data.discord_audit || 0) + ' audit; option='
+                + (data.option_feature_rows || 0) + ')', 'info');
+        } catch (_) {}
+    } catch (e) {
+        _astraSignalRows = [];
+        _astraSignalMeta = null;
+        console.error('[ASTRA] signal load failed:', e);
+        try { log('Astra layer load failed: ' + e.message, 'warn'); } catch (_) {}
+    } finally {
+        _astraSignalsLoading = false;
+    }
+    drawAstraSignalOverlay();
+}
+
+function _drawAstraMark(ctx, x, y, direction, color, optionAvailable) {
+    const r = optionAvailable ? 5.5 : 4;
+    ctx.save();
+    ctx.beginPath();
+    if (direction > 0) {
+        ctx.moveTo(x, y - r);
+        ctx.lineTo(x + r, y + r);
+        ctx.lineTo(x - r, y + r);
+    } else {
+        ctx.moveTo(x, y + r);
+        ctx.lineTo(x + r, y - r);
+        ctx.lineTo(x - r, y - r);
+    }
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.globalAlpha = optionAvailable ? 0.92 : 0.55;
+    ctx.fill();
+    ctx.lineWidth = optionAvailable ? 1.5 : 1;
+    ctx.strokeStyle = 'rgba(7, 11, 18, 0.9)';
+    ctx.stroke();
+    if (optionAvailable) {
+        ctx.beginPath();
+        ctx.arc(x, y, r + 2, 0, Math.PI * 2);
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = 0.65;
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawAstraSignalOverlay() {
+    if (!chart || !candleSeries) return;
+    const canvas = document.getElementById('indicator-signal-overlay');
+    const container = document.getElementById('chart-container');
+    if (!canvas || !container) return;
+    if (!layerOn('astra') || !_astraSignalRows.length) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, H - _timeAxisHeight());
+    ctx.clip();
+    let visibleRange = null;
+    try { visibleRange = chart.timeScale().getVisibleRange(); } catch (_) {}
+    for (const row of _astraSignalRows) {
+        // Resolve against the current candle buffer at draw time.  This lets
+        // Astra marks appear after the user pages left into older history.
+        const t = _snapToBarTime(Number(row.rawChartTime));
+        if (!Number.isFinite(t)) continue;
+        if (visibleRange && (t < visibleRange.from - 300 || t > visibleRange.to + 300)) continue;
+        const x = _indicatorTimeToX(t, W, visibleRange);
+        if (x === null || x < -40 || x > W + 40) continue;
+        const candle = _findCandleAtChartTime(t);
+        if (!candle) continue;
+        const direction = Number(row.direction) >= 0 ? 1 : -1;
+        const px = direction > 0 ? candle.low : candle.high;
+        let y = null;
+        try { y = candleSeries.priceToCoordinate(Number(px)); } catch (_) {}
+        if (y === null || y === undefined) continue;
+        const color = direction > 0 ? 'rgba(45, 226, 142, 1)' : 'rgba(255, 166, 78, 1)';
+        _drawAstraMark(ctx, x, y, direction, color, !!row.option_available);
+    }
+    ctx.restore();
+}
+
 // Read-only QQQ 0DTE research layer. The API serves five-minute point-in-time
 // snapshots derived from actual OPRA one-minute data; price levels arrive
 // already mapped into the active MNQ coordinate. It never enters order state.
@@ -7501,8 +7723,8 @@ let _optionWallSnapshots = [];
 let _optionWallPiSignals = [];
 let _optionWallLoading = false;
 let _optionWallMeta = null;
+const _optionWallSessionMetaCache = new Map();
 const OPTION_WALL_SNAPSHOT_SEC = 5 * 60;
-const OPTION_WALL_MAX_GAP_SEC = 10 * 60;
 const OPTION_WALL_OVERLAP_TOLERANCE = 0.25;
 const OPTION_WALL_OVERLAP_OFFSET_PX = 1.5;
 
@@ -7549,10 +7771,15 @@ async function refreshOptionWallLayer() {
             _clearOptionWallOverlay();
             return;
         }
-        _optionWallSnapshots = (data.snapshots || []).map(row => ({
-            ...row,
-            chartTime: isoToChartTime(row.as_of),
-        })).filter(row => Number.isFinite(row.chartTime))
+        _optionWallSnapshots = (data.snapshots || []).map(row => {
+            const session = _optionWallSessionMeta(row);
+            return {
+                ...row,
+                chartTime: isoToChartTime(row.as_of),
+                _wallSessionKey: session.key,
+                _wallSessionClose: session.close,
+            };
+        }).filter(row => Number.isFinite(row.chartTime))
             .sort((a, b) => a.chartTime - b.chartTime);
         _optionWallPiSignals = (data.pi_signals || []).map(row => ({
             ...row,
@@ -7595,21 +7822,56 @@ function _optionWallPriorSnapshot(chartTime) {
     return index > 0 ? _optionWallSnapshots[index - 1] : null;
 }
 
-function _optionWallSegmentEndTime(row, next) {
-    const gap = next ? Number(next.chartTime) - Number(row.chartTime) : NaN;
-    const rowDay = String(row.as_of || '').slice(0, 10);
-    const nextDay = String((next && next.as_of) || '').slice(0, 10);
-    let sessionClose = Infinity;
-    const asOfMs = Date.parse(String(row.as_of || ''));
+function _optionWallSessionMeta(row) {
+    const raw = String((row && row.as_of) || '');
+    const cacheKey = raw.slice(0, 10);
+    if (cacheKey && _optionWallSessionMetaCache.has(cacheKey)) {
+        return _optionWallSessionMetaCache.get(cacheKey);
+    }
+    const asOfMs = Date.parse(raw);
+    let meta = { key: cacheKey, close: NaN };
     if (Number.isFinite(asOfMs)) {
         const ny = _newYorkParts(asOfMs);
-        const closeMs = nyLocalToUtcMs(ny.year, ny.month - 1, ny.day, 16, 0);
-        sessionClose = utcMsToChartTime(closeMs);
+        meta = {
+            key: ny.year + '-' + String(ny.month).padStart(2, '0')
+                + '-' + String(ny.day).padStart(2, '0'),
+            close: utcMsToChartTime(
+                nyLocalToUtcMs(ny.year, ny.month - 1, ny.day, 16, 0),
+            ),
+        };
     }
-    if (next && gap > 0 && gap <= OPTION_WALL_MAX_GAP_SEC && rowDay === nextDay) {
-        return Math.min(next.chartTime, sessionClose);
+    if (cacheKey) _optionWallSessionMetaCache.set(cacheKey, meta);
+    return meta;
+}
+
+function _optionWallSessionKey(row) {
+    return (row && row._wallSessionKey) || _optionWallSessionMeta(row).key;
+}
+
+function _optionWallSameSession(row, next) {
+    return !!next && _optionWallSessionKey(row) === _optionWallSessionKey(next);
+}
+
+function _optionWallSessionCloseTime(row) {
+    const cached = Number(row && row._wallSessionClose);
+    return Number.isFinite(cached) ? cached : _optionWallSessionMeta(row).close;
+}
+
+function _optionWallSegmentEndTime(row, next) {
+    const sessionClose = _optionWallSessionCloseTime(row);
+    if (_optionWallSameSession(row, next) && Number(next.chartTime) > Number(row.chartTime)) {
+        return Number.isFinite(sessionClose)
+            ? Math.min(next.chartTime, sessionClose)
+            : Number(next.chartTime);
     }
-    return Math.min(Number(row.chartTime) + OPTION_WALL_SNAPSHOT_SEC, sessionClose);
+    const suppliedCadence = Number(row && row.cadence_seconds);
+    const cadence = Number.isFinite(suppliedCadence) && suppliedCadence > 0
+        ? suppliedCadence
+        : OPTION_WALL_SNAPSHOT_SEC;
+    if (Number.isFinite(sessionClose) && sessionClose >= Number(row.chartTime)) {
+        return Math.min(Number(row.chartTime) + cadence, sessionClose);
+    }
+    return Number(row.chartTime) + cadence;
 }
 
 function _optionWallsOverlap(row) {
@@ -7661,6 +7923,29 @@ function drawOptionWallOverlay() {
         { key: 'gamma_flip_mnq', color: 'rgba(255,181,71,0.92)', dash: [6, 4], label: 'GAMMA FLIP' },
     ];
     const visibleWindow = _optionWallVisibleWindow(visibleRange);
+    // Time/session work is shared by all three series. Previously each series
+    // repeated the same chart-coordinate and New York session conversions for
+    // every snapshot on every drag frame.
+    const visiblePoints = [];
+    for (let index = visibleWindow.start; index < visibleWindow.end; index++) {
+        const row = _optionWallSnapshots[index];
+        const next = _optionWallSnapshots[index + 1];
+        const x1 = _indicatorTimeToX(row.chartTime, W, visibleRange);
+        const x2 = _indicatorTimeToX(_optionWallSegmentEndTime(row, next), W, visibleRange);
+        if (x1 === null || x2 === null) continue;
+        const overlap = _optionWallsOverlap(row);
+        const ys = {};
+        for (const spec of specs) {
+            const value = Number(row[spec.key]);
+            let y = Number.isFinite(value) ? candleSeries.priceToCoordinate(value) : null;
+            if (y !== null && y !== undefined && overlap) {
+                if (spec.key === 'call_wall_mnq') y -= OPTION_WALL_OVERLAP_OFFSET_PX;
+                if (spec.key === 'put_wall_mnq') y += OPTION_WALL_OVERLAP_OFFSET_PX;
+            }
+            ys[spec.key] = y;
+        }
+        visiblePoints.push({ x1, x2, session: _optionWallSessionKey(row), ys });
+    }
 
     ctx.save();
     ctx.beginPath();
@@ -7671,24 +7956,29 @@ function drawOptionWallOverlay() {
         ctx.lineWidth = spec.key === 'gamma_flip_mnq' ? 1.2 : 1.7;
         ctx.setLineDash(spec.dash);
         ctx.beginPath();
-        for (let index = visibleWindow.start; index < visibleWindow.end; index++) {
-            const row = _optionWallSnapshots[index];
-            const value = Number(row[spec.key]);
-            if (!Number.isFinite(value)) continue;
-            const next = _optionWallSnapshots[index + 1];
-            const x1 = _indicatorTimeToX(row.chartTime, W, visibleRange);
-            const endTime = _optionWallSegmentEndTime(row, next);
-            const x2 = _indicatorTimeToX(endTime, W, visibleRange);
-            let y = candleSeries.priceToCoordinate(value);
-            if (x1 === null || x2 === null || y === null || y === undefined) continue;
-            if (_optionWallsOverlap(row)) {
-                if (spec.key === 'call_wall_mnq') y -= OPTION_WALL_OVERLAP_OFFSET_PX;
-                if (spec.key === 'put_wall_mnq') y += OPTION_WALL_OVERLAP_OFFSET_PX;
+        let drawing = false;
+        let currentSession = null;
+        let lastX = null;
+        let lastY = null;
+        for (const point of visiblePoints) {
+            const { x1, x2, session } = point;
+            const y = point.ys[spec.key];
+            if (x1 === null || x2 === null || y === null || y === undefined) {
+                drawing = false;
+                continue;
             }
-            // Every snapshot is its own horizontal segment. A wall jump starts
-            // a new segment; there is deliberately no vertical connector.
-            ctx.moveTo(x1, y);
+            if (!drawing || session !== currentSession) {
+                ctx.moveTo(x1, y);
+            } else if (Math.abs(lastX - x1) > 0.01 || Math.abs(lastY - y) > 0.01) {
+                // A changed level remains a continuous step inside the RTH
+                // session. Stable levels skip this redundant path command.
+                ctx.lineTo(x1, y);
+            }
             ctx.lineTo(x2, y);
+            drawing = true;
+            currentSession = session;
+            lastX = x2;
+            lastY = y;
         }
         ctx.stroke();
     }
@@ -7811,6 +8101,7 @@ async function refreshIndicatorSignalMarkers(logSummary) {
             _indicatorSignalsQueued = false;
             refreshIndicatorSignalMarkers(false);
             refreshPiSignalMarkers();
+            refreshAstraSignalMarkers();
         }
     }
 }

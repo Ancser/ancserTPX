@@ -35,6 +35,9 @@ ROUTES = ROOT / "backend" / "api" / "routes.py"
 BEHAVIOUR_PARAMS = {
     "pi_long_only", "pi_signal_set", "pi_max_signal_age_min",
     "pi_short_sl_value", "pi_long_hold_min", "pi_short_hold_min",
+    "option_wall_submodel", "option_wall_side_mode",
+    "option_wall_long_sl_atr", "option_wall_short_sl_atr",
+    "option_wall_max_hold_min", "option_wall_max_trades_per_day",
     "factor_sl_value", "factor_max_hold_bars", "rr_ratio",
     "trail_enabled", "trail_trigger_pct", "trail_lock_pct",
     "tr_daily_loss_stop", "tr_daily_win_stop", "tr_daily_profit_stop",

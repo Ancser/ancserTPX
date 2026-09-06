@@ -36,6 +36,7 @@ CANONICAL = [
     ("momentum", "MOMENTUM"),
     ("betafib", "BETAFIB"),
     ("pi", "PI"),
+    ("optionwall", "OPTION WALL"),
 ]
 
 
@@ -73,6 +74,29 @@ def _function_source(name: str) -> str:
 def test_model_selectors_keep_payload_values_and_show_only_canonical_identity():
     assert _select_options("strategy-bt") == CANONICAL
     assert _select_options("strategy-live") == CANONICAL
+
+
+def test_option_wall_primary_strict_controls_and_signal_date_scope_are_explicit():
+    assert _select_options("option-wall-submodel-bt") == [
+        ("primary_strict", "PRIMARY STRICT"),
+    ]
+    assert _select_options("option-wall-submodel-live") == [
+        ("primary_strict", "PRIMARY STRICT"),
+    ]
+    assert '<option value="optionwall" disabled>OPTION WALL</option>' in HTML
+
+    collect = _function_source("collectStrategyParams")
+    for field in (
+        "option_wall_submodel", "option_wall_side_mode",
+        "option_wall_long_sl_atr", "option_wall_short_sl_atr",
+        "option_wall_max_hold_min", "option_wall_max_trades_per_day",
+    ):
+        assert field in collect
+
+    scope = _function_source("_scopeDatesForStrategy")
+    assert "OPTION_WALL_SIGNAL_FIRST_DATE" in scope
+    assert "startEl.dataset.signalScope" in scope
+    assert "switchingFromAutoScopedDate" in scope
 
 
 def test_strategy_descriptions_are_separate_and_follow_selection_and_language():
@@ -431,6 +455,28 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     assert layer_sync.index("if (current === on) return;") < layer_sync.index("tr.tpxSetState(on)")
 
 
+def test_chart_layer_choices_are_restored_and_persisted_through_one_state_path():
+    assert "const CHART_LAYER_STORAGE_KEY = 'ancserTPX.chartLayers'" in JS
+    load = _function_source("_loadChartLayerPreferences")
+    assert "typeof saved[layer.key] === 'boolean'" in load
+    assert "Array.isArray(saved)" in load
+
+    persist = _function_source("_persistChartLayerPreferences")
+    assert "CHART_LAYERS.map" in persist
+    assert "localStorage.setItem(CHART_LAYER_STORAGE_KEY" in persist
+
+    seed = _function_source("_seedChartLayerMarkup")
+    assert "track.classList.toggle('on', on)" in seed
+    assert "track.setAttribute('aria-checked', String(on))" in seed
+    assert JS.index("_seedChartLayerMarkup();") < JS.index("function toggleChartLayer(key, on)")
+
+    toggle = _function_source("toggleChartLayer")
+    assert "if (!(key in CHART_OVERLAYS)) return" in toggle
+    assert toggle.index("CHART_OVERLAYS[key] = !!on") < toggle.index(
+        "_persistChartLayerPreferences()"
+    )
+
+
 def test_option_wall_demo_is_an_opt_in_read_only_chart_layer():
     assert "{ key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false }" in JS
     assert 'data-switch-proxy="lp-optionwall" aria-checked="false"' in HTML
@@ -445,11 +491,17 @@ def test_option_wall_demo_is_an_opt_in_read_only_chart_layer():
     assert "_optionWallSegmentEndTime(row, next)" in draw
     assert "ctx.moveTo(x1, y)" in draw
     assert "ctx.lineTo(x2, y)" in draw
-    assert "let drawing" not in draw
+    assert "let drawing = false" in draw
+    assert "session !== currentSession" in draw
+    assert "ctx.lineTo(x1, y)" in draw
     assert "CALL+PUT WALL" in draw
     assert "_optionWallsOverlap(row)" in draw
-    assert "OPTION_WALL_MAX_GAP_SEC = 10 * 60" in JS
+    assert "function _optionWallSameSession(row, next)" in JS
+    assert "OPTION_WALL_MAX_GAP_SEC" not in JS
     assert "OPTION_WALL_OVERLAP_TOLERANCE = 0.25" in JS
+    assert "const visiblePoints = []" in draw
+    assert draw.count("_indicatorTimeToX(row.chartTime") == 1
+    assert "visiblePoints.push({ x1, x2, session:" in draw
 
 
 def test_left_history_paging_does_not_recompute_signals_or_duplicate_canvas_work():

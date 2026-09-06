@@ -111,7 +111,9 @@ class BacktestEngine:
         # 1.0.8: strategy_mode "trend"(現行)或 "fade"(前日 VA 回歸)。
         # 屬性名沿用 trend_follow,兩策略介面相容,其餘管線不變。
         _strat = str(getattr(self.strategy_params, "strategy", "") or "").lower()
-        self.strategy_mode = _strat if _strat in ("fade", "sigma", "factor", "momentum", "betafib", "pi") else "factor"
+        self.strategy_mode = _strat if _strat in (
+            "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+        ) else "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
             if str(getattr(self.strategy_params, "fade_entry_mode", "") or "").lower() == "or15":
@@ -130,6 +132,9 @@ class BacktestEngine:
                 params=self.strategy_params,
                 replay_rows=self.pi_replay_rows,
             )
+        elif self.strategy_mode == "optionwall":
+            from backend.strategy.option_wall import OptionWallStrategy
+            self.trend_follow = OptionWallStrategy(params=self.strategy_params)
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
         # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
@@ -184,13 +189,18 @@ class BacktestEngine:
         if self.strategy_mode in FACTOR_PIPELINE_STRATEGIES:
             # 兩族的「一根」定義不同:factor 用 factor_timeframe_minutes,
             # research_lab(momentum / betafib)用 research_tf_minutes。
-            _tf = (int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5)
-                   if self.strategy_mode == "factor"
-                   else int(getattr(self.strategy_params, "research_tf_minutes", 5) or 5))
-            self._pmo_max_hold_minutes = (
-                max(0, int(getattr(self.strategy_params, "factor_max_hold_bars", 0) or 0))
-                * max(1, _tf)
-            )
+            if self.strategy_mode == "optionwall":
+                self._pmo_max_hold_minutes = max(1, int(getattr(
+                    self.strategy_params, "option_wall_max_hold_min", 60,
+                ) or 60))
+            else:
+                _tf = (int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5)
+                       if self.strategy_mode == "factor"
+                       else int(getattr(self.strategy_params, "research_tf_minutes", 5) or 5))
+                self._pmo_max_hold_minutes = (
+                    max(0, int(getattr(self.strategy_params, "factor_max_hold_bars", 0) or 0))
+                    * max(1, _tf)
+                )
         else:
             self._pmo_max_hold_minutes = 0
 
@@ -514,6 +524,15 @@ class BacktestEngine:
                 self.trend_follow.observe(candle, [], True)
             elif not self._open_position and not self._pending_order:
                 self._reset_trend_session_state()
+        elif (
+            self.strategy_mode == "optionwall"
+            and not self._open_position
+            and not self._pending_order
+            and not self._trend_session_allowed(candle.timestamp)
+        ):
+            # Primary Strict enters in RTH but its completed 5m ATR blend needs
+            # the immediately preceding futures candles for causal warm-up.
+            self.trend_follow.observe(candle, [], True)
         elif self.strategy_mode in FACTOR_PIPELINE_STRATEGIES and (self._open_position or self._pending_order):
             self.trend_follow.observe(candle, [], True)
 
@@ -624,6 +643,10 @@ class BacktestEngine:
                 eval_zones = []
                 eval_mature = True
                 zone_source = "factor"
+            elif self.strategy_mode == "optionwall":
+                eval_zones = []
+                eval_mature = True
+                zone_source = "option_wall"
             elif self.strategy_mode == "fade":
                 eval_zones = []
                 eval_mature = True
@@ -1004,6 +1027,8 @@ class BacktestEngine:
         cutting off would-be winners).
         """
         # 1.0.8/1.0.10: ladder exit mode for TREND/FACTOR.
+        if self.strategy_mode == "optionwall":
+            return
         if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
             self._check_ladder_sl(candle)
             return

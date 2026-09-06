@@ -306,7 +306,7 @@ test("panning to the left edge prepends an older chart page", async ({ page }) =
   expect(signalRequestsDuringPaging).toEqual([]);
 });
 
-test("option-wall jumps are separate horizontal segments and overlaps stay visible", async ({ page }) => {
+test("option-wall is continuous inside a session, breaks overnight, and keeps overlaps visible", async ({ page }) => {
   test.setTimeout(120000);
   const now = Math.floor(Date.now() / MIN) * MIN;
   const storeFrom = now - 180 * MIN;
@@ -382,25 +382,41 @@ test("option-wall jumps are separate horizontal segments and overlaps stay visib
     layerOn: window.layerOn("optionwall"),
     snapshotCount: _optionWallSnapshots.length,
     canvas: !!document.getElementById("option-wall-overlay"),
-    crossDayEnd: window._optionWallSegmentEndTime(
-      { chartTime: 1000, as_of: "2026-08-03T20:00:00Z" },
-      { chartTime: 87400, as_of: "2026-08-04T13:35:00Z" },
+    sameSession: window._optionWallSameSession(
+      { as_of: "2026-08-03T13:35:00Z" },
+      { as_of: "2026-08-03T20:00:00Z" },
+    ),
+    crossSession: window._optionWallSameSession(
+      { as_of: "2026-08-03T20:00:00Z" },
+      { as_of: "2026-08-04T13:35:00Z" },
     ),
     closeEnd: window._optionWallSegmentEndTime({
       chartTime: window.isoToChartTime("2026-08-03T20:00:00Z"),
       as_of: "2026-08-03T20:00:00Z",
     }, null),
     closeStart: window.isoToChartTime("2026-08-03T20:00:00Z"),
+    hourlyEnd: window._optionWallSegmentEndTime({
+      chartTime: window.isoToChartTime("2026-08-03T19:00:00Z"),
+      as_of: "2026-08-03T19:00:00Z",
+      cadence_seconds: 3600,
+    }, null),
   }));
 
   expect(painted.layerOn).toBe(true);
   expect(painted.snapshotCount).toBe(4);
   expect(painted.canvas).toBe(true);
   expect(painted.segments.length).toBeGreaterThan(0);
-  expect(painted.segments.every((s) => Math.abs(s.y2 - s.y1) < 0.01)).toBe(true);
+  expect(painted.segments.every((s) => (
+    Math.abs(s.x2 - s.x1) < 0.01 || Math.abs(s.y2 - s.y1) < 0.01
+  ))).toBe(true);
+  expect(painted.segments.some((s) => (
+    Math.abs(s.x2 - s.x1) < 0.01 && Math.abs(s.y2 - s.y1) > 0.01
+  ))).toBe(true);
   expect(painted.texts).toContain("CALL+PUT WALL");
-  expect(painted.crossDayEnd).toBe(1300); // one snapshot only, never overnight
+  expect(painted.sameSession).toBe(true);
+  expect(painted.crossSession).toBe(false);
   expect(painted.closeEnd).toBe(painted.closeStart); // stop exactly at 16:00 ET
+  expect(painted.hourlyEnd).toBe(painted.closeStart); // hourly fallback stays valid to close
 
   const green = painted.segments.filter((s) => s.stroke.includes("40, 209, 124"));
   const red = painted.segments.filter((s) => s.stroke.includes("255, 93, 115"));

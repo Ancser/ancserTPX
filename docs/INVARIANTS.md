@@ -113,6 +113,7 @@
 | CONFIG-005 | backtest 與 live 兩個引擎認得的 strategy_mode 必須**完全相同**;白名單裡不得有引擎不認得的殘骸;`FACTOR_PIPELINE_STRATEGIES` 成員必須實作 `observe()` | `test_strategy_pipeline_classification.py` |
 | CONFIG-003 | 時間出場對 FACTOR/PMO preset 永久關閉(`factor_max_hold_bars=0`),不要重新加回這個控制項 | `test_param_default_consistency.py` |
 | CONFIG-004 | 策略預設值與 preset 的往返序列化必須無損 | `test_strategy_defaults.py` |
+| CONFIG-006 | `OPTION WALL / PRIMARY STRICT` 只可讀 entry-time 因果欄位與固定 gate，不得載入研究 artifact 的 PnL／未來路徑；v1 僅允許 MNQ、固定 RTH historical replay，沒有 causal live option feed 時 `/live/start` 必須明確拒絕 | `test_option_wall_strategy.py` + `test_strategy_pipeline_classification.py` |
 
 ## UI — 前端與 Glass
 
@@ -127,7 +128,7 @@
 | UI-007 | 光學輸出不得取樣自己:Tier-1 只取 Tier-0;Tier-2 可取 Tier-0 + 合格 Tier-1,但不得取 Tier-2/self | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 | UI-008 | Research→Backtest/Live 在目的 workspace 可量測後,不得讓可見 Glass 留在無有效來源/1×1 canvas 的狀態 | `tests/ui/glass-ui.spec.js` |
 | UI-009 | switch/button 的本地狀態更新不得觸發無關的大型 scene 結構重建 | `tests/ui/glass-ui.spec.js` |
-| UI-010 | 策略 canonical identity 固定為 `FADE/SIGMA/FACTOR/MOMENTUM/BETAFIB/PI`;說明是分離且本地化的 presentation | `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
+| UI-010 | 策略 canonical identity 固定為 `FADE/SIGMA/FACTOR/MOMENTUM/BETAFIB/PI/OPTION WALL`;說明是分離且本地化的 presentation | `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
 | UI-011 | 語言 Glass presentation 必須沿用唯一的 `UI_LANG`/storage/event 路徑,thumb 顯示目前語言且同步 `<html lang>` | `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
 | UI-012 | 共用/分層來源不得改變各 component 原有的 shrink/refraction/motion 與本地材質所有權 | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
 | UI-013 | 可見來源正確性有 bounded high-priority 路徑;背景結構 churn 仍走原本 deferred/batched scheduler | `test_glass_sampling_contract.py` + `tests/ui/glass-ui.spec.js` |
@@ -139,13 +140,15 @@
 | UI-019 | RESEARCH robustness 的 Monte Carlo 百分位只能來自後端同一個 seeded bootstrap，並完整呈現 P5/P25/P50/P75/P95；摘要六欄等寬、Monte Carlo 必須排第一、P25–P75 內帶與外帶必須可區分，風險警示與動態 `?` 說明不得退回長篇行內文字 | `test_robustness.py` + `tests/ui/research-robustness.spec.js` |
 | UI-020 | Research robustness charts use the backend's seeded path data: Monte Carlo exposes P5/P25/P50/P75/P95 at every replay step; Walk-Forward exposes separate 1/3, 2/3, and 3/3 paths in both charts with $1,000/$2,000 maxDD guides; Slippage is rendered as an organized table. The Topstep/XFA tables show sizes 1/2/3/5/10 and explain column parameters with help dots. Calendar BT/LIVE labels stay in normal HTML rows so responsive SVG scaling cannot squash the text. | `test_robustness.py` + `tests/ui/research-robustness.spec.js` |
 | UI-021 | The upper workspace navigation remains the Liquid Glass dock, but the lower panel navigation must remain the original flat `.bottom-tabs` underline bar. The skin must not add `.glass-segment`, optical container/indicator nodes, or wrapped Glass label content to the lower tabs. | `tests/ui/glass-ui.spec.js` |
+| UI-022 | Chart Layer choices persist in browser-local storage and survive reload. Stored values may override only known layer keys with real booleans; unseen/new keys keep their declared defaults. Restored state must seed the live switch markup before Glass initializes so the first interaction after reload toggles from the visible state. | `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
+| UI-023 | QQQ Option Wall, Put Wall, and Gamma Flip are continuous step lines within one New York RTH date but must start a new subpath after the 16:00 ET close; no wall may connect overnight into the next open. Per-session metadata and shared X coordinates are computed once per snapshot rather than once per series on every paint. The feed prefers real 5-minute demo payloads and may fill otherwise-missing purchased sessions only from point-in-time hourly feature rows, which must remain explicitly labelled hourly and use their supplied cadence rather than being presented or truncated as 5-minute data. | `test_option_wall_demo.py` + `test_ui_glass_repair_contracts.py` + `tests/ui/chart-catchup.spec.js` |
 | RES-001 | **走查分段只能有一份定義。** `sweep.py` 的評分與 RESEARCH 面板的走查必須呼叫同一個 `robustness.segment_index()`。1.0.8g 起 `sweep.py` 內嵌一份、1.1 又在 `robustness.py` 寫了第二份,兩者只靠一個「比對原始碼字串」的測試宣稱一致 —— 從未拿實際數字對過。同一個詞在兩條路徑上可能是兩件事 | `test_robustness.py` |
 
 ---
 
 ## 目前的覆蓋缺口(誠實版)
 
-**74 條 active invariant 目前都已有自動化保護。** UI-002…021 的 paint/timing／表單鏡像／Research 呈現行為由
+**77 條 active invariant 目前都已有自動化保護。** UI-002…023 的 paint/timing／表單鏡像／Research 呈現行為由
 `tests/ui/glass-ui.spec.js` 與 `tests/ui/research-robustness.spec.js` 在 Chromium 驗證;小型架構接縫另由 pytest static
 contracts 快速擋回歸。CI 的 browser job 以 `--lifespan off` 啟動 app,不得啟動
 candle accumulator / shadow replay / broker 連線。
