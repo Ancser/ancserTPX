@@ -37,43 +37,37 @@ def _status(last: datetime | None = None, bars: int = 10) -> dict:
         "last": last,
         "age_days": 0 if last else None,
         "state": "FRESH" if last else "EMPTY",
+        "canonical_exists": bool(last),
+        "pending_bars": 0,
     }
 
 
-class _NoIterationBars:
-    def __bool__(self):
-        return True
-
-    def __len__(self):
-        return 2_331_102
-
-    def __iter__(self):
-        raise AssertionError("store_status must not iterate the snapshot")
-
-    def __getitem__(self, _index):
-        raise AssertionError("store_status must use snapshot bounds")
-
-
-class _StatusSnapshot:
-    bars = _NoIterationBars()
-    first_time = datetime(2020, 1, 1, tzinfo=UTC)
-    last_time = datetime.now(UTC) - timedelta(minutes=1)
-
-
-class StoreStatusSnapshotTests(unittest.TestCase):
-    def test_status_uses_snapshot_metadata_without_full_list_copy_or_iteration(self):
+class StoreStatusLightweightTests(unittest.TestCase):
+    def test_status_uses_sidecar_metadata_without_loading_the_pickle(self):
+        first = datetime(2020, 1, 1, tzinfo=UTC)
+        last = datetime.now(UTC) - timedelta(minutes=1)
+        status = {
+            "symbol": "MNQ",
+            "bars": 2_331_102,
+            "first": first,
+            "last": last,
+            "age_days": 0,
+            "state": "FRESH",
+            "canonical_exists": True,
+            "pending_bars": 0,
+        }
         with patch.object(
-            accumulator.candle_store, "load_snapshot", return_value=_StatusSnapshot()
-        ) as load_snapshot, patch.object(
-            accumulator.candle_store, "load",
+            accumulator.candle_store, "lightweight_status", return_value=status
+        ) as lightweight_status, patch.object(
+            accumulator.candle_store, "load_snapshot",
             side_effect=AssertionError("full list copy is forbidden"),
         ):
             result = accumulator.store_status("MNQ")
 
-        load_snapshot.assert_called_once_with("MNQ", 1)
-        self.assertEqual(result["bars"], 2_331_102)
-        self.assertEqual(result["first"], _StatusSnapshot.first_time)
-        self.assertEqual(result["last"], _StatusSnapshot.last_time)
+        lightweight_status.assert_called_once_with("MNQ", 1)
+        self.assertEqual(result["bars"], status["bars"])
+        self.assertEqual(result["first"], first)
+        self.assertEqual(result["last"], last)
         self.assertEqual(result["state"], "FRESH")
 
 
@@ -96,45 +90,65 @@ class AccumulatorEventLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(status_threads), 1)
         self.assertIsNot(status_threads[0], event_loop_thread)
 
-    async def test_blocked_merge_does_not_block_event_loop_heartbeat(self):
+    async def test_blocked_pending_save_does_not_block_event_loop_heartbeat(self):
         event_loop_thread = threading.current_thread()
-        merge_entered = threading.Event()
-        release_merge = threading.Event()
-        merge_threads: list[threading.Thread] = []
+        save_entered = threading.Event()
+        release_save = threading.Event()
+        save_threads: list[threading.Thread] = []
         now = datetime.now(UTC)
         incoming = [_bar(now)]
 
-        def blocking_merge(_bars, _symbol, _base):
-            merge_threads.append(threading.current_thread())
-            merge_entered.set()
-            release_merge.wait()
-            return 11, 1
+        def blocking_save(_bars, _symbol, _base):
+            save_threads.append(threading.current_thread())
+            save_entered.set()
+            release_save.wait()
+            return 1, 1
 
         task = None
         try:
             with patch.object(accumulator, "store_status", return_value=_status(now)), \
                     patch.object(accumulator, "_fetch", new=AsyncMock(return_value=incoming)), \
-                    patch.object(accumulator.candle_store, "merge", side_effect=blocking_merge):
+                    patch.object(accumulator.candle_store, "append_pending", side_effect=blocking_save):
                 task = asyncio.create_task(accumulator.accumulate_once(
                     ["MNQ"], client=object(), log=lambda _message: None
                 ))
-                await asyncio.to_thread(merge_entered.wait)
+                await asyncio.to_thread(save_entered.wait)
 
                 heartbeat = asyncio.get_running_loop().create_future()
                 asyncio.get_running_loop().call_soon(heartbeat.set_result, True)
                 self.assertTrue(await heartbeat)
                 self.assertFalse(task.done())
 
-                release_merge.set()
+                release_save.set()
                 result = await task
         finally:
-            release_merge.set()
+            release_save.set()
             if task is not None and not task.done():
                 await task
 
         self.assertEqual(result["MNQ"]["added"], 1)
-        self.assertEqual(len(merge_threads), 1)
-        self.assertIsNot(merge_threads[0], event_loop_thread)
+        self.assertEqual(len(save_threads), 1)
+        self.assertIsNot(save_threads[0], event_loop_thread)
+
+    async def test_background_save_never_loads_or_merges_full_store(self):
+        now = datetime.now(UTC)
+        incoming = [_bar(now)]
+        with patch.object(accumulator, "store_status", return_value=_status(now)), \
+                patch.object(accumulator, "_fetch", new=AsyncMock(return_value=incoming)), \
+                patch.object(accumulator.candle_store, "append_pending", return_value=(1, 1)), \
+                patch.object(
+                    accumulator.candle_store, "load_snapshot",
+                    side_effect=AssertionError("background save must not load full store"),
+                ), patch.object(
+                    accumulator.candle_store, "merge",
+                    side_effect=AssertionError("background save must not merge full store"),
+                ) as merge:
+            result = await accumulator.accumulate_once(
+                ["MNQ"], client=object(), log=lambda _message: None
+            )
+
+        self.assertEqual(result["MNQ"]["pending"], 1)
+        merge.assert_not_called()
 
 
 class ConcurrentStoreTransactionTests(unittest.IsolatedAsyncioTestCase):

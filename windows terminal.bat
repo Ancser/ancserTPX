@@ -1,10 +1,10 @@
 @echo off
-title ancserTPX terminal
+title windows terminal
 color 0A
 
 echo.
 echo  ========================================
-echo   ancserTPX terminal
+echo   windows terminal
 echo  ========================================
 echo.
 
@@ -61,4 +61,4 @@ echo.
 python -m backend.terminal_live
 
 echo.
-echo  ancserTPX terminal stopped.
+echo  windows terminal stopped.

@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
-title ancserTPX - Environment Setup
+title windows install
 color 0A
 
 echo.
 echo  ========================================
-echo   ancserTPX - One-Click Install
+echo   windows install
 echo  ========================================
 echo.
 
@@ -64,7 +64,7 @@ if exist "%PY_INSTALL_DIR%\python.exe" (
 
 echo.
 echo  [ERROR] Python install ran but python.exe not found at expected path.
-echo  Please open a NEW cmd window and run "ancserTPX install win.bat" again.
+echo  Please open a NEW cmd window and run "windows install.bat" again.
 pause
 exit /b 1
 
@@ -140,9 +140,9 @@ if exist ".env" (
 echo.
 echo  ========================================
 echo   Setup complete!
-echo   Double-click "ancserTPX app win.vbs" for the native WebView2 app
-echo   ("ancserTPX web win.bat" remains a compatibility shortcut)
-echo   Run "ancserTPX terminal win.bat" for terminal-only LIVE
+echo   Double-click "windows app.vbs" for the native WebView2 app
+echo   ("windows web.bat" remains a compatibility shortcut)
+echo   Run "windows terminal.bat" for terminal-only LIVE
 echo  ========================================
 echo.
 pause

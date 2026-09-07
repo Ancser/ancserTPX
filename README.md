@@ -77,11 +77,13 @@ Web backtests run in a **dedicated child process** (`ProcessPoolExecutor`) with 
 
 ### Data persistence
 
-Historical 1-minute candles are persisted to `data/store/MNQ_accumulated_1m.pkl` — an append-only store that never truncates. On fetch:
-1. Load from local store (instant, no API call)
-2. Incremental API fetch (only the tail since last stored bar)
-3. Merge + auto gap-detection + recovery of wifi-dropped bars
-4. Save back to store
+Historical 1-minute candles are persisted to `data/store/MNQ_accumulated_1m.pkl` — an append-only store that never truncates. Startup/CONNECT fetches only a recent working window and saves new closed bars to a deduplicated pending journal, so it does not decode the full store. On an explicit backtest, store-only request, or chart left-edge pan:
+1. Merge the pending journal into the local store
+2. Load/select the requested range
+3. Incremental API fetch when the requested range extends past the store
+4. Save back to the canonical store with gap detection/recovery
+
+The background saver tracks MNQ by default and activates MES only after that product is explicitly selected. The pending journal is private runtime data and is consolidated on the next full-history operation.
 
 The store survives server restarts, so subsequent launches need only a few hundred bars of incremental data instead of the full 60-day re-download.
 
@@ -155,10 +157,10 @@ Run the matching files for your operating system:
 
 ### Windows 11
 
-- First-time install: double-click `ancserTPX install win.bat`
-- Native desktop app: double-click `ancserTPX app win.vbs`
-- `ancserTPX web win.bat` remains a compatibility shortcut to the native app
-- Terminal-only LIVE: double-click `ancserTPX terminal win.bat`
+- First-time install: double-click `windows install.bat`
+- Native desktop app: double-click `windows app.vbs`
+- `windows web.bat` remains a compatibility shortcut to the native app
+- Terminal-only LIVE: double-click `windows terminal.bat`
 
 The native app uses the Microsoft Edge WebView2 runtime as an embedded window;
 it does not open a browser tab or leave a server CMD window running. The API
@@ -181,9 +183,9 @@ avatar turns red with `BACKEND OFFLINE` while the page remains visible.
 
 ### macOS
 
-- First-time install: double-click `ancserTPX install mac.command`
-- Web app: double-click `ancserTPX web mac.command`
-- Terminal-only LIVE: double-click `ancserTPX terminal mac.command`
+- First-time install: double-click `macOS install.command`
+- Web app: double-click `macOS web.command`
+- Terminal-only LIVE: double-click `macOS terminal.command`
 
 > **First launch only:** macOS will block the file with "cannot be opened because it is from an unidentified developer".
 > Fix: **right-click** the file → **Open** → click **Open** in the dialog. Only needed once per file.

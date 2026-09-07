@@ -6157,6 +6157,7 @@ async function connectAPI() {
     const body = {
         unit: 2,
         unit_number: 1,
+        load_scope: 'connect',
         start_time: startDate + 'T00:00:00Z',
         end_time: endDate + 'T23:59:59Z',
         continuous_contract: true,
@@ -6433,7 +6434,7 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
     btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data...';
     log((appendFetch ? 'Syncing new backtest data' : 'Fetching backtest data') + ' (' + fetchLabel + ' -> ' + endDate + ')...', 'info');
 
-    const body = { unit: 2, unit_number: 1,   // always 1m bars for backtest / machine learning
+    const body = { unit: 2, unit_number: 1, load_scope: 'backtest',   // always 1m bars for backtest / machine learning
         start_time: fetchStartTime,
         end_time:   endDate   + 'T23:59:59Z',
         append: appendFetch,

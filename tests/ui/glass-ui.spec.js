@@ -227,7 +227,7 @@ test("version shows in the top-left brand only, never in the tab title", async (
   // The tab title is deliberately version-free; the brand badge carries it.
   await expect(page).toHaveTitle("ancserTPX");
   const ver = page.locator("body > .glass-topbar > .topbar-brand > .ver");
-  await expect(ver).toHaveText("1.1.1");
+  await expect(ver).toHaveText("1.2.1");
   // The skin used to hardcode this string as well as the markup, so the two
   // drifted apart. Pin that the badge is whatever index.html declares.
   const declared = await page.evaluate(async () => {
@@ -235,7 +235,7 @@ test("version shows in the top-left brand only, never in the tab title", async (
     const m = html.match(/letter-spacing:2px;margin-left:2px;">\s*([^\s<]+)/);
     return m ? m[1] : null;
   });
-  expect(declared).toBe("1.1.1");
+  expect(declared).toBe("1.2.1");
   const watermark = page.locator("#chart-container > .chart-watermark");
   await expect(watermark).toHaveCount(1);
   await expect(watermark.locator("small")).toHaveCount(0);

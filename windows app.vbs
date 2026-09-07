@@ -19,7 +19,7 @@ End If
 
 pythonw = FindPythonW(fso, shell, root)
 If pythonw = "" Then
-    MsgBox "Python was not found. Run ancserTPX install win.bat first.", 16, "ancserTPX"
+    MsgBox "Python was not found. Run windows install.bat first.", 16, "ancserTPX"
     WScript.Quit 1
 End If
 

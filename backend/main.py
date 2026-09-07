@@ -58,12 +58,31 @@ async def lifespan(app: FastAPI):
     import asyncio as _asyncio
     from backend.api.routes import shadow_replay_daily_task
     _shadow_task = _asyncio.create_task(shadow_replay_daily_task())
-    # 1.0.9: 跨商品資料累積 —— 在此之前只有「按連線」與「跑回測」會累積,
-    # 且只針對 UI 當下選中的合約。券商 1m 只保留 60 天,任何商品超過就會
-    # 出現永久補不回來的空洞(MES 尤其危險,平常沒人選它)。
-    # 這個背景任務與 UI 完全解耦:伺服器活著就累積 MNQ + MES。
-    from backend.data.accumulator import accumulator_task
-    _accum_task = _asyncio.create_task(accumulator_task(interval_s=3600))
+    # The accumulator is intentionally lightweight: it fetches recent bars and
+    # writes a pending journal, never decoding the full MNQ/MES pickle at
+    # startup. MES is activated after an explicit MES contract selection;
+    # ANCSERTPX_ACCUMULATOR_SYMBOLS can add a deliberate maintenance symbol.
+    _accum_task = None
+    auto_accum = os.getenv("ANCSERTPX_AUTO_ACCUMULATOR", "true").strip().lower()
+    if auto_accum in {"1", "true", "yes", "on"}:
+        from backend.data.accumulator import accumulator_task
+        raw_symbols = os.getenv("ANCSERTPX_ACCUMULATOR_SYMBOLS", "").strip()
+        symbols = tuple(
+            symbol.strip().upper()
+            for symbol in raw_symbols.replace(";", ",").split(",")
+            if symbol.strip().upper() in {"MNQ", "MES"}
+        ) or None
+        logger.info(
+            "Lightweight candle auto-save enabled: MNQ by default; configured=%s",
+            ", ".join(symbols) if symbols else "none",
+        )
+        _accum_task = _asyncio.create_task(
+            accumulator_task(interval_s=3600, symbols=symbols)
+        )
+    else:
+        logger.info(
+            "Lightweight candle auto-save disabled by ANCSERTPX_AUTO_ACCUMULATOR"
+        )
     # Record-only PI listener: starts with the backend (no Live engine or
     # browser action required), catches up today/yesterday, then follows new
     # eligible messages for the chart/audit stream.  A PI Live engine pauses
@@ -77,7 +96,8 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Live engine shutdown during backend exit failed")
     await stop_pi_recorder()
-    _accum_task.cancel()    # 1.0.9
+    if _accum_task is not None:
+        _accum_task.cancel()
     _shadow_task.cancel()   # 1.0.9
     logger.info("ancserTPX backend stopped")
 

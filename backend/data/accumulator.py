@@ -1,13 +1,15 @@
-"""1.0.9: 跨商品 1m 資料累積器(伺服器背景任務 + CLI 共用核心)。
+"""1m 資料累積器(伺服器背景任務 + CLI 共用核心)。
 
 ## 問題
 
-在此之前,累積只有兩個觸發點,而且都只針對「UI 當下選中的合約」:
+歷史版本的累積只有兩個觸發點,而且都只針對「UI 當下選中的合約」:
     frontend/static/ancserTPX.js:4870   connectAPI()
     frontend/static/ancserTPX.js:5139   _ensureBacktestData()
 
-所以跑 MNQ 回測不會累積 MES、開著網頁不動不會累積、實盤執行中也不會
-(_store_save 只在 /api/data/fetch-historical 內被呼叫)。
+所以跑 MNQ 回測不會累積 MES、開著網頁不動不會累積、實盤執行中也不會。
+
+目前背景任務維持自動抓取，但只寫入 candle_store 的 pending journal；
+它不會為了查看或保存而解包完整 store。完整 merge 交給明確的歷史操作。
 
 而券商只保留約 60 天 1m 資料 —— 任何商品超過 60 天沒抓,中間就出現
 **永久補不回來的空洞**(store 只增不減,但缺掉的那段再也拿不到)。
@@ -24,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
@@ -33,12 +36,48 @@ from backend.timebase import UTC, as_utc as _utc, utc_now
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SYMBOLS = ("MNQ", "MES")
+# MNQ is the default product in this app.  MES is activated only after the
+# user actually selects/uses an MES contract; this keeps an unused ES product
+# out of startup network work as well as out of memory.
+DEFAULT_SYMBOLS = ("MNQ",)
 RETENTION_DAYS = 60       # 券商 1m 保留期(實測 H26 及更早全空)
 OVERLAP_HOURS = 3         # 增量重疊,避免邊界漏根
 ROLL_WINDOW_DAYS = 12     # 日曆換月日前後視為換月窗口
+UNKNOWN_STORE_WARMUP_DAYS = 2  # old pkl without bounds metadata: recent only
 MONTH_CODE = {3: "H", 6: "M", 9: "U", 12: "Z"}
 _CODE_MONTH = {v: k for k, v in MONTH_CODE.items()}
+
+_SYMBOL_ALIASES = {
+    "ENQ": "MNQ",
+    "NQ": "MNQ",
+    "MNQ": "MNQ",
+    "ES": "MES",
+    "MES": "MES",
+}
+_ACTIVE_SYMBOLS = set(DEFAULT_SYMBOLS)
+_ACTIVE_SYMBOLS_LOCK = threading.Lock()
+
+
+def normalize_symbol(symbol: str) -> str:
+    """Map contract aliases to the two supported candle-store products."""
+    raw = str(symbol or "").strip().upper()
+    return _SYMBOL_ALIASES.get(raw, raw)
+
+
+def activate_symbol(symbol: str) -> str:
+    """Start tracking a product after an explicit UI/API use of its contract."""
+    normalized = normalize_symbol(symbol)
+    if normalized not in {"MNQ", "MES"}:
+        return normalized
+    with _ACTIVE_SYMBOLS_LOCK:
+        _ACTIVE_SYMBOLS.add(normalized)
+    logger.info("[accumulate] activated %s after explicit contract use", normalized)
+    return normalized
+
+
+def active_symbols() -> tuple[str, ...]:
+    with _ACTIVE_SYMBOLS_LOCK:
+        return tuple(sorted(_ACTIVE_SYMBOLS))
 
 
 def _third_friday(year: int, month: int) -> datetime:
@@ -70,18 +109,15 @@ def prev_contract_id(symbol: str, now: datetime) -> str:
 
 
 def store_status(symbol: str) -> dict:
-    snapshot = candle_store.load_snapshot(symbol, 1)
+    # Startup status must never decode the full persistent pickle.  The
+    # lightweight sidecars include canonical bounds plus the pending journal.
+    symbol = normalize_symbol(symbol)
+    status = candle_store.lightweight_status(symbol, 1)
     now = utc_now()
-    if not snapshot.bars:
-        return {"symbol": symbol, "bars": 0, "first": None, "last": None,
-                "age_days": None, "state": "EMPTY"}
-    # The immutable snapshot already owns sorted bounds. Do not materialize a
-    # multi-million-pointer list merely to inspect count/first/last.
-    lo, hi = snapshot.first_time, snapshot.last_time
-    age = (now - hi).days
-    return {"symbol": symbol, "bars": len(snapshot.bars), "first": lo, "last": hi,
-            "age_days": age,
-            "state": "FRESH" if age <= 3 else ("STALE" if age < RETENTION_DAYS else "HOLE")}
+    last = status.get("last")
+    if last is not None and status.get("age_days") is None:
+        status["age_days"] = (now - last).days
+    return status
 
 
 async def _fetch(client, symbol: str, since: datetime, now: datetime,
@@ -131,7 +167,13 @@ async def accumulate_once(symbols: Optional[Iterable[str]] = None,
 
     client 為 None 時自行建立(用 .env 憑證)並在結束時關閉。
     """
-    symbols = list(symbols or DEFAULT_SYMBOLS)
+    raw_symbols = list(symbols) if symbols is not None else list(active_symbols())
+    symbols = list(dict.fromkeys(
+        normalize_symbol(symbol) for symbol in raw_symbols
+        if normalize_symbol(symbol) in {"MNQ", "MES"}
+    ))
+    if not symbols:
+        symbols = list(DEFAULT_SYMBOLS)
     now = utc_now()
     owned = client is None
     if owned:
@@ -164,20 +206,35 @@ async def accumulate_once(symbols: Optional[Iterable[str]] = None,
                         f"{st['last']:%Y-%m-%d} 至 {floor:%Y-%m-%d} 永久缺失")
                     since = floor
             else:
-                since = floor
+                # Existing stores created before bounds metadata are known to
+                # contain history, but inspecting that pickle would defeat
+                # lazy startup.  Warm only a recent bounded window; an
+                # explicit backtest/left-edge read will materialize the full
+                # store and merge the journal later.
+                warmup_days = (
+                    UNKNOWN_STORE_WARMUP_DAYS
+                    if st.get("canonical_exists") else RETENTION_DAYS - 1
+                )
+                since = now - timedelta(days=warmup_days)
             bars = await _fetch(client, s, since, now, log)
             if not bars:
                 out[s] = {"added": 0, "total": st["bars"], "last": st["last"]}
                 continue
-            # merge() intentionally remains synchronous for CLI callers; the
-            # server accumulator runs its full dict/sort/pickle transaction in
-            # a worker. candle_store serializes transactions per symbol/base.
-            total, added = await asyncio.to_thread(candle_store.merge, bars, s, 1)
+            # The background path never calls merge(): it writes a deduplicated
+            # journal and therefore never decodes/re-saves the full pickle.
+            pending_count, added = await asyncio.to_thread(
+                candle_store.append_pending, bars, s, 1
+            )
             after = await asyncio.to_thread(store_status, s)
-            out[s] = {"added": added, "total": total, "last": after["last"]}
+            out[s] = {
+                "added": added,
+                "total": after["bars"],
+                "last": after["last"],
+                "pending": pending_count,
+            }
             if added:
-                log(f"[accumulate] {s} +{added} 根 → {total:,} 根,"
-                    f"最新 {after['last']:%Y-%m-%d %H:%M}")
+                log(f"[accumulate] {s} +{added} 根 → pending {pending_count:,} 根,"
+                    f"最新 {after['last']:%Y-%m-%d %H:%M} (未解包完整 store)")
     finally:
         if owned:
             try:
@@ -189,15 +246,20 @@ async def accumulate_once(symbols: Optional[Iterable[str]] = None,
 
 async def accumulator_task(interval_s: int = 3600,
                            symbols: Optional[Iterable[str]] = None) -> None:
-    """伺服器背景任務:定期把所有商品補到最新。
+    """伺服器背景任務:定期抓取已啟用商品的最新增量。
 
-    與 UI 操作完全解耦 —— 只要伺服器活著就會累積,不管你在看哪個商品、
-    有沒有跑回測、有沒有開實盤。
+    It saves to the lightweight pending journal.  It does not load the full
+    store; MES joins the active set only after explicit contract use.
     """
+    configured = tuple(dict.fromkeys(
+        normalize_symbol(symbol) for symbol in (symbols or ())
+        if normalize_symbol(symbol) in {"MNQ", "MES"}
+    ))
     await asyncio.sleep(30)          # 讓啟動流程先完成
     while True:
         try:
-            await accumulate_once(symbols)
+            selected = tuple(dict.fromkeys((*configured, *active_symbols())))
+            await accumulate_once(selected)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

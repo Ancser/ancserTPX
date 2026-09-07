@@ -198,6 +198,24 @@ class ChartHistoryPaginationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(returned, expected)
         self.assertEqual(response["source"], "persistent_store")
 
+    async def test_initial_chart_without_connect_does_not_load_persistent_store(self):
+        original = routes._historical_candles
+        routes._historical_candles = []
+        try:
+            with patch.object(
+                routes, "_store_merge_pending",
+                side_effect=AssertionError("initial chart must not merge store"),
+            ), patch.object(
+                routes, "_store_load_snapshot",
+                side_effect=AssertionError("initial chart must not load store"),
+            ):
+                response = await routes.get_stored_candles(limit=60000)
+        finally:
+            routes._historical_candles = original
+
+        self.assertEqual(response["candles"], [])
+        self.assertEqual(response["source"], "working_set")
+
 
 class TerminalProgressTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -241,6 +259,7 @@ class ThreadingStructureTests(unittest.TestCase):
         source = inspect.getsource(routes.fetch_historical)
         for name in (
             "_store_load_snapshot", "_store_save", "_store_merge",
+            "_store_append_pending", "_store_merge_pending",
             "_store_detect_gaps", "_store_advance_frozen",
             "_merge_store_and_fresh", "_merge_candle_lists",
         ):

@@ -2,7 +2,7 @@
 set -e
 echo ""
 echo "  ========================================"
-echo "   ancserTPX - One-Click Install"
+echo "   macOS install"
 echo "  ========================================"
 echo ""
 
@@ -96,7 +96,7 @@ else
     else
         echo ""
         echo "  [ERROR] Python install ran but python3 not found in PATH."
-        echo "  Please open a NEW terminal and run ancserTPX install mac.command again."
+        echo "  Please open a NEW terminal and run macOS install.command again."
         exit 1
     fi
 fi
@@ -139,7 +139,7 @@ fi
 echo ""
 echo "  ========================================"
 echo "   Setup complete!"
-echo "   Double-click ancserTPX web mac.command for Web"
-echo "   Double-click ancserTPX terminal mac.command for terminal-only LIVE"
+echo "   Double-click macOS web.command for Web"
+echo "   Double-click macOS terminal.command for terminal-only LIVE"
 echo "  ========================================"
 echo ""

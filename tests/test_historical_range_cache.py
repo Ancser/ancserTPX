@@ -222,6 +222,41 @@ class HistoricalRangeRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(load_threads), 1)
         self.assertNotEqual(load_threads[0], event_thread)
 
+    async def test_connect_warmup_fetches_and_journals_without_full_store_load(self):
+        fetched = _bars(25, datetime(2026, 8, 2, tzinfo=UTC))
+        req = routes.FetchHistoricalRequest(
+            username="test", api_key="test", contract_id=CONTRACT,
+            unit=2, unit_number=1,
+            start_time=fetched[0].timestamp.isoformat(),
+            end_time=fetched[-1].timestamp.isoformat(),
+            continuous_contract=False, load_scope="connect",
+        )
+        broker_fetch = AsyncMock(return_value=fetched)
+
+        with patch("backend.broker.topstepx.TopstepXClient", _FakeTopstepXClient), \
+                patch.object(
+                    _FakeTopstepXClient, "get_historical_bars_paginated",
+                    new=broker_fetch,
+                ), patch.object(
+                    routes, "_store_load_snapshot",
+                    side_effect=AssertionError("CONNECT must not load full store"),
+                ), patch.object(
+                    routes, "_store_save",
+                    side_effect=AssertionError("CONNECT must use pending journal"),
+                ), patch.object(
+                    routes, "_store_detect_gaps",
+                    side_effect=AssertionError("CONNECT must not scan full store"),
+                ), patch.object(
+                    routes, "_store_append_pending", return_value=(25, 25)
+                ) as append_pending:
+            result = await routes.fetch_historical(req)
+
+        broker_fetch.assert_awaited_once()
+        append_pending.assert_called_once_with(fetched, "MNQ", 1)
+        self.assertFalse(result["from_store"])
+        self.assertEqual(result["candles_count"], len(fetched))
+        self.assertEqual(result["cache_kind"], "fallback")
+
     async def test_append_uses_only_grows_store_merge_not_delta_overwrite(self):
         bars = _bars(100)
         source_key = routes._historical_source_key(CONTRACT, 2, 1, False)

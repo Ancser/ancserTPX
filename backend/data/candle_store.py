@@ -9,6 +9,12 @@
 
 Location: ``data/store/{symbol}_accumulated_1m.pkl``
 
+Recent bars may first land in a small append journal
+``…_accumulated_1m.pending.jsonl``.  The journal is intentionally separate
+from the full pickle: the background updater can save new candles without
+decoding the multi-million-bar store.  Explicit history/backtest/chart-left
+reads merge the journal into the canonical pickle before loading it.
+
 Design principles
 ─────────────────
 1. **Only-grows, never truncates.**  Bars fetched weeks ago survive even after
@@ -16,6 +22,8 @@ Design principles
 2. **Incremental.**  ``merge()`` upserts by timestamp; existing bars are kept,
    newer fetch wins on clash (revision).  The caller need only fetch the
    *delta* since ``last_ts()`` — typically a few hundred bars.
+   ``append_pending()`` provides the no-full-load variant used by startup,
+   CONNECT, and the background saver.
 3. **Gap-aware.**  ``detect_gaps()`` finds interior holes that are NOT expected
    exchange maintenance / weekends, so the caller can re-fetch just those
    windows to recover wifi-drop damage.
@@ -134,11 +142,356 @@ def _meta_path(symbol: str = "MNQ", base: int = 1) -> Path:
     return STORE_DIR / f"{symbol}_accumulated_{base}m.meta.json"
 
 
+def _pending_path(symbol: str = "MNQ", base: int = 1) -> Path:
+    """Return the bounded-work journal used by lazy incremental saves."""
+    return STORE_DIR / f"{symbol}_accumulated_{base}m.pending.jsonl"
+
+
+def _pending_meta_path(symbol: str = "MNQ", base: int = 1) -> Path:
+    return STORE_DIR / f"{symbol}_accumulated_{base}m.pending.meta.json"
+
+
+def _empty_meta() -> dict:
+    return {
+        "frozen_through": None,
+        "segments": [],
+        "total_bars": 0,
+        "first_ts": None,
+        "last_ts": None,
+    }
+
+
+def _parse_meta_time(value) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return _as_utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _candle_record(candle: Candle) -> dict:
+    """Serialize only the stable Candle fields used by the pending journal."""
+    return {
+        "timestamp": _as_utc(candle.timestamp).isoformat(),
+        "open": float(candle.open),
+        "high": float(candle.high),
+        "low": float(candle.low),
+        "close": float(candle.close),
+        "volume": int(candle.volume),
+        "symbol": str(getattr(candle, "symbol", "MNQ") or "MNQ"),
+        "interval": str(getattr(candle, "interval", "1m") or "1m"),
+        "source": str(getattr(candle, "source", "topstepx") or "topstepx"),
+    }
+
+
+def _record_candle(record: dict, fallback_symbol: str) -> Optional[Candle]:
+    try:
+        timestamp = _parse_meta_time(record.get("timestamp"))
+        if timestamp is None:
+            return None
+        return Candle(
+            timestamp=timestamp,
+            open=float(record["open"]),
+            high=float(record["high"]),
+            low=float(record["low"]),
+            close=float(record["close"]),
+            volume=int(record.get("volume", 0)),
+            symbol=str(record.get("symbol") or fallback_symbol),
+            interval=str(record.get("interval") or "1m"),
+            source=str(record.get("source") or "topstepx"),
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _read_pending_meta(symbol: str = "MNQ", base: int = 1) -> dict:
+    p = _pending_meta_path(symbol, base)
+    if not p.exists():
+        return {"count": 0, "first_ts": None, "last_ts": None}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return {
+            "count": max(0, int(data.get("count", 0) or 0)),
+            "first_ts": data.get("first_ts"),
+            "last_ts": data.get("last_ts"),
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {"count": 0, "first_ts": None, "last_ts": None}
+
+
+def _atomic_json_write(path: Path, payload: dict) -> None:
+    STORE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _write_pending_meta(bars: List[Candle], symbol: str, base: int) -> None:
+    if not bars:
+        for path in (_pending_path(symbol, base), _pending_meta_path(symbol, base)):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return
+    ordered = sorted(bars, key=lambda c: _as_utc(c.timestamp))
+    _atomic_json_write(
+        _pending_meta_path(symbol, base),
+        {
+            "count": len(ordered),
+            "first_ts": _as_utc(ordered[0].timestamp).isoformat(),
+            "last_ts": _as_utc(ordered[-1].timestamp).isoformat(),
+            "updated_at": utc_now().isoformat(),
+        },
+    )
+
+
+def _read_pending_locked(symbol: str, base: int) -> List[Candle]:
+    path = _pending_path(symbol, base)
+    if not path.exists():
+        return []
+    by_ts: Dict[datetime, Candle] = {}
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                candle = _record_candle(record, symbol)
+                if candle is not None:
+                    by_ts[_as_utc(candle.timestamp)] = candle
+    except OSError as exc:
+        logger.warning("[CandleStore] pending journal read failed for %s: %s", symbol, exc)
+        return []
+    return sorted(by_ts.values(), key=lambda c: _as_utc(c.timestamp))
+
+
+def _read_pending_tail_locked(symbol: str, base: int,
+                              max_bytes: int = 1_048_576) -> Dict[datetime, Candle]:
+    """Read only the recent journal tail used for overlap revisions."""
+    path = _pending_path(symbol, base)
+    if not path.exists():
+        return {}
+    by_ts: Dict[datetime, Candle] = {}
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            start = max(0, size - max_bytes)
+            fh.seek(start)
+            if start:
+                fh.readline()  # discard the partial first record
+            for raw_line in fh:
+                if not raw_line.strip():
+                    continue
+                try:
+                    record = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                candle = _record_candle(record, symbol)
+                if candle is not None:
+                    by_ts[_as_utc(candle.timestamp)] = candle
+    except OSError as exc:
+        logger.warning("[CandleStore] pending journal tail read failed for %s: %s", symbol, exc)
+    return by_ts
+
+
+def _append_pending_locked(candles: List[Candle], symbol: str, base: int) -> None:
+    if not candles:
+        return
+    path = _pending_path(symbol, base)
+    STORE_DIR.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        for candle in candles:
+            fh.write(json.dumps(_candle_record(candle), ensure_ascii=False))
+            fh.write("\n")
+
+
+def _save_pending_meta_state(count: int, first: Optional[datetime],
+                             last: Optional[datetime], symbol: str,
+                             base: int) -> None:
+    if count <= 0 or last is None:
+        _write_pending_meta([], symbol, base)
+        return
+    _atomic_json_write(
+        _pending_meta_path(symbol, base),
+        {
+            "count": int(count),
+            "first_ts": _as_utc(first).isoformat() if first else None,
+            "last_ts": _as_utc(last).isoformat(),
+            "updated_at": utc_now().isoformat(),
+        },
+    )
+
+
+def _write_pending_locked(bars: List[Candle], symbol: str, base: int) -> None:
+    if not bars:
+        _write_pending_meta([], symbol, base)
+        return
+    ordered = sorted(bars, key=lambda c: _as_utc(c.timestamp))
+    path = _pending_path(symbol, base)
+    STORE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+        for candle in ordered:
+            fh.write(json.dumps(_candle_record(candle), ensure_ascii=False))
+            fh.write("\n")
+    tmp.replace(path)
+    _write_pending_meta(ordered, symbol, base)
+
+
+def append_pending(new_bars: List[Candle], symbol: str = "MNQ",
+                   base: int = 1) -> Tuple[int, int]:
+    """Save fresh bars without reading the canonical multi-million-bar store.
+
+    Returns ``(pending_count, added_or_revised)``.  The journal is deduplicated
+    by timestamp, so repeated live polling and accumulator overlap do not grow
+    it with copies of the same bar.  ``merge_pending`` is the only operation
+    that materializes the canonical pickle.
+    """
+    if not new_bars:
+        status = pending_status(symbol, base)
+        return status["count"], 0
+
+    incoming_by_ts: Dict[datetime, Candle] = {}
+    for candle in new_bars:
+        try:
+            incoming_by_ts[_as_utc(candle.timestamp)] = candle
+        except (AttributeError, TypeError):
+            continue
+    if not incoming_by_ts:
+        status = pending_status(symbol, base)
+        return status["count"], 0
+
+    with _store_lock(symbol, base):
+        path = _pending_path(symbol, base)
+        meta = _read_pending_meta(symbol, base)
+        last = _parse_meta_time(meta.get("last_ts"))
+        first = _parse_meta_time(meta.get("first_ts"))
+
+        if path.exists() and meta["count"] > 0 and last is not None:
+            # Normal path: the journal is append-only.  Only inspect its recent
+            # tail for a broker revision in the overlap window; never parse the
+            # entire pending history during a live poll.
+            tail = _read_pending_tail_locked(symbol, base)
+            to_append: List[Candle] = []
+            new_count = 0
+            for ts, candle in sorted(incoming_by_ts.items()):
+                if ts > last:
+                    to_append.append(candle)
+                    new_count += 1
+                    continue
+                previous = tail.get(ts)
+                if previous is not None and _candle_record(previous) != _candle_record(candle):
+                    to_append.append(candle)
+            if not to_append:
+                return meta["count"], 0
+            _append_pending_locked(to_append, symbol, base)
+            first = min(first, min(incoming_by_ts)) if first else min(incoming_by_ts)
+            latest = max(last, max(incoming_by_ts))
+            count = meta["count"] + new_count
+            _save_pending_meta_state(count, first, latest, symbol, base)
+            return count, len(to_append)
+
+        # First write, or recovery from a stale/missing sidecar: do a journal-
+        # only deduplicating rewrite.  The canonical pickle is still untouched.
+        existing = _read_pending_locked(symbol, base)
+        by_ts = {_as_utc(c.timestamp): c for c in existing}
+        before = {_as_utc(c.timestamp): _candle_record(c) for c in existing}
+        by_ts.update(incoming_by_ts)
+        ordered = sorted(by_ts.values(), key=lambda c: _as_utc(c.timestamp))
+        after = {
+            _as_utc(c.timestamp): _candle_record(c) for c in ordered
+        }
+        changed = sum(1 for ts, record in after.items() if before.get(ts) != record)
+        if changed:
+            _write_pending_locked(ordered, symbol, base)
+        return len(ordered), changed
+
+
+def pending_status(symbol: str = "MNQ", base: int = 1) -> dict:
+    """Read pending-journal metadata without touching the full candle store."""
+    with _store_lock(symbol, base):
+        meta = _read_pending_meta(symbol, base)
+        path = _pending_path(symbol, base)
+        # A crash between the journal and its metadata is repaired by a small
+        # journal-only scan; it still never opens the canonical pickle.
+        if path.exists() and meta["count"] <= 0:
+            bars = _read_pending_locked(symbol, base)
+            if bars:
+                _write_pending_locked(bars, symbol, base)
+                meta = _read_pending_meta(symbol, base)
+        return {
+            "count": meta["count"],
+            "first": _parse_meta_time(meta.get("first_ts")),
+            "last": _parse_meta_time(meta.get("last_ts")),
+        }
+
+
+def has_persistent_store(symbol: str = "MNQ", base: int = 1) -> bool:
+    """Check for a canonical/seed file using stat only; no unpickle."""
+    return _store_path(symbol, base).exists() or _seed_path(symbol, base).exists()
+
+
+def lightweight_status(symbol: str = "MNQ", base: int = 1) -> dict:
+    """Return store bounds from sidecars/pending metadata only.
+
+    This is safe for the startup accumulator: it never calls ``load`` or
+    ``pickle.load``.  Older stores whose metadata predates the bounds fields
+    are reported as ``UNKNOWN`` until an explicit full operation refreshes the
+    sidecar; the accumulator then uses a short bounded warm-up window.
+    """
+    meta = load_meta(symbol, base)
+    pending = pending_status(symbol, base)
+    first = _parse_meta_time(meta.get("first_ts"))
+    last = _parse_meta_time(meta.get("last_ts"))
+    if pending["first"] is not None:
+        first = pending["first"] if first is None else min(first, pending["first"])
+    if pending["last"] is not None:
+        last = pending["last"] if last is None else max(last, pending["last"])
+    try:
+        total = max(0, int(meta.get("total_bars", 0) or 0))
+    except (TypeError, ValueError):
+        total = 0
+    if total <= 0:
+        total = pending["count"]
+    elif pending["count"]:
+        # This is an operational estimate until the pending journal is merged;
+        # exact count remains the canonical store's responsibility.
+        total += pending["count"]
+    now = utc_now()
+    age_days = (now - last).days if last is not None else None
+    if last is None:
+        state = "UNKNOWN" if has_persistent_store(symbol, base) else "EMPTY"
+    else:
+        state = "FRESH" if age_days <= 3 else (
+            "STALE" if age_days < 60 else "HOLE"
+        )
+    return {
+        "symbol": symbol,
+        "bars": total,
+        "first": first,
+        "last": last,
+        "age_days": age_days,
+        "state": state,
+        "canonical_exists": has_persistent_store(symbol, base),
+        "pending_bars": pending["count"],
+    }
+
+
 # 1.0.10: 隨 repo 散佈的開機種子。
 #
 # 完整的 accumulated store 是 210MB/商品(含 2020 起的 Databento 補齊段),
 # 不進版控 —— 見 .gitignore。git 對二進位檔是每個版本存一份完整 blob,而
-# accumulator 每小時重寫整個檔案,追蹤它會讓 repo 無上限膨脹(實測光是先前
+# 舊版 accumulator 每小時重寫整個檔案,追蹤它會讓 repo 無上限膨脹(實測光是先前
 # 42 個歷史版本就已經佔掉 .git 的 259MB)。
 #
 # 種子只含**自家 TopstepX 帳號抓的、2026-06-01 之後**的資料(約 6MB/商品),
@@ -157,7 +510,7 @@ def _seed_path(symbol: str = "MNQ", base: int = 1) -> Path:
 # mtime 變了就自動失效,所以 save() 之後一定讀得到新資料。
 #
 # ⚠️ 記憶體代價:每根 Candle 約 576 bytes → 233 萬根約 1.25GB/商品。
-# 這是 web server 程序常駐的量。
+# 這只會在明確的完整歷史操作中發生；啟動／CONNECT 走 pending journal。
 @dataclass(frozen=True)
 class CandleSnapshot:
     """Immutable index over one sorted persistent-store generation.
@@ -307,6 +660,23 @@ def _save_locked(bars: List[Candle], symbol: str, base: int) -> None:
     _CACHE[f"{symbol}:{base}"] = CandleSnapshot(
         symbol, base, p, _path_version(p), tuple(ordered)
     )
+    # Keep cheap bounds beside the pickle so future startup scans do not need
+    # to unpickle the full store just to decide where the next delta begins.
+    try:
+        meta = load_meta(symbol, base)
+        meta["total_bars"] = len(ordered)
+        meta["first_ts"] = (
+            _as_utc(ordered[0].timestamp).isoformat() if ordered else None
+        )
+        meta["last_ts"] = (
+            _as_utc(ordered[-1].timestamp).isoformat() if ordered else None
+        )
+        meta["updated_at"] = utc_now().isoformat()
+        save_meta(meta, symbol, base)
+    except Exception as exc:
+        # A metadata failure must not turn a successfully persisted candle
+        # generation into a failed trading/data request.
+        logger.warning("[CandleStore] bounds metadata update failed: %s", exc)
     logger.info(f"[CandleStore] saved {len(bars)} bars → {p.name}")
 
 
@@ -367,6 +737,28 @@ def merge(new_bars: List[Candle], symbol: str = "MNQ",
     """
     with _store_lock(symbol, base):
         return _merge_locked(new_bars, symbol, base)
+
+
+def merge_pending(symbol: str = "MNQ", base: int = 1) -> Tuple[int, int]:
+    """Merge the lazy journal into the canonical store on an explicit read.
+
+    An empty journal returns immediately and therefore does not load the pkl.
+    When bars exist, this is deliberately a full operation: the caller is at
+    a backtest/store request or has panned to the chart's left edge.
+    """
+    with _store_lock(symbol, base):
+        pending = _read_pending_locked(symbol, base)
+        if not pending:
+            return 0, 0
+        total, added = _merge_locked(pending, symbol, base)
+        # Only clear after the canonical atomic save succeeded.  If merge/save
+        # raises, the journal remains available for the next retry.
+        _write_pending_locked([], symbol, base)
+        logger.info(
+            "[CandleStore] merged pending journal: %d bars (%+d new) → %s",
+            len(pending), added, _store_path(symbol, base).name,
+        )
+        return total, added
 
 
 def _merge_locked(new_bars: List[Candle], symbol: str,
@@ -535,11 +927,15 @@ def last_complete_day_end(candles: List[Candle]) -> Optional[datetime]:
 def load_meta(symbol: str = "MNQ", base: int = 1) -> dict:
     p = _meta_path(symbol, base)
     if not p.exists():
-        return {"frozen_through": None, "segments": [], "total_bars": 0}
+        return _empty_meta()
     try:
-        return json.load(open(p, "r", encoding="utf-8"))
-    except Exception:
-        return {"frozen_through": None, "segments": [], "total_bars": 0}
+        with p.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return _empty_meta()
+        return data
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return _empty_meta()
 
 
 def save_meta(meta: dict, symbol: str = "MNQ", base: int = 1) -> None:

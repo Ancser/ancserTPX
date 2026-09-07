@@ -14,8 +14,9 @@ ATR 被撐大、SL/TP 寬度全錯,而且是永久性的(store 只增不減)。
 
 ## DATA-004 為什麼重要
 
-`load()` 有 mtime 快取。回傳共用 list 的話,呼叫端(30 多處,其中
-`accumulator.store_status()` 確實會做 `bars.sort()`)就地修改會污染快取。
+`load()` 有 mtime 快取。回傳共用 list 的話,呼叫端(30 多處)就地修改會
+污染快取。啟動 accumulator 的 `store_status()` 只讀 sidecar,不再觸碰完整
+snapshot。
 """
 from __future__ import annotations
 

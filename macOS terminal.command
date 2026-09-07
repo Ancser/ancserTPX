@@ -1,7 +1,7 @@
 #!/bin/bash
 echo ""
 echo "  ========================================"
-echo "   ancserTPX terminal"
+echo "   macOS terminal"
 echo "  ========================================"
 echo ""
 
@@ -12,11 +12,11 @@ if command -v python3 &>/dev/null; then
 elif command -v python &>/dev/null; then
     PY=python
 else
-    echo "  [ERROR] Python not found! Run ancserTPX install mac.command first."
+    echo "  [ERROR] Python not found! Run macOS install.command first."
     exit 1
 fi
 
-echo "  Stopping old ancserTPX instances..."
+echo "  Stopping old Web/Terminal instances..."
 pkill -f "uvicorn backend.main:app" 2>/dev/null || true
 pkill -f "backend.terminal_live" 2>/dev/null || true
 pkill -f "terminal_live.py" 2>/dev/null || true
@@ -49,4 +49,4 @@ echo ""
 $PY -m backend.terminal_live
 
 echo ""
-echo "  ancserTPX terminal stopped."
+echo "  macOS terminal stopped."

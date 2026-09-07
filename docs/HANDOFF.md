@@ -5,7 +5,7 @@ Updated 2026-09-07. Current HEAD + the uncommitted fixes listed below.
 ## State
 
 ```
-tests            574 pytest passing + 8 subtests + 38 Chromium interaction tests
+tests            582 pytest passing + 8 subtests + 38 Chromium interaction tests
 invariants       87 documented / 83 active / 4 explicitly retired
 strategies       factor · momentum · betafib · pi · optionwall · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
@@ -243,13 +243,13 @@ historical parsing, rollover boundaries, or immutable fixtures.
 
 ### R0.13 — Native Windows desktop launcher (2026-09-06)
 
-Windows now has a single-process native app entry point, `ancserTPX app win.vbs`.
+Windows now has a single-process native app entry point, `windows app.vbs`.
 The hidden host starts `backend.desktop_app`, which owns both Uvicorn and an
 embedded Edge WebView2 window on fixed loopback `127.0.0.1:8001`. A per-user OS
 lock prevents duplicate app processes. Closing the window runs the normal FastAPI
 lifespan shutdown: Web-owned engines stop, account leases and the broker client
 are released, pending entries are cancelled, and broker-side protection on an
-open position is preserved. The old `ancserTPX web win.bat` is only a compatibility
+open position is preserved. The old `windows web.bat` is only a compatibility
 wrapper; it no longer opens a browser or force-kills arbitrary port processes.
 
 ### R0.14 — Safe Windows launcher handoff (2026-09-07)
@@ -262,6 +262,23 @@ its `8001` listener. The native page also polls `/api/health` every three
 seconds. If the backend disappears while the WebView remains alive, the
 account avatar becomes red with `BACKEND OFFLINE` and the page stays open; a
 recovered backend restores the previous connection state.
+
+### R0.15 — Lazy candle startup with incremental auto-save (2026-09-07)
+
+The old startup accumulator decoded and rewrote the complete MNQ and MES
+multi-million-bar pickles. That is the reason a native App could be charged
+with roughly 3.5GB while a browser window appeared much smaller: the embedded
+Python/WebView process owns the backend data objects, whereas Chrome reports
+only its browser process separately.
+
+Startup and CONNECT now fetch only a recent working window. New closed bars are
+deduplicated into `data/store/{symbol}_accumulated_1m.pending.jsonl`, so the
+background saver remains automatic without loading the canonical pickle. MNQ
+is active by default; MES is activated after explicit MES/ES contract use.
+Backtest, store-only history, chart left-edge pagination, and manual shadow
+replay are the explicit full-history boundaries: they merge the pending journal
+once, then may materialize the canonical store. The pending sidecars are
+runtime-only and ignored by Git.
 
 ### R0.7 — Research robustness presentation (2026-09-01)
 

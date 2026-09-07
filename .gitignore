@@ -216,4 +216,8 @@ scratchpad/
 data/store/*.pkl
 data/store/*.pkl.bak
 data/store/*.pkl.tmp
+data/store/*.pending.jsonl
+data/store/*.pending.jsonl.tmp
+data/store/*.pending.meta.json
+data/store/*.pending.meta.json.tmp
 !data/store/seed/*.pkl

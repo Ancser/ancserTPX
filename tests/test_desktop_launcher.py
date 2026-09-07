@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_desktop_launcher_owns_native_window_and_fixed_loopback_server():
     launcher = (ROOT / "backend" / "desktop_app.py").read_text(encoding="utf-8")
-    web_launcher = (ROOT / "ancserTPX web win.bat").read_text(encoding="utf-8")
-    vbs_launcher = (ROOT / "ancserTPX app win.vbs").read_text(encoding="utf-8")
+    web_launcher = (ROOT / "windows web.bat").read_text(encoding="utf-8")
+    vbs_launcher = (ROOT / "windows app.vbs").read_text(encoding="utf-8")
 
     assert "uvicorn.Server" in launcher
     assert "webview.create_window" in launcher

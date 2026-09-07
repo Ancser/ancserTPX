@@ -38,6 +38,8 @@ from backend.db.models import (
 from backend.backtest.engine import BacktestEngine
 from backend.data.candle_store import (
     save as _store_save, merge as _store_merge,
+    append_pending as _store_append_pending,
+    merge_pending as _store_merge_pending,
     load_snapshot as _store_load_snapshot,
     select_range as _store_select_range,
     snapshot_contains as _store_snapshot_contains,
@@ -74,6 +76,17 @@ router = APIRouter()
 def _env(key: str, default: str = "") -> str:
     """讀取 .env 環境變數"""
     return os.getenv(key, default)
+
+
+def _activate_candle_accumulator(contract_id: str) -> None:
+    """Let the lightweight background saver follow an explicitly used product."""
+    try:
+        from backend.data.accumulator import activate_symbol
+        activate_symbol(_extract_symbol(contract_id))
+    except Exception as exc:
+        # Candle persistence is additive; a missing optional background worker
+        # must never make a successful historical/API request fail.
+        logger.debug("Accumulator activation skipped: %s", exc)
 
 
 MNQ_SIZE_CHOICES = (1, 2, 3, 5, 10)  # 1.0.8: sizing choices
@@ -679,6 +692,7 @@ _live_start_client_refs: Dict[int, int] = {}
 _live_start_locks: Dict[int, asyncio.Lock] = {}
 _live_contract_id = current_quarterly_contract_id("ENQ")  # replaced after connect
 _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
+_pending_live_last: Dict[str, datetime] = {}
 ML_DISPLAY_LIMIT = 200
 
 def _candle_time(c: Candle) -> datetime:
@@ -1608,6 +1622,7 @@ class BacktestRequest(BaseModel):
 
 class FetchHistoricalRequest(BaseModel):
     workset_token: str = ""         # backend-issued immutable range token
+    load_scope: str = "history"     # connect=recent warm-up only; history=backtest/full capable
     username: str = ""             # 空 = 從 .env 讀取
     api_key: str = ""              # 空 = 從 .env 讀取
     contract_id: str = ""          # 空 = 自動找 NQ
@@ -1847,11 +1862,13 @@ async def get_stored_candles(
 ):
     """Return chart candles, with optional cursor pagination for left-panning.
 
-    The initial request keeps the historical 60k chart cap for compatibility.
-    ``before`` and ``after`` are exclusive ISO-8601 cursors; paged requests are
-    bounded to ``_CHART_HISTORY_PAGE_MAX`` rows and may transparently read the
-    append-only store when CONNECT's warm in-memory set no longer reaches the
-    requested boundary.  Backtests continue to use the complete workset.
+    The initial request keeps the historical 60k chart cap for compatibility,
+    but returns an empty set before CONNECT rather than materializing the full
+    store. ``before`` and ``after`` are exclusive ISO-8601 cursors; paged
+    requests are bounded to ``_CHART_HISTORY_PAGE_MAX`` rows and may
+    transparently read the append-only store when CONNECT's warm in-memory set
+    no longer reaches the requested boundary. Backtests continue to use the
+    complete workset.
     """
     before_dt = _parse_iso_utc(before) if before else None
     after_dt = _parse_iso_utc(after) if after else None
@@ -1876,19 +1893,27 @@ async def get_stored_candles(
     rows = _chart_rows_from_memory(before_dt, after_dt)
     source = "working_set"
     if rows is None:
-        # CONNECT commonly keeps only a 14-day working set in memory.  The
-        # append-only candle store is the chart's offline history source, so a
-        # left-pan request can continue without credentials or a new broker
-        # fetch.  ENQ/NQ share the MNQ store's price coordinate in this app.
-        symbols = [_extract_symbol(_live_contract_id or "MNQ"), "MNQ"]
-        snapshot = None
-        for symbol in dict.fromkeys(symbols):
-            candidate = await asyncio.to_thread(_store_load_snapshot, symbol)
-            if candidate.bars:
-                snapshot = candidate
-                break
-        rows = snapshot.bars if snapshot is not None else []
-        source = "persistent_store" if snapshot is not None else "working_set"
+        if not paged:
+            # A pre-CONNECT chart boot must stay cheap.  The user-visible
+            # initial chart is populated by CONNECT; only an explicit cursor
+            # request (normally a left-edge pan) is allowed to materialize
+            # persistent history.
+            rows = []
+        else:
+            # CONNECT commonly keeps only a 14-day working set in memory. The
+            # append-only candle store is the chart's offline history source,
+            # so a left-pan request can continue without credentials or a new
+            # broker fetch. ENQ/NQ share the MNQ store's price coordinate here.
+            symbols = [_extract_symbol(_live_contract_id or "MNQ"), "MNQ"]
+            snapshot = None
+            for symbol in dict.fromkeys(symbols):
+                await asyncio.to_thread(_store_merge_pending, symbol, 1)
+                candidate = await asyncio.to_thread(_store_load_snapshot, symbol)
+                if candidate.bars:
+                    snapshot = candidate
+                    break
+            rows = snapshot.bars if snapshot is not None else []
+            source = "persistent_store" if snapshot is not None else "working_set"
 
     total = len(rows)
     if before_dt is None and after_dt is None:
@@ -2051,6 +2076,25 @@ async def get_latest_candles(since: str = ""):
         if not closed_candles:
             return {"candles": [], "count": 0}
         _upsert_historical_candles(closed_candles)
+        # Live polling is another recent-only path.  Persist the closed tail
+        # through the journal so a 5-second chart refresh never decodes the
+        # full store; a later backtest/left-edge read will consolidate it.
+        live_symbol = _extract_symbol(_live_contract_id or "MNQ")
+        newest_closed = _candle_time(closed_candles[-1])
+        if newest_closed > _pending_live_last.get(live_symbol, datetime.min.replace(tzinfo=UTC)):
+            try:
+                pending_count, pending_changed = await asyncio.to_thread(
+                    _store_append_pending, closed_candles, live_symbol, 1
+                )
+                _pending_live_last[live_symbol] = newest_closed
+                if pending_changed:
+                    logger.info(
+                        "[Store] live tail saved %d new/revised %s bars to pending "
+                        "journal (%d pending)",
+                        pending_changed, live_symbol, pending_count,
+                    )
+            except Exception as exc:
+                logger.warning("[Store] live pending save failed (non-fatal): %s", exc)
 
         # Filter by `since` if provided
         result = closed_candles
@@ -2345,6 +2389,13 @@ async def fetch_historical(req: FetchHistoricalRequest):
     requested_start = _parse_iso_utc(req.start_time) if req.start_time else None
     requested_end = _parse_iso_utc(req.end_time) if req.end_time else None
     contract_hint = req.contract_id or _env("TOPSTEPX_CONTRACT_ID")
+    recent_connect = (
+        str(getattr(req, "load_scope", "history") or "history").strip().lower()
+        == "connect"
+        and not req.force_full
+        and not req.append
+        and not req.store_only
+    )
 
     # A backend token already binds the exact resolved contract and immutable
     # candle generation. It can therefore serve a contained selection before
@@ -2442,6 +2493,10 @@ async def fetch_historical(req: FetchHistoricalRequest):
                 if not contract_id:
                     contract_id = await client.get_nq_contract_id()
 
+        # The default background saver tracks MNQ only.  A real MES/ES
+        # selection opts that product in without preloading its full store.
+        _activate_candle_accumulator(contract_id)
+
         # Never disconnect or replace a client already owned by a running live
         # engine. Such fetches use this history-only client and close it below.
         if not _has_running_live_engine():
@@ -2529,7 +2584,15 @@ async def fetch_historical(req: FetchHistoricalRequest):
         store_snapshot = None
         fetch_start = req.start_time
         from_store = False
-        if not req.force_full and not req.append and req.unit_number == 1:
+        if (
+            not recent_connect
+            and not req.force_full
+            and not req.append
+            and req.unit_number == 1
+        ):
+            # Flush only the small pending journal before an operation that is
+            # explicitly allowed to materialize the canonical full store.
+            await asyncio.to_thread(_store_merge_pending, symbol, 1)
             store_snapshot = await asyncio.to_thread(_store_load_snapshot, symbol)
             if store_snapshot.bars:
                 from_store = True
@@ -2648,11 +2711,27 @@ async def fetch_historical(req: FetchHistoricalRequest):
         # 流程會觸發多次 fetch —— 實測啟動時寫了三遍、合計約 48 秒,前端就卡在
         # LOADING DATA。沒有 store 基底時(首次抓取)一律寫。
         store_persisted = False
-        if req.unit_number == 1 and candles and not _skip_api and req.append:
+        if req.unit_number == 1 and candles and not _skip_api and recent_connect:
+            # CONNECT is intentionally recent-only.  Save its closed/recent
+            # bars to the journal; do not turn a warm-up into a full pkl load.
+            try:
+                pending_count, pending_changed = await asyncio.to_thread(
+                    _store_append_pending, candles, symbol, 1
+                )
+                if pending_changed:
+                    logger.info(
+                        "[Store] connect warm-up saved %d new/revised bars to "
+                        "pending journal (%d pending)",
+                        pending_changed, pending_count,
+                    )
+            except Exception as e:
+                logger.warning(f"[Store] connect pending save failed (non-fatal): {e}")
+        elif req.unit_number == 1 and candles and not _skip_api and req.append:
             # Append requests carry only the requested delta. A full save here
             # would truncate the accumulator to that delta; merge preserves the
             # persistent store's only-grows invariant (DATA-001).
             try:
+                await asyncio.to_thread(_store_merge_pending, symbol, 1)
                 await asyncio.to_thread(_store_merge, candles, symbol)
                 store_persisted = True
             except Exception as e:
@@ -2668,6 +2747,7 @@ async def fetch_historical(req: FetchHistoricalRequest):
         # ── Gap detection + auto-recovery ──
         # 1.0.10: 資料沒變就不必重掃 —— 233 萬根掃一次約 2 秒,而且結果必定相同。
         if (req.unit_number == 1 and candles and not req.append and not _skip_api
+                and not recent_connect
                 and (_store_dirty or not from_store)):
             try:
                 gaps = await asyncio.to_thread(_store_detect_gaps, candles)
@@ -3307,6 +3387,7 @@ def _run_shadow_replay_sync(trade_date: Optional[str] = None) -> dict:
 
     candles = _historical_candles
     if not candles:
+        candle_store.merge_pending("MNQ", 1)
         candles = candle_store.load("MNQ", 1)
     candles = sorted(candles, key=lambda c: c.timestamp)
     return run_shadow_replay(candles, trade_date, _shadow_timeline_provider(candles))

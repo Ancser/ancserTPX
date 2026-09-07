@@ -67,11 +67,13 @@ Web 回測在**獨立子進程**（`ProcessPoolExecutor`）中運行，擁有自
 
 ### 資料持久化
 
-歷史 1 分鐘 K 線持久化到 `data/store/MNQ_accumulated_1m.pkl` —— 一個只增不減的累積庫。fetch 時：
-1. 從本地庫載入（瞬間，無 API 呼叫）
-2. 增量 API 抓取（只拉最後一根 bar 之後的尾巴）
-3. 合併 + 自動缺 K 檢測 + 補回 wifi 斷線遺失的 bar
-4. 存回庫
+歷史 1 分鐘 K 線持久化到 `data/store/MNQ_accumulated_1m.pkl` —— 一個只增不減的累積庫。啟動／CONNECT 只抓最近工作窗口，新的已完成 K 線先寫入去重 pending journal，不會為了保存而解包完整 store。只有明確執行 backtest、store-only，或圖表拖到最左端時才：
+1. 把 pending journal 合併進本機累積庫
+2. 載入／選取要求的歷史範圍
+3. 要求範圍超出本機庫時才做增量 API 抓取
+4. 存回 canonical store，並執行缺 K 檢測／補回
+
+背景自動保存預設只追蹤 MNQ；真正選用 MES 後才啟用 MES。pending journal 是本機執行資料，下一次完整歷史操作時會合併清理。
 
 庫在伺服器重啟後依然存在，後續啟動只需幾百根增量 bar，而不是整段 60 天重新下載。
 
@@ -143,10 +145,10 @@ API 保護契約：
 
 ### Windows 11
 
-- 首次安裝：雙擊 `ancserTPX install win.bat`
-- 原生桌面 App：雙擊 `ancserTPX app win.vbs`
-- `ancserTPX web win.bat` 仍保留為啟動原生 App 的相容捷徑
-- Terminal-only LIVE：雙擊 `ancserTPX terminal win.bat`
+- 首次安裝：雙擊 `windows install.bat`
+- 原生桌面 App：雙擊 `windows app.vbs`
+- `windows web.bat` 仍保留為啟動原生 App 的相容捷徑
+- Terminal-only LIVE：雙擊 `windows terminal.bat`
 
 原生 App 使用 Microsoft Edge WebView2 作為內嵌視窗，不會開啟瀏覽器分頁，
 也不會留下需要操作的 server CMD。API 固定只監聽本機 `127.0.0.1:8001`。
@@ -164,9 +166,9 @@ Windows 啟動只會停止已知的 ancserTPX 舊 Web／Terminal 程序及其對
 
 ### macOS
 
-- 首次安裝：雙擊 `ancserTPX install mac.command`
-- Web 版：雙擊 `ancserTPX web mac.command`
-- Terminal-only LIVE：雙擊 `ancserTPX terminal mac.command`
+- 首次安裝：雙擊 `macOS install.command`
+- Web 版：雙擊 `macOS web.command`
+- Terminal-only LIVE：雙擊 `macOS terminal.command`
 
 > **第一次執行**：macOS 會擋下，跳出「無法打開，因為來自未識別的開發者」。
 > 解法：**對檔案按右鍵 → 打開 → 在對話框再點「打開」**。每個檔案只需做一次。

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_terminal_cleanup_does_not_target_desktop_app_port():
     script = (ROOT / "backend" / "stop_legacy_instances.ps1").read_text(encoding="utf-8")
-    launcher = (ROOT / "ancserTPX terminal win.bat").read_text(encoding="utf-8")
+    launcher = (ROOT / "windows terminal.bat").read_text(encoding="utf-8")
 
     assert "stop_legacy_instances.ps1" in launcher
     assert "kill_old.ps1" not in launcher

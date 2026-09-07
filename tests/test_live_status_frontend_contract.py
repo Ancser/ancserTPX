@@ -94,6 +94,7 @@ def test_backtest_loader_always_reselects_backend_workset_and_propagates_token()
     assert "body.workset_token = _btDataRange.worksetToken" in ensure
     assert "resp.status === 409" in ensure
     assert "body.append = false" in ensure
+    assert "load_scope: 'backtest'" in ensure
     assert "worksetToken: data.workset_token || ''" in ensure
     assert "Already loaded for this exact range" not in ensure
     assert "workset_token: (_btDataRange && _btDataRange.worksetToken) || ''" in build

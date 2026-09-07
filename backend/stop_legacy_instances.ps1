@@ -4,7 +4,7 @@
 # terminated by a project launcher.
 $terminalPattern = '(?i)backend\.terminal_live|terminal_live\.py'
 $webPattern = '(?i)backend\.main:app|(?:-m\s+)?backend\.main\b|backend[\\/]main\.py\b|uvicorn(?:\.exe)?\s+(?:backend\.)?main:app'
-$launcherPattern = '(?i)ancserTPX[\\/ ]+(?:terminal|web) win\.bat'
+$launcherPattern = '(?i)(?:ancserTPX[\\/ ]+(?:terminal|web) win\.bat|windows[\\/ ]+(?:terminal|web)\.bat)'
 $webPortPattern = '(?i)(?:--port|-p)\s*8001(?:\s|$)'
 $stopped = 0
 
@@ -13,7 +13,7 @@ $legacyWebBatchParentIds = @(
     $processes |
         Where-Object {
             $_.Name -ieq 'cmd.exe' -and
-            [string]$_.CommandLine -match '(?i)ancserTPX[\\/ ]+web win\.bat'
+            [string]$_.CommandLine -match '(?i)(?:ancserTPX[\\/ ]+web win\.bat|windows[\\/ ]+web\.bat)'
         } |
         Select-Object -ExpandProperty ProcessId
 )

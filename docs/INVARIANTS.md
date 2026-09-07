@@ -107,6 +107,7 @@
 | DATA-006 | 完整 store(210MB/商品)不進版控;`data/store/seed/` 的開機種子只含自家 TopstepX 抓的資料,不含 Databento(授權) | `test_data_and_skin_policy.py` |
 | DATA-007 | API 載入/寫入 store、缺口掃描、frozen 推進、百萬根 merge/sort、workset slice/copy/publish **不得阻塞 asyncio event loop**;券商 I/O 維持 async,CPU/磁碟工作走 worker thread | `test_historical_range_cache.py` + `test_backtest_data_lifecycle.py` |
 | DATA-008 | 回測資料由 backend token 綁定單一 immutable workset 與 resolved contract economics。Live tail 不得改寫已解析的回測輸入;新選擇必須釋放舊的大型 generation;range cache 只能使用 observed/validated coverage,且 store/seed generation 變更後不得命中舊快取 | `test_historical_range_cache.py` + `test_backtest_data_lifecycle.py` |
+| DATA-009 | 啟動與 CONNECT 只能抓取最近增量；背景自動保存寫入去重 pending journal，不得為了保存而解包完整 MNQ/MES store。只有 backtest、store-only 或圖表拖到左界時才合併 pending 並載入完整 pkl；未使用 MES 不加入背景追蹤 | `test_lazy_candle_store.py` + `test_accumulator_event_loop.py` + `test_historical_range_cache.py` |
 
 ## BACKTEST — 回測生命週期
 

@@ -130,8 +130,8 @@ def test_untrusted_and_synthetic_test_hosts_are_rejected_before_routes():
 
 def test_production_launchers_are_loopback_only_and_cors_wildcard_is_removed():
     main = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
-    win = (ROOT / "ancserTPX web win.bat").read_text(encoding="utf-8")
-    mac = (ROOT / "ancserTPX web mac.command").read_text(encoding="utf-8")
+    win = (ROOT / "windows web.bat").read_text(encoding="utf-8")
+    mac = (ROOT / "macOS web.command").read_text(encoding="utf-8")
 
     for source in (main, win, mac):
         assert "0.0.0.0" not in source
