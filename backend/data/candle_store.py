@@ -502,6 +502,10 @@ def _seed_path(symbol: str = "MNQ", base: int = 1) -> Path:
     return STORE_DIR / "seed" / f"{symbol}_seed_{base}m.pkl"
 
 
+def _seed_meta_path(symbol: str = "MNQ", base: int = 1) -> Path:
+    return STORE_DIR / "seed" / f"{symbol}_seed_{base}m.meta.json"
+
+
 # ── Core: load / save / merge ─────────────────────────────────────────────
 
 # 1.0.10: 以檔案 mtime 為鍵的記憶體快取。
@@ -925,7 +929,16 @@ def last_complete_day_end(candles: List[Candle]) -> Optional[datetime]:
 # ── Completeness metadata ─────────────────────────────────────────────────
 
 def load_meta(symbol: str = "MNQ", base: int = 1) -> dict:
+    # An accumulated sidecar is not authoritative without its matching
+    # canonical pickle. A stale private sidecar must not claim full history on
+    # a fresh clone that only has the small seed.
     p = _meta_path(symbol, base)
+    if not _store_path(symbol, base).exists():
+        seed_meta = _seed_meta_path(symbol, base)
+        if _seed_path(symbol, base).exists() and seed_meta.exists():
+            p = seed_meta
+        else:
+            return _empty_meta()
     if not p.exists():
         return _empty_meta()
     try:

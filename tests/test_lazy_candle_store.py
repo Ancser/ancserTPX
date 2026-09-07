@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -100,6 +101,23 @@ class LazyCandleJournalTests(unittest.TestCase):
         self.assertEqual(status["first"], bars[0].timestamp)
         self.assertEqual(status["last"], bars[-1].timestamp)
         self.assertTrue(status["canonical_exists"])
+
+    def test_missing_canonical_store_uses_seed_metadata_not_stale_accumulated_meta(self):
+        seed_dir = cs.STORE_DIR / "seed"
+        seed_dir.mkdir(parents=True)
+        (seed_dir / "MNQ_seed_1m.pkl").write_bytes(b"seed")
+        (seed_dir / "MNQ_seed_1m.meta.json").write_text(
+            json.dumps({"role": "seed", "total_bars": 3}), encoding="utf-8"
+        )
+        (cs.STORE_DIR / "MNQ_accumulated_1m.meta.json").write_text(
+            json.dumps({"role": "private-full", "total_bars": 2_359_843}),
+            encoding="utf-8",
+        )
+
+        meta = cs.load_meta("MNQ", 1)
+
+        self.assertEqual(meta["role"], "seed")
+        self.assertEqual(meta["total_bars"], 3)
 
     def test_mes_is_not_active_until_an_es_contract_is_used(self):
         with accumulator._ACTIVE_SYMBOLS_LOCK:

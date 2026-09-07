@@ -220,4 +220,8 @@ data/store/*.pending.jsonl
 data/store/*.pending.jsonl.tmp
 data/store/*.pending.meta.json
 data/store/*.pending.meta.json.tmp
+# The accumulated metadata belongs to the private full store too.  Keep only
+# the small seed metadata under data/store/seed/ in version control.
+data/store/*_accumulated_*.meta.json
+data/store/*_accumulated_*.meta.json.tmp
 !data/store/seed/*.pkl

@@ -43,6 +43,14 @@ class TestStoreIsNotVersioned:
             cwd=ROOT, capture_output=True, text=True)
         assert r.returncode == 0, "完整 store 沒有被 gitignore 擋住"
 
+    def test_git_actually_ignores_accumulated_metadata(self):
+        """累積 store 的 sidecar 不能脫離被忽略的 binary 單獨散佈。"""
+        for sym in ("MNQ", "MES"):
+            r = subprocess.run(
+                ["git", "check-ignore", f"data/store/{sym}_accumulated_1m.meta.json"],
+                cwd=ROOT, capture_output=True, text=True)
+            assert r.returncode == 0, f"{sym} accumulated metadata 沒有被 gitignore 擋住"
+
     def test_git_does_not_ignore_the_seed(self):
         r = subprocess.run(["git", "check-ignore", "data/store/seed/MNQ_seed_1m.pkl"],
                            cwd=ROOT, capture_output=True, text=True)
@@ -54,6 +62,15 @@ class TestStoreIsNotVersioned:
         tracked = [l for l in r.stdout.splitlines() if l.endswith(".pkl")]
         bad = [t for t in tracked if "/seed/" not in t]
         assert not bad, f"這些完整 store 被追蹤了: {bad}"
+
+    def test_no_accumulated_metadata_is_tracked(self):
+        r = subprocess.run(["git", "ls-files", "data/store/"],
+                           cwd=ROOT, capture_output=True, text=True)
+        bad = [
+            path for path in r.stdout.splitlines()
+            if "_accumulated_" in path and "/seed/" not in path
+        ]
+        assert not bad, f"這些 accumulated metadata 被追蹤了: {bad}"
 
     def test_seed_files_are_tracked(self):
         """正向斷言:seed 沒被追蹤的話上一條會空跑通過。"""
