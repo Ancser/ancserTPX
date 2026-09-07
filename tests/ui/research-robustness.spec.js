@@ -18,7 +18,6 @@ test("robustness panel renders from the endpoint", async ({ page }) => {
   test.setTimeout(120000);
   const calls = [];
   await page.addInitScript(() => {
-    localStorage.setItem("ancserTPX.uiLang", "en");
     localStorage.setItem("ancserTPXTheme", "dark");
     // Seed through the app's own restore path — `backtestData` is a module
     // local, not a window property, so assigning it from outside does nothing.

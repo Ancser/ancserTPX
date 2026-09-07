@@ -5,7 +5,7 @@
 # 功能 / Features:
 #   - FastAPI REST routes for config, historical candles, backtest,
 #     live engine, presets, and trade history.
-#   - 1.0.8: 移除 ML sweep / conf-combo / ml_consolidation_v2 相關端點與機制。
+#   - 1.0.8: 移除 ML grid / conf-combo / ml_consolidation_v2 相關端點與機制。
 #   - Presets preserve both trend and confluence strategy parameters.
 #   - Value Area is locked to 80%; live/latest-candle routes use completed 1m bars.
 # ============================================================
@@ -23,7 +23,7 @@ from collections import deque
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 from backend.db.models import (
     current_quarterly_contract_id, normalize_contract_id_to_front,  # 1.0.8: 自動換月
     BacktestConfig, BarUnit, Candle, Direction, StrategyParams,
-    get_point_value, get_contract_label, get_tick_size,
+    get_point_value, get_contract_label, get_tick_size, contract_specs_manifest,
     get_commission_rt, get_fees_rt, _extract_symbol,
 )
 from backend.backtest.engine import BacktestEngine
@@ -51,6 +51,7 @@ from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, MARKET_CLOCK_VERSION, allowed_sessions_label,
     as_new_york, normalize_allowed_sessions, rth_session_date,
 )
+from backend.timebase import UTC, time_zone_manifest, utc_now, utc_now_naive
 from backend.strategy.factor import (
     FACTOR_EMAPMO_HISTORY_BARS,
     calculate_emapmo_snapshot,
@@ -424,7 +425,7 @@ def _parse_iso_utc(v) -> Optional[datetime]:
         t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
     except Exception:
         return None
-    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+    return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def _betafib_hour(val) -> Optional[int]:
@@ -676,15 +677,15 @@ _live_start_client_refs: Dict[int, int] = {}
 # Per-account reservation closes the race between two concurrent /live/start
 # requests before either request has registered its engine in _live_engines.
 _live_start_locks: Dict[int, asyncio.Lock] = {}
-_live_contract_id = "CON.F.US.ENQ.M26"  # Set after connect
+_live_contract_id = current_quarterly_contract_id("ENQ")  # replaced after connect
 _candle_cache = {"data": None, "time": 0}  # Cache for latest-candles (avoid API spam)
 ML_DISPLAY_LIMIT = 200
 
 def _candle_time(c: Candle) -> datetime:
     ts = c.timestamp
     if ts.tzinfo is None:
-        return ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
+        return ts.replace(tzinfo=UTC)
+    return ts.astimezone(UTC)
 
 
 def _candle_key(c: Candle) -> str:
@@ -926,7 +927,7 @@ def _build_continuous_candles(
     prev_by_ts = {_candle_key(c): c for c in prev_bars}
     current_by_ts = {_candle_key(c): c for c in current_bars}
     common_keys = sorted(set(prev_by_ts).intersection(current_by_ts), key=lambda k: _candle_time(prev_by_ts[k]))
-    roll_ts = roll_at.astimezone(timezone.utc) if roll_at.tzinfo else roll_at.replace(tzinfo=timezone.utc)
+    roll_ts = roll_at.astimezone(UTC) if roll_at.tzinfo else roll_at.replace(tzinfo=UTC)
 
     anchor_key = None
     if common_keys:
@@ -1306,7 +1307,7 @@ def _collect_momentum_markers(bars: List[Candle], cutoff: Optional[datetime],
     注意這裡跑在 5m bar 上,而策略跑在 1m —— 進場點落在 5m 邊界,
     22:30 剛好是 5m 邊界所以對得上。
     """
-    from backend.strategy.factor import _topstep_trade_date
+    from backend.timebase import topstep_trade_date
 
     markers: List[Dict[str, Any]] = []
     day = None
@@ -1314,7 +1315,7 @@ def _collect_momentum_markers(bars: List[Candle], cutoff: Optional[datetime],
     fired = False
     for i, bar in enumerate(bars[:-1]):
         ts = _candle_time(bar)
-        d = _topstep_trade_date(ts)
+        d = topstep_trade_date(ts)
         if d != day:
             day, open_px, open_ts, first_ret, fired = d, float(bar.open), ts, None, False
         if open_px is None or open_ts is None:
@@ -1509,7 +1510,6 @@ class BacktestRequest(BaseModel):
     tr_daily_win_stop: int = 0            # 1.0.9: FULL WIN LOCK — 日贏 N 單停新單(0=OFF)
     # 1.0.9: PDPT — 當日獲利達此金額($)後停開新單(0=OFF)。Topstep XFA 一致性用。
     tr_daily_profit_stop: float = 0.0
-    sweep_models: Optional[List[str]] = None  # 1.0.9: sweep run/lock — 要跑的 model 清單(None=全部)
     fade_tp_frac: float = 0.75            # 1.0.9: DAY ZONE TP=VAL→POC 比例
     fade_entry_mode: str = "limit"        # 1.0.9: DAY ZONE 進場 limit|rejection|or15
     # Contract & sizing (defaults to 3× Micro NQ)
@@ -1710,18 +1710,6 @@ class MetricsResponse(BaseModel):
     total_gain: float = 0.0
     total_loss: float = 0.0
     daily_pnl: Dict[str, float] = {}
-    # Post-breakout 60m path stats (averaged across confirmed-breakout trades)
-    post_breakout_sample_size: int = 0
-    post_breakout_avg_max_fav_ticks: float = 0.0
-    post_breakout_avg_max_adv_ticks: float = 0.0
-    post_breakout_tp_clean: int = 0
-    post_breakout_tp_after_trail: int = 0
-    post_breakout_tp_after_sl: int = 0
-    current_zone_trades: int = 0
-    current_zone_wins: int = 0
-    current_zone_win_rate: float = 0.0
-    current_zone_avg_pnl: float = 0.0
-    current_zone_total_pnl: float = 0.0
     # Week-to-week variation (std/cv/range/consistency) — see _weekly_stats()
     weekly_stats: Dict[str, Any] = {}
     # Per-strategy breakdown
@@ -1754,7 +1742,13 @@ async def get_config():
     """
     username = _env("TOPSTEPX_USERNAME")
     api_key = _env("TOPSTEPX_API_KEY")
-    contract_id = _env("TOPSTEPX_CONTRACT_ID")
+    front_month_contracts = {
+        symbol: current_quarterly_contract_id(symbol)
+        for symbol in ("MNQ", "ENQ", "MES")
+    }
+    contract_id = normalize_contract_id_to_front(
+        _env("TOPSTEPX_CONTRACT_ID") or front_month_contracts["MNQ"]
+    )
     use_demo = _env("TOPSTEPX_USE_DEMO", "false").lower() == "true"
 
     return {
@@ -1762,6 +1756,10 @@ async def get_config():
         "has_api_key": bool(api_key),
         "api_key_preview": api_key[:6] + "***" if api_key else "",
         "contract_id": contract_id,
+        "front_month_contracts": front_month_contracts,
+        "contract_specs": contract_specs_manifest(),
+        "time_zones": time_zone_manifest(),
+        "market_clock_version": MARKET_CLOCK_VERSION,
         "use_demo": use_demo,
         "env_loaded": bool(username and api_key),
     }
@@ -1979,7 +1977,7 @@ async def get_mnq_signal_markers(limit: int = 60000):
 
 @router.get("/research/institution/latest")
 async def institution_research_latest():
-    """Latest hunter/sweep/liquidity research summary for the Data tab."""
+    """Latest hunter/liquidity research summary for the Data tab."""
     path = Path("data") / "machinelearning" / "institution_research" / "latest.json"
     if not path.exists():
         return {
@@ -2679,7 +2677,7 @@ async def fetch_historical(req: FetchHistoricalRequest):
                     # 永遠取到最舊的 5 個(2020 年)。券商只保留約 60 天,那 5 次
                     # 請求必定回 0 bars;更糟的是**真正該修的近期破洞永遠排不進
                     # 那 5 個名額**。改成只回補券商真的拿得到的範圍,並取最新的。
-                    _now = datetime.now(timezone.utc)
+                    _now = utc_now()
                     _reach = _now - timedelta(days=BROKER_HISTORY_DAYS)
                     _fixable = [g for g in gaps if _store_utc(g[0]) >= _reach]
                     _old = len(gaps) - len(_fixable)
@@ -2863,7 +2861,7 @@ def _update_bt_progress(stage: str, current: int = 0, total: int = 0,
         "current": int(current),
         "total": int(total),
         "detail": detail,
-        "updated_at": datetime.now(timezone.utc).timestamp(),
+        "updated_at": utc_now().timestamp(),
     }
     _bt_progress_state = state
     try:
@@ -3225,17 +3223,6 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         total_gain=getattr(m, "total_gain", 0.0),
         total_loss=getattr(m, "total_loss", 0.0),
         daily_pnl=m.daily_pnl or {},
-        post_breakout_sample_size=getattr(m, "post_breakout_sample_size", 0),
-        post_breakout_avg_max_fav_ticks=getattr(m, "post_breakout_avg_max_fav_ticks", 0.0),
-        post_breakout_avg_max_adv_ticks=getattr(m, "post_breakout_avg_max_adv_ticks", 0.0),
-        post_breakout_tp_clean=getattr(m, "post_breakout_tp_clean", 0),
-        post_breakout_tp_after_trail=getattr(m, "post_breakout_tp_after_trail", 0),
-        post_breakout_tp_after_sl=getattr(m, "post_breakout_tp_after_sl", 0),
-        current_zone_trades=getattr(m, "current_zone_trades", 0),
-        current_zone_wins=getattr(m, "current_zone_wins", 0),
-        current_zone_win_rate=getattr(m, "current_zone_win_rate", 0.0),
-        current_zone_avg_pnl=getattr(m, "current_zone_avg_pnl", 0.0),
-        current_zone_total_pnl=getattr(m, "current_zone_total_pnl", 0.0),
         weekly_stats=_weekly_stats(m.daily_pnl or {}),
         trend_follow=_sub_resp(m.trend_follow_metrics),
     )
@@ -3263,256 +3250,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     return response
 
 
-# ── 1.0.8: 高效參數掃描(0.15.0 sweep 回歸版,timeline 快路徑)────────
-_SWEEP_RESULTS_FILE = Path("data") / "sweep_results.json"
-_sweep_running = False
-_LATEST_SWEEP_PRESET_PREFIX = "SWEEP "
-
-
-def _sync_latest_sweep_presets(payload: dict, req: BacktestRequest, contract_size: int) -> list[str]:
-    results = list((payload or {}).get("results") or [])
-    if not results:
-        return []
-    grouped: dict[str, list[dict]] = {}
-    for row in results:
-        grouped.setdefault(str(row.get("model") or "TREND").upper(), []).append(row)
-
-    def _rank(row: dict) -> tuple:
-        return (
-            1 if row.get("accept") else 0,
-            1 if row.get("wf_pass") else 0,
-            float(row.get("pf") or 0.0),
-            float(row.get("score") or 0.0),
-            float(row.get("pnl") or 0.0),
-            -float(row.get("max_dd") or 0.0),
-        )
-
-    model_to_strategy = {
-        "TREND": "trend",
-        "DAY ZONE": "fade",
-        "DISTRIBUTION": "sigma",
-        "FACTOR": "factor",
-    }
-    model_order = ["FACTOR", "DISTRIBUTION", "DAY ZONE", "TREND"]
-
-    def _factor_family_key(row: dict) -> str:
-        params = row.get("params") or {}
-        return str(params.get("factor_signal_family") or row.get("label") or "factor").lower()
-
-    def _factor_pf_rank(row: dict) -> tuple:
-        return (
-            float(row.get("pf") or 0.0),
-            1 if row.get("wf_pass") else 0,
-            float(row.get("pnl") or 0.0),
-            -float(row.get("max_dd") or 0.0),
-            float(row.get("score") or 0.0),
-        )
-
-    def _select_latest_rows(model: str, rows: list[dict]) -> list[dict]:
-        ranked = sorted(rows, key=_rank, reverse=True)
-        if model != "FACTOR":
-            return ranked[:3]
-        best_by_family: dict[str, dict] = {}
-        for row in sorted(rows, key=_factor_pf_rank, reverse=True):
-            family = _factor_family_key(row)
-            if family not in best_by_family:
-                best_by_family[family] = row
-        return sorted(best_by_family.values(), key=_factor_pf_rank, reverse=True)[:3]
-
-    data = _load_presets_file()
-    presets = data.setdefault("presets", {})
-    previous_latest = set(str(n) for n in (data.get("latest_sweep_presets") or []))
-    for name in list(presets.keys()):
-        if name in previous_latest or str(name).startswith(_LATEST_SWEEP_PRESET_PREFIX):
-            presets.pop(name, None)
-
-    created: list[str] = []
-    fallback_cid = current_quarterly_contract_id("MNQ")
-    contract_id = normalize_contract_id_to_front(getattr(req, "contract_id", "") or fallback_cid)
-    try:
-        raw_created = str((payload or {}).get("created_at") or "")
-        sweep_dt = datetime.fromisoformat(raw_created.replace("Z", "+00:00")).astimezone()
-    except Exception:
-        sweep_dt = datetime.now(timezone.utc).astimezone()
-    date_prefix = sweep_dt.strftime("%m%d")
-    for model in model_order:
-        rows = _select_latest_rows(model, grouped.get(model, []))
-        for idx, row in enumerate(rows, start=1):
-            row_params = dict(row.get("preset_params") or row.get("params") or {})
-            strategy = str(row_params.get("strategy") or model_to_strategy.get(model, "trend"))
-            row_params["strategy"] = strategy
-            params = dict(_DEFAULT_PRESET_PARAMS)
-            params.update({
-                "strategy": strategy,
-                "contract_id": contract_id,
-                "contract_size": int(contract_size),
-                "candle_seconds": int(getattr(req, "candle_seconds", 60) or 60),
-                "area_timeframe": row_params.get("area_timeframe", "15m"),
-                "method": row_params.get("method", "single"),
-                "tf_combo": row_params.get("tf_combo", []),
-            })
-            params.update(row_params)
-            label = " ".join(str(row.get("label") or "").replace("#", "").split())[:48]
-            name = (
-                f"{date_prefix} {model} #{idx} "
-                f"{label} PF{float(row.get('pf') or 0.0):.2f}"
-            )
-            presets[name] = params
-            created.append(name)
-    data["latest_sweep_presets"] = created
-    data["latest_sweep_created_at"] = str((payload or {}).get("created_at") or datetime.now(timezone.utc).isoformat())
-    _save_presets_file(data)
-    return created
-
-
-@router.post("/backtest/sweep")
-async def run_backtest_sweep(req: BacktestRequest = BacktestRequest()):
-    """跑完整 multi-model 參數掃描(TREND / DAY ZONE / DISTRIBUTION),結果持久化供 SWEEP 分頁。"""
-    global _sweep_running
-    if _sweep_running:
-        raise HTTPException(400, "A sweep is already running")
-
-    from backend.backtest.sweep import run_model_sweep
-
-    _sweep_running = True
-    try:
-        workset_snapshot = _historical_working_snapshot
-        immutable_candles = _resolve_backtest_workset(req.workset_token)
-        req = _bind_backtest_request_to_workset(req, workset_snapshot)
-        if not immutable_candles:
-            raise HTTPException(400, "No historical data — connect and load data first")
-        refresh_contract = (
-            workset_snapshot.contract_id
-            if workset_snapshot is not None else req.contract_id
-        )
-        refreshed = await _refresh_recent_historical_candles(refresh_contract)
-        candles = await asyncio.to_thread(
-            _merge_refresh_into_workset,
-            immutable_candles,
-            refreshed,
-            workset_snapshot.requested_start if workset_snapshot else None,
-            workset_snapshot.requested_end if workset_snapshot else None,
-        )
-        contract_size = _normalize_contract_size(req.contract_id, req.contract_size)
-        base = _build_strategy_params_from_request(req, contract_size)
-        candles = await asyncio.to_thread(
-            sorted, candles, key=lambda c: c.timestamp,
-        )
-        _update_bt_progress("sweeping", 0, 1, "preparing")
-
-        def _progress(cur, total, detail):
-            _update_bt_progress("sweeping", cur, total, detail)
-
-        results = await asyncio.to_thread(run_model_sweep, candles, base, _progress, getattr(req, 'sweep_models', None))
-        results.sort(key=lambda r: -r.get("score", 0.0))
-        qualified_by_model = {"TREND": [], "DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": []}
-        for r in results:
-            if r.get("accept"):
-                model = str(r.get("model") or "TREND").upper()
-                qualified_by_model.setdefault(model, []).append(r)
-        payload = {
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "market_clock_version": MARKET_CLOCK_VERSION,
-            "candles": len(candles),
-            "range": [
-                candles[0].timestamp.isoformat(),
-                candles[-1].timestamp.isoformat(),
-            ],
-            "results": results,
-            "qualified_by_model": qualified_by_model,
-        }
-        try:
-            payload["latest_sweep_presets"] = _sync_latest_sweep_presets(payload, req, contract_size)
-        except Exception as e:
-            logger.warning(f"sync latest sweep presets failed: {e}")
-        _SWEEP_RESULTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SWEEP_RESULTS_FILE.write_text(
-            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
-        )
-        # 1.0.9: 長期記錄 — 每次 sweep 存時間戳全檔 + 追加摘要到 sweep_history.jsonl
-        try:
-            import gc as _gc
-            runs_dir = Path("data") / "sweep_runs"
-            runs_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%SZ")
-            (runs_dir / f"sweep_{stamp}.json").write_text(
-                json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            top = results[0] if results else {}
-            hist = {
-                "created_at": payload["created_at"], "stamp": stamp,
-                "market_clock_version": MARKET_CLOCK_VERSION,
-                "candles": len(candles), "range": payload["range"],
-                "variants": len(results),
-                "accepted": sum(len(v) for v in qualified_by_model.values()),
-                "by_model": {m: len(v) for m, v in qualified_by_model.items()},
-                "top": {"model": top.get("model"), "label": top.get("label"),
-                        "pf": top.get("pf"), "pnl": top.get("pnl"),
-                        "max_dd": top.get("max_dd"), "trades": top.get("trades")},
-            }
-            with (Path("data") / "sweep_history.jsonl").open("a", encoding="utf-8") as f:
-                f.write(json.dumps(hist, ensure_ascii=False) + "\n")
-            _gc.collect()   # 掃描後釋放記憶體
-        except Exception as e:
-            logger.warning(f"sweep archive failed: {e}")
-        _update_bt_progress("done", 1, 1, "Sweep complete", status="done")
-        return payload
-    except BaseException as exc:
-        _update_bt_error(exc)
-        raise
-    finally:
-        _sweep_running = False
-
-
-@router.get("/backtest/sweep/history")
-async def get_backtest_sweep_history(limit: int = 50):
-    """1.0.9: 近 N 次 sweep 的長期摘要記錄(data/sweep_history.jsonl)。"""
-    path = Path("data") / "sweep_history.jsonl"
-    rows: List[dict] = []
-    try:
-        if path.exists():
-            with path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            rows.append(json.loads(line))
-                        except Exception:
-                            continue
-    except Exception as e:
-        logger.warning(f"read sweep history failed: {e}")
-    rows = rows[-max(1, int(limit)):][::-1]   # 最新在前
-    return {"runs": rows, "count": len(rows)}
-
-
-@router.get("/backtest/sweep/results")
-async def get_backtest_sweep_results():
-    """回傳最近一次 sweep 結果(啟動時 SWEEP 分頁自動載入)。"""
-    try:
-        if _SWEEP_RESULTS_FILE.exists():
-            payload = json.loads(_SWEEP_RESULTS_FILE.read_text(encoding="utf-8"))
-            if payload.get("market_clock_version") == MARKET_CLOCK_VERSION:
-                return payload
-            return {
-                "results": [],
-                "qualified_by_model": {
-                    "DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": [], "PI": [],
-                },
-                "created_at": None,
-                "market_clock_version": MARKET_CLOCK_VERSION,
-                "stale_reason": "saved sweep predates the New York market clock; rerun required",
-            }
-    except Exception as e:
-        logger.warning(f"read sweep results failed: {e}")
-    return {
-        "results": [],
-        # 1.0.10p: keys follow the models run_model_sweep() actually dispatches.
-        # TREND sat here long after its sweep stopped existing.
-        "qualified_by_model": {"DAY ZONE": [], "DISTRIBUTION": [], "FACTOR": [], "PI": []},
-        "created_at": None,
-        "market_clock_version": MARKET_CLOCK_VERSION,
-    }
-
-
+# ── Research robustness endpoint ─────────────────────────────────────
 class RobustnessRequest(BaseModel):
     """Trades to score. Only the four fields the maths needs are read."""
     trades: List[dict] = []
@@ -3526,11 +3264,8 @@ class RobustnessRequest(BaseModel):
 async def post_research_robustness(req: RobustnessRequest):
     """Monte Carlo + walk-forward + slip injection for a set of trades.
 
-    1.0.10p: this used to run in the browser (`_robMonteCarlo`,
-    `_robWalkForward`), which meant the sweep could not gate on it, research
-    scripts each reimplemented it, and pytest could not reach it. One
-    implementation now lives in backend.backtest.robustness and everything —
-    panel, sweep, scripts — reads it from here.
+    The implementation lives in backend.backtest.robustness so the research
+    panel and standalone scripts share one calculation.
     """
     from backend.backtest import robustness
 
@@ -3608,7 +3343,7 @@ async def shadow_replay_daily_task():
     from datetime import timedelta as _td
     while True:
         try:
-            now = datetime.now(timezone.utc)
+            now = utc_now()
             target = now.replace(hour=20, minute=10, second=0, microsecond=0)
             if target <= now:
                 target += _td(days=1)
@@ -3722,7 +3457,7 @@ async def list_backtests():
     ]
 
 
-# 1.0.8: 移除 ML sweep 狀態快取 (_ml_results_cache/_ml_progress)
+# 1.0.8: 移除 ML grid 狀態快取 (_ml_results_cache/_ml_progress)
 
 
 def _request_payload(model: BaseModel) -> dict:
@@ -3949,7 +3684,7 @@ ML_TIMEFRAMES = ("15m", "30m", "1h", "4h")
 ML_RR_VALUES = tuple(range(1, 7))   # 1:1 .. 1:6
 
 
-# ── COMBINATION (confluence Model+Style sweep) grid ───────────────────
+# ── OVERLAP zone timeline helpers ─────────────────────────────────────
 # 6 × 2 × 4 × 3 × 2 = 288 runs. Structural MODEL knobs (band / min-distinct-tf /
 # min-prob / ev-floor / timeframes / trail-lock) are HELD at the panel values;
 # only the suspects that move win-rate/edge are swept.
@@ -4571,7 +4306,7 @@ async def live_account_state():
         return {
             "accounts": results,
             "engine": engine_state,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now_naive().isoformat(),
         }
 
     except Exception as e:
@@ -4610,7 +4345,7 @@ def _trade_history_cache_is_fresh(now_epoch: Optional[float] = None) -> bool:
     except OSError:
         return False
     if now_epoch is None:
-        now_epoch = datetime.now(timezone.utc).timestamp()
+        now_epoch = utc_now().timestamp()
     age = max(0.0, float(now_epoch) - float(modified))
     return age <= _TRADE_HISTORY_CACHE_MAX_AGE_SECONDS
 
@@ -5149,30 +4884,6 @@ def _migrate_preset_market_clock(params: dict) -> bool:
             params[key] = None
     params["market_clock_version"] = MARKET_CLOCK_VERSION
     return True
-
-
-def _preset_name_uses_allowed_model(name: str) -> bool:
-    parts = str(name or "").split()
-    if len(parts) < 2:
-        return False
-    if parts[0].upper() == "SWEEP":
-        model_parts = parts[1:]
-    elif len(parts) >= 2 and len(parts[0]) == 4 and parts[0].isdigit():
-        model_parts = parts[1:]
-    elif len(parts) >= 3 and len(parts[0]) == 5 and parts[0][2] == "." and ":" in parts[1]:
-        model_parts = parts[2:]
-    elif len(parts) >= 2 and len(parts[0]) == 5 and parts[0][2] == ".":
-        model_parts = parts[1:]
-    else:
-        model_parts = parts
-    model_part = " ".join(model_parts).upper()
-    return (
-        model_part.startswith("TREND #")
-        or model_part.startswith("DAY ZONE #")
-        or model_part.startswith("DISTRIBUTION #")
-        or model_part.startswith("PMO #")
-        or model_part.startswith("FACTOR #")
-    )
 
 
 def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:

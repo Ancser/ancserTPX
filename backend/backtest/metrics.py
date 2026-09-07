@@ -5,9 +5,6 @@
 #   - calculate_all(trades, capital) → Metrics
 #   - 子方法: win_rate / expectancy / max_drawdown / calmar_ratio /
 #             profit_factor / max_consecutive_losses / daily_pnl_summary
-# 版本變更 (v1.0.6):
-#   - 新增 _aggregate_post_breakout: 彙總 60 分鐘 MFE/MAE/路徑統計
-#   - 把這些欄位填入 Metrics.post_breakout_* (供前端顯示)
 # 勝率定義: pnl > 0 即為 win — TP 與賺錢的 trail-SL 都算勝
 # 關聯:
 #   ← backend/backtest/engine.py
@@ -18,10 +15,9 @@
 """
 
 from __future__ import annotations
-import math
 from typing import Dict, List, Tuple
 
-from backend.db.models import ExitReason, Metrics, Trade, StrategyType
+from backend.db.models import Metrics, Trade, StrategyType
 
 
 class MetricsCalculator:
@@ -75,9 +71,6 @@ class MetricsCalculator:
             total_loss=total_loss,
             daily_pnl=self.daily_pnl_summary(completed),
         )
-
-        self._aggregate_post_breakout(completed, metrics)
-        self._aggregate_zone_source(completed, metrics)
 
         # ── Per-strategy breakdown (trend only) ──
         tf_trades = [t for t in completed if t.strategy == StrategyType.TREND_FOLLOW]
@@ -204,60 +197,3 @@ class MetricsCalculator:
                 date_str = t.exit_time.strftime("%Y-%m-%d")
                 daily[date_str] = daily.get(date_str, 0) + t.pnl
         return daily
-
-    @staticmethod
-    def _aggregate_post_breakout(trades: List[Trade], metrics: Metrics) -> None:
-        """Aggregate the per-trade 60m post-breakout fields onto Metrics.
-
-        Buckets only count trades whose post-breakout window populated a value
-        (post_breakout_max_favorable_ticks is not None). Trades that never had
-        a tracker (e.g. pre-v1.0.6 cached results) are skipped silently.
-
-        TP-clean   : reached TP within 60m, did NOT first cross trail or SL
-        TP-trail   : reached TP within 60m, but first crossed the trail level
-        TP-SL      : reached TP within 60m, but first crossed the SL level
-        """
-        sample = [t for t in trades if t.post_breakout_max_favorable_ticks is not None]
-        if not sample:
-            return
-
-        fav_total = sum(t.post_breakout_max_favorable_ticks or 0 for t in sample)
-        adv_total = sum(t.post_breakout_max_adverse_ticks or 0 for t in sample)
-        n = len(sample)
-
-        tp_clean = 0
-        tp_after_trail = 0
-        tp_after_sl = 0
-        for t in sample:
-            if not t.post_breakout_reached_tp:
-                continue
-            if t.post_breakout_broke_sl_first:
-                tp_after_sl += 1
-            elif t.post_breakout_broke_trail_first:
-                tp_after_trail += 1
-            else:
-                tp_clean += 1
-
-        metrics.post_breakout_sample_size      = n
-        metrics.post_breakout_avg_max_fav_ticks = round(fav_total / n, 2) if n else 0.0
-        metrics.post_breakout_avg_max_adv_ticks = round(adv_total / n, 2) if n else 0.0
-        metrics.post_breakout_tp_clean         = tp_clean
-        metrics.post_breakout_tp_after_trail   = tp_after_trail
-        metrics.post_breakout_tp_after_sl      = tp_after_sl
-
-    @staticmethod
-    def _aggregate_zone_source(trades: List[Trade], metrics: Metrics) -> None:
-        """Aggregate current-zone performance. v1.0.6 does not trade previous zones."""
-
-        def _apply(prefix: str, bucket: List[Trade]) -> None:
-            total = len(bucket)
-            wins = sum(1 for t in bucket if (t.pnl or 0) > 0)
-            pnl = sum(t.pnl or 0 for t in bucket)
-            setattr(metrics, f"{prefix}_zone_trades", total)
-            setattr(metrics, f"{prefix}_zone_wins", wins)
-            setattr(metrics, f"{prefix}_zone_win_rate", (wins / total) if total else 0.0)
-            setattr(metrics, f"{prefix}_zone_avg_pnl", (pnl / total) if total else 0.0)
-            setattr(metrics, f"{prefix}_zone_total_pnl", pnl)
-
-        current = [t for t in trades if getattr(t, "zone_source", None) == "current"]
-        _apply("current", current)

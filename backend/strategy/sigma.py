@@ -9,21 +9,16 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, Iterable, Optional
 
 from backend.db.models import Candle, Direction, StrategyType, TradeSignal
 from backend.strategy.session_filter import market_session
+from backend.timebase import as_utc as _utc
 
 
 TICK_SIZE = 0.25
 MIN_SIGMA_POINTS = 1.0
-
-
-def _utc(ts: datetime) -> datetime:
-    if ts.tzinfo is None:
-        return ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
 
 
 def _round_tick(price: float) -> float:

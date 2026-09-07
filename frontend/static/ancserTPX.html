@@ -7,7 +7,7 @@
   功能 / Features:
     1. Backtest, Machine Learning, Live 共用 completed 1m candle decision flow.
     2. 策略固定為 trend。
-    3. Value Area 固定 80%，preset 名稱不再包含 area sweep。
+    3. Value Area fixed at 80%; preset names use the normal model/date format.
     4. Full TP Lock 取代舊 profit lock，達到 1/2/3 次完整 TP 後下一 session 前停止新單。
     5. Chart overlay 標示 session boundary、VP zone、禁止交易時段紅色斜線。
   ============================================================
@@ -22,8 +22,8 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z&intraarrow=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&sweepglass=9&slpair=1&multx=2&robustness=4">
-    <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10p-glass83">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z-cleanup1&intraarrow=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&slpair=1&multx=2&robustness=4">
+    <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10p-glass84">
 </head>
 <body>
 <!-- SVG filter host used by the production liquid-glass engine. -->
@@ -40,14 +40,6 @@
         <div class="tab" data-tab="live">Live</div>
     </div>
     <div class="header-right">
-        <!-- One locale authority: toggleLanguage() owns state; this node is only its presentation. -->
-        <button type="button" id="lang-toggle" class="lang-toggle glass-switch topbar-lang" role="switch"
-                aria-checked="false" aria-label="Interface language: English. Switch to Traditional Chinese."
-                data-locale="en" data-stage="switch" title="Switch to Traditional Chinese">
-            <span class="optical-surface switch-thumb lang-thumb" data-optical="switch" aria-hidden="true">
-                <span class="surface-content switch-state-icon lang-glyph">En</span>
-            </span>
-        </button>
         <div class="account-switcher">
             <span class="account-badge" id="account-badge">--</span>
         </div>
@@ -69,14 +61,14 @@
                 <div class="form-group">
                     <label>CONTRACT</label>
                     <select id="contract-preset" onchange="onContractPresetChange()">
-                        <option value="CON.F.US.MNQ.M26" selected>MNQ (Micro NQ — $2/pt)</option>
-                        <option value="CON.F.US.ENQ.M26">NQ (Mini NQ — $20/pt)</option>
+                        <option value="MNQ" data-contract-root="MNQ" selected>MNQ (Micro NQ — $2/pt)</option>
+                        <option value="ENQ" data-contract-root="ENQ">NQ (Mini NQ — $20/pt)</option>
                         <option value="">CUSTOM…</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label>CONTRACT ID</label>
-                    <input type="text" id="contract-id" placeholder="auto-detect" value="CON.F.US.MNQ.M26">
+                    <input type="text" id="contract-id" placeholder="auto-detect" value="MNQ">
                 </div>
                 <!-- MERGE HISTORY removed: TopstepX API only serves ~60 days of
                      1m bars, so chaining older quarterly contracts always returns
@@ -104,7 +96,7 @@
                      (Databento 歷史 + TopstepX 近期),完全不需要連線。 -->
                 <button type="button" class="btn btn-offline" id="btn-offline"
                         onclick="toggleOfflineMode()"
-                        title="帳號仍連線,但不抓 K 棒 —— 回測直接用本機 store(Databento + TopstepX)">OFFLINE MODE</button>
+                        title="Account remains connected, but candle data is not fetched — backtest uses the local store (Databento + TopstepX)">OFFLINE MODE</button>
             </div>
         </div>
         <div id="clock"></div>
@@ -133,8 +125,8 @@
                 <div class="form-group fx1">
                     <label>CONTRACT</label>
                     <select id="contract-bt" onchange="syncSizeOptions('bt'); updateTrailBounds('bt'); refreshCapsForContract('bt')">
-                        <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
-                        <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+                        <option value="MNQ" data-contract-root="MNQ" selected>MNQ ($2/pt)</option>
+                        <option value="ENQ" data-contract-root="ENQ">NQ ($20/pt)</option>
                     </select>
                 </div>
                 <div class="form-mult" aria-hidden="true">&times;</div>
@@ -874,59 +866,6 @@
 
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
                 <button class="btn btn-green" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
-                <!-- 1.0.9: 全策略參數掃描(TREND+DAY ZONE+DISTRIBUTION),依 PF 排序,結果進 PRESETS 分頁 -->
-                <!-- 1.0.10: sweep run/lock 面板。model scope 收進同列的 glass dropdown，
-                     不再把原生 select 壓縮成側欄的半欄。 -->
-                <div class="sweep-action-row" id="sweep-action-row">
-                    <button class="btn btn-amber" id="btn-sweep" onclick="runBacktestSweep()" disabled>SWEEP</button>
-                    <button type="button" class="btn btn-amber sweep-model-trigger" id="sweep-model-btn"
-                            aria-label="Sweep model" aria-haspopup="menu" aria-controls="sweep-model-pop" aria-expanded="false"
-                            onclick="toggleSweepModelMenu()">…</button>
-                    <div id="sweep-model-pop" class="sweep-model-pop hidden" role="menu"
-                         aria-label="Sweep model">
-                        <div class="sweep-model-title">SWEEP MODEL <span>MNQx1 · RISK LOCKED</span></div>
-                        <div class="sweep-model-row" role="menuitem">
-                            <span class="sweep-model-name">ALL MODELS</span>
-                            <button type="button" role="switch" class="glass-switch sweep-model-switch on" data-stage="switch"
-                                    data-sweep-model="ALL" aria-checked="true" aria-label="ALL MODELS"
-                                    onclick="onSweepModelSwitch(this)">
-                                <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
-                            </button>
-                        </div>
-                        <div class="sweep-model-row" role="menuitem">
-                            <span class="sweep-model-name">FACTOR ONLY</span>
-                            <button type="button" role="switch" class="glass-switch sweep-model-switch" data-stage="switch"
-                                    data-sweep-model="FACTOR" aria-checked="false" aria-label="FACTOR ONLY"
-                                    onclick="onSweepModelSwitch(this)">
-                                <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
-                            </button>
-                        </div>
-                        <div class="sweep-model-row" role="menuitem">
-                            <span class="sweep-model-name">DAY ZONE ONLY</span>
-                            <button type="button" role="switch" class="glass-switch sweep-model-switch" data-stage="switch"
-                                    data-sweep-model="DAY ZONE" aria-checked="false" aria-label="DAY ZONE ONLY"
-                                    onclick="onSweepModelSwitch(this)">
-                                <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
-                            </button>
-                        </div>
-                        <div class="sweep-model-row" role="menuitem">
-                            <span class="sweep-model-name">DISTRIBUTION ONLY</span>
-                            <button type="button" role="switch" class="glass-switch sweep-model-switch" data-stage="switch"
-                                    data-sweep-model="DISTRIBUTION" aria-checked="false" aria-label="DISTRIBUTION ONLY"
-                                    onclick="onSweepModelSwitch(this)">
-                                <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
-                            </button>
-                        </div>
-                        <div class="sweep-model-row" role="menuitem">
-                            <span class="sweep-model-name">PI ONLY</span>
-                            <button type="button" role="switch" class="glass-switch sweep-model-switch" data-stage="switch"
-                                    data-sweep-model="PI" aria-checked="false" aria-label="PI ONLY"
-                                    onclick="onSweepModelSwitch(this)">
-                                <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
                 <div id="backtest-progress-wrap" style="display:none;margin-top:1px;">
                     <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
                         <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">BACKTEST</span>
@@ -975,8 +914,8 @@
                     <div class="form-group fx1">
                         <label>CONTRACT</label>
                         <select id="contract-live" onchange="syncSizeOptions('live'); updateTrailBounds('live'); refreshCapsForContract('live')">
-                            <option value="CON.F.US.MNQ.M26" selected>MNQ ($2/pt)</option>
-                            <option value="CON.F.US.ENQ.M26">NQ ($20/pt)</option>
+                            <option value="MNQ" data-contract-root="MNQ" selected>MNQ ($2/pt)</option>
+                            <option value="ENQ" data-contract-root="ENQ">NQ ($20/pt)</option>
                         </select>
                     </div>
                     <div class="form-mult" aria-hidden="true">&times;</div>
@@ -1814,7 +1753,7 @@
 
             <!-- 1.0.9: 圖表快捷鈕 — ≫ 跳到最新;1.0.10:圖層開關。 -->
             <!-- 1.0.10: 圖層開關沿用玻璃皮膚的 .glass-switch,和 PI 訊號等級、
-                 語言/主題那幾顆是同一套元件、同一組彈簧、同一份 switch 光學設定
+                 主題開關共用同一套元件、同一組彈簧、同一份 switch 光學設定
                  (shrink 0.40)。每顆拇指是自己的 optical-surface —— 因為
                  data-stage="switch" 就在按鈕上,取樣複本只有這顆開關,不是整頁。
 
@@ -1950,23 +1889,12 @@
         <div class="bottom-panel" id="bottom-panel">
             <div id="bottom-drag-handle" title="Drag to resize"><div class="drag-pill"></div></div>
             <div class="bottom-tabs">
-                <div class="bottom-tab" data-btab="presets">PRESETS</div>
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
-                <!-- 1.0.8: 移除 LEARN RESULT 分頁(ML sweep 結果板塊已刪除) -->
                 <div class="bottom-tab" data-btab="pnl">PNL CURVE</div>
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
-                <!-- 1.0.9: SWEEP 結果(全策略,依 PF 排序)+ 每列 + 存成結構化 preset -->
-                <div id="btab-presets" class="hidden">
-                    <div style="display:flex;align-items:center;gap:12px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap;">
-                        <span style="font-size:11px;color:var(--amber);font-weight:600;letter-spacing:0.5px;">SWEEP RESULTS · ALL MODELS · SORTED BY PF</span>
-                        <label style="font-size:10px;color:var(--text2);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="sweep-filter-acc" onchange="renderSweepTable()"> ACC ★ pass only</label>
-                        <span id="sweep-meta" style="font-size:10px;color:var(--text3);">No results yet — run sidebar <b>SWEEP</b> (~10–15 min).</span>
-                    </div>
-                    <div id="sweep-results-wrap" class="trade-table-wrap"></div>
-                </div>
                 <div id="btab-trades">
                     <div class="trade-table-wrap">
                         <table>
@@ -2070,8 +1998,8 @@
     <!-- 1.0.10: 移除 ORDER COMPARISON(Selected Preset vs Live Execution)面板。
          配對只靠「同方向 + 進場時間 5 分鐘內」,歷史 live 列又常缺 preset 名,
          歸因本來就是近似值;renderOrderComparison() 與 _orderCard() 一併刪除。 -->
-    <!-- 1.0.9: RESEARCH robustness — 取代舊 Hunter/Sweep/Liquidity 摘要。
-         回測完成後在此顯示 Monte Carlo / Walk-Forward / Slippage 注入分析。 -->
+    <!-- RESEARCH robustness: Monte Carlo / Walk-Forward / Slippage analysis
+         appears here after a backtest completes. -->
     <div id="institution-panel" class="institution-panel">
         <div class="institution-head">
             <div>
@@ -2085,12 +2013,13 @@
     </div>
 </div>
 
-    <script src="/static/topstep-eval.js?v=1.0.9k-topstep1"></script>
-    <script src="/static/ancserTPX.js?v=1.0.10z&intraarrow=1&nyzone=20260624&sweepbt=1&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&sweep=4&fade109=1&riskgate109=1&acct109=6&modelrename=1&sweepui109=2&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&i18n=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&sweepglass=9&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&statushealth=1"></script>
+    <script src="/static/tpx-system.js?v=1"></script>
+    <script src="/static/topstep-eval.js?v=1.0.9k-topstep2"></script>
+    <script src="/static/ancserTPX.js?v=1.0.10z-cleanup1&intraarrow=1&nyzone=20260624&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&fade109=1&riskgate109=1&acct109=6&modelrename=1&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&statushealth=1"></script>
     <!-- Production handlers bind first; the skin then moves those same nodes. -->
-    <script src="/static/tpx-glass-skin.js?v=1.1.1-brand2"></script>
-    <script src="/static/tpx-glass.js?v=1.0.10p-glass82"></script>
+    <script src="/static/tpx-glass-skin.js?v=1.1.1-brand3"></script>
+    <script src="/static/tpx-glass.js?v=1.0.10p-glass84"></script>
     <!-- Dev tool: optics tuner dropdown under the avatar. Safe to remove. -->
-    <script src="/static/tpx-glass-tuner.js?v=1.0.9-glass65"></script>
+    <script src="/static/tpx-glass-tuner.js?v=1.0.9-glass66"></script>
 </body>
 </html>

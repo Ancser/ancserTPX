@@ -18,11 +18,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from backend.backtest.engine import BacktestEngine, _topstep_trade_date
+from backend.backtest.engine import BacktestEngine
+from backend.timebase import UTC, topstep_trade_date as _topstep_trade_date, utc_now
 from backend.db.models import (
     BacktestConfig, StrategyParams,
     _extract_symbol, get_commission_rt, get_fees_rt,
@@ -61,7 +62,7 @@ def _parse_ts(v) -> Optional[datetime]:
     s = re.sub(r"\.\d+", "", str(v)).replace("Z", "+00:00")
     try:
         dt = datetime.fromisoformat(s)
-        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
     except (ValueError, TypeError):
         return None
 
@@ -191,7 +192,7 @@ def _bt_trades_for_date(params: StrategyParams, candles: list, trade_date: str,
         if _topstep_trade_date(t.entry_time) != trade_date:
             continue
         out.append({
-            "entry_time": t.entry_time if t.entry_time.tzinfo else t.entry_time.replace(tzinfo=timezone.utc),
+            "entry_time": t.entry_time if t.entry_time.tzinfo else t.entry_time.replace(tzinfo=UTC),
             "entry_price": float(t.entry_price),
             "direction": t.direction.value,
             "pnl": t.pnl,
@@ -330,7 +331,7 @@ def run_shadow_replay(
     )
     payload = {
         "date": trade_date,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": utc_now().isoformat(),
         "candles_last": candles[-1].timestamp.isoformat(),
         "main_account": main_acct,
         "day_pass": day_pass,

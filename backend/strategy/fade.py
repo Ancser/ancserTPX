@@ -19,13 +19,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import timezone
 from typing import Any, Dict, Optional
 
 from backend.db.models import (
     Candle, Direction, StrategyType, TradeSignal,
 )
 from backend.strategy.session_filter import as_new_york
+from backend.timebase import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ class PrevDayFade:
 class OpeningRangeFade:
     """策略:15m 開盤區間假突破 fade(雙向)。
 
-    1.0.9 從 `scripts/fade_professional_idea_sweep.py` 的 `or15_false_break` 最佳
+    1.0.9 從歷史 OR15 false-break 研究的最佳設定
     生產可用變體移植(SL=0.2×前日VA幅、TP=1×前日VA幅、每方向每日一次、market@close)。
     以 `fade_entry_mode == "or15"` 被引擎選用,共用 fade 的前日 VP 水位餵入管線。
     介面與 PrevDayFade / SessionTrendFollow 相容。
@@ -336,7 +336,7 @@ class OpeningRangeFade:
                   f"| previous-day VA range={rng:.2f}")
         logger.info(f"[OR15DAYZONE] {'SELL' if dsign < 0 else 'BUY'} @ {entry:.2f} "
                     f"| SL={sl:.2f} TP={tp:.2f} | levels({lv['date']})")
-        ts_utc = candle.timestamp.replace(tzinfo=timezone.utc) if candle.timestamp.tzinfo is None else candle.timestamp.astimezone(timezone.utc)
+        ts_utc = candle.timestamp.replace(tzinfo=UTC) if candle.timestamp.tzinfo is None else candle.timestamp.astimezone(UTC)
         or_start = ts_utc.replace(hour=13, minute=30, second=0, microsecond=0)
         or_end = ts_utc.replace(hour=13, minute=45, second=0, microsecond=0)
         return TradeSignal(

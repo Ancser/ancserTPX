@@ -91,12 +91,11 @@ def make_engine(
 
 
 def _prepare_close_window_tick(item: LiveTradingEngine, monkeypatch) -> None:
-    class FixedDateTime(datetime):
-        @classmethod
-        def utcnow(cls):
-            return cls(2026, 1, 15, 20, 45)
-
-    monkeypatch.setattr(engine_module, "datetime", FixedDateTime)
+    monkeypatch.setattr(
+        engine_module,
+        "utc_now_naive",
+        lambda: datetime(2026, 1, 15, 20, 45),
+    )
     item._today = "2026-01-15"
     item._get_topstep_trade_date = Mock(return_value="2026-01-15")
     item._sync_position = AsyncMock()
@@ -215,7 +214,7 @@ def isolate_close_bookkeeping(item):
     item._persist_exit_record = Mock()
     item._persist_trade_record = Mock()
     item._refresh_account_snapshot = AsyncMock()
-    item._sweep_contract_open_orders = AsyncMock()
+    item._cancel_contract_open_orders = AsyncMock()
     item._cancel_with_retry = AsyncMock()
 
 

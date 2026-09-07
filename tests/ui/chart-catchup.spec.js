@@ -32,7 +32,6 @@ async function openWithStubbedCandles(page, {
   storeFrom, storeCount, liveFrom, liveCount, onBeforeRequest, optionWallData,
 }) {
   await page.addInitScript(() => {
-    localStorage.setItem("ancserTPX.uiLang", "en");
     localStorage.setItem("ancserTPXTheme", "dark");
   });
 
@@ -310,6 +309,22 @@ test("option-wall is continuous inside a session, breaks overnight, and keeps ov
   test.setTimeout(120000);
   const now = Math.floor(Date.now() / MIN) * MIN;
   const storeFrom = now - 180 * MIN;
+  const nyParts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+  }).formatToParts(new Date(now)).filter((part) => part.type !== "literal")
+    .map((part) => [part.type, Number(part.value)]));
+  const minutesAfterMidnight = (nyParts.hour % 24) * 60 + nyParts.minute;
+  // Keep all generated snapshots on one New York calendar date. The old
+  // Date.now()-60m fixture crossed midnight for one hour every day and made
+  // the vertical-step assertion depend on the wall clock running the test.
+  const firstAgeMin = minutesAfterMidnight >= 40
+    ? 30
+    : minutesAfterMidnight + 30;
+  const firstOffset = 180 - firstAgeMin;
   const at = (offsetMin) => new Date(storeFrom + offsetMin * MIN).toISOString();
   const snapshot = (offsetMin, call, put, flip) => ({
     as_of: at(offsetMin),
@@ -364,10 +379,10 @@ test("option-wall is continuous inside a session, breaks overnight, and keeps ov
       date: "test",
       paid_cost_usd: 0,
       snapshots: [
-        snapshot(120, 102, 98, 100),
-        snapshot(125, 102, 98, 100),
-        snapshot(135, 97, 103, 100),
-        snapshot(140, 100, 100, 99),
+        snapshot(firstOffset, 102, 98, 100),
+        snapshot(firstOffset + 5, 102, 98, 100),
+        snapshot(firstOffset + 15, 97, 103, 100),
+        snapshot(firstOffset + 20, 100, 100, 99),
       ],
       pi_signals: [],
     },
@@ -401,7 +416,6 @@ test("option-wall is continuous inside a session, breaks overnight, and keeps ov
       cadence_seconds: 3600,
     }, null),
   }));
-
   expect(painted.layerOn).toBe(true);
   expect(painted.snapshotCount).toBe(4);
   expect(painted.canvas).toBe(true);

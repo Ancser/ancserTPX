@@ -9,18 +9,13 @@ complete warm-up.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Iterable, Optional, Tuple
 
 from backend.db.models import Candle
 from backend.strategy.factor import FACTOR_EMAPMO_HISTORY_BARS
 from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, is_allowed_session
-
-
-def _utc(ts: datetime) -> datetime:
-    if ts.tzinfo is None:
-        return ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
+from backend.timebase import as_utc as _utc
 
 
 def signal_warmup_spec(params) -> Optional[Tuple[int, int, int]]:

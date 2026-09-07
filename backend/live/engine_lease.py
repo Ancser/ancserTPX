@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union
+
+from backend.timebase import utc_now
 
 
 PathLike = Union[str, os.PathLike[str]]
@@ -83,7 +84,7 @@ class LiveEngineLease:
         metadata = {
             "pid": os.getpid(),
             "account_id": self.account_id,
-            "started_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": utc_now().isoformat(),
         }
         payload = json.dumps(metadata, separators=(",", ":")).encode("utf-8")
         self._handle.seek(0)
@@ -125,4 +126,3 @@ class LiveEngineLease:
 
     def __exit__(self, *_exc) -> None:
         self.release()
-

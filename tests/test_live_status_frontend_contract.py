@@ -91,7 +91,6 @@ def test_backtest_loader_always_reselects_backend_workset_and_propagates_token()
     build = _function_source("buildBacktestBody")
     retry = _function_source("_postBacktestWithWorksetRetry")
     run = _function_source("runBacktest")
-    sweep = _function_source("runBacktestSweep")
     assert "body.workset_token = _btDataRange.worksetToken" in ensure
     assert "resp.status === 409" in ensure
     assert "body.append = false" in ensure
@@ -101,7 +100,6 @@ def test_backtest_loader_always_reselects_backend_workset_and_propagates_token()
     assert "resp.status !== 409" in retry
     assert "Object.assign(body, buildBacktestBody())" in retry
     assert "_postBacktestWithWorksetRetry" in run
-    assert "_postBacktestWithWorksetRetry" in sweep
 
 
 def test_active_script_url_busts_cache_for_status_health_code():

@@ -158,7 +158,7 @@ class LiveDailyRiskSyncTests(unittest.IsolatedAsyncioTestCase):
         engine.client.get_positions = AsyncMock(return_value=[])
         engine._latest_topstep_closing_fill = AsyncMock(return_value=_close_fill(-100.0))
         engine._refresh_account_snapshot = AsyncMock(return_value=True)
-        engine._sweep_contract_open_orders = AsyncMock()
+        engine._cancel_contract_open_orders = AsyncMock()
         engine.trend_follow.notify_trade_closed = MagicMock()
 
         await engine._sync_position()
@@ -169,7 +169,7 @@ class LiveDailyRiskSyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(engine._daily_loss_count, 0)
         self.assertEqual(engine._daily_win_count, 0)
-        engine._sweep_contract_open_orders.assert_not_awaited()
+        engine._cancel_contract_open_orders.assert_not_awaited()
         engine.trend_follow.notify_trade_closed.assert_not_called()
         rows = json.loads(Path(engine._trades_file).read_text(encoding="utf-8"))
         self.assertEqual(rows[-1]["exit_reason"], "manual")
@@ -181,7 +181,7 @@ class LiveDailyRiskSyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(engine._daily_loss_count, 1)
         self.assertTrue(Path(engine._daily_risk_state_file).exists())
-        engine._sweep_contract_open_orders.assert_awaited_once_with("close")
+        engine._cancel_contract_open_orders.assert_awaited_once_with("close")
         engine.trend_follow.notify_trade_closed.assert_called_once_with("sl")
 
         restarted = _engine(self.root)

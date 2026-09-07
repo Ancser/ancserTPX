@@ -143,25 +143,8 @@ def test_walk_forward_declines_rather_than_guessing_on_thin_samples():
     assert walk_forward([{"pnl": 1} for _ in range(10)]) is None
 
 
-def test_sweep_uses_the_shared_split_instead_of_its_own_copy():
-    """1.1.1: one definition, not two that a string check claims agree.
-
-    This used to assert that sweep.py still contained the literal line
-    `seg = min(2, int(off * 3 / span_days))`. That guarded the *spelling* of a
-    duplicate, not its behaviour — the two implementations were never compared
-    on a single number, so "walk-forward" could have meant different things in
-    a sweep and in the RESEARCH panel without any test noticing.
-    """
-    import inspect
-    from backend.backtest import sweep
-
-    body = inspect.getsource(sweep._run_one)
-    assert "segment_index(" in body, "sweep no longer uses the shared split"
-    assert "min(2, int(" not in body, "sweep reintroduced its own inline split"
-
-
-def test_the_shared_split_reproduces_the_original_sweep_arithmetic():
-    """Exhaustive equivalence against the 1.0.8g formula it replaced.
+def test_the_shared_split_keeps_the_proven_three_bucket_arithmetic():
+    """Exhaustive equivalence against the historical formula it replaced.
 
     The clamp is the whole risk: the final day sits exactly at `span`, which
     divides to `segments` and indexes one past the last bucket.
@@ -170,7 +153,7 @@ def test_the_shared_split_reproduces_the_original_sweep_arithmetic():
 
     for span_days in range(1, 200):
         for off in range(0, span_days + 1):
-            original = min(2, int(off * 3 / span_days))     # the replaced line
+            original = min(2, int(off * 3 / span_days))
             assert segment_index(off, span_days) == original, (off, span_days)
 
     # Positive assertion: this really does exercise every bucket, otherwise a
@@ -179,7 +162,7 @@ def test_the_shared_split_reproduces_the_original_sweep_arithmetic():
     assert seen == {0, 1, 2}
 
 
-def test_day_span_bucketing_matches_the_sweep_day_loop():
+def test_day_span_bucketing_matches_the_proven_day_loop():
     """The day-keyed helper must land dates in the same buckets."""
     from datetime import date, timedelta
     from backend.backtest.robustness import segment_day_span, segment_index
@@ -238,7 +221,7 @@ def test_frontend_no_longer_owns_a_second_monte_carlo():
     """The port is only a win once the browser copy goes away.
 
     Leaving both means two implementations that drift — exactly the situation
-    walk-forward was already in (sweep.py plus the panel).
+    walk-forward previously existed in more than one implementation.
     """
     code = re.sub(r"//[^\n]*", "", JS)
     for gone in ("function _robMonteCarlo(", "function _robWalkForward(",

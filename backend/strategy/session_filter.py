@@ -10,14 +10,15 @@ by the timezone database instead of fixed UTC offsets.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 from typing import Iterable, Optional
-from zoneinfo import ZoneInfo
+
+from backend.timebase import NEW_YORK, UTC, as_utc
 
 
 SESSION_CODES = ("ASIA", "EURO", "PRE", "RTH", "AH")
 DEFAULT_ALLOWED_SESSIONS = ("ASIA",)
-MARKET_TIMEZONE = ZoneInfo("America/New_York")
+MARKET_TIMEZONE = NEW_YORK
 MARKET_CLOCK_VERSION = "america-new-york-v1"
 
 MARKET_PHASE_OPEN = "open"
@@ -34,13 +35,6 @@ _SESSION_STARTS = {
 _PRE_FLATTEN = time(15, 30)
 _FLATTEN = time(15, 45)
 _REOPEN = time(18, 0)
-
-
-def as_utc(ts: datetime) -> datetime:
-    """Normalize an aware timestamp or a legacy naive-UTC timestamp to UTC."""
-    if ts.tzinfo is None:
-        return ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
 
 
 def as_new_york(ts: datetime) -> datetime:
@@ -75,7 +69,7 @@ def market_session(ts: datetime) -> tuple[str, datetime]:
         _SESSION_STARTS[code],
         tzinfo=MARKET_TIMEZONE,
     )
-    return code, start_local.astimezone(timezone.utc)
+    return code, start_local.astimezone(UTC)
 
 
 def market_session_id(ts: datetime) -> str:

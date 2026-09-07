@@ -25,17 +25,12 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from backend.db.models import Candle, Direction, StrategyType, TradeSignal, get_tick_size
 from backend.strategy.session_filter import as_new_york, rth_session_date
-
-_UTC = timezone.utc
-
-
-def _utc(ts: datetime) -> datetime:
-    return ts.replace(tzinfo=_UTC) if ts.tzinfo is None else ts.astimezone(_UTC)
+from backend.timebase import as_utc as _utc
 
 
 class _ResearchBase:
@@ -125,8 +120,8 @@ class _ResearchBase:
         return (a14 + (a50 or a14)) / 2.0
 
     def _trade_date(self, ts: datetime) -> str:
-        from backend.strategy.factor import _topstep_trade_date
-        return _topstep_trade_date(ts)
+        from backend.timebase import topstep_trade_date
+        return topstep_trade_date(ts)
 
     def _side_ok(self, d: Direction) -> bool:
         if self.side_mode == "long_only":

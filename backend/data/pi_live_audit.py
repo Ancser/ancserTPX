@@ -13,9 +13,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
+
+from backend.timebase import UTC, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +35,8 @@ def _iso(value: Any) -> str | None:
         except (TypeError, ValueError):
             return str(value)
     if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=timezone.utc)
-    return stamp.astimezone(timezone.utc).isoformat()
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC).isoformat()
 
 
 def _row_for_signal(signal: Any, *, event: str, received_at: Any = None,
@@ -42,7 +44,7 @@ def _row_for_signal(signal: Any, *, event: str, received_at: Any = None,
     """Build a JSON-safe row without importing ``PiSignal`` (avoids a cycle)."""
     row = {
         "event": str(event),
-        "logged_at": datetime.now(timezone.utc).isoformat(),
+        "logged_at": utc_now().isoformat(),
         "message_id": str(getattr(signal, "message_id", "")),
         # ``ts`` is Discord's source/event timestamp; ``received_at`` is the
         # local time at which this process dispatched the parsed signal.
@@ -98,10 +100,10 @@ def append_message_event(message: Any, *, event: str, error: str | None = None,
     target = path or AUDIT_PATH
     row = {
         "event": str(event),
-        "logged_at": datetime.now(timezone.utc).isoformat(),
+        "logged_at": utc_now().isoformat(),
         "message_id": str((message or {}).get("id") or ""),
         "ts": _iso((message or {}).get("timestamp")),
-        "received_at": datetime.now(timezone.utc).isoformat(),
+        "received_at": utc_now().isoformat(),
         "raw": (message or {}).get("content") or "",
     }
     if error:
@@ -128,7 +130,7 @@ def append_status_event(event: str, *, path: Path | None = None,
     target = path or AUDIT_PATH
     row = {
         "event": str(event),
-        "logged_at": datetime.now(timezone.utc).isoformat(),
+        "logged_at": utc_now().isoformat(),
     }
     for key, value in fields.items():
         if value is None:
@@ -270,10 +272,10 @@ def load_replay_rows(
     collapsed to one mark, and the shared 07:00 PT pre-session rule is kept.
     """
     try:
-        lo = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
-        hi = end if end.tzinfo else end.replace(tzinfo=timezone.utc)
-        lo = lo.astimezone(timezone.utc) - timedelta(minutes=2)
-        hi = hi.astimezone(timezone.utc) + timedelta(minutes=2)
+        lo = start if start.tzinfo else start.replace(tzinfo=UTC)
+        hi = end if end.tzinfo else end.replace(tzinfo=UTC)
+        lo = lo.astimezone(UTC) - timedelta(minutes=2)
+        hi = hi.astimezone(UTC) + timedelta(minutes=2)
     except (AttributeError, TypeError, ValueError):
         return []
 
@@ -304,8 +306,8 @@ def load_replay_rows(
         except (TypeError, ValueError):
             continue
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        ts = ts.astimezone(timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
+        ts = ts.astimezone(UTC)
         if ts < lo or ts > hi or is_pre_session(ts):
             continue
 

@@ -15,9 +15,8 @@
         real stage underneath.
      3. Run an SVG filter chain over the clone:
           blur -> shrink displace -> refract displace -> saturate
-          -> screen-blend a specular highlight
-        where the displacement/specular maps are canvas-generated
-        from a physically-derived refraction profile.
+        where the displacement map is canvas-generated from a
+        physically-derived refraction profile.
 
    ── THE CONSEQUENCE THAT MATTERS FOR TPX ─────────────────────────
 
@@ -58,10 +57,10 @@
 
     /* ── component tuning ─────────────────────────────────────────── */
     const defaults = {
-        slider:           { profile: "convex-squircle", bezel: 16, refraction: 0.85, thickness: 21, shrink: 0.00, specular: 0.60, blur: 0.10, saturation: 1.25, idleScale: 1.00, activeScale: 1.08, stiffness: 900, damping: 54, stretch: 0.17 },
+        slider:           { profile: "convex-squircle", bezel: 16, refraction: 0.85, thickness: 21, shrink: 0.00, blur: 0.10, saturation: 1.25, idleScale: 1.00, activeScale: 1.08, stiffness: 900, damping: 54, stretch: 0.17 },
         /* APX's 19px bezel belongs to a 62px-high thumb. TPX's thumb is
            22px high, so a proportional 7px bezel keeps a clear centre. */
-        switch:           { profile: "convex-squircle", bezel: 10, refraction: 1.00, thickness: 54, shrink: 0.40, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.50, stiffness: 820, damping: 48, stretch: 0.12 },
+        switch:           { profile: "convex-squircle", bezel: 10, refraction: 1.00, thickness: 54, shrink: 0.40, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.50, stiffness: 820, damping: 48, stretch: 0.12 },
         /* Pill and container are separate surfaces with separate configs,
            so their shrink is set independently -- these numbers were tuned
            by eye in the app and exported from the tuner, not derived. A
@@ -73,20 +72,20 @@
            Labels and icons are unaffected either way: the content pass is
            configured with shrink 0 (see configureNodes below), which is
            what keeps text crisp while the backdrop scales. */
-        dock:             { profile: "convex-squircle", bezel: 18, refraction: 0.23, thickness: 70, shrink: 0.10, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.50, stiffness: 520, damping: 34, stretch: 0.16 },
-        dockContainer:    { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.20, specular: 0.60, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.00, stiffness: 520, damping: 34, stretch: 0.00 },
-        segment:          { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 10, shrink: 0.12, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.62, stiffness: 760, damping: 42, stretch: 0.14 },
-        segmentContainer: { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.02, specular: 0.60, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.00, stiffness: 760, damping: 42, stretch: 0.00 },
-        fab:              { profile: "convex-squircle", bezel: 14, refraction: 0.86, thickness: 64, shrink: 0.30, specular: 0.60, blur: 0.16, saturation: 1.22, idleScale: 0.88, activeScale: 1.00, stiffness: 540, damping: 32, stretch: 0.18 },
+        dock:             { profile: "convex-squircle", bezel: 18, refraction: 0.23, thickness: 70, shrink: 0.10, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.50, stiffness: 520, damping: 34, stretch: 0.16 },
+        dockContainer:    { profile: "convex-squircle", bezel: 18, refraction: 0.92, thickness: 70, shrink: 0.20, blur: 0.20, saturation: 1.22, idleScale: 1.00, activeScale: 1.00, stiffness: 520, damping: 34, stretch: 0.00 },
+        segment:          { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 10, shrink: 0.12, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.62, stiffness: 760, damping: 42, stretch: 0.14 },
+        segmentContainer: { profile: "convex-squircle", bezel: 18, refraction: 0.88, thickness: 68, shrink: 0.02, blur: 0.18, saturation: 1.25, idleScale: 1.00, activeScale: 1.00, stiffness: 760, damping: 42, stretch: 0.00 },
+        fab:              { profile: "convex-squircle", bezel: 14, refraction: 0.86, thickness: 64, shrink: 0.30, blur: 0.16, saturation: 1.22, idleScale: 0.88, activeScale: 1.00, stiffness: 540, damping: 32, stretch: 0.18 },
         /* TPX precision lens:
              shrink -0.20  magnifies 20% (see createShrinkMap)
              blur     0.00  preserves sharp chart/text sampling. */
-        precision:        { profile: "convex-squircle", bezel: 30, refraction: 1.50, thickness: 150, shrink: -0.20, specular: 0.60, blur: 0.00, saturation: 1.30, idleScale: 1.20, activeScale: 1.94, stiffness: 400, damping: 25, stretch: 0.15 },
+        precision:        { profile: "convex-squircle", bezel: 30, refraction: 1.50, thickness: 150, shrink: -0.20, blur: 0.00, saturation: 1.30, idleScale: 1.20, activeScale: 1.94, stiffness: 400, damping: 25, stretch: 0.15 },
     };
 
     /* APX selectors use two independent optical channels:
-         - the main pass shrinks/refracts the sampled backdrop and frame;
-         - the content pass refracts text/icons with shrink and specular off.
+         - the main pass shrinks/refracts the sampled backdrop;
+         - the content pass refracts text/icons with shrink disabled.
        TPX gives that content pass its own local track source because the
        top dock's main backdrop source (#chart-container) has no nav text. */
     const REFRACT_CONTROL_LABELS = new Set(["dock", "segment"]);
@@ -98,7 +97,7 @@
     /* ── live tuning ─────────────────────────────────────────────────
        tpx-glass-tuner.js writes straight into `settings`, so persisting
        is just a snapshot of it. Restored BEFORE any surface is built:
-       the displacement / shrink / specular maps are baked from these
+       the displacement / shrink maps are baked from these
        numbers at mount time, so applying them later would mean
        rebuilding every filter chain anyway. */
     const TUNING_KEY = "ancserTPXGlassTuning";
@@ -161,9 +160,9 @@
        several nested per-pixel loops plus PNG encoding in an animation
        frame. Keep the small set of actually-used geometries instead. */
     const opticalKernelCache = new Map();
-    const containerMaterialCache = new Map();
+    const containerMaskCache = new Map();
     const MAX_KERNEL_CACHE = 64;
-    const MAX_MATERIAL_CACHE = 16;
+    const MAX_MASK_CACHE = 16;
 
     function boundedCacheSet(cache, key, value, limit) {
         if (cache.size >= limit && !cache.has(key)) {
@@ -183,21 +182,19 @@
         return boundedCacheSet(opticalKernelCache, key, {
             shrink: createShrinkMap(config, width, height),
             displacement: createDisplacementMap(config, width, height, radius),
-            specular: createSpecularMap(config, width, height, radius),
         }, MAX_KERNEL_CACHE);
     }
 
-    function containerMaterial(element, width, height, radius) {
-        const border = getComputedStyle(element).borderTopColor;
+    function containerMask(width, height, radius) {
         const key = JSON.stringify([
-            width, height, Number(radius.toFixed(3)), border,
+            width, height, Number(radius.toFixed(3)),
         ]);
-        const cached = containerMaterialCache.get(key);
+        const cached = containerMaskCache.get(key);
         if (cached) return cached;
         return boundedCacheSet(
-            containerMaterialCache, key,
-            createContainerMaterialMap(element, width, height, radius),
-            MAX_MATERIAL_CACHE
+            containerMaskCache, key,
+            createContainerMask(width, height, radius),
+            MAX_MASK_CACHE
         );
     }
 
@@ -421,43 +418,6 @@
         };
     }
 
-    function createSpecularMap(config, width, height, radius) {
-        const canvas = document.createElement("canvas");
-        canvas.width = width;
-        canvas.height = height;
-        const context = canvas.getContext("2d");
-        const image = context.createImageData(width, height);
-        const data = image.data;
-        const safeRadius = clamp(radius, 2, Math.min(width, height) / 2 - 1);
-        const outerSquared = (safeRadius + 1) ** 2;
-        const innerSquared = Math.max(0, safeRadius - 1.8) ** 2;
-        const lightX = Math.cos(-Math.PI * 0.72);
-        const lightY = Math.sin(-Math.PI * 0.72);
-
-        for (let y = 0; y < height; y += 1) {
-            for (let x = 0; x < width; x += 1) {
-                const cx = capsuleCoordinate(x, width, safeRadius);
-                const cy = capsuleCoordinate(y, height, safeRadius);
-                const squared = cx * cx + cy * cy;
-                if (squared > outerSquared || squared < innerSquared) continue;
-                const distance = Math.sqrt(squared);
-                const nx = distance > 0 ? cx / distance : 0;
-                const ny = distance > 0 ? -cy / distance : 0;
-                const dot = Math.abs(nx * lightX + ny * lightY);
-                const edge = clamp((safeRadius - distance) / 1.8, 0, 1);
-                const curve = dot * Math.sqrt(1 - (1 - edge) ** 2);
-                const channel = Math.round(clamp(255 * curve, 0, 255));
-                const offset = (y * width + x) * 4;
-                data[offset] = channel;
-                data[offset + 1] = channel;
-                data[offset + 2] = channel;
-                data[offset + 3] = Math.round(channel * curve);
-            }
-        }
-        context.putImageData(image, 0, 0);
-        return canvas.toDataURL("image/png");
-    }
-
     function roundedRectPath(context, x, y, width, height, radius) {
         const r = clamp(radius, 0, Math.min(width, height) / 2);
         context.beginPath();
@@ -473,23 +433,12 @@
         context.closePath();
     }
 
-    function createContainerMaterialMap(element, width, height, radius) {
-        const materialCanvas = document.createElement("canvas");
+    function createContainerMask(width, height, radius) {
         const maskCanvas = document.createElement("canvas");
-        materialCanvas.width = maskCanvas.width = width;
-        materialCanvas.height = maskCanvas.height = height;
-        const context = materialCanvas.getContext("2d");
+        maskCanvas.width = width;
+        maskCanvas.height = height;
         const maskContext = maskCanvas.getContext("2d");
-        const shellStyle = getComputedStyle(element);
         const inset = 1;
-        roundedRectPath(
-            context, inset, inset,
-            width - inset * 2, height - inset * 2,
-            Math.max(0, radius - inset)
-        );
-        context.lineWidth = 2;
-        context.strokeStyle = shellStyle.borderTopColor;
-        context.stroke();
         roundedRectPath(
             maskContext, inset, inset,
             width - inset * 2, height - inset * 2,
@@ -497,10 +446,7 @@
         );
         maskContext.fillStyle = "#fff";
         maskContext.fill();
-        return {
-            material: materialCanvas.toDataURL("image/png"),
-            mask: maskCanvas.toDataURL("image/png"),
-        };
+        return maskCanvas.toDataURL("image/png");
     }
 
     /* ── filter construction ─────────────────────────────────────── */
@@ -559,16 +505,9 @@
                 </feMerge>
                 <feDisplacementMap data-node="parent-displacement" in="parentShrunk" in2="parentDisplacementMap" scale="0" xChannelSelector="R" yChannelSelector="G" result="parentRefracted"></feDisplacementMap>
                 <feColorMatrix data-node="parent-saturation" in="parentRefracted" type="saturate" values="1" result="parentSaturated"></feColorMatrix>
-                <feImage data-node="parent-specular-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentSpecularMap"></feImage>
-                <feComponentTransfer in="parentSpecularMap" result="parentSpecularFaded">
-                    <feFuncA data-node="parent-specular-alpha" type="linear" slope="0.60"></feFuncA>
-                </feComponentTransfer>
-                <feBlend in="parentSpecularFaded" in2="parentSaturated" mode="screen" result="parentGlass"></feBlend>
                 <feImage data-node="parent-mask-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentMaskMap"></feImage>
-                <feComposite in="parentGlass" in2="parentMaskMap" operator="in" result="parentGlassClipped"></feComposite>
-                <feImage data-node="parent-material-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="parentMaterialMap"></feImage>
-                <feBlend in="parentMaterialMap" in2="parentGlassClipped" mode="normal" result="parentSurface"></feBlend>
-                <feBlend in="parentSurface" in2="SourceGraphic" mode="normal" result="parentComposite"></feBlend>
+                <feComposite in="parentSaturated" in2="parentMaskMap" operator="in" result="parentGlassClipped"></feComposite>
+                <feBlend in="parentGlassClipped" in2="SourceGraphic" mode="normal" result="parentComposite"></feBlend>
             `
             : "";
         const sourceInput = parentPass ? "parentComposite" : "SourceGraphic";
@@ -613,11 +552,8 @@
             </feMerge>
             <feDisplacementMap data-node="displacement" in="${displacementInput}" in2="displacementMap" scale="50" xChannelSelector="R" yChannelSelector="G" result="refracted"></feDisplacementMap>
             <feColorMatrix data-node="saturation" in="refracted" type="saturate" values="1.3" result="refractedSaturated"></feColorMatrix>
-            <feImage data-node="specular-image" x="0" y="0" width="100" height="60" preserveAspectRatio="none" result="specularMap"></feImage>
-            <feComponentTransfer in="specularMap" result="specularFaded">
-                <feFuncA data-node="specular-alpha" type="linear" slope="0.60"></feFuncA>
-            </feComponentTransfer>
-            <feBlend in="specularFaded" in2="refractedSaturated" mode="screen"></feBlend>
+            <feColorMatrix data-node="final" in="refractedSaturated" type="matrix"
+                values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 1 0"></feColorMatrix>
         `;
         byId("filterDefs").appendChild(filter);
         const pick = (name) => filter.querySelector(`[data-node="${name}"]`);
@@ -629,10 +565,7 @@
                 displacementImage: pick("parent-displacement-image"),
                 displacement: pick("parent-displacement"),
                 saturation: pick("parent-saturation"),
-                specularImage: pick("parent-specular-image"),
-                materialImage: pick("parent-material-image"),
                 maskImage: pick("parent-mask-image"),
-                specularAlpha: pick("parent-specular-alpha"),
             }
             : null;
         return {
@@ -644,8 +577,6 @@
             displacementImage: pick("displacement-image"),
             displacement: pick("displacement"),
             saturation: pick("saturation"),
-            specularImage: pick("specular-image"),
-            specularAlpha: pick("specular-alpha"),
         };
     }
 
@@ -924,7 +855,7 @@
     /* Glass surfaces are sampled before their optical layers are mounted, so
        tier ownership must be written before the stage templates are cloned.
        Precision is the compositor (Tier 2); every other optical root exposes
-       only its native/fallback material when a Precision source samples it. */
+       only its native/fallback appearance when a Precision source samples it. */
     function markGlassTiers() {
         document.querySelectorAll("[data-optical]").forEach((element) => {
             element.dataset.glassTier = element.dataset.optical === "precision"
@@ -1061,7 +992,6 @@
                    this by element id; TPX has many instances. */
                 syncSample: null,
                 lastMap: null,
-                lastSpecular: null,
                 /* Canvas templates intentionally begin dormant at 1x1. A
                    Precision spring hydrates them once before its first paint;
                    the normal 30fps heartbeat owns all later refreshes. */
@@ -1311,9 +1241,7 @@
                 [
                     surface.filterNodes.parent.shrinkImage,
                     surface.filterNodes.parent.displacementImage,
-                    surface.filterNodes.parent.specularImage,
                     surface.filterNodes.parent.maskImage,
-                    surface.filterNodes.parent.materialImage,
                 ].forEach((node) => {
                     node.setAttribute("x", parentX.toFixed(3));
                     node.setAttribute("y", parentY.toFixed(3));
@@ -1499,7 +1427,7 @@
         });
     }
 
-    /* Animated Tier-1 fallback material is visible only inside Precision.
+    /* Animated Tier-1 fallback appearance is visible only inside Precision.
        Mirror its inline state only to those one or two compositor copies;
        the historical rule that avoids broadcasting per-frame transforms to
        every ordinary stage clone remains unchanged. */
@@ -2104,16 +2032,15 @@
             2, Math.min(width, height) / 2
         );
         const kernel = opticalKernel(config, width, height, radius);
-        const { shrink, displacement, specular } = kernel;
+        const { shrink, displacement } = kernel;
         const configureNodes = (
-            nodes, passConfig, passShrink, passDisplacement, passSpecular,
-            passWidth, passHeight, shrinkScale, specularStrength
+            nodes, passConfig, passShrink, passDisplacement,
+            passWidth, passHeight, shrinkScale
         ) => {
             if (!nodes) return;
             setHref(nodes.shrinkImage, passShrink.url);
             setHref(nodes.displacementImage, passDisplacement.url);
-            setHref(nodes.specularImage, passSpecular);
-            [nodes.shrinkImage, nodes.displacementImage, nodes.specularImage]
+            [nodes.shrinkImage, nodes.displacementImage]
                 .forEach((node) => {
                     node.setAttribute("width", String(passWidth));
                     node.setAttribute("height", String(passHeight));
@@ -2125,7 +2052,6 @@
             );
             nodes.blur.setAttribute("stdDeviation", passConfig.blur.toFixed(3));
             nodes.saturation.setAttribute("values", passConfig.saturation.toFixed(3));
-            nodes.specularAlpha.setAttribute("slope", specularStrength.toFixed(3));
         };
         /* How far outside its own box this surface can pull a pixel:
            feDisplacementMap maps a channel of 0..255 onto -scale/2..
@@ -2140,12 +2066,12 @@
             + 8
         );
         configureNodes(
-            surface.filterNodes, config, shrink, displacement, specular,
-            width, height, shrink.scale, config.specular
+            surface.filterNodes, config, shrink, displacement,
+            width, height, shrink.scale
         );
         configureNodes(
-            surface.contentFilterNodes, config, shrink, displacement, specular,
-            width, height, 0, 0
+            surface.contentFilterNodes, config, shrink, displacement,
+            width, height, 0
         );
         if (
             surface.filterNodes.parent
@@ -2167,20 +2093,18 @@
             const parentKernel = opticalKernel(
                 parentConfig, parentWidth, parentHeight, parentRadius
             );
-            const parentMaterial = containerMaterial(
-                surface.parentContainerSource, parentWidth, parentHeight, parentRadius
+            const parentMask = containerMask(
+                parentWidth, parentHeight, parentRadius
             );
             configureNodes(
                 surface.filterNodes.parent, parentConfig, parentKernel.shrink,
-                parentKernel.displacement, parentKernel.specular,
+                parentKernel.displacement,
                 parentWidth, parentHeight,
-                parentKernel.shrink.scale, parentConfig.specular
+                parentKernel.shrink.scale
             );
-            setHref(surface.filterNodes.parent.materialImage, parentMaterial.material);
-            setHref(surface.filterNodes.parent.maskImage, parentMaterial.mask);
+            setHref(surface.filterNodes.parent.maskImage, parentMask);
         }
         surface.lastMap = displacement.url;
-        surface.lastSpecular = specular;
     }
 
     function rebuildFilters(component = null) {
@@ -2217,10 +2141,10 @@
         });
     }
 
-    let pendingMaterialFrame = 0;
+    let pendingMaskFrame = 0;
 
-    function refreshContainerMaterials() {
-        pendingMaterialFrame = 0;
+    function refreshContainerMasks() {
+        pendingMaskFrame = 0;
         surfaces.forEach((surface) => {
             if (!surface.filterNodes.parent || !surface.parentContainerSource) return;
             const source = surface.parentContainerSource;
@@ -2231,15 +2155,14 @@
                 parseFloat(computed.borderTopLeftRadius) || height / 2,
                 2, Math.min(width, height) / 2
             );
-            const material = containerMaterial(source, width, height, radius);
-            setHref(surface.filterNodes.parent.materialImage, material.material);
-            setHref(surface.filterNodes.parent.maskImage, material.mask);
+            const mask = containerMask(width, height, radius);
+            setHref(surface.filterNodes.parent.maskImage, mask);
         });
     }
 
-    function scheduleContainerMaterialRefresh() {
-        if (pendingMaterialFrame) cancelAnimationFrame(pendingMaterialFrame);
-        pendingMaterialFrame = requestAnimationFrame(refreshContainerMaterials);
+    function scheduleContainerMaskRefresh() {
+        if (pendingMaskFrame) cancelAnimationFrame(pendingMaskFrame);
+        pendingMaskFrame = requestAnimationFrame(refreshContainerMasks);
     }
 
     function runSpringLoop(
@@ -3390,8 +3313,8 @@
             try { localStorage.setItem(THEME_KEY, light ? "light" : "dark"); } catch (e) {}
         }
         /* Geometry and refraction maps do not depend on the palette. The
-           parent material alone bakes the resolved border colour. */
-        if (surfaces.length) scheduleContainerMaterialRefresh();
+           the parent mask follows the container geometry. */
+        if (surfaces.length) scheduleContainerMaskRefresh();
     }
 
     function initTheme() {
@@ -3405,9 +3328,7 @@
     function init() {
         /* Theme first: it stamps data-theme and the switch's `.on`
            class. initTactileSwitch reads that class to seed its
-           committed position, and createContainerMaterialMap bakes
-           the resolved border colour into a texture — so both would
-           be wrong if the palette were applied afterwards. */
+           committed position before surfaces are built. */
         initTheme();
         loadTuning();
         buildOpticalSurfaces();
@@ -3441,15 +3362,11 @@
         liveAll(".glass-fab").forEach(initLayeredFab);
         liveAll(".glass-slider").forEach(initFluidSlider);
         liveAll(".chart-lens").forEach(initChartLens);
-        /* One sweep covers every switch including the theme one —
+        /* One pass covers every tactile switch including the theme one —
            initialising #theme-switch separately would bind two
            independent spring loops to the same element. */
         liveAll(".glass-switch").forEach((track) => {
             initTactileSwitch(track, (on) => {
-                if (track.id === "lang-toggle") {
-                    window.toggleLanguage?.();
-                    return;
-                }
                 if (track.id === "theme-switch") {
                     setTheme(on ? "light" : "dark");
                     return;
@@ -3579,7 +3496,7 @@
                     (item) => item.component === component && item.lastMap
                 );
                 return node
-                    ? { displacement: node.lastMap, specular: node.lastSpecular }
+                    ? { displacement: node.lastMap }
                     : null;
             },
 
@@ -3674,7 +3591,7 @@
                     return true;
                 });
                 if (!unique.length) {
-                    console.log("[TPX Glass] clone 稽核:無差異 ✔");
+                    console.log("[TPX Glass] clone audit: no differences ✔");
                     return [];
                 }
                 console.warn(

@@ -190,18 +190,17 @@ def test_popup_switches_use_shared_geometry_without_compact_shrink():
     css = _source(GLASS_CSS)
     assert ".glass-switch.interacting .switch-thumb {" in css
     # The old popup-only pseudo-layer applied a 60% center transform.  It was
-    # removed so chart/sweep rows use the ordinary switch track/thumb directly.
+    # removed so the chart layer rows use the ordinary switch track/thumb.
     assert 'data-glass-sampling="material-only"' not in css
     app_css = _source(APP_CSS)
-    assert ".chart-layer-pop .glass-switch," in app_css
-    assert ".sweep-model-pop .glass-switch" in app_css
+    assert ".chart-layer-pop .glass-switch {" in app_css
     assert "width: 2.8333rem;" in app_css
     assert "height: 1.1667rem;" in app_css
     assert "position: absolute;" in app_css[app_css.index(
-        ".chart-layer-pop .switch-thumb,"
+        ".chart-layer-pop .switch-thumb {"
     ):]
     assert "z-index: 5;" in app_css[app_css.index(
-        ".chart-layer-pop .switch-thumb,"
+        ".chart-layer-pop .switch-thumb {"
     ):]
 
 
@@ -244,7 +243,7 @@ def test_silent_same_state_switch_sync_cannot_leave_dark_interaction_stuck():
     assert "beginSwitchIdleReturn();" in tactile
 
 
-def test_locale_uses_the_existing_tactile_switch_controller_once():
+def test_theme_uses_the_existing_tactile_switch_controller_once():
     js = _source(GLASS_JS)
     tactile = _slice(js, "function initTactileSwitch", "function startMirrorHeartbeat")
     switch_init = _slice(
@@ -257,11 +256,9 @@ def test_locale_uses_the_existing_tactile_switch_controller_once():
     assert "handledKeyboardClick" in tactile
     assert "event.isTrusted" in tactile
     assert "commit(committed ? 0 : 1);" in tactile
-    assert 'track.id === "lang-toggle"' in switch_init
-    assert "window.toggleLanguage?.()" in switch_init
-    assert switch_init.index('track.id === "lang-toggle"') < switch_init.index(
-        'track.id === "theme-switch"'
-    )
+    assert 'track.id === "lang-toggle"' not in switch_init
+    assert "window.toggleLanguage?.()" not in switch_init
+    assert 'track.id === "theme-switch"' in switch_init
 
 
 def test_tier_one_controls_do_not_hide_the_pointer_lens():

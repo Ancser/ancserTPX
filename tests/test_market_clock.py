@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import runpy
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -145,25 +143,6 @@ def test_legacy_betafib_preset_hours_are_migrated_once():
     params_again = migrated_again["presets"]["old"]
     assert params_again["betafib_entry_start_hour"] == 18
     assert params_again["betafib_entry_end_hour"] == 21
-
-
-def test_old_sweep_results_are_preserved_on_disk_but_hidden_until_rerun(
-    tmp_path, monkeypatch,
-):
-    from backend.api import routes
-    from backend.strategy.session_filter import MARKET_CLOCK_VERSION
-
-    path = tmp_path / "sweep_results.json"
-    old_payload = {"created_at": "2026-07-09T00:00:00Z", "results": [{"pf": 9.9}]}
-    path.write_text(json.dumps(old_payload), encoding="utf-8")
-    monkeypatch.setattr(routes, "_SWEEP_RESULTS_FILE", path)
-
-    response = asyncio.run(routes.get_backtest_sweep_results())
-
-    assert response["results"] == []
-    assert response["market_clock_version"] == MARKET_CLOCK_VERSION
-    assert "rerun required" in response["stale_reason"]
-    assert json.loads(path.read_text(encoding="utf-8")) == old_payload
 
 
 def test_pi_purple_study_imports_shared_close_clock_and_history_loader():

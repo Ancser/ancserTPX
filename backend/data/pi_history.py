@@ -32,11 +32,12 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
 from backend.live.pi_listener import DIRECTION, SYMBOL_MAP, is_pre_session
+from backend.timebase import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ HIST_PATH = Path(__file__).resolve().parents[2] / "data" / "research" / "pi_sign
 
 def parse_ts(value: str) -> datetime:
     """把 json 裡的時戳轉成 UTC aware datetime。"""
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
 
 
 def row_is_pre_session(row: dict) -> bool:

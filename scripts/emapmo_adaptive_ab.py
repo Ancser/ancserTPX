@@ -28,12 +28,8 @@ logging.disable(logging.INFO)
 
 from backend.api.routes import BacktestRequest, _build_strategy_params_from_request  # noqa
 from backend.backtest.engine import BacktestEngine, BacktestConfig  # noqa
-from backend.backtest.sweep import _extract_symbol  # noqa
 from backend.data import candle_store  # noqa
-try:
-    from backend.backtest.costs import get_commission_rt, get_fees_rt
-except ImportError:
-    from backend.backtest.sweep import get_commission_rt, get_fees_rt
+from backend.db.models import _extract_symbol, get_commission_rt, get_fees_rt  # noqa
 
 
 def _utc(t):

@@ -13,17 +13,16 @@
 from __future__ import annotations
 import uuid
 import logging
-import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-from zoneinfo import ZoneInfo
 
 from backend.db.models import (
     Candle, Trade, TradeSignal, BacktestConfig, BacktestResult,
     Metrics, ConsolidationZone, BreakoutAnalysis, StrategyParams,
     Direction, ExitReason, StrategyType, ZoneStatus,
     FACTOR_PIPELINE_STRATEGIES, ZONELESS_STRATEGIES, ZONELESS_ZONE_RENDER,
-    get_point_value, get_tick_size,
+    current_quarterly_contract_id, get_point_value, get_tick_size,
+    strategy_param,
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.session_filter import (
@@ -36,25 +35,21 @@ from backend.strategy.factor import FactorSignalStrategy
 from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
 from backend.backtest.intrabar import resolve_same_bar_exit
+from backend.strategy.exit_policy import (
+    ExitAction,
+    ExitDecision,
+    ExitState,
+    ExitTrailMode,
+    ensure_exit_policy,
+    evaluate_exit_operation,
+    resolve_exit_policy,
+)
+from backend.timebase import CHICAGO, UTC, topstep_trade_date as _topstep_trade_date
 
 logger = logging.getLogger(__name__)
 
-# How long after entry we keep tracking price action for the post-breakout
-# stats (MFE / MAE / trail-or-SL-then-TP path). 60 candles ≈ 1h on 1m bars.
-POST_BREAKOUT_WINDOW_MIN = 60
-
-
-_CT = ZoneInfo("America/Chicago")
-_UTC_TZ = ZoneInfo("UTC")
-
-
-def _topstep_trade_date(utc_dt: datetime) -> str:
-    """TopStep trading date for a UTC timestamp. Day resets at CT 17:00 (CME new session)."""
-    aware = utc_dt.replace(tzinfo=_UTC_TZ) if utc_dt.tzinfo is None else utc_dt
-    ct_dt = aware.astimezone(_CT)
-    if ct_dt.hour >= 17:
-        return (ct_dt + timedelta(days=1)).strftime("%Y-%m-%d")
-    return ct_dt.strftime("%Y-%m-%d")
+_CT = CHICAGO
+_UTC_TZ = UTC
 
 
 class BacktestEngine:
@@ -63,7 +58,6 @@ class BacktestEngine:
     # Default fallbacks. Real values set per-instance from contract_id below.
     POINT_VALUE = 20.0
     TICK_SIZE = 0.25
-    TRAIL_TICK_STEP = 5
     CLOSE_WINDOW_ENABLED = True
 
     def __init__(self, config: Optional[BacktestConfig] = None,
@@ -83,7 +77,7 @@ class BacktestEngine:
         self.pi_replay_rows = list(pi_replay_rows or [])
 
         # Resolve contract specs once. NQ=$20, MNQ=$2; tick size 0.25 for both.
-        _cid = getattr(self.strategy_params, "contract_id", "") or "CON.F.US.MNQ.M26"
+        _cid = getattr(self.strategy_params, "contract_id", "") or current_quarterly_contract_id("MNQ")
         self.contract_id = _cid
         self.contract_size = max(1, int(getattr(self.strategy_params, "contract_size", 1) or 1))
         # Per-instance values shadow class defaults so machine-learning contract scans stay isolated.
@@ -158,16 +152,16 @@ class BacktestEngine:
         self._fade_day_candles: List[Candle] = []
         self._fade_level_zones: List[ConsolidationZone] = []
         self._fade_active_level_zone: Optional[ConsolidationZone] = None
-        # 1.0.8: 出場模式("tp" 固定 TP | "ladder" 無 TP 階梯滾動)
+        # Model exit settings are resolved once through the same contract used
+        # by live. Direction-specific models (PI) are rebound per signal.
+        self._default_exit_policy = resolve_exit_policy(
+            self.strategy_params, self.strategy_mode, Direction.BUY,
+        )
         self._tr_exit_mode = (
             "ladder"
-            if str(getattr(self.strategy_params, "tr_exit_mode", "tp") or "tp").lower() == "ladder"
+            if self._default_exit_policy.trail_mode == ExitTrailMode.LADDER
             else "tp"
         )
-        self.LADDER_TRIGGER_R = 2.0   # 浮盈達 2R 啟動(SL→entry)
-        self.LADDER_GAP_R = 2.0       # 之後每 +1R 跟 1R,恆落後峰值整數 2R
-        self._ladder_risk: float = 0.0
-        self._ladder_max_r: float = 0.0
         # 1.0.8: 日虧斷路器 — 當日虧損單數達 N 停新單(0=OFF)
         self._tr_daily_loss_stop = max(0, int(getattr(self.strategy_params, "tr_daily_loss_stop", 0) or 0))
         self._daily_loss_count: int = 0
@@ -179,31 +173,6 @@ class BacktestEngine:
             getattr(self.strategy_params, "tr_daily_profit_stop", 0) or 0))
         self._daily_profit_td: float = 0.0
         self._loss_count_date: Optional[str] = None
-        # 1.0.9: prevRV regime gate — 前一日 RV 落在近 N 日最高三分位 → 今日不進場
-        # 1.0.10 BUG FIX:原本只有 strategy_mode == "factor" 才算出非零值,
-        # 但下方 _process_candle 的時間出場閘門檢查的是 FACTOR_PIPELINE_STRATEGIES
-        # (含 momentum / betafib)—— 閘門看起來支援它們,值卻永遠是 0。
-        # 實測:MOMENTUM/BETAFIB 在 12/24/48 根四種設定下回傳**完全相同**的結果,
-        # 就是這個靜默無效造成的;研究時會誤判成「時間出場對這兩族沒影響」。
-        # 預設 factor_max_hold_bars=0,所以修正後生產行為不變。
-        if self.strategy_mode in FACTOR_PIPELINE_STRATEGIES:
-            # 兩族的「一根」定義不同:factor 用 factor_timeframe_minutes,
-            # research_lab(momentum / betafib)用 research_tf_minutes。
-            if self.strategy_mode == "optionwall":
-                self._pmo_max_hold_minutes = max(1, int(getattr(
-                    self.strategy_params, "option_wall_max_hold_min", 60,
-                ) or 60))
-            else:
-                _tf = (int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5)
-                       if self.strategy_mode == "factor"
-                       else int(getattr(self.strategy_params, "research_tf_minutes", 5) or 5))
-                self._pmo_max_hold_minutes = (
-                    max(0, int(getattr(self.strategy_params, "factor_max_hold_bars", 0) or 0))
-                    * max(1, _tf)
-                )
-        else:
-            self._pmo_max_hold_minutes = 0
-
         # Pre-computed zone timeline (set once for machine learning grid runs)
         self._zone_timeline: Optional[List[dict]] = zone_timeline
         self._zi: int = 0  # current index into zone_timeline
@@ -219,7 +188,9 @@ class BacktestEngine:
         self._equity_curve: List[Tuple[datetime, float]] = []
         self._daily_pnl: Dict[str, float] = {}
         self._last_closed_trade: Optional[Trade] = None
-        # Trailing SL state (forced ON — one-time trigger per position)
+        self._active_exit_policy = None
+        self._exit_state = ExitState()
+        # Compatibility/status mirror; ExitState is the calculation source.
         self._trail_sl_triggered: bool = False
         # Full TP lock: stop new entries after N full TP exits in the same Topstep session.
         self._full_tp_lock: int = max(
@@ -241,44 +212,14 @@ class BacktestEngine:
             or None
         )
         self._session_direction_used: set[tuple[str, str]] = set()
-        # Active post-breakout trackers (one per recently-entered trade).
-        # We keep tracking even after the trade exits, since the user wants to
-        # know whether price would have reached TP within 60m even if SL fired first.
-        self._breakout_trackers: List[dict] = []
-
-    @classmethod
-    def _floor_ticks_to_step(cls, ticks: float) -> int:
-        try:
-            n = abs(float(ticks))
-        except (TypeError, ValueError):
-            return 0
-        return int(n // cls.TRAIL_TICK_STEP) * cls.TRAIL_TICK_STEP
 
     @staticmethod
     def _strategy_group(strategy) -> str:
         return "tr"
 
-    def _strategy_param(self, strategy, suffix: str, fallback):
-        key = self._strategy_group(strategy)
-        prefixed = getattr(self.strategy_params, f"{key}_{suffix}", None)
-        if prefixed is not None:
-            return prefixed
-        return getattr(self.strategy_params, suffix, fallback)
-
-    def _strategy_trail_enabled(self, strategy) -> bool:
-        return bool(self._strategy_param(strategy, "trail_enabled", True))
-
-    def _strategy_trigger_pct(self, strategy) -> float:
-        trigger_pct = self._strategy_param(strategy, "trail_trigger_pct", 0.30)
-        if trigger_pct is None:
-            trigger_pct = 0.30
-        if trigger_pct > 1:
-            trigger_pct = trigger_pct / 100.0
-        return trigger_pct
-
     def _full_tp_lock_for_strategy(self, strategy) -> int:
         try:
-            lock = int(self._strategy_param(strategy, "full_tp_lock", 0) or 0)
+            lock = int(strategy_param(self.strategy_params, "full_tp_lock", 0) or 0)
         except (TypeError, ValueError):
             lock = 0
         return max(0, min(3, lock))
@@ -308,17 +249,6 @@ class BacktestEngine:
         key = self._strategy_group(signal.strategy)
         return self._full_tp_counts.get(key, 0) >= lock
 
-    def _resolved_trail_ticks(self, strategy=None) -> int:
-        sl_ticks = abs(int(self._strategy_param(strategy, 'sl_ticks', 50) or 50))
-        tp_ticks = abs(int(self._strategy_param(strategy, 'tp_ticks', 0) or 0))
-        trail_ticks = int(self._strategy_param(strategy, 'trail_sl_ticks', 5) or 0)
-        trigger_pct = self._strategy_trigger_pct(strategy)
-        if trigger_pct <= 0:
-            return 0
-
-        max_positive = max(0, self._floor_ticks_to_step(tp_ticks * trigger_pct) - self.TRAIL_TICK_STEP)
-        return max(0, min(min(tp_ticks, max_positive), trail_ticks))
-
     def run(self, candles: List[Candle], progress_cb=None) -> BacktestResult:
         """執行回測 (1m candles)
 
@@ -343,8 +273,8 @@ class BacktestEngine:
         _live_edge_guard = self._pending_max_age + 2
         total = len(candles)
 
-        # Date progress only for a normal single backtest. The ML grid sweep runs
-        # with a precomputed zone timeline (hundreds of runs) — stay silent there.
+        # A precomputed zone timeline is an internal replay path; date progress
+        # belongs only to the normal single-backtest lifecycle.
         _log_progress = self._zone_timeline is None and total > 0
         _prev_date = None
 
@@ -382,8 +312,6 @@ class BacktestEngine:
         if candles and self.strategy_mode == "fade":
             self._close_fade_level_zone(candles[-1].timestamp)
 
-        # Flush any 60m post-breakout windows that didn't naturally close.
-        self._finalize_breakout_trackers()
 
         from backend.backtest.metrics import MetricsCalculator
         calc = MetricsCalculator()
@@ -422,12 +350,13 @@ class BacktestEngine:
         self._equity_curve = []
         self._daily_pnl = {}
         self._last_closed_trade = None
+        self._active_exit_policy = None
+        self._exit_state = ExitState()
         self._trail_sl_triggered = False
         self._full_tp_count = 0
         self._full_tp_counts = {"tr": 0}
         self._full_tp_ts_date = ""
         self._session_direction_used = set()
-        self._breakout_trackers = []
         self._near_data_end = False   # live-edge guard flag
         self._zi = 0                  # zone timeline index
         self._fade_day = None
@@ -500,11 +429,6 @@ class BacktestEngine:
                 self._fade_day = _ts_date
                 self._fade_day_candles = []
             self._fade_day_candles.append(candle)
-
-        # Advance any active 60m post-breakout trackers BEFORE we touch
-        # position state — they keep tracking even after the trade exits.
-        if self._breakout_trackers:
-            self._update_breakout_trackers(candle)
 
         # ── Zone state: either live detector or pre-computed timeline ──
         _recent_zones = []
@@ -580,24 +504,15 @@ class BacktestEngine:
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
-                # PI 持倉上限依方向讀取。多單預設 0=OFF,空單預設 60m;
-                # 兩側都從同一份 StrategyParams 進來,避免 UI 顯示有值但引擎沒讀。
-                _hold = self._pmo_max_hold_minutes
-                if self.strategy_mode == "pi":
-                    _hold_field = (
-                        "pi_long_hold_min"
-                        if self._open_position.direction == Direction.BUY
-                        else "pi_short_hold_min"
-                    )
-                    _hold = max(0, int(getattr(
-                        self.strategy_params, _hold_field, 0) or 0))
-                if _hold > 0 and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES:
-                    held = (candle.timestamp - self._open_position.entry_time).total_seconds() / 60.0
-                    if held >= _hold:
-                        self._force_exit(candle, ExitReason.FLATTEN)
-                        return
-                # ── Trailing SL: trigger at configured TP%, then move SL from entry ──
-                self._check_trailing_sl(candle)
+                decision = self._evaluate_active_exit(candle)
+                if decision.action == ExitAction.CLOSE:
+                    self._store_exit_state(decision.state)
+                    self._force_exit(candle, decision.reason or ExitReason.FLATTEN)
+                    return
+                if decision.action == ExitAction.MOVE_SL:
+                    self._check_trailing_sl(candle, decision)
+                else:
+                    self._store_exit_state(decision.state)
                 return  # still open, don't open new
 
         if (
@@ -660,6 +575,7 @@ class BacktestEngine:
             signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
             if signal:
                 signal.zone_source = zone_source
+                ensure_exit_policy(signal, self.strategy_params, self.strategy_mode)
                 # 1.0.8: 日虧斷路器 — 當日虧損單數達上限,今天不再開新單
                 if (self._tr_daily_loss_stop
                         and self._daily_loss_count >= self._tr_daily_loss_stop):
@@ -863,13 +779,14 @@ class BacktestEngine:
             meta=meta,
         )
         self._open_position = trade
-        self._trail_sl_triggered = False
+        self._active_exit_policy = ensure_exit_policy(
+            signal, self.strategy_params, self.strategy_mode,
+        )
+        self._store_exit_state(ExitState())
 
-        # 1.0.8/1.0.10: ladder exit for TREND-compatible market-entry strategies.
-        # DAY ZONE keeps its own target definition.
-        if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
-            self._ladder_risk = abs(trade.entry_price - trade.sl_price)
-            self._ladder_max_r = 0.0
+        # A no-hard-TP policy still needs a finite simulation sentinel; the
+        # shared policy, not a model branch in this adapter, owns that choice.
+        if not self._active_exit_policy.hard_tp_enabled:
             far = 1_000_000.0
             trade.tp_price = (
                 trade.entry_price + far
@@ -877,227 +794,77 @@ class BacktestEngine:
                 else trade.entry_price - far
             )
 
-        # Spawn a 60m post-breakout tracker. We track price action for
-        # POST_BREAKOUT_WINDOW_MIN minutes regardless of when (or whether)
-        # the trade actually exits — the user wants to know how price
-        # behaved within 1h after breakout, not just up to the exit.
-        trail_ticks = self._resolved_trail_ticks(signal.strategy)
-        trail_pts = trail_ticks * self.TICK_SIZE
-        if signal.direction == Direction.BUY:
-            trail_lvl = fill_price + trail_pts
-        else:
-            trail_lvl = fill_price - trail_pts
-        self._breakout_trackers.append({
-            "trade": trade,
-            "direction": signal.direction,
-            "entry_price": fill_price,
-            "sl_price": signal.sl_price,
-            "tp_price": signal.tp_price,
-            "trail_lvl": trail_lvl,        # entry ± trail_sl_ticks×tick (where trail-SL would sit)
-            "deadline": candle.timestamp + timedelta(minutes=POST_BREAKOUT_WINDOW_MIN),
-            "max_fav_ticks": 0.0,
-            "max_adv_ticks": 0.0,
-            "ever_hit_trail": False,
-            "ever_hit_sl": False,
-            "ever_hit_tp": False,
-            "first_event": None,            # one of "trail" / "sl" / "tp" / None
-        })
-
         logger.debug(
             f"Entry: {trade.strategy.value} {trade.direction.value} "
             f"@ {fill_price:.2f} | SL={trade.sl_price:.2f} TP={trade.tp_price:.2f}"
         )
 
-    def _update_breakout_trackers(self, candle: Candle):
-        """Advance each active post-breakout tracker with this candle's range.
+    def _store_exit_state(self, state: ExitState) -> None:
+        self._exit_state = state
+        self._trail_sl_triggered = state.trail_triggered
 
-        Updates MFE/MAE and detects which level (trail / sl / tp) is crossed
-        first. When a candle straddles adverse and favorable levels, the shared
-        nearest-to-open rule decides which level came first.
-        """
-        if not self._breakout_trackers:
-            return
-
-        keep: List[dict] = []
-        for tr in self._breakout_trackers:
-            # The entry candle itself is the "breakout" candle — start tracking
-            # from the NEXT candle. Skip if candle.timestamp == entry_time.
-            if candle.timestamp <= tr["trade"].entry_time:
-                keep.append(tr)
-                continue
-
-            # Window expired → finalize and write back to the trade.
-            if candle.timestamp >= tr["deadline"]:
-                t = tr["trade"]
-                t.post_breakout_max_favorable_ticks = round(tr["max_fav_ticks"], 2)
-                t.post_breakout_max_adverse_ticks   = round(tr["max_adv_ticks"], 2)
-                t.post_breakout_reached_tp          = bool(tr["ever_hit_tp"])
-                t.post_breakout_broke_trail_first   = (tr["first_event"] == "trail")
-                t.post_breakout_broke_sl_first      = (tr["first_event"] == "sl")
-                continue  # do not re-add — tracker is done
-
-            entry = tr["entry_price"]
-            direction = tr["direction"]
-
-            # MFE / MAE in ticks for this candle's range.
-            if direction == Direction.BUY:
-                fav = (candle.high - entry) / self.TICK_SIZE
-                adv = (entry - candle.low) / self.TICK_SIZE
-            else:
-                fav = (entry - candle.low) / self.TICK_SIZE
-                adv = (candle.high - entry) / self.TICK_SIZE
-            if fav > tr["max_fav_ticks"]:
-                tr["max_fav_ticks"] = fav
-            if adv > tr["max_adv_ticks"]:
-                tr["max_adv_ticks"] = adv
-
-            # Detect level crossings during this candle.
-            sl_p = tr["sl_price"]
-            tp_p = tr["tp_price"]
-            trail_p = tr["trail_lvl"]
-            if direction == Direction.BUY:
-                hit_sl = candle.low <= sl_p
-                hit_tp = candle.high >= tp_p
-                hit_trail = candle.low <= trail_p   # adverse retrace through trail-SL level
-            else:
-                hit_sl = candle.high >= sl_p
-                hit_tp = candle.low <= tp_p
-                hit_trail = candle.high >= trail_p
-
-            if hit_sl:
-                tr["ever_hit_sl"] = True
-            if hit_tp:
-                tr["ever_hit_tp"] = True
-            if hit_trail:
-                tr["ever_hit_trail"] = True
-
-            if tr["first_event"] is None:
-                # Order events within this candle. SL is more adverse than trail
-                # (trail sits between entry and SL), so SL implies trail too.
-                # If only one event fires, that's the first event. If multiple
-                # fire on this candle, use adverse_first to decide whether
-                # adverse (sl/trail) or favorable (tp) came first.
-                events_adverse = []
-                if hit_sl:
-                    events_adverse.append("sl")
-                elif hit_trail:
-                    events_adverse.append("trail")
-                events_fav = ["tp"] if hit_tp else []
-
-                if events_adverse and events_fav:
-                    adverse_price = sl_p if hit_sl else trail_p
-                    adverse_first = (
-                        resolve_same_bar_exit(candle.open, adverse_price, tp_p) == "sl"
-                    )
-                    tr["first_event"] = events_adverse[0] if adverse_first else events_fav[0]
-                elif events_adverse:
-                    tr["first_event"] = events_adverse[0]
-                elif events_fav:
-                    tr["first_event"] = events_fav[0]
-
-            keep.append(tr)
-
-        self._breakout_trackers = keep
-
-    def _finalize_breakout_trackers(self):
-        """End-of-backtest: flush any trackers whose 60m window did not close
-        because the data ran out. Whatever stats we accumulated still go on
-        the trade — partial windows are better than no signal at all."""
-        for tr in self._breakout_trackers:
-            t = tr["trade"]
-            t.post_breakout_max_favorable_ticks = round(tr["max_fav_ticks"], 2)
-            t.post_breakout_max_adverse_ticks   = round(tr["max_adv_ticks"], 2)
-            t.post_breakout_reached_tp          = bool(tr["ever_hit_tp"])
-            t.post_breakout_broke_trail_first   = (tr["first_event"] == "trail")
-            t.post_breakout_broke_sl_first      = (tr["first_event"] == "sl")
-        self._breakout_trackers = []
-
-    def _check_trailing_sl(self, candle: Candle):
-        """Trailing SL (opt-in via strategy_params.trail_enabled, default ON):
-        if price moves enough to reach the configured fraction of TP, move SL
-        to entry +/- trail_sl_ticks.
-        trail_sl_ticks=5 (default) → new SL = entry ± 5 ticks locked profit.
-        One-time trigger per position.
-
-        1.0.8: tr_exit_mode="ladder" 時改走 _check_ladder_sl(多段棘輪,非一次性)。
-
-        Disabling lets the trade run all the way to TP or full SL — useful when
-        post-breakout stats show many trades dipping back through the trail
-        level before reaching TP (a high TP↶TRAIL count means trail is
-        cutting off would-be winners).
-        """
-        # 1.0.8/1.0.10: ladder exit mode for TREND/FACTOR.
-        if self.strategy_mode == "optionwall":
-            return
-        if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
-            self._check_ladder_sl(candle)
-            return
-        if self._trail_sl_triggered:
-            return
+    def _evaluate_active_exit(
+        self,
+        candle: Candle,
+        *,
+        held_minutes: Optional[float] = None,
+    ) -> ExitDecision:
         pos = self._open_position
         if not pos:
-            return
-        if not self._strategy_trail_enabled(pos.strategy):
-            return
-        mkt = candle.close
-        if pos.direction == Direction.BUY:
-            ticks_moved = (mkt - pos.entry_price) / self.TICK_SIZE
-        else:
-            ticks_moved = (pos.entry_price - mkt) / self.TICK_SIZE
-
-        # v1.0.6: TP is RR-based, so derive the trail trigger from the position's
-        # actual TP distance instead of the removed fixed tp_ticks param.
-        tp_ticks = abs(pos.tp_price - pos.entry_price) / self.TICK_SIZE
-        trigger_pct = self._strategy_trigger_pct(pos.strategy)
-        if trigger_pct <= 0:
-            return
-        trigger_ticks = max(1.0, tp_ticks * trigger_pct)
-        if ticks_moved >= trigger_ticks:
-            self._trail_sl_triggered = True
-            trail_ticks = self._resolved_trail_ticks(pos.strategy)
-            trail_pts = trail_ticks * self.TICK_SIZE
-            if pos.direction == Direction.BUY:
-                pos.sl_price = pos.entry_price + trail_pts
-            else:
-                pos.sl_price = pos.entry_price - trail_pts
-            logger.debug(
-                f"Trail SL: {ticks_moved:.1f} ticks moved → SL moved to {pos.sl_price:.2f} "
-                f"({trail_ticks}t from entry, trigger={trigger_pct:.0%} TP)"
+            return ExitDecision(action=ExitAction.NONE, state=self._exit_state)
+        if self._active_exit_policy is None:
+            self._active_exit_policy = resolve_exit_policy(
+                self.strategy_params, self.strategy_mode, pos.direction,
             )
+        state = ExitState(
+            trail_triggered=self._trail_sl_triggered,
+            ladder_max_r=self._exit_state.ladder_max_r,
+            ladder_lock_r=self._exit_state.ladder_lock_r,
+        )
+        held = (
+            (candle.timestamp - pos.entry_time).total_seconds() / 60.0
+            if held_minutes is None
+            else held_minutes
+        )
+        return evaluate_exit_operation(
+            policy=self._active_exit_policy,
+            state=state,
+            direction=pos.direction,
+            entry_price=pos.entry_price,
+            current_sl=pos.sl_price,
+            original_sl=float(pos.original_sl_price or pos.sl_price),
+            tp_price=pos.tp_price,
+            market_price=candle.close,
+            held_minutes=held,
+            tick_size=self.TICK_SIZE,
+        )
 
-    def _check_ladder_sl(self, candle: Candle):
-        """1.0.8: 無 TP 階梯滾動出場(回測驗證 +8044 vs 固定TP +7181)。
+    def _check_trailing_sl(
+        self,
+        candle: Candle,
+        decision: Optional[ExitDecision] = None,
+    ) -> None:
+        """Apply the shared exit kernel's stop-move operation to a backtest."""
 
-        浮盈(收盤計)首達 +2R → SL 移到 entry(保本);之後每多 +1R,
-        SL 跟進 +1R — 恆落後最高浮盈整數 R 約 2R。只上不下(棘輪)。
-        """
+        decision = decision or self._evaluate_active_exit(candle, held_minutes=0.0)
+        self._store_exit_state(decision.state)
         pos = self._open_position
-        if not pos or self._ladder_risk <= 0:
+        if decision.action != ExitAction.MOVE_SL or not pos or decision.stop_price is None:
             return
-        mkt = candle.close
-        if pos.direction == Direction.BUY:
-            fav = mkt - pos.entry_price
+        pos.sl_price = decision.stop_price
+        if self._active_exit_policy and self._active_exit_policy.trail_mode == ExitTrailMode.LADDER:
+            logger.debug(
+                "Ladder SL: peak %.2fR → SL %.2f (%+.0fR)",
+                decision.state.ladder_max_r,
+                decision.stop_price,
+                decision.lock_r or 0.0,
+            )
         else:
-            fav = pos.entry_price - mkt
-        r = fav / self._ladder_risk
-        if r > self._ladder_max_r:
-            self._ladder_max_r = r
-        if self._ladder_max_r < self.LADDER_TRIGGER_R:
-            return
-        lock_r = math.floor(self._ladder_max_r) - self.LADDER_GAP_R  # 2R→0(entry), 3R→+1R…
-        tick = self.TICK_SIZE
-        if pos.direction == Direction.BUY:
-            new_sl = round((pos.entry_price + lock_r * self._ladder_risk) / tick) * tick
-            if new_sl > pos.sl_price:
-                pos.sl_price = new_sl
-                self._trail_sl_triggered = True
-                logger.debug(f"Ladder SL: peak {self._ladder_max_r:.2f}R → SL {new_sl:.2f} (+{lock_r:g}R)")
-        else:
-            new_sl = round((pos.entry_price - lock_r * self._ladder_risk) / tick) * tick
-            if new_sl < pos.sl_price:
-                pos.sl_price = new_sl
-                self._trail_sl_triggered = True
-                logger.debug(f"Ladder SL: peak {self._ladder_max_r:.2f}R → SL {new_sl:.2f} (+{lock_r:g}R)")
+            logger.debug(
+                "Trail SL: %.1f ticks moved → SL moved to %.2f",
+                decision.favourable_ticks,
+                decision.stop_price,
+            )
 
     def _execute_exit(self, candle: Candle, exit_price: float, reason: ExitReason):
         pos = self._open_position
@@ -1138,16 +905,14 @@ class BacktestEngine:
         self._trades.append(pos)
         self._last_closed_trade = pos
         self._open_position = None
-        self._trail_sl_triggered = False
+        self._active_exit_policy = None
+        self._store_exit_state(ExitState())
         # 1.0.8: 日虧斷路器計數(任何原因的虧損出場都算一單虧)
         if pnl < 0:
             self._daily_loss_count += 1
         elif pnl > 0:
             self._daily_win_count += 1   # 1.0.9: FULL WIN LOCK 計數
         self._daily_profit_td += pnl     # 1.0.9: PDPT 累計(含虧損,才是真實日損益)
-        self._ladder_risk = 0.0
-        self._ladder_max_r = 0.0
-
         # Notify strategy of trade close
         self.trend_follow.notify_trade_closed(reason.value)
 

@@ -1,12 +1,12 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-05. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-06. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            563 pytest passing + 8 subtests + 36 Chromium interaction tests
-invariants       79 documented / 77 active / 2 explicitly retired
+tests            569 pytest passing + 8 subtests + 36 Chromium interaction tests
+invariants       85 documented / 81 active / 4 explicitly retired
 strategies       factor · momentum · betafib · pi · optionwall · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
@@ -130,8 +130,9 @@ boundaries do not depend on fixed summer UTC hours. Topstep trade-day accounting
 remains `America/Chicago` 17:00; PI replay filtering remains Los Angeles 07:00.
 
 Old derived sweep/backtest results are retained as evidence but are not loaded
-as current results unless tagged `america-new-york-v1`; rerun them. Presets were
-versioned in place. Legacy non-null BETAFIB summer-UTC hours migrate once to ET.
+as current product results; the product no longer exposes the cross-model sweep
+route or result view. Presets were versioned in place. Legacy non-null BETAFIB
+summer-UTC hours migrate once to ET.
 Raw candles, broker fills, `live_exits`, and historical research reports are not
 rewritten. Pre-clock-version research reports remain historical evidence and
 must be regenerated before making a current winter/cross-year comparison.
@@ -155,8 +156,8 @@ Current script dependency audit:
 - Backtest/strategy consumers can produce different EST/cross-year results even
   without source edits, including `best_mes_parity_study.py`,
   `best_regime_diagnosis.py`, `clamp_cap_study.py`, `emapmo_adaptive_ab.py`,
-  `hold_window_ab.py`, `pf_attribution.py`, `preset_stability_baseline.py`,
-  `public_strategy_research.py`, and `stability_sweep_2026.py`, plus the EMAPMO
+  `hold_window_ab.py`, `pf_attribution.py`, and `public_strategy_research.py`,
+  plus the EMAPMO
   factor/session diagnostic scripts.
 
 All 42 files under `scripts/` passed an import-smoke after the migration. This
@@ -188,6 +189,58 @@ paint, including late option-list changes. Password, hidden, and file values
 are deliberately blank in optical DOM. If a future regression ever shows a
 Lens/source disagreement, the real source control remains authoritative.
 
+### R0.10 — Product surface cleanup (2026-09-06)
+
+The product no longer exposes the cross-model sweep: the sidebar action/model
+controls, result/preset view, `sweep_models` request field, and
+`/backtest/sweep` API family were removed. Normal preset list/save/use/delete
+behavior remains. The cross-model implementation and its dedicated research
+scripts were deleted together with their
+feature-specific tests. `test_product_scope.py` prevents the route, controls,
+module, or Sweep scripts from returning while retaining normal preset CRUD.
+
+The language switch, translation table/observer, and alternate Chinese UI copy
+were removed. The UI is English-only and keeps `<html lang="en">`. Backtest
+metrics for all-zone TP/SL/TRAIL and session TP/SL/TRAIL breakdowns were also
+removed; the underlying exit mechanics remain unchanged.
+
+Liquid Glass still supplies backdrop sampling/refraction, but no longer adds a
+default frame, white edge/rim, specular pass, or edge stroke. The Live/Discord
+chart lens uses the same no-rim treatment.
+
+### R0.11 — Signal-attached unified exits (2026-09-06)
+
+Exit selection now follows the same architecture as entry signals. Every
+accepted `TradeSignal` carries one resolved immutable `ExitPolicy`, and the
+single pure `evaluate_exit_operation()` kernel decides time close, one-shot
+trailing, or R-ladder stop movement. PI resolves its directional hold time,
+Option Wall resolves a 60-minute hold with no hard TP/trailing, and Factor-family
+models resolve their configured TP/trail/ladder combination through that same
+contract. Model-specific exit math no longer lives separately in the two engines.
+
+Backtest and Live intentionally remain separate execution adapters: Backtest
+simulates candle fills and same-bar ordering, while Live translates `CLOSE` to
+the existing bot-owned `flatten_now()` flow and `MOVE_SL` to modification of the
+attached Auto OCO child. Manual/untracked positions remain outside automatic
+exit ownership. Factor ladder market entries now receive the same far-TP Auto
+OCO bracket already used by limit entries and Backtest; this closes the one
+parity gap found during integration.
+
+### R0.12 — Canonical timebase and rolling contracts (2026-09-06)
+
+All backend instants are based on aware UTC from `backend/timebase.py`.
+Session rules convert that instant to New York, Topstep accounting converts to
+Chicago with the 17:00 boundary, and PI source rules convert to Los Angeles.
+The chart receives UTC instants and shifts only presentation to the browser/OS
+local timezone. UTC is not New York time: New York is UTC−5 in standard time
+and UTC−4 during daylight saving time.
+
+Production defaults no longer name a fixed M26/U26 expiry. The backend computes
+the current quarterly front month and publishes that mapping, contract economics,
+clock version, and timezone names through `/api/config`; the browser consumes
+that manifest. Fixed expiry strings remain only where tests deliberately exercise
+historical parsing, rollover boundaries, or immutable fixtures.
+
 ### R0.7 — Research robustness presentation (2026-09-01)
 
 The Research panel now starts with six equal-width baseline cards (TRADES,
@@ -211,7 +264,7 @@ preset behavior changed.
 ### R0.8 — Native lower navigation restored (2026-09-03)
 
 Liquid Glass remains on the upper Research/Backtest/Live workspace dock only.
-The lower PRESETS/BACKTEST TRADES/EXECUTE TRADES/PNL CURVE/SYSTEM LOG bar now
+The lower BACKTEST TRADES/EXECUTE TRADES/PNL CURVE/SYSTEM LOG bar now
 uses the original `.bottom-tabs` / `.bottom-tab` flat underline styling. The
 skin no longer wraps those labels or inserts a segment lens/container, and a
 browser contract protects both halves of that decision: upper stays Glass,
@@ -295,7 +348,7 @@ PI listener died on a malformed timestamp (P0)   parse_message + run() now guard
 routes.py held a third copy of PI defaults       now reads _PARAM_DEFAULTS
 candle_store.load() leaked its cache list        cache-miss path now copies
 pi_signal / routes each re-read the signal json  both go through load_rows()
-glass skin removed the language toggle           now re-parents it
+product language toggle/translation path        retired; UI is English-only
 EXEC-004 reverted to the pre-1.0.10n contract after live evidence   see corrected R0
 LIVE-001 / LIVE-003 named things that never existed   corrected
 Execute Trades could retain an old broker cache indefinitely   bounded refresh + tab-open refresh

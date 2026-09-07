@@ -10,10 +10,12 @@ import csv
 import gzip
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+
+from backend.timebase import UTC
 
 
 DEFAULT_DATA_ROOT = (
@@ -68,8 +70,8 @@ def _timestamp(value: object) -> datetime:
     except (TypeError, ValueError) as exc:
         raise ValueError(f"invalid Option Wall as_of: {value!r}") from exc
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 @lru_cache(maxsize=8)

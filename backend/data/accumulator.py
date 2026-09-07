@@ -24,11 +24,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
 from backend.data import candle_store
 from backend.db.models import BarUnit, current_quarterly_contract_id
+from backend.timebase import UTC, as_utc as _utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +41,8 @@ MONTH_CODE = {3: "H", 6: "M", 9: "U", 12: "Z"}
 _CODE_MONTH = {v: k for k, v in MONTH_CODE.items()}
 
 
-def _utc(ts: datetime) -> datetime:
-    return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
-
-
 def _third_friday(year: int, month: int) -> datetime:
-    d = datetime(year, month, 1, tzinfo=timezone.utc)
+    d = datetime(year, month, 1, tzinfo=UTC)
     n = 0
     while True:
         if d.weekday() == 4:
@@ -74,7 +71,7 @@ def prev_contract_id(symbol: str, now: datetime) -> str:
 
 def store_status(symbol: str) -> dict:
     snapshot = candle_store.load_snapshot(symbol, 1)
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     if not snapshot.bars:
         return {"symbol": symbol, "bars": 0, "first": None, "last": None,
                 "age_days": None, "state": "EMPTY"}
@@ -135,7 +132,7 @@ async def accumulate_once(symbols: Optional[Iterable[str]] = None,
     client 為 None 時自行建立(用 .env 憑證)並在結束時關閉。
     """
     symbols = list(symbols or DEFAULT_SYMBOLS)
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     owned = client is None
     if owned:
         from backend.broker.topstepx import TopstepXClient

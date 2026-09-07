@@ -3,20 +3,15 @@
 1.0.10p: these lived only in `frontend/static/ancserTPX.js` (`_robMonteCarlo`,
 `_robWalkForward`, `_robSeriesStats`).  Three consequences of that:
 
-  * the sweep pipeline could not use them — a sweep variant had no Monte Carlo
-    number to gate on, so `_annotate_plateau_and_acceptance` had to judge
-    robustness from PF and walk-forward alone;
+  * backend reports and research tools could not reuse them;
   * research agents could not use them either, so each one reimplemented a
     bootstrap in its own script — the same divergence that let PI accumulate
     nine private simulation loops;
   * pytest could not reach them.  Only the Chromium suite could, and only
     through the rendered panel.
 
-Walk-forward additionally existed TWICE, here and at `sweep.py`'s three-way
-date split, with nothing keeping the two definitions in step.  This module is
-now the single implementation; `sweep.py` keeps its own inline split because it
-works on day-keyed aggregates rather than trades, and `test_robustness.py`
-pins the two against each other.
+Walk-forward also existed in multiple private implementations with nothing
+keeping the definitions in step. This module is now the single implementation.
 
 One deliberate behaviour change: the browser used `Math.random()`, so the same
 trades produced different Monte Carlo percentiles on every render and no result
@@ -27,6 +22,8 @@ from __future__ import annotations
 
 import random
 from typing import Iterable, List, Optional, Sequence
+
+from backend.db.models import get_tick_value
 
 # Matches the frontend constant of the same name; a "month" for normalising
 # P&L across runs of different lengths.  Total P&L is not comparable — seven
@@ -194,12 +191,8 @@ def monte_carlo_passes(mc: Optional[dict]) -> bool:
 def segment_index(offset: float, span: float, segments: int = 3) -> int:
     """Which walk-forward bucket a point `offset` into a `span` belongs to.
 
-    1.1.1: THE single definition of the split. It previously existed twice —
-    inline in sweep.py (day-keyed aggregates, since 1.0.8g) and again here
-    (trade dicts) — with nothing but a string-matching test claiming the two
-    agreed. They were never checked against each other on actual numbers, so
-    "walk-forward" could have meant two different things depending on whether
-    you ran a sweep or opened the RESEARCH panel.
+    This is the single definition used by backend robustness reports. The
+    exhaustive regression test pins the original three-bucket arithmetic.
 
     The clamp is load-bearing: the last point sits exactly at `span`, which
     divides to `segments` and would index one past the end.
@@ -212,8 +205,8 @@ def segment_index(offset: float, span: float, segments: int = 3) -> int:
 def segment_day_span(day_keys: Sequence[str], segments: int = 3):
     """Bucket ISO date strings into equal date spans; yields (index, key).
 
-    Span is counted in whole days INCLUSIVE of both ends (`+ 1`), matching the
-    sweep's original arithmetic — a one-day run is a span of 1, not 0.
+    Span is counted in whole days INCLUSIVE of both ends (`+ 1`), so a one-day
+    run is a span of 1, not 0.
     """
     from datetime import date as _date
     keys = sorted(day_keys)
@@ -310,18 +303,13 @@ def monthly_pnl(total_pnl: float, start, end) -> Optional[float]:
     return float(total_pnl) / (days / DAYS_PER_MONTH)
 
 
-# Dollar value of one point, per contract. Mirrors _ROB_POINT_VALUE in the
-# frontend; MNQ is the default because it is what the account trades.
-POINT_VALUE = {"MNQ": 2, "NQ": 20, "ENQ": 20, "MES": 5, "ES": 50,
-               "MGC": 10, "GC": 100, "ZL": 600}
-TICK = 0.25
 DEFAULT_SLIP_LEVELS = (1, 2, 4, 8)
 
 
 def tick_value(symbol: Optional[str]) -> float:
     """Dollars per tick per contract for the traded symbol."""
     key = str(symbol or "/MNQ").replace("/", "").upper()
-    return POINT_VALUE.get(key, POINT_VALUE["MNQ"]) * TICK
+    return get_tick_value(key, fallback_contract_id="MNQ")
 
 
 def slip_injection(trades: Sequence[dict],
@@ -349,7 +337,7 @@ def evaluate(trades: Sequence[dict], *, iters: int = DEFAULT_ITERS,
              seed: Optional[int] = DEFAULT_SEED,
              dd_threshold: float = 2000.0,
              slip_levels: Sequence[int] = DEFAULT_SLIP_LEVELS) -> dict:
-    """One call the API, the sweep, and research scripts all share."""
+    """One call shared by the API and research reports."""
     pnls = [float(t.get("pnl") or 0.0) for t in trades]
     mc = monte_carlo(pnls, iters=iters, seed=seed, dd_threshold=dd_threshold)
     wf = walk_forward(trades)

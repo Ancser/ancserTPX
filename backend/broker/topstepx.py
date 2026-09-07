@@ -45,7 +45,7 @@ import asyncio
 import calendar
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
@@ -53,6 +53,7 @@ import httpx
 from backend.db.models import (
     Candle, OrderRequest, OrderResponse, AccountInfo, BarUnit
 )
+from backend.timebase import UTC, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def order_error_meaning(code: Optional[int]) -> str:
 
 def _utc_search_window(days: int) -> Tuple[str, str]:
     """Return the bounded UTC window required by ProjectX search endpoints."""
-    end = datetime.now(timezone.utc)
+    end = utc_now()
     start = end - timedelta(days=days)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     return start.strftime(fmt), end.strftime(fmt)
@@ -140,7 +141,7 @@ def contract_roll_start(contract_id: str, roll_buffer_days: int = 8) -> Optional
         return None
     year, month = parsed
     roll_date = _third_friday(year, month) - timedelta(days=roll_buffer_days)
-    return datetime(roll_date.year, roll_date.month, roll_date.day, tzinfo=timezone.utc)
+    return datetime(roll_date.year, roll_date.month, roll_date.day, tzinfo=UTC)
 
 
 class TopstepXClient:
@@ -204,7 +205,7 @@ class TopstepXClient:
             )
 
         self.token = data["token"]
-        self._token_acquired_at = datetime.now(timezone.utc)
+        self._token_acquired_at = utc_now()
         if self._http and not self._http.is_closed:
             self._http.headers.update({"Authorization": f"Bearer {self.token}"})
         logger.info("TopstepX authentication succeeded")
@@ -214,7 +215,7 @@ class TopstepXClient:
         """ProjectX JWTs are about 24h; refresh before the edge so long runs stay alive."""
         if not self.token or not self._token_acquired_at:
             return True
-        return datetime.now(timezone.utc) - self._token_acquired_at >= timedelta(hours=23)
+        return utc_now() - self._token_acquired_at >= timedelta(hours=23)
 
     async def _ensure_http(self) -> httpx.AsyncClient:
         """確保 HTTP client 存在且有 token"""
@@ -365,7 +366,7 @@ class TopstepXClient:
 
         try:
             contracts = await self.search_contracts(search_text)
-            today = datetime.now(timezone.utc).date()
+            today = utc_now().date()
             candidates = []  # (id, (year, month) | None, active_flag)
             for c in contracts:
                 cid = c.get("id", "")
@@ -514,7 +515,7 @@ class TopstepXClient:
         # 確保 startTime/endTime 有值 (API 要求必填)
         if not start_time or not end_time:
             from datetime import timedelta
-            now = datetime.now(timezone.utc)
+            now = utc_now()
             if not end_time:
                 end_time = now.strftime("%Y-%m-%dT%H:%M:%SZ")
             if not start_time:

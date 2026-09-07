@@ -541,7 +541,7 @@ def _synthesize_overlap_zone(
     """Average the overlapping reference zones into one synthetic zone.
 
     Mirrors backend.api.routes._synthesize_merged_zone EXACTLY so live overlap
-    behaves identically to the backtest/ML overlap sweep. Entry levels
+    behaves identically across callers through the shared overlap rule. Entry levels
     (VAH/VAL/POC) are the mean across timeframes; the VP histogram is summed so
     the lowest-volume-node SL still works.
     """
@@ -584,7 +584,7 @@ class OverlapZoneDetector:
     Internally holds one ClockBucketZoneDetector per timeframe in the combo.
     On each candle, a merged reference zone exists ONLY when every timeframe has
     a completed active zone and all their value areas overlap (intersection
-    non-empty). This is the exact rule used by the backtest/ML overlap sweep
+    non-empty). This is the shared backtest/live overlap rule
     (routes._merge_zone_timelines): lo = max(val_80), hi = min(vah_80); merged
     exists iff lo <= hi. Entry happens at the AVERAGE overlapping VAH/VAL level.
     """
@@ -702,7 +702,7 @@ def build_zone_detector(
     - ``area_timeframe == "session"`` → SessionZoneDetector(0.15.5 式整個
       session 生長區間;與其他 TF 互斥,忽略 tf_combo)。
     - When ``tf_combo`` has >= 2 valid timeframes → OverlapZoneDetector
-      (multi-timeframe overlap, identical to the backtest/ML overlap sweep).
+      (multi-timeframe overlap, shared by backtest and live).
     - Otherwise → single-timeframe ClockBucketZoneDetector keyed by
       ``area_timeframe`` (or the single timeframe in tf_combo if given).
     """

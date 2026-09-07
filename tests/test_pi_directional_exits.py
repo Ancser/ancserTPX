@@ -208,7 +208,7 @@ def test_live_pi_time_exit_never_flattens_an_unowned_manual_position(monkeypatch
     engine.flatten_now.assert_not_awaited()
 
 
-def test_existing_flatten_path_cancels_known_brackets_then_sweeps_residual_orders():
+def test_existing_flatten_path_cancels_known_brackets_then_cancels_residual_orders():
     engine = _live_engine(Direction.BUY, long_hold=60, short_hold=60)
     engine._sl_order_id = 10
     engine._tp_order_id = 11
@@ -228,8 +228,7 @@ def test_existing_flatten_path_cancels_known_brackets_then_sweeps_residual_order
         (10, "SL (flatten)"),
         (11, "TP (flatten)"),
         (12, "ENTRY (flatten)"),
-        (99, "SWEEP (flatten)"),
+        (99, "RESIDUAL (flatten)"),
     }
     engine.client.flatten_all.assert_awaited_once_with(123)
     engine.client.get_open_orders.assert_awaited_once_with(123)
-

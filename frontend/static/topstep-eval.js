@@ -1,12 +1,13 @@
 (function (root, factory) {
     'use strict';
-    const api = factory();
+    const api = factory(root.ANCSER_SYSTEM);
     if (typeof module === 'object' && module.exports) module.exports = api;
     if (root) root.TPXTopstepEval = api;
-}(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+}(typeof globalThis !== 'undefined' ? globalThis : this, function (system) {
     'use strict';
 
-    const TRADE_TZ = 'America/Chicago';
+    if (!system || !system.timeZones) throw new Error('ANCSER_SYSTEM must load first');
+    const TRADE_TZ = system.timeZones.topstep;
     const TRADE_DAY_START_HOUR_CT = 17;
     const TRADE_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
         timeZone: TRADE_TZ,
@@ -57,7 +58,25 @@
         };
     }
 
-    /** Topstep trading day: 17:00 CT through 15:10 CT the next calendar day. */
+    function _tradeDateKeyFromParts(parts) {
+        const shifted = new Date(Date.UTC(
+            parts.year,
+            parts.month - 1,
+            parts.day + (parts.hour >= TRADE_DAY_START_HOUR_CT ? 1 : 0)
+        ));
+        return dateKey(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate());
+    }
+
+    /** Topstep accounting date: the next trade date starts at 17:00 CT. */
+    function tradeDateKey(value) {
+        const date = value instanceof Date ? value : new Date(value);
+        if (!date || !Number.isFinite(date.getTime())) return null;
+        const parts = timePartsInZone(date);
+        if (![parts.year, parts.month, parts.day, parts.hour, parts.minute].every(Number.isFinite)) return null;
+        return _tradeDateKeyFromParts(parts);
+    }
+
+    /** Topstep active trading day: reject the 15:10–17:00 CT dead zone. */
     function tradeDayKey(value) {
         const date = value instanceof Date ? value : new Date(value);
         if (!date || !Number.isFinite(date.getTime())) return null;
@@ -66,12 +85,7 @@
         // CME/Topstep session is closed after 15:10 CT until the next trading
         // day opens at 17:00 CT. Reject stale/custom rows in that dead zone.
         if ((parts.hour === 15 && parts.minute > 10) || parts.hour === 16) return null;
-        const shifted = new Date(Date.UTC(
-            parts.year,
-            parts.month - 1,
-            parts.day + (parts.hour >= TRADE_DAY_START_HOUR_CT ? 1 : 0)
-        ));
-        return dateKey(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, shifted.getUTCDate());
+        return _tradeDateKeyFromParts(parts);
     }
 
     function hashText(text) {
@@ -402,6 +416,7 @@
 
     return Object.freeze({
         DEFAULTS: DEFAULTS,
+        tradeDateKey: tradeDateKey,
         tradeDayKey: tradeDayKey,
         effectiveTarget: effectiveTarget,
         buildActiveDays: buildActiveDays,

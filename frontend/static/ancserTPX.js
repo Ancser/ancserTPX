@@ -4,7 +4,11 @@
 
 // Auto-detect port from current page URL (supports dynamic launcher ports)
 const API = window.location.origin + '/api';
-const MARKET_CLOCK_VERSION = 'america-new-york-v1';
+const SYSTEM_RUNTIME = window.ANCSER_SYSTEM;
+let MARKET_CLOCK_VERSION = SYSTEM_RUNTIME.marketClockVersion;
+const SYSTEM_TIME_ZONES = SYSTEM_RUNTIME.timeZones;
+const FRONT_MONTH_CONTRACTS = SYSTEM_RUNTIME.frontMonthContracts;
+const SYSTEM_CONTRACT_SPECS = SYSTEM_RUNTIME.contractSpecs;
 
 // Same-origin Web control protection. The backend sets a port-scoped,
 // SameSite=Strict CSRF cookie on GET; only this origin can read it and copy it
@@ -85,44 +89,24 @@ let valLine = null;
 
 // -- Strategy Params & Presets ----------------------
 
-// 1.0.8: 目前前月季約(鏡像後端 current_quarterly_contract_id):
-// CME 股指 H/M/U/Z,到期=季月第3個週五,前 8 天視為換月。
-function currentQuarterlyContractId(sym) {
-    const now = new Date();
-    const codes = { 3: 'H', 6: 'M', 9: 'U', 12: 'Z' };
-    const thirdFriday = (y, m) => {
-        let count = 0;
-        for (let d = 1; d <= 21; d++) {
-            if (new Date(Date.UTC(y, m - 1, d)).getUTCDay() === 5) {
-                count++;
-                if (count === 3) return Date.UTC(y, m - 1, d);
-            }
-        }
-        return Date.UTC(y, m - 1, 21);
-    };
-    for (const y of [now.getUTCFullYear(), now.getUTCFullYear() + 1]) {
-        for (const m of [3, 6, 9, 12]) {
-            if (now.getTime() < thirdFriday(y, m) - 8 * 86400000) {
-                return 'CON.F.US.' + String(sym || 'MNQ').toUpperCase() + '.' + codes[m] + String(y).slice(-2);
-            }
-        }
-    }
-    return 'CON.F.US.' + String(sym || 'MNQ').toUpperCase() + '.H' + String(now.getUTCFullYear() + 2).slice(-2);
+function defaultContractId() {
+    return FRONT_MONTH_CONTRACTS.MNQ || 'MNQ';
 }
 
-// 1.0.8: 開機把所有寫死到期月的合約選項/輸入改成目前前月(auto-renew)
+// The backend owns front-month calculation. Before /config returns, bare roots
+// remain valid inputs and are resolved by the broker/backend.
 function refreshContractOptions() {
-    const quarterly = new Set(['NQ', 'ENQ', 'MNQ', 'ES', 'MES']);
-    const rewrite = (v) => {
-        const m = /^CON\.F\.US\.([A-Z]+)\./.exec(String(v || '').toUpperCase());
-        return (m && quarterly.has(m[1])) ? currentQuarterlyContractId(m[1]) : v;
-    };
-    document.querySelectorAll('select option').forEach(o => {
-        const nv = rewrite(o.value);
-        if (nv !== o.value) o.value = nv;
+    document.querySelectorAll('[data-contract-root]').forEach(option => {
+        const root = String(option.dataset.contractRoot || '').toUpperCase();
+        option.value = FRONT_MONTH_CONTRACTS[root] || root;
     });
     const cidInput = document.getElementById('contract-id');
-    if (cidInput && cidInput.value) cidInput.value = rewrite(cidInput.value);
+    if (cidInput) {
+        const raw = String(cidInput.value || 'MNQ').toUpperCase();
+        const match = /^CON\.F\.US\.([A-Z]+)\./.exec(raw);
+        const root = match ? match[1] : raw;
+        if (FRONT_MONTH_CONTRACTS[root]) cidInput.value = FRONT_MONTH_CONTRACTS[root];
+    }
 }
 document.addEventListener('DOMContentLoaded', refreshContractOptions);
 // 1.0.10: 還原 OFFLINE MODE(重整後保持)
@@ -146,7 +130,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     tr_trail_enabled: true,
     tr_full_tp_lock: 0,
     candle_seconds: 60,
-    contract_id: currentQuarterlyContractId('MNQ'),  // 1.0.8: 自動換月
+    contract_id: defaultContractId(),
     contract_size: 3,
     value_area_pct: 0.80,
     area_timeframe: '15m',
@@ -589,57 +573,36 @@ function normalizeStrategyName(value) {
     return 'factor';
 }
 
-// Stable strategy identity is deliberately separate from localized explanation.
+// Stable strategy identity is deliberately separate from the display copy.
 // Values stay unchanged because they are part of preset and API compatibility.
 const STRATEGY_PRESENTATION = Object.freeze({
     fade: {
         displayName: 'FADE',
-        description: {
-            en: 'Previous-day value-area mean reversion.',
-            zh: '前一交易日價值區均值回歸。',
-        },
+        description: 'Previous-day value-area mean reversion.',
     },
     sigma: {
         displayName: 'SIGMA',
-        description: {
-            en: 'Rolling-distribution resting fade.',
-            zh: '滾動分佈的靜置限價回歸。',
-        },
+        description: 'Rolling-distribution resting fade.',
     },
     factor: {
         displayName: 'FACTOR',
-        description: {
-            en: 'EMAPMO / KDJMA / MREV factor signals.',
-            zh: 'EMAPMO / KDJMA / MREV 因子訊號。',
-        },
+        description: 'EMAPMO / KDJMA / MREV factor signals.',
     },
     momentum: {
         displayName: 'MOMENTUM',
-        description: {
-            en: 'Intraday momentum continuation.',
-            zh: '日內動能延續。',
-        },
+        description: 'Intraday momentum continuation.',
     },
     betafib: {
         displayName: 'BETAFIB',
-        description: {
-            en: 'Overnight Fibonacci retracement (observation only).',
-            zh: '夜盤 Fibonacci 回撤(觀察用)。',
-        },
+        description: 'Overnight Fibonacci retracement (observation only).',
     },
     pi: {
         displayName: 'PI',
-        description: {
-            en: 'External Discord signal routing.',
-            zh: '外部 Discord 訊號路由。',
-        },
+        description: 'External Discord signal routing.',
     },
     optionwall: {
         displayName: 'OPTION WALL',
-        description: {
-            en: 'Causal QQQ Option Wall / Gamma signals mapped to MNQ (historical replay).',
-            zh: 'QQQ 期權牆與 Gamma 因果訊號映射至 MNQ（歷史重播）。',
-        },
+        description: 'Causal QQQ Option Wall / Gamma signals mapped to MNQ (historical replay).',
     },
 });
 
@@ -652,8 +615,7 @@ function syncStrategyDescription(mode) {
     const target = document.getElementById('strategy-desc-' + mode);
     if (!select || !target) return;
     const meta = strategyPresentation(select.value);
-    const lang = (typeof UI_LANG !== 'undefined' && UI_LANG === 'zh') ? 'zh' : 'en';
-    target.textContent = meta.description[lang];
+    target.textContent = meta.description;
 }
 
 function _setStrategySelect(mode, strategy) {
@@ -809,7 +771,6 @@ function updateStrategyParamVisibility(mode) {
         // PI uses factor_sl_value for longs and pi_short_sl_value for shorts.
         // Keep the generic label for every other strategy sharing this control.
         longSlLabel.textContent = isPi ? 'LONG SL' : 'SL INPUT';
-        if (typeof _i18nTranslateTree === 'function') _i18nTranslateTree(longSlLabel);
     }
     show('betafib-exit-' + mode, isSessfib);
     showControl('tp-cap-usd', !isOptionWall);
@@ -826,8 +787,8 @@ function updateStrategyParamVisibility(mode) {
     if (isFade) {
         const fem = _mlSelectValue('fade-entry-mode-' + mode, 'limit');
         slText = (fem === 'or15')
-            ? 'OR15: entry ± 0.2×前日VA幅(雙向假突破·TP 1×幅)'
-            : 'DAY ZONE: 前日 VAL - 120 tick 固定緩衝';
+            ? 'OR15: entry ± 0.2× previous-day VA width (two-sided false break · TP 1× width)'
+            : 'DAY ZONE: previous-day VAL - 120 tick fixed buffer';
     } else if (isSigma) {
         slText = 'DISTRIBUTION: preset rolling sigma SL / center TP';
     } else if (isFactor) {
@@ -835,7 +796,7 @@ function updateStrategyParamVisibility(mode) {
     } else if (isOptionWall) {
         slText = 'OPTION WALL: hourly causal signal · completed 5m ATR blend · no hard TP · 60m max';
     } else {
-        slText = 'TREND: POC↔VAH/VAL 間最低量節點 SL';
+        slText = 'TREND: lowest-volume node between POC and VAH/VAL for SL';
     }
     let entryMode = 'market';
     if (isFade) {
@@ -902,7 +863,7 @@ function onExitModeChange(mode) {
         el.disabled = off;
         const grp = el.closest('.form-group');
         if (grp) grp.style.opacity = off ? '0.35' : '';
-        if (grp) grp.title = off ? 'LADDER 模式不使用(無 TP;階梯固定 +2R 保本、每 +1R 跟 1R)' : '';
+        if (grp) grp.title = off ? 'Not used in LADDER mode (no TP; fixed +2R breakeven ladder, then trails by 1R)' : '';
     };
     dim('rr-ratio-' + mode, isLadder);
     dim('trail-trigger-pct-' + mode, isLadder);
@@ -945,7 +906,7 @@ function _factorRiskOptionList(rule, kind) {
     // 1.0.10: FIB LEVEL 的 SL 不是倍數,而是 fib 層級本身(由 SL fib 那個下拉決定),
     // 所以 SL INPUT 在此模式下沒有意義 —— 給一個明確的佔位而不是誤導性的 ATR 倍數。
     if (rule === 'fib') {
-        return [['0', t('Determined by SL fib')]];
+        return [['0', 'Determined by SL fib']];
     }
     // DAILY ATR 與 ATR/ATR BLEND 同樣是倍數。PI 多空兩側共用 1–4、0.5 step。
     return [
@@ -1123,8 +1084,8 @@ function _scopeDatesForStrategy(mode, strategy) {
         if (startEl.value < firstDate || switchingFromAutoScopedDate) {
             if (!startEl.dataset.signalPrev) startEl.dataset.signalPrev = startEl.value;
             startEl.value = firstDate;
-            log(strategyDisplayName(strategy) + ' 訊號最早只到 ' + firstDate
-                + ' —— 起始日已自動縮短(避免掃描無訊號區間)', 'info');
+            log(strategyDisplayName(strategy) + ' signals begin on ' + firstDate
+                + ' — start date shortened automatically to skip the empty range.', 'info');
         }
         startEl.dataset.signalScope = strategy;
     } else if (startEl.dataset.signalPrev) {
@@ -1261,7 +1222,7 @@ function collectConfluenceParams(mode) {
         conf_rr_grid: null,
         conf_use_scorer: true,
         conf_enable_breakout: (function () {
-            // BREAKOUT control removed from the UI (sweep showed it's redundant at
+            // BREAKOUT control removed from the UI (prior research showed it is redundant at
             // the optimal RR). Default OFF → momentum+reversion only.
             const el = document.getElementById('conf-breakout-' + mode);
             return el ? el.value === '1' : false;
@@ -1768,7 +1729,7 @@ const PRESET_MODEL_ORDER = [
 function _presetNameMeta(name) {
     const raw = String(name || '');
     const fixed = /\s+\*$/.test(raw);
-    const s = raw.replace(/\s+\*$/, '').replace(/^SWEEP\s+/i, '').trim();
+    const s = raw.replace(/\s+\*$/, '').trim();
     const compactDated = s.match(/^(\d{4})\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
     const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
     const legacy = s.match(/^(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
@@ -2049,7 +2010,7 @@ function _normalizeNamingModel(model) {
 
 function _sanitizePresetPurpose(value, fallback) {
     const clean = String(value || '').replace(/\s+/g, '').trim();
-    return (clean || fallback || '手動保存').slice(0, 12);
+    return (clean || fallback || 'Manual').slice(0, 12);
 }
 
 function _nextPresetNumber(model, datePrefix) {
@@ -2182,13 +2143,13 @@ function suggestedPresetPurpose(params) {
         const risk = Number(p.conf_max_risk_ticks || 0);
         const prob = Number(p.conf_min_prob || 0);
         const rr = Number(p.conf_rr || 0);
-        if (prob >= 0.6) return '回撤最低';
-        if (risk <= 50) return 'PNL最高';
-        if (rr >= 2.75) return '穩健測試';
-        if (rr <= 1.75) return '卡瑪最佳';
-        return '手動測試';
+        if (prob >= 0.6) return 'Lowest DD';
+        if (risk <= 50) return 'Highest PNL';
+        if (rr >= 2.75) return 'Robust Test';
+        if (rr <= 1.75) return 'Best Calmar';
+        return 'Manual Test';
     }
-    return '手動測試';
+    return 'Manual Test';
 }
 
 function buildPresetName(params, purpose, model) {
@@ -2714,8 +2675,8 @@ let _inlineHelpSeq = 0;
 
 function _updateHelpDotLabel(dot) {
     if (!dot) return;
-    dot.setAttribute('aria-label', UI_LANG === 'zh' ? '顯示參數說明' : 'Show parameter help');
-    dot.title = UI_LANG === 'zh' ? '參數說明' : 'Parameter help';
+    dot.setAttribute('aria-label', 'Show parameter help');
+    dot.title = 'Parameter help';
 }
 
 function _configureHelpDot(dot) {
@@ -2754,20 +2715,8 @@ function _newHelpDot() {
     return _configureHelpDot(dot);
 }
 
-function _localizedHelpTip(tip) {
-    if (tip && typeof tip === 'object') {
-        return {
-            en: String(tip.en || tip.zh || '').trim(),
-            zh: String(tip.zh || tip.en || '').trim(),
-        };
-    }
-    const value = String(tip || '').trim();
-    const splitAt = value.indexOf('\n');
-    if (splitAt < 0) return { en: value, zh: value };
-    return {
-        zh: value.slice(0, splitAt).trim(),
-        en: value.slice(splitAt + 1).trim(),
-    };
+function _englishHelpTip(tip) {
+    return String(tip || '').trim();
 }
 
 function addHelpDot(label, tip) {
@@ -2777,16 +2726,13 @@ function addHelpDot(label, tip) {
         dot = _newHelpDot();
         label.appendChild(dot);
     }
-    const localized = _localizedHelpTip(tip);
-    ['en', 'zh'].forEach((lang) => {
-        const value = localized[lang];
-        if (!value) return;
-        const attr = 'data-tip-' + lang;
-        const existing = dot.getAttribute(attr) || '';
+    const value = _englishHelpTip(tip);
+    if (value) {
+        const existing = dot.getAttribute('data-tip-en') || '';
         if (!existing.includes(value)) {
-            dot.setAttribute(attr, existing ? existing + '\n' + value : value);
+            dot.setAttribute('data-tip-en', existing ? existing + '\n' + value : value);
         }
-    });
+    }
     return dot;
 }
 
@@ -2808,7 +2754,7 @@ function showHelpTooltip(dot) {
         _activeHelpDot.setAttribute('aria-expanded', 'false');
     }
     const chunks = [];
-    const registered = dot ? dot.getAttribute('data-tip-' + UI_LANG) : '';
+    const registered = dot ? dot.getAttribute('data-tip-en') : '';
     if (registered) chunks.push(registered);
     const sourceIds = dot ? String(dot.getAttribute('data-help-sources') || '').split(',').filter(Boolean) : [];
     sourceIds.forEach((id) => {
@@ -2889,43 +2835,40 @@ function migrateInlineHelp() {
 function decorateParamHelpDots() {
     // Applied to BOTH backtest (-bt) and live (-live) panels.
     const shared = {
-        'strategy': {
-            en: 'FADE / SIGMA / FACTOR / MOMENTUM / BETAFIB / PI.\nSelect a model; its localized description appears below the selector.',
-            zh: 'FADE / SIGMA / FACTOR / MOMENTUM / BETAFIB / PI。\n選擇模型；下方會顯示本地化說明。',
-        },
-        'contract': '\u4ea4\u6613 / \u56de\u6e2c\u4f7f\u7528\u7684\u671f\u8ca8\u5408\u7d04\uff0c\u4f8b\u5982 CON.F.US.MNQ.U26\u3002\nFutures contract used for data and orders.',
-        'size': '\u6bcf\u7b46\u4ea4\u6613\u7684\u5408\u7d04\u53e3\u6578\u3002\nNumber of contracts per trade.',
-        'preset': '\u8f09\u5165\u6216\u4fdd\u5b58\u76ee\u524d\u6240\u6709\u53c3\u6578\u8a2d\u5b9a\u3002\nLoad or save the current parameter set.',
+        'strategy': 'FADE / SIGMA / FACTOR / MOMENTUM / BETAFIB / PI.\nSelect a model; its English description appears below the selector.',
+        'contract': 'Futures contract used for data and orders. Bare symbols automatically resolve to the current front month.',
+        'size': 'Number of contracts per trade.',
+        'preset': 'Load or save the current parameter set.',
         // ML CONFLUENCE
-        'conf-minprob': 'ML \u6a5f\u7387\u9580\u6abb\uff1a\u53ea\u5728 scorer \u9810\u6e2c\u52dd\u7387 \u2265 \u6b64\u503c\u6642\u9032\u5834\u3002OFF = \u4e0d\u7528\u52dd\u7387\u9580\u6abb\u3002\nML win-probability gate.',
-        'conf-rrmode': '\u56fa\u5b9a\u76c8\u8667\u6bd4\uff0c\u53ef\u9078 1:1 \u5230 1:6\u3002LATEST production scorer \u76ee\u524d\u7528 RR3 \u8a13\u7df4\u3002\nFixed reward:risk from 1:1 to 1:6.',
-        'conf-band': '\u532f\u805a\u5e36\u5bec\uff08ticks\uff09\uff1a\u4e0d\u540c TF \u6c34\u5e73\u4f4d\u843d\u5728\u6b64\u7bc4\u570d\u5167\u8996\u70ba\u540c\u4e00\u532f\u805a\u5340\u3002\u8d8a\u5927 = \u8d8a\u5bb9\u6613\u5408\u4f75\uff0c\u8a0a\u865f\u66f4\u591a\u3002\nConfluence band in ticks.',
-        'conf-mintf': '\u6700\u5c11\u4e0d\u540c\u6642\u9593\u6846\u6578\uff1a\u4e00\u500b\u532f\u805a\u5340\u81f3\u5c11\u9700\u8981\u591a\u5c11\u500b\u4e0d\u540c TF \u7684\u6c34\u5e73\u4f4d\u624d\u7b97\u6709\u6548\u3002\nMinimum distinct timeframes required.',
-        'conf-evfloor': '\u671f\u671b\u503c\u9580\u6abb\uff0c\u512a\u5148\u65bc MIN PROB\u3002EV = prob \u00d7 RR \u2212 (1 \u2212 prob)\u3002\nExpected-value gate.',
-        'conf-maxrisk': '\u6700\u5927 SL \u98a8\u96aa\uff08ticks\uff09\uff1aSL \u8ddd\u96e2\u8d85\u904e\u6b64\u503c\u7684\u8a0a\u865f\u6703\u88ab\u8df3\u904e\u3002\nMax allowed stop distance in ticks.',
-        'conf-trail-trigger': 'ML \u9054\u5230 TP \u7684\u6307\u5b9a\u767e\u5206\u6bd4\u5f8c\uff0c\u5c07 SL \u79fb\u5230 +5% TP \u7684\u9396\u5229\u4f4d\u3002\nTrail trigger for moving stop after partial progress toward TP.',
-        'conf-session-limit': 'Live parity \u9396\u5b9a\uff1a\u540c\u4e00 session / \u4e3b TF \u7246 / \u65b9\u5411\u53ea\u505a\u4e00\u6b21\u3002\nLive-style duplicate-entry lock.',
-        'conf-allowed-sessions': '\u5e02\u5834\u76e4\u6bb5\u904e\u6ffe\uff1a\u53ea\u5728\u9078\u5b9a\u76e4\u6bb5\u958b\u65b0\u55ae\u3002ASIA \u662f\u76ee\u524d\u8f03\u7a69\u7684\u9810\u8a2d\u3002\nMarket segment filter.',
-        'overlap-tf': '\u53c3\u8207\u532f\u805a\u7684\u6642\u9593\u6846\u3002\u9078 1 = \u55ae\u4e00\u6846\uff1b\u9078 2+ = \u8de8\u6846\u91cd\u758a\u532f\u805a\u3002\nTimeframes feeding confluence.',
+        'conf-minprob': 'ML win-probability gate.',
+        'conf-rrmode': 'Fixed reward:risk from 1:1 to 1:6.',
+        'conf-band': 'Confluence band in ticks.',
+        'conf-mintf': 'Minimum distinct timeframes required.',
+        'conf-evfloor': 'Expected-value gate.',
+        'conf-maxrisk': 'Max allowed stop distance in ticks.',
+        'conf-trail-trigger': 'Trail trigger for moving stop after partial progress toward TP.',
+        'conf-session-limit': 'Live-style duplicate-entry lock.',
+        'conf-allowed-sessions': 'Market segment filter.',
+        'overlap-tf': 'Timeframes feeding confluence.',
         // TREND
         'tr-overlap-trade-tf': 'TREND overlap trade zone: merged = synthetic averaged overlap; smallest = trade the smallest selected timeframe zone.',
-        'area-pct': 'TREND\uff1a\u5340\u9593\u5224\u5b9a\u7684\u9762\u7a4d\u6bd4\u4f8b\u9580\u6abb\uff0c\u8d8a\u9ad8\u8d8a\u56b4\u683c\u3002\nTREND range-area threshold.',
-        'confirm-bars': 'TREND\uff1a\u7a81\u7834\u5f8c\u9700\u8981\u9023\u7e8c\u78ba\u8a8d\u7684 K \u7dda\u6578\uff0c\u8d8a\u591a\u8d8a\u4fdd\u5b88\u3002\nConfirmation bars after breakout.',
-        'rr-ratio': 'TREND\uff1a\u6b62\u76c8\u8207\u6b62\u640d\u7684\u6bd4\u4f8b\uff08TP:SL\uff09\u3002\nTake-profit to stop-loss ratio.',
-        'trail-trigger-pct': '\u50f9\u683c\u5230\u9054 TP \u7684\u6307\u5b9a\u767e\u5206\u6bd4\u5f8c\u958b\u59cb\u79fb\u52d5\u6b62\u640d\u3002OFF = \u4e0d\u79fb\u52d5\u3002\nTrail trigger percentage.',
-        'trail-sl-pct': '\u89f8\u767c\u5f8c\u6b62\u640d\u8981\u79fb\u5230\u7684\u4f4d\u7f6e\uff0c\u76f8\u5c0d\u5165\u5834 / TP \u8a08\u7b97\u3002\nWhere the stop moves after trigger.',
-        'full-tp-lock': '\u65e5\u5167\u9054\u5230\u6b64\u7372\u5229\u76ee\u6a19\u5f8c\u9396\u5b9a\uff0c\u4e0d\u518d\u958b\u65b0\u55ae\uff080 = OFF\uff09\u3002\nBlocks new entries after daily profit target.',
-        'tr-session-limit': '\u540c\u4e00 Topstep session \u5167\uff0c\u540c\u4e00\u5340\u9593 / \u7a81\u7834\u65b9\u5411\u53ea\u5141\u8a31\u4e00\u6b21\u6210\u4ea4\u6a5f\u6703\uff1b\u672a\u6210\u4ea4\u53d6\u6d88\u6703\u91cb\u653e\u3002\nOne filled opportunity per zone/direction per session.',
-        'tr-allowed-sessions': 'TREND \u5e02\u5834\u76e4\u6bb5\u904e\u6ffe\uff1a\u53ea\u5728\u9078\u5b9a\u76e4\u6bb5\u958b\u65b0\u55ae\uff1bpending \u8de8\u51fa\u76e4\u6bb5\u6703\u53d6\u6d88\u4e26\u91cb\u653e lock\u3002\nTrend market segment filter.',
+        'area-pct': 'TREND range-area threshold.',
+        'confirm-bars': 'Confirmation bars after breakout.',
+        'rr-ratio': 'Take-profit to stop-loss ratio.',
+        'trail-trigger-pct': 'Trail trigger percentage.',
+        'trail-sl-pct': 'Where the stop moves after trigger.',
+        'full-tp-lock': 'Blocks new entries after daily profit target.',
+        'tr-session-limit': 'One filled opportunity per zone/direction per session.',
+        'tr-allowed-sessions': 'Trend market segment filter.',
     };
     const standalone = {
-        'username': 'Topstep / ProjectX \u767b\u5165\u90f5\u7bb1\u3002\nTopstep login email.',
-        'apikey': 'ProjectX API \u91d1\u9470\u3002\nProjectX API key.',
-        'contract-preset': '\u5feb\u901f\u586b\u5165 contractId\u3002\nShortcut that fills the contractId.',
-        'contract-id': '\u671f\u8ca8\u5408\u7d04 ID\uff0c\u4f8b\u5982 CON.F.US.MNQ.U26\u3002\nFutures contract ID.',
-        'start-date': '\u6b77\u53f2\u8cc7\u6599\u958b\u59cb\u65e5\u671f\u3002\nStart date for historical data.',
-        'end-date': '\u6b77\u53f2\u8cc7\u6599\u7d50\u675f\u65e5\u671f\u3002\nEnd date for historical data.',
-        'data-count': '\u76ee\u524d\u8f09\u5165\u7684 1 \u5206\u9418 K \u7dda\u6578\u91cf\u3002\nLoaded 1-minute candle count.',
+        'username': 'Topstep / ProjectX login email.',
+        'apikey': 'ProjectX API key.',
+        'contract-preset': 'Shortcut that fills the contract ID.',
+        'contract-id': 'Futures contract ID or bare symbol, for example MNQ (auto front month).',
+        'start-date': 'Start date for historical data.',
+        'end-date': 'End date for historical data.',
+        'data-count': 'Loaded 1-minute candle count.',
     };
     const apply = (id, tip) => {
         const el = document.getElementById(id);
@@ -3050,11 +2993,10 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
             t.classList.add('active');
             const tab = t.dataset.btab;
-            ['presets','trades','execute','pnl','log'].forEach(id => {
+            ['trades', 'execute', 'pnl', 'log'].forEach(id => {
                 const panel = document.getElementById('btab-' + id);
                 if (panel) panel.classList.toggle('hidden', id !== tab);
             });
-            if (tab === 'presets') renderSweepTable();
             if (tab === 'log') scrollSystemLogToBottom();
             if (tab === 'pnl') renderPnlCurve();
             if (tab === 'execute') {
@@ -3082,6 +3024,19 @@ async function loadEnvConfig() {
     try {
         const resp = await fetch(API + '/config');
         const cfg = await resp.json();
+        Object.assign(SYSTEM_TIME_ZONES, cfg.time_zones || {});
+        Object.assign(FRONT_MONTH_CONTRACTS, cfg.front_month_contracts || {});
+        Object.assign(SYSTEM_CONTRACT_SPECS, cfg.contract_specs || {});
+        MARKET_CLOCK_VERSION = cfg.market_clock_version || MARKET_CLOCK_VERSION;
+        DEFAULT_STRATEGY_PARAMS.market_clock_version = MARKET_CLOCK_VERSION;
+        DEFAULT_STRATEGY_PARAMS.contract_id = defaultContractId();
+        Object.values(_appliedStrategyParamsByMode).forEach(params => {
+            params.market_clock_version = MARKET_CLOCK_VERSION;
+            if (!params.contract_id || /^[A-Z]+$/.test(params.contract_id)) {
+                params.contract_id = defaultContractId();
+            }
+        });
+        refreshContractOptions();
         const apiKeyInput = document.getElementById('apikey');
         if (apiKeyInput) {
             apiKeyInput.dataset.configured = (
@@ -3093,7 +3048,7 @@ async function loadEnvConfig() {
             document.getElementById('username').value = cfg.username;
             document.getElementById('apikey').placeholder = cfg.api_key_preview + ' (from .env)';
             document.getElementById('apikey').value = '';
-            document.getElementById('contract-id').value = cfg.contract_id || '';
+            document.getElementById('contract-id').value = cfg.contract_id || defaultContractId();
             log('.env loaded: username=' + cfg.username + ', key=' + cfg.api_key_preview, 'success');
             log('Credentials from .env -- click CONNECT to fetch data', 'info');
 
@@ -4705,7 +4660,7 @@ function createSessionDividerCanvas() {
     return canvas;
 }
 
-// Session boundaries in America/New_York local wall time. nyLocalToUtcMs()
+// Session boundaries in the configured market timezone. nyLocalToUtcMs()
 // resolves EST/EDT separately for each date.
 const SESSION_BOUNDARIES = [
     { h: 18, m: 0,  label: 'ASIA' },
@@ -4777,16 +4732,16 @@ function _timeZoneOffsetMs(timeZone, utcMs) {
 
 function nyLocalToUtcMs(year, month, day, hour, minute) {
     const guess = Date.UTC(year, month, day, hour, minute, 0);
-    let offset = _timeZoneOffsetMs('America/New_York', guess);
+    let offset = _timeZoneOffsetMs(SYSTEM_TIME_ZONES.market, guess);
     let utc = guess - offset;
-    const offset2 = _timeZoneOffsetMs('America/New_York', utc);
+    const offset2 = _timeZoneOffsetMs(SYSTEM_TIME_ZONES.market, utc);
     if (offset2 !== offset) utc = guess - offset2;
     return utc;
 }
 
 function _newYorkParts(utcMs) {
     const parts = new Intl.DateTimeFormat('en-US-u-ca-gregory', {
-        timeZone: 'America/New_York',
+        timeZone: SYSTEM_TIME_ZONES.market,
         year: 'numeric', month: '2-digit', day: '2-digit',
         weekday: 'short', hour: '2-digit', minute: '2-digit',
         hourCycle: 'h23',
@@ -4870,16 +4825,16 @@ function getNextSessionBoundaryMs(isoStr) {
 // 而是根本不畫,順便省掉重繪成本(VP 與 zone 線在 233 萬根上很吃 CPU)。
 // ════════════════════════════════════════════════════════════════════
 const CHART_LAYERS = [
-    { key: 'emapmo',   label: 'EMAPMO 三角',      on: true  },
-    { key: 'pi',       label: 'PI 訊號 (圈/π)',    on: true  },
-    { key: 'trades',   label: '交易框 (SL/TP)',    on: true  },
-    { key: 'mrev',     label: 'MREV 泡泡',         on: false },
-    { key: 'kdjma',    label: 'KDJMA 圓點',        on: false },
-    { key: 'intramom', label: 'INTRAMOM 箭頭',     on: false },
-    { key: 'zonelines',label: 'VAH/VAL/POC 線',    on: false },
-    { key: 'sessva',   label: 'Session VA 發展',   on: false },
-    { key: 'fib',      label: 'BETAFIB 水位線',    on: false },
-    { key: 'dayzone',  label: 'DAY ZONE 前日水位', on: false },
+    { key: 'emapmo',   label: 'EMAPMO triangle',       on: true  },
+    { key: 'pi',       label: 'PI signals (circle/pi)', on: true  },
+    { key: 'trades',   label: 'Trade brackets (SL/TP)', on: true  },
+    { key: 'mrev',     label: 'MREV bubbles',           on: false },
+    { key: 'kdjma',    label: 'KDJMA dots',              on: false },
+    { key: 'intramom', label: 'INTRAMOM arrows',         on: false },
+    { key: 'zonelines',label: 'VAH/VAL/POC lines',       on: false },
+    { key: 'sessva',   label: 'Session VA development',  on: false },
+    { key: 'fib',      label: 'BETAFIB levels',          on: false },
+    { key: 'dayzone',  label: 'DAY ZONE prior levels',   on: false },
     { key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false },
 ];
 const CHART_LAYER_STORAGE_KEY = 'ancserTPX.chartLayers';
@@ -5083,8 +5038,7 @@ function drawSessionDividers() {
     startDay.setUTCHours(0, 0, 0, 0);
     const endMs = toMs + dayMs;
 
-    // Sweep-only uses session high/low levels, so keep session dividers but do
-    // not shade NY-open windows by default.
+    // Keep session dividers visible without shading NY-open windows by default.
 
     ctx.strokeStyle = 'rgba(247, 239, 224, 0.25)';
     ctx.lineWidth = 1;
@@ -5322,7 +5276,7 @@ async function refreshTfZones(force) {
 }
 
 // Draw one zone's VAH/VAL (solid) + POC (dashed) horizontal lines.
-// `op` is an opacity multiplier (backtest zones = 0.8, live/current zone = 1.0).
+// `op` is an opacity multiplier (backtest zones = 0.8, live active zone = 1.0).
 function _drawZoneLines(ctx, z, tf, lw, color, op, W, H, rightX, priceToY, tX) {
     if (!layerOn('zonelines')) return;
     const yVAH = priceToY(z.vah_80);
@@ -6105,7 +6059,7 @@ async function connectAPI() {
     const apikey = document.getElementById('apikey').value.trim();
     const contractId = document.getElementById('contract-id').value.trim();
     if (btn.dataset.busy === '1') {
-        log('已在連線中,略過重複點擊', 'warn');
+        log('Already connecting; ignored duplicate click.', 'warn');
         return;
     }
     btn.dataset.busy = '1';
@@ -6123,7 +6077,7 @@ async function connectAPI() {
         btn.disabled = false;
         btn.textContent = 'CONNECT';
         setStatus('err', 'CONNECT TIMED OUT');
-        log('連線逾時(60 秒)—— 已解除卡住的 UI。券商維護中可改用 OFFLINE MODE。', 'error');
+        log('Connection timed out after 60 seconds; UI was released. Use OFFLINE MODE during broker maintenance.', 'error');
     }, 60000);
 
     // CONNECT loads only the recent warm-up window (CONNECT_WARMUP_DAYS) so the
@@ -6173,8 +6127,6 @@ async function connectAPI() {
         document.getElementById('conn-trigger').classList.add('connected');
         document.getElementById('data-count').value = data.candles_count + ' bars';
         document.getElementById('btn-backtest').disabled = false;
-        const btnSweep = document.getElementById('btn-sweep');   // 1.0.9: 連線後啟用 SWEEP
-        if (btnSweep) btnSweep.disabled = false;
         const btnRunAll = document.getElementById('btn-run-all');
         if (btnRunAll) btnRunAll.disabled = false;
         const btnFullFilter = document.getElementById('btn-full-filter');
@@ -6242,7 +6194,7 @@ async function connectAPI() {
         btn.disabled = false;
         btn.textContent = 'CONNECT';
         // 離線模式下不要把燈留在「連上」的綠色
-        if (isOffline()) setStatus('off', 'OFFLINE — K 棒用本機資料');
+        if (isOffline()) setStatus('off', 'OFFLINE — using local candles');
     }
 }
 
@@ -6498,9 +6450,7 @@ async function _postBacktestWithWorksetRetry(url, body, btn) {
     log('Backtest data selection changed; reselecting once before retry...', 'warn');
     const ready = await _ensureBacktestData(btn);
     if (!ready) return resp;
-    const sweepModels = body.sweep_models;
     Object.assign(body, buildBacktestBody());
-    if (sweepModels) body.sweep_models = sweepModels;
     return await send();
 }
 
@@ -6575,311 +6525,18 @@ function _stopBacktestProgress(success) {
     setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, success ? 1200 : 3500);
 }
 
-// ── 1.0.8: 高效參數掃描(SWEEP 分頁)─────────────────────────
-let _sweepData = null;
-let _sweepSortKey = 'pf';        // 1.0.9: 預設依 PF 排序
-let _sweepRenderedRows = [];     // 目前排序後渲染的列(供 + 存 preset)
-
-async function loadSweepResults() {
-    // 啟動時自動載入上一次 sweep 結果
-    try {
-        const resp = await fetch(API + '/backtest/sweep/results');
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data && data.stale_reason) {
-            _sweepData = null;
-            const wrap = document.getElementById('sweep-results-wrap');
-            const meta = document.getElementById('sweep-meta');
-            if (wrap) wrap.innerHTML = '<div style="color:var(--amber);padding:16px;">' +
-                'Saved sweep used the old fixed-UTC clock. Run SWEEP again.</div>';
-            if (meta) meta.textContent = 'MARKET CLOCK UPDATED · RERUN REQUIRED';
-            return;
-        }
-        if (data && data.results && data.results.length) {
-            _sweepData = data;
-            renderSweepTable();
-        }
-    } catch (_) { /* server 未起或無結果 — 靜默 */ }
-}
-
-function renderSweepTable(sortKey) {
-    if (sortKey) _sweepSortKey = sortKey;
-    const wrap = document.getElementById('sweep-results-wrap');
-    const meta = document.getElementById('sweep-meta');
-    if (!wrap || !_sweepData || !(_sweepData.results || []).length) return;
-    const onlyAcc = !!((document.getElementById('sweep-filter-acc') || {}).checked);   // 1.0.9: 只顯示 ACC ★
-    let rows = [..._sweepData.results];
-    if (onlyAcc) rows = rows.filter(r => r.accept);
-    const k = _sweepSortKey;
-    rows.sort((a, b) => (Number(b[k]) || 0) - (Number(a[k]) || 0));
-    _sweepRenderedRows = rows;   // 1.0.9: 供 + 存 preset(index 對齊渲染順序)
-    if (!rows.length) {
-        wrap.innerHTML = '<div style="color:var(--text3);padding:16px;">' + t('No ACC ★ pass variants — untick the filter to see all.') + '</div>';
-        if (meta) meta.textContent = '0 / ' + _sweepData.results.length + ' ' + t('pass ACC ★');
-        return;
-    }
-
-    if (meta) {
-        const created = _sweepData.created_at ? String(_sweepData.created_at).slice(0, 16).replace('T', ' ') : '?';
-        const byModel = _sweepData.qualified_by_model || {};
-        const modelSummary = Object.keys(byModel).length
-            ? (' | qualified: ' + Object.keys(byModel).map(m => m + '=' + ((byModel[m] || []).length)).join(' '))
-            : '';
-        meta.textContent = 'sweep @ ' + created + ' UTC | ' + rows.length +
-            (onlyAcc ? ' ' + t('★ pass') + ' / ' + (_sweepData.results || []).length + ' ' + t('all') : ' ' + t('variants')) +
-            ' | ' + t('sort') + ': ' + k + ' (' + t('click column header to change') + ') | PF first' + modelSummary;
-    }
-    const th = (key, label, tip) => '<th style="cursor:pointer;' +
-        (key === k ? 'color:var(--amber);' : '') +
-        '"' + (tip ? ' title="' + tip + '"' : '') +
-        ' onclick="renderSweepTable(\'' + key + '\')">' + label + '</th>';
-    const money = (v, pos) => '<span style="color:var(--' + (v >= 0 ? (pos || 'green') : 'red') + ');">' +
-        (v >= 0 ? '+' : '') + Math.round(v) + '</span>';
-    // 1.0.9: params 拆成 model / risk 兩欄(risk = 封鎖型設定;sweep 不掃 risk 變體)
-    const RISK_KEYS = ['tr_daily_loss_stop', 'tr_daily_win_stop', 'tr_daily_profit_stop',
-        'tr_allowed_sessions', 'tr_one_trade_per_session', 'factor_max_trades_per_day',
-        'pmo_max_trades_per_day'];
-    const fmtParams = (p, riskSide) => Object.keys(p || {})
-        .filter(kk => kk !== 'strategy' && (RISK_KEYS.includes(kk) === riskSide))
-        .map(kk => kk.replace(/^(tr_|factor_|sigma_|fade_|pmo_)/, '') + '=' +
-            (Array.isArray(p[kk]) ? p[kk].join('+') : p[kk]))
-        .join(' ') || '—';
-    const factorsOf = (r) => {
-        const p = r.params || {};
-        return p.factor_signal_family ? String(p.factor_signal_family).toUpperCase()
-            : (p.sigma_method ? ('ROLL' + (p.sigma_window_minutes || '') + ' ' + String(p.sigma_method).toUpperCase())
-            : (p.fade_entry_mode ? String(p.fade_entry_mode).toUpperCase() : (r.model || '—')));
-    };
-    wrap.innerHTML = '<table><thead><tr>' +
-        '<th>#</th><th title="縮放測試通過時顯示 MNQx3 / NQx1">CONTRACT</th><th>MODEL</th><th>FACTORS</th>' +
-        '<th>MODEL PARAMS</th><th>RISK PARAMS</th><th>TRADES</th>' +
-        th('monthly_avg', 'M-PNL', '月均 PnL(30.44 天歸一)') + th('pf', 'PF') +
-        th('max_dd', 'MAXDD') + th('worst_day', 'WORST-D') +
-        th('weekly_cv', 'W-VAR', '週變異 CV = 週PnL std / |mean|,<1 為穩') +
-        '<th title="walk-forward 三段各正">WF</th>' +
-        '<th title="ACC: 月PnL>3k · PF>1.5 · 月20筆 · DD<1k · 週CV<1(或縮放後通過)">ACC</th>' +
-        '<th title="存成結構化 preset(命名規則自動)">+</th>' +
-        '</tr></thead><tbody>' +
-        rows.slice(0, 80).map((r, i) => {
-            const segs = (r.seg_pnls || []).map(v => Math.round(v)).join(' / ');
-            const sc = r.scaled || null;
-            const scale = r.contract_scale || 'MNQx1';
-            return '<tr' + (r.accept ? ' style="background:rgba(0,229,160,0.06);"' : '') + '>' +
-                '<td style="color:var(--text2);">' + (i + 1) + '</td>' +
-                '<td style="color:' + (scale !== 'MNQx1' ? 'var(--amber)' : 'var(--text2)') + ';font-weight:600;">' + scale + '</td>' +
-                '<td style="color:var(--cyan);font-weight:600;">' + (r.model || 'TREND') + '</td>' +
-                '<td style="color:var(--text2);">' + factorsOf(r) + '</td>' +
-                '<td style="font-family:\'IBM Plex Mono\',monospace;font-size:10px;">' + fmtParams(r.params, false) + '</td>' +
-                '<td style="font-family:\'IBM Plex Mono\',monospace;font-size:10px;color:var(--text3);">' + fmtParams(r.params, true) + '</td>' +
-                '<td>' + r.trades + ' <span style="color:var(--text3);font-size:9px;">(' + (r.trades_per_month || 0) + '/mo)</span></td>' +
-                '<td>' + money(sc ? sc.monthly_avg : (r.monthly_avg || 0)) + '</td>' +
-                '<td style="color:' + (((sc ? sc.pf : r.pf) || 0) >= 1.5 ? 'var(--green)' : 'var(--red)') + ';">' + ((sc ? sc.pf : r.pf) || 0).toFixed(2) + '</td>' +
-                '<td style="color:var(--red);">' + Math.round(sc ? sc.max_dd : r.max_dd) + '</td>' +
-                '<td style="color:var(--red);">' + Math.round(r.worst_day) + '</td>' +
-                '<td style="color:' + ((r.weekly_cv || 99) < 1 ? 'var(--green)' : 'var(--text2)') + ';">' + (r.weekly_cv != null ? r.weekly_cv.toFixed(2) : '—') + '</td>' +
-                '<td title="' + segs + '" style="color:' + (r.wf_pass ? 'var(--green)' : 'var(--red)') + ';">' + (r.wf_pass ? '✓' : '✗') + '</td>' +
-                '<td style="color:' + (r.accept ? 'var(--green)' : 'var(--text3)') + ';font-weight:bold;">' + (r.accept ? '★' : '—') + '</td>' +
-                '<td><button class="btn btn-outline btn-mini" style="padding:0 7px;font-size:12px;line-height:1.5;" onclick="saveSweepPreset(' + i + ')" title="存成 preset">+</button></td>' +
-                '</tr>';
-        }).join('') + '</tbody></table>';
-}
-
-// 1.0.9: 程式化切換底部分頁
+// Programmatic switching for the lower navigation tabs.
 function _showBottomTab(name) {
     document.querySelectorAll('.bottom-tab').forEach(x => x.classList.toggle('active', x.dataset.btab === name));
-    ['presets', 'trades', 'execute', 'pnl', 'log'].forEach(id => {
+    ['trades', 'execute', 'pnl', 'log'].forEach(id => {
         const p = document.getElementById('btab-' + id);
         if (p) p.classList.toggle('hidden', id !== name);
     });
-    if (name === 'presets') renderSweepTable();
     if (name === 'log') scrollSystemLogToBottom();
     if (name === 'pnl') renderPnlCurve();
     if (name === 'execute') {
         revealNewestExecuteTrade();
         refreshVisibleExecuteTrades(true);
-    }
-}
-
-// Sweep model scope is a small multi-select, presented as glass switches so
-// the control stays readable in the single-column sidebar.  The ALL switch is
-// a convenience state; the request body still receives the same canonical
-// backend model names as the old native select.
-// 1.0.10p: TREND 曾經在這份清單和 dropdown 裡,但 backend 的 run_model_sweep()
-// 只 dispatch DAY ZONE / DISTRIBUTION / FACTOR —— 沒有 run_trend_sweep。選
-// 「TREND ONLY」會讓 want={'TREND'},三個 _on() 全部 False,sweep 跑完回零筆。
-// 這份清單的每個項目都必須在 backend 有對應的 dispatch,由
-// test_sweep_model_scope_matches_backend_dispatch 釘住。
-const SWEEP_MODEL_ORDER = Object.freeze(['DAY ZONE', 'DISTRIBUTION', 'FACTOR', 'PI']);
-
-function _sweepModelButtons() {
-    return Array.from(document.querySelectorAll('#sweep-model-pop .sweep-model-switch'))
-        .filter((button) => !button.closest('.optical-stage-copy'));
-}
-
-function _setSweepModelSwitch(track, on) {
-    if (!track) return;
-    if (track.tpxSetState) track.tpxSetState(!!on, true);
-    else {
-        track.classList.toggle('on', !!on);
-        track.setAttribute('aria-checked', String(!!on));
-    }
-}
-
-function _sweepModelSelection() {
-    const buttons = _sweepModelButtons();
-    if (!buttons.length) return SWEEP_MODEL_ORDER.slice();
-    const all = buttons.find((button) => button.dataset.sweepModel === 'ALL');
-    if (all?.getAttribute('aria-checked') === 'true') return SWEEP_MODEL_ORDER.slice();
-    const enabled = new Set(buttons
-        .filter((button) => button.getAttribute('aria-checked') === 'true')
-        .map((button) => button.dataset.sweepModel));
-    return SWEEP_MODEL_ORDER.filter((model) => enabled.has(model));
-}
-
-function _normaliseSweepModelSwitch(source) {
-    const buttons = _sweepModelButtons();
-    if (!buttons.length) return;
-    const key = source?.dataset.sweepModel;
-    const all = buttons.find((button) => button.dataset.sweepModel === 'ALL');
-    if (key === 'ALL') {
-        const on = source.getAttribute('aria-checked') === 'true';
-        buttons.forEach((button) => _setSweepModelSwitch(button, on));
-        return;
-    }
-    const enabled = buttons.filter((button) => button.dataset.sweepModel !== 'ALL'
-        && button.getAttribute('aria-checked') === 'true');
-    // Keep ALL as a readable summary only when every individual model is on.
-    _setSweepModelSwitch(all, enabled.length === SWEEP_MODEL_ORDER.length);
-}
-
-// The inline handler runs after the tactile switch's pointer/keyboard commit.
-// A microtask keeps programmatic HTMLElement.click() and real pointer clicks
-// on the same path without making the spring controller race the normaliser.
-function onSweepModelSwitch(source) {
-    setTimeout(() => _normaliseSweepModelSwitch(source), 0);
-}
-
-function toggleSweepModelMenu(force) {
-    const pop = document.getElementById('sweep-model-pop');
-    const button = document.getElementById('sweep-model-btn');
-    if (!pop) return;
-    const show = (force === undefined) ? pop.classList.contains('hidden') : !!force;
-    pop.classList.toggle('hidden', !show);
-    if (button) button.setAttribute('aria-expanded', String(show));
-    if (show) {
-        window.TpxGlass?.sync?.(false);
-        const first = pop.querySelector('.sweep-model-switch');
-        if (first) setTimeout(() => first.focus(), 0);
-    }
-}
-
-document.addEventListener('click', (event) => {
-    const pop = document.getElementById('sweep-model-pop');
-    const button = document.getElementById('sweep-model-btn');
-    if (!pop || pop.classList.contains('hidden')) return;
-    if (pop.contains(event.target) || (button && button.contains(event.target))) return;
-    toggleSweepModelMenu(false);
-});
-document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    const pop = document.getElementById('sweep-model-pop');
-    if (!pop || pop.classList.contains('hidden')) return;
-    toggleSweepModelMenu(false);
-    document.getElementById('sweep-model-btn')?.focus();
-});
-
-// 1.0.9: 全策略參數掃描(TREND + DAY ZONE + DISTRIBUTION)→ 結果進 PRESETS 分頁,依 PF 排序
-async function runBacktestSweep() {
-    const sweepBtn = document.getElementById('btn-sweep');
-    const btBtn = document.getElementById('btn-backtest');
-    if (sweepBtn && sweepBtn.disabled) return;
-    const _resetSweepBtn = () => { if (sweepBtn) sweepBtn.textContent = 'SWEEP'; };
-    // 1.0.9: SWEEP 很吃 CPU/記憶體;和 live 引擎同時跑易造成卡頓/當機 → 先警告
-    try {
-        const lr = await fetch(API + '/live/status-all');
-        if (lr.ok) {
-            const ld = await lr.json();
-            const running = (ld.engines || []).filter(e => e.status && e.status.running).length;
-            if (running > 0 && !confirm('Detected ' + running + ' running live engine(s).\nSWEEP is resource intensive and may make live trading unresponsive. Stop live engines first when possible.\nContinue anyway?')) { _resetSweepBtn(); return; }
-        }
-    } catch (e) {}
-    const dataOk = await _ensureBacktestData(sweepBtn || btBtn);
-    if (!dataOk) { _resetSweepBtn(); return; }
-    if (!confirm('Start parameter sweep for the selected models (MNQx1, risk settings locked, about 5–25 minutes)?')) { _resetSweepBtn(); return; }
-
-    if (sweepBtn) { sweepBtn.disabled = true; sweepBtn.textContent = 'SWEEPING…'; }
-    if (btBtn) btBtn.disabled = true;
-    _showBottomTab('presets');
-    const body = buildBacktestBody();
-    // 1.0.10: model scope comes from the glass-switch dropdown.  Keep the
-    // request values identical to the old native select for preset parity.
-    const _mm = _sweepModelSelection();
-    if (!_mm.length) { log('Select at least one model before starting SWEEP', 'warn'); _resetSweepBtn(); if (sweepBtn) sweepBtn.disabled = false; if (btBtn) btBtn.disabled = false; return; }
-    // 全選就不送 sweep_models(backend 的 None = 全跑)。長度用清單本身,
-    // 不要寫死數字 —— 之前寫死 4,清單一改就會靜默送出部分選取。
-    if (_mm.length < SWEEP_MODEL_ORDER.length) body.sweep_models = _mm;
-    log('SWEEP started: ' + _mm.join(' + ') + ' (MNQx1 locked, sorted by PF)…', 'info');
-    _startBacktestProgress();
-
-    let ok = false;
-    try {
-        const resp = await _postBacktestWithWorksetRetry(
-            API + '/backtest/sweep', body, sweepBtn || btBtn,
-        );
-        if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || resp.statusText); }
-        await resp.json();                 // sweep 已持久化結果
-        await loadSweepResults();
-        renderSweepTable('pf');
-        ok = true;
-        const n = (_sweepData && (_sweepData.results || []).length) || 0;
-        log('SWEEP complete // ' + n + ' variants // sorted by PF; click + to save a preset', 'success');
-    } catch (e) {
-        log('SWEEP failed: ' + e.message, 'error');
-    } finally {
-        _stopBacktestProgress(ok);
-        if (sweepBtn) { sweepBtn.disabled = false; sweepBtn.textContent = 'SWEEP'; }
-        if (btBtn) btBtn.disabled = false;
-    }
-}
-
-// 1.0.9: 把某個 sweep 結果列存成結構化命名 preset(base = 當前 backtest 表單,overlay = 該列掃出的參數)
-async function saveSweepPreset(i) {
-    const r = (_sweepRenderedRows || [])[i];
-    if (!r) { log('Sweep result row not found', 'warn'); return; }
-    const rowStrat = (r.params && r.params.strategy)
-        || (r.model === 'DAY ZONE' ? 'fade' : (r.model === 'DISTRIBUTION' ? 'sigma' : (r.model === 'FACTOR' ? 'factor' : 'trend')));
-    // 1.0.9 FIX: 一律用 sweep 存下的完整參數快照(preset_params)—— 逐位重現掃描條件。
-    // 舊法用「當前表單」當 base,表單的 session/size/trail/exit 會污染 preset,
-    // 導致回測結果與 sweep 榜單完全對不上(0708 事件)。
-    let params;
-    if (r.preset_params && Object.keys(r.preset_params).length) {
-        params = Object.assign({}, r.preset_params, { strategy: rowStrat });
-    } else {
-        log('This legacy sweep row has no parameter snapshot; falling back to form values, so results may differ', 'warn');
-        params = Object.assign({}, collectStrategyParams('bt'), r.params, { strategy: rowStrat });
-    }
-    const defaultName = buildPresetName(params, suggestedPresetPurpose(params));
-    const name = prompt('Preset name:', defaultName);
-    if (!name || !name.trim()) return;
-    try {
-        const resp = await fetch(API + '/presets/save', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: name.trim(), params: params }),
-        });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        await fetch(API + '/presets/use', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: name.trim(), mode: 'bt' }),
-        });
-        await fetchPresets();
-        refreshPresetDropdowns();
-        const btPreset = document.getElementById('preset-bt');
-        if (btPreset) btPreset.value = name.trim();
-        applyStrategyParams('bt', params);
-        log('Sweep preset "' + name.trim() + '" saved ✓ (' + r.model + ' ' + r.label + ')', 'success');
-    } catch (e) {
-        log('Preset save error: ' + e.message, 'error');
     }
 }
 
@@ -7368,11 +7025,11 @@ function _ensurePiSignalRefreshTimer() {
 
 function _piChartSourceAllowed(ts) {
     // PI-001 is a source-time rule, not a browser-local clock rule.  Format
-    // in the exchange's America/Los_Angeles zone so PDT/PST both keep the
+    // in the configured PI source zone so PDT/PST both keep the
     // 07:00 boundary and replay rows can never become chart marks.
     try {
         const parts = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'America/Los_Angeles', hour: '2-digit', minute: '2-digit',
+            timeZone: SYSTEM_TIME_ZONES.pi_source, hour: '2-digit', minute: '2-digit',
             hour12: false, hourCycle: 'h23',
         }).formatToParts(new Date(ts));
         const hour = Number(parts.find(p => p.type === 'hour')?.value);
@@ -7395,14 +7052,14 @@ async function refreshPiSignalMarkers() {
     if (!rows || !rows.length) return;
     _piSignalsLoading = true;
     try {
-        // contract_id 形如 CON.F.US.MNQ.U26 —— 取第 4 段。
+        // Full contract IDs use the fourth segment; bare symbols stay valid.
         // 1.0.10 BUG:這裡原本寫 fv('contract-id', ...)。fv 不是全域 helper,
         // 它是 collectConfluenceParams() 內部的區域箭頭函式(而且是 parseFloat,
         // 本來就讀不了字串)。ReferenceError 被下面的 catch 吞掉 → 靜默清空
         // _piSignalRows → 圖上永遠沒有 PI 標記,而且 console 一片乾淨。
         const _cidEl = document.getElementById('contract-id');
-        const cid = (_cidEl && _cidEl.value) || 'CON.F.US.MNQ.U26';
-        const sym = String(cid).split('.')[3] || 'MNQ';
+        const cid = (_cidEl && _cidEl.value) || defaultContractId();
+        const sym = (String(cid).split('.')[3] || String(cid) || 'MNQ').toUpperCase();
         const qs = new URLSearchParams({ symbol: sym || '' });
         const resp = await fetch(API + '/pi/signals?' + qs.toString());
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -7630,8 +7287,8 @@ function _clearOptionWallOverlay() {
 async function refreshOptionWallLayer() {
     if (_optionWallLoading) return;
     if (!layerOn('optionwall')) { _clearOptionWallOverlay(); return; }
-    const contract = String(document.getElementById('contract-id')?.value || 'CON.F.US.MNQ.U26');
-    const symbol = contract.split('.')[3] || 'MNQ';
+    const contract = String(document.getElementById('contract-id')?.value || defaultContractId());
+    const symbol = (contract.split('.')[3] || contract || 'MNQ').toUpperCase();
     if (!symbol.startsWith('MNQ')) {
         _optionWallSnapshots = [];
         _optionWallPiSignals = [];
@@ -8185,49 +7842,8 @@ function drawLiveTradeMarkers(trades) {
     _refreshAllMarkers();
 }
 
-const SESSION_CODES = ['ASIA', 'EURO', 'PRE', 'RTH', 'AH'];
-const TOPSTEP_TRADE_TZ = 'America/Chicago';
-const TOPSTEP_TRADE_DAY_START_HOUR_CT = 17;
-
-function _dateKeyFromUtcParts(y, m, d) {
-    return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-}
-
-function _timePartsInZone(date, timeZone) {
-    const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: timeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        hour12: false,
-        hourCycle: 'h23',
-    }).formatToParts(date);
-    const out = {};
-    parts.forEach(p => { if (p.type !== 'literal') out[p.type] = p.value; });
-    return {
-        year: parseInt(out.year, 10),
-        month: parseInt(out.month, 10),
-        day: parseInt(out.day, 10),
-        hour: parseInt(out.hour, 10),
-    };
-}
-
 function topstepTradeDateKey(value) {
-    const d = value instanceof Date ? value : new Date(value);
-    if (!d || isNaN(d.getTime())) return null;
-    const p = _timePartsInZone(d, TOPSTEP_TRADE_TZ);
-    if (![p.year, p.month, p.day, p.hour].every(Number.isFinite)) return null;
-    const shifted = new Date(Date.UTC(
-        p.year,
-        p.month - 1,
-        p.day + (p.hour >= TOPSTEP_TRADE_DAY_START_HOUR_CT ? 1 : 0)
-    ));
-    return _dateKeyFromUtcParts(
-        shifted.getUTCFullYear(),
-        shifted.getUTCMonth() + 1,
-        shifted.getUTCDate()
-    );
+    return window.TPXTopstepEval.tradeDateKey(value);
 }
 
 function tradeRealizedDayKey(trade) {
@@ -8279,48 +7895,6 @@ function getSessionCodeFromDate(d) {
     return 'AH';
 }
 
-function getTradeExitBucket(trade) {
-    const reason = ((trade && trade.exit_reason) || '').toLowerCase();
-    if (reason === 'tp' || reason === 'tp_4r') return 'tp';
-    if (reason === 'trail_sl') return 'trail_sl';
-    if (reason === 'sl' || reason === 'be_sl') return 'sl';
-    return 'other';
-}
-
-function summarizeTradeOutcomes(trades) {
-    const summary = {
-        total: 0,
-        tp: 0, sl: 0, trail_sl: 0, other: 0,
-        // Sum of PnL per bucket — used to compute avg $ per exit type
-        tp_pnl: 0, sl_pnl: 0, trail_sl_pnl: 0, other_pnl: 0,
-        sessions: {},
-    };
-    SESSION_CODES.forEach(code => {
-        summary.sessions[code] = { total: 0, tp: 0, sl: 0, trail_sl: 0 };
-    });
-
-    (trades || []).forEach(trade => {
-        summary.total += 1;
-        const bucket = getTradeExitBucket(trade);
-        const pnl = +(trade && trade.pnl) || 0;
-        if (bucket === 'tp')            { summary.tp += 1;        summary.tp_pnl += pnl; }
-        else if (bucket === 'sl')       { summary.sl += 1;        summary.sl_pnl += pnl; }
-        else if (bucket === 'trail_sl') { summary.trail_sl += 1;  summary.trail_sl_pnl += pnl; }
-        else                            { summary.other += 1;     summary.other_pnl += pnl; }
-
-        const refIso = trade && (trade.entry_time || trade.exit_time);
-        if (!refIso) return;
-        const sessionCode = getSessionCodeFromDate(new Date(refIso));
-        if (!sessionCode || !summary.sessions[sessionCode]) return;
-        summary.sessions[sessionCode].total += 1;
-        if (bucket === 'tp') summary.sessions[sessionCode].tp += 1;
-        else if (bucket === 'sl') summary.sessions[sessionCode].sl += 1;
-        else if (bucket === 'trail_sl') summary.sessions[sessionCode].trail_sl += 1;
-    });
-
-    return summary;
-}
-
 // Compute summary metrics from a list of trades (used for backtest-day-span and live comparison)
 function _computeTradeStats(trades) {
     if (!trades || trades.length === 0) {
@@ -8331,7 +7905,6 @@ function _computeTradeStats(trades) {
             rr_ratio: 0, max_dd: 0, calmar: 0,
             days: 0, daily_pnl: {}, consec3Pass: false, maxStreak: 0,
             maxDayPnl: 0, maxDayPass: false, maxDayPct: 0,
-            tp: 0, sl: 0, trail_sl: 0, other: 0, session_tp: {},
         };
     }
     let total = 0;
@@ -8361,8 +7934,7 @@ function _computeTradeStats(trades) {
             daily[key] = (daily[key] || 0) + p;
         }
     }
-    const exitSummary = summarizeTradeOutcomes(sorted);
-    const count = exitSummary.total;
+    const count = sorted.length;
     const winRate = count ? wins.length / count : 0;
     const totalGain = wins.reduce((a,b)=>a+b, 0);
     const totalLoss = losses.reduce((a,b)=>a+b, 0);
@@ -8408,15 +7980,6 @@ function _computeTradeStats(trades) {
         maxDayPnl: maxDayPnl,
         maxDayPct: maxDayPct,
         maxDayPass: maxDayPass,
-        tp: exitSummary.tp,
-        sl: exitSummary.sl,
-        trail_sl: exitSummary.trail_sl,
-        other: exitSummary.other,
-        // Avg PnL per exit bucket — exposes the huge $ difference between TP / TRAIL / SL
-        avg_tp_pnl:       exitSummary.tp       ? exitSummary.tp_pnl       / exitSummary.tp       : 0,
-        avg_sl_pnl:       exitSummary.sl       ? exitSummary.sl_pnl       / exitSummary.sl       : 0,
-        avg_trail_sl_pnl: exitSummary.trail_sl ? exitSummary.trail_sl_pnl / exitSummary.trail_sl : 0,
-        session_tp: exitSummary.sessions,
     };
 }
 
@@ -8557,10 +8120,8 @@ function renderCapUi(mode) {
     }
     if (hint) {
         hint.textContent = usd > 0
-            ? (UI_LANG === 'zh'
-                ? ('(價距 ' + ticks + 't · ' + c.size + ' 口 → $' + c.tv.toFixed(2) + '/tick)')
-                : ('(price distance ' + ticks + 't · ' + c.size + ' contracts → $' + c.tv.toFixed(2) + '/tick)'))
-            : t('(per-trade profit cap · 0=unlimited)');
+            ? ('(price distance ' + ticks + 't · ' + c.size + ' contracts → $' + c.tv.toFixed(2) + '/tick)')
+            : '(per-trade profit cap · 0=unlimited)';
     }
 }
 
@@ -8667,15 +8228,6 @@ function renderMetrics(m, backtestTrades) {
     const totalPnlLabel = daySpan > 0 ? ('FINAL PNL (' + daySpan + 'd)') : 'FINAL PNL';
 
     const paren = (v) => liveStats ? ' <span class="metric-real">(' + v + ')</span>' : '';
-    const fmtSessionTriple = (stats, code) => {
-        const s = stats && stats.session_tp ? stats.session_tp[code] : null;
-        if (!s || !s.total) return '--';
-        return fmtTpSlTrail(
-            ((s.tp / s.total) * 100).toFixed(0) + '%',
-            ((s.sl / s.total) * 100).toFixed(0) + '%',
-            ((s.trail_sl / s.total) * 100).toFixed(0) + '%'
-        );
-    };
 
     // Profit Factor = gross gain / gross loss. PF>1 profitable, >2 strong.
     const profitFactorOf = (gain, loss) => Math.abs(loss || 0) > 0 ? Math.abs(gain || 0) / Math.abs(loss) : (gain > 0 ? Infinity : 0);
@@ -8683,32 +8235,6 @@ function renderMetrics(m, backtestTrades) {
                                : ((m.profit_factor != null) ? m.profit_factor : profitFactorOf(total_gain, total_loss));
     const pfLive = liveStats ? (liveStats.profit_factor != null ? liveStats.profit_factor : profitFactorOf(liveStats.total_gain, liveStats.total_loss)) : null;
     const fmtPF = (v) => (Number.isFinite(v) && v < 999) ? v.toFixed(2) : '∞';
-
-    // Exit-path distribution — % of trades that exited via each reason (NOT win rate)
-    const fmtTpSlTrail = (tp, sl, trail) => (
-        '<span style="color:var(--green);">' + tp + '</span>/' +
-        '<span style="color:var(--red);">' + sl + '</span>/' +
-        '<span style="color:var(--white);">' + trail + '</span>'
-    );
-    const fmtPctTriple = (s) => {
-        const t = s && s.trades ? s.trades : 0;
-        if (!t) return '--';
-        const tp = ((s.tp / t) * 100).toFixed(0);
-        const sl = ((s.sl / t) * 100).toFixed(0);
-        const tr = ((s.trail_sl / t) * 100).toFixed(0);
-        return fmtTpSlTrail(tp + '%', sl + '%', tr + '%');
-    };
-    // Avg $ per exit bucket — shows the magnitude gap between full TP, trail SL, full SL
-    const fmtAvgTriple = (s) => {
-        if (!s || !s.trades) return '--';
-        const sign = (v) => (v >= 0 ? '+' : '') + Math.round(v);
-        return fmtTpSlTrail(sign(s.avg_tp_pnl || 0), sign(s.avg_sl_pnl || 0), sign(s.avg_trail_sl_pnl || 0));
-    };
-    const fmtZoneExitBuckets = (stats) => {
-        if (!stats || !stats.trades) return '--';
-        return fmtPctTriple(stats);
-    };
-    const currentZoneStats = _computeTradeStats((windowed ? windowedTrades : allTrades).filter(t => t.zone_source === 'current'));
 
     // Week-to-week variation: σ of weekly PnL, with consistency (% of green weeks).
     // Lower CV + higher consistency = steadier equity curve, less luck-dependent.
@@ -8810,8 +8336,7 @@ function renderMetrics(m, backtestTrades) {
         : ('Max drawdown $' + max_dd.toFixed(0) + ' — over $1,000, which is the order of the daily loss '
            + 'limit on most Topstep accounts. Size down or tighten the stop.');
 
-    // 1.0.8: 佈局重排 — WORST DAY 接在 TOTAL LOSS 後;WIN RATE 全寬置於
-    // EXIT % 之前;CURRENT ZONE 全寬獨立一行 → ASIA..RTH 兩兩自動對齊。
+    // Layout is kept compact by pairing the primary account metrics in two columns.
     const items = [
         // 1.0.10: 版面兩兩配對(.metrics-grid 是兩欄,順序即配對):
         //   FINAL PNL | MONTHLY   ·  TOTAL GAIN | TOTAL LOSS  ·  BEST | WORST DAY
@@ -8911,19 +8436,6 @@ function renderMetrics(m, backtestTrades) {
                 value: (sn ? (sw / sn * 100).toFixed(1) : '--') + '%' + paren(sn + ' tr'),
                 cls: '' };
         })(),
-        { label: 'EXIT % TP/SL/TRAIL',
-          value: fmtPctTriple(backtestStats) + paren(liveStats ? fmtPctTriple(liveStats) : ''),
-          cls: '' },
-        { label: 'AVG $ TP/SL/TRAIL',
-          value: fmtAvgTriple(backtestStats) + paren(liveStats ? fmtAvgTriple(liveStats) : ''),
-          cls: '' },
-        { label: 'CURRENT ZONE TP/SL/TRAIL', full: true,
-          value: fmtZoneExitBuckets(currentZoneStats),
-          cls: '' },
-        { label: 'ASIA TP/SL/TRAIL', value: fmtSessionTriple(backtestStats, 'ASIA'), cls: '' },
-        { label: 'EURO TP/SL/TRAIL', value: fmtSessionTriple(backtestStats, 'EURO'), cls: '' },
-        { label: 'PRE TP/SL/TRAIL',  value: fmtSessionTriple(backtestStats, 'PRE'), cls: '' },
-        { label: 'RTH TP/SL/TRAIL',  value: fmtSessionTriple(backtestStats, 'RTH'), cls: '' },
     ];
 
     grid.innerHTML = items.map(i => `
@@ -9110,8 +8622,7 @@ function renderExecuteTrades(trades) {
 function classifyZoneType(z) {
     if (!z.formed_at) return '-';
     const code = getSessionCodeFromDate(new Date(z.formed_at));
-    // 1.0.9 i18n: EN 顯示代碼,繁中經 t() 對照(亞盤/歐盤/盤前/早盤/盤後)
-    return ['ASIA', 'EURO', 'PRE', 'RTH', 'AH'].indexOf(code) >= 0 ? t(code) : '-';
+    return ['ASIA', 'EURO', 'PRE', 'RTH', 'AH'].indexOf(code) >= 0 ? code : '-';
 }
 
 function zpad(n) { return n < 10 ? '0'+n : n; }
@@ -9215,16 +8726,16 @@ function _applyOfflineUi() {
     }
     // CONNECT 保持可用 —— OFFLINE 只影響 K 棒抓取,不影響帳號連線
     // 灰色 = 刻意離線,不是故障。紅色留給「連線失敗」。
-    if (OFFLINE_MODE) setStatus('off', 'OFFLINE — K 棒用本機資料');
+    if (OFFLINE_MODE) setStatus('off', 'OFFLINE — using local candles');
 }
 
 function toggleOfflineMode() {
     OFFLINE_MODE = !OFFLINE_MODE;
     _applyOfflineUi();
     if (OFFLINE_MODE) {
-        log('OFFLINE MODE 開啟 —— 帳號仍可連線,但不抓 K 棒(回測使用本機 store)', 'warn');
+        log('OFFLINE MODE enabled — account connections remain available, but candle data uses the local store.', 'warn');
     } else {
-        log('OFFLINE MODE 關閉 —— 恢復增量抓取 K 棒', 'info');
+        log('OFFLINE MODE disabled — incremental candle fetching resumed.', 'info');
     }
 }
 
@@ -9367,7 +8878,7 @@ function renderPnlCurve() {
         ctx.fillStyle = C.text2;
         ctx.font = '12px "IBM Plex Mono", monospace';
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(t('No trades yet — run BACKTEST or load LIVE trades'), W / 2, H / 2);
+        ctx.fillText('No trades yet — run BACKTEST or load LIVE trades', W / 2, H / 2);
         return;
     }
 
@@ -9664,7 +9175,7 @@ async function _calFetchLive(force) {
 
 // ════════════════════════════════════════════════════════════════════════
 // RESEARCH robustness (1.0.9) — Monte Carlo · Walk-Forward · Slippage.
-// Replaces the old Hunter/Sweep/Liquidity summary. Runs entirely client-side
+// Replaces the old Hunter/Liquidity summary. Runs entirely client-side
 // on the latest backtest trades (cache-restored results work too); live fills
 // already loaded for the Research view feed the slippage measurement.
 // ════════════════════════════════════════════════════════════════════════
@@ -9715,7 +9226,7 @@ const _ROB_SLIP_LEVELS = [1, 2, 4, 8];
 
 // 1.0.10p: Monte Carlo and walk-forward used to be computed right here.
 // They now live in backend/backtest/robustness.py, because a browser-only
-// implementation meant the sweep could not gate on these numbers, research
+// implementation meant the research path could not gate on these numbers, so
 // scripts each rewrote their own bootstrap, and pytest could not reach any of
 // it. The old one also used Math.random(), so the same trades produced
 // different percentiles on every render and no reported figure could be
@@ -9783,7 +9294,7 @@ function _robHelpDot(text) {
     const value = String(text || '');
     return '<button type="button" class="help-dot rob-help-dot"'
         + ' aria-expanded="false" aria-describedby="global-help-tooltip"'
-        + ' data-tip-en="' + _attr(value) + '" data-tip-zh="' + _attr(value) + '">?</button>';
+        + ' data-tip-en="' + _attr(value) + '">?</button>';
 }
 
 function _robAlert(severity, tip) {
@@ -10182,10 +9693,10 @@ function _robTopstepHtml(analysis, slipTicks) {
         + '</div>';
 }
 
-// 1.0.10p: _robWalkForward lived here and sweep.py had a second, independent
+// 1.0.10p: _robWalkForward lived here and the standalone research worker had a second, independent
 // three-way split. Two implementations of one concept, with nothing keeping
 // them in step. backend.backtest.robustness.walk_forward is now the only one
-// this panel uses; test_robustness.py pins it against sweep.py's.
+// this panel uses; test_robustness.py pins it against the worker's.
 
 // Measured slip: live fill vs the open of its 5m bar (the FACTOR backtest fill
 // assumption). Market-order fills land <120s after the 5m boundary and are not
@@ -10229,7 +9740,7 @@ function _robMeasureSlip() {
 
 function _robBadge(pass, passText, failText) {
     return '<span class="rob-badge ' + (pass ? 'institution-pos' : 'institution-neg') + '">'
-        + t(pass ? passText : failText) + '</span>';
+        + (pass ? passText : failText) + '</span>';
 }
 
 async function renderResearchRobustness(force) {
@@ -10239,7 +9750,7 @@ async function renderResearchRobustness(force) {
     const trades = (backtestData && backtestData.trades)
         ? backtestData.trades.filter(tr => tr.pnl != null) : [];
     if (!trades.length) {
-        status.textContent = t('Run a backtest first — analysis uses the latest backtest trades.');
+        status.textContent = 'Run a backtest first — analysis uses the latest backtest trades.';
         content.innerHTML = '';
         return;
     }
@@ -10254,10 +9765,10 @@ async function renderResearchRobustness(force) {
     // 1.0.10p: every number below now comes from POST /api/research/robustness.
     // Bail out visibly rather than silently rendering a half-empty panel — a
     // blank card used to be indistinguishable from "no edge".
-    status.textContent = t('Evaluating…');
+    status.textContent = 'Evaluating…';
     const rob = await _robFetchBackend(trades, slipLevels, !!force);
     if (!rob || !rob.stats) {
-        status.textContent = t('Robustness service unavailable — see SYSTEM LOG.');
+        status.textContent = 'Robustness service unavailable — see SYSTEM LOG.';
         content.innerHTML = '';
         return;
     }
@@ -10276,7 +9787,7 @@ async function renderResearchRobustness(force) {
     // 1.0.10: 月均是主要數字,總額退居括號 —— 不同長度的回測用總額比較沒有意義。
     const spanMonths = rob.span_months;
     const monthly = rob.monthly_pnl;
-    status.textContent = t('Latest backtest · metrics shown below.');
+    status.textContent = 'Latest backtest · metrics shown below.';
 
     const topstepSlipPerContract = Math.max(0, Number(slip.usedTicks) || 0) * tickVal;
     const topstep = _robTopstepAnalysis(trades, topstepSlipPerContract, !!force);
@@ -10301,7 +9812,7 @@ async function renderResearchRobustness(force) {
     };
     let mcHtml;
     if (!mc) {
-        mcHtml = '<div class="institution-status">' + t('Not enough trades (need ≥10).') + '</div>';
+        mcHtml = '<div class="institution-status">Not enough trades (need ≥10).</div>';
     } else {
         const perMo = (v) => (spanMonths && spanMonths > 0)
             ? _robUsd(v / spanMonths) : '—';
@@ -10342,7 +9853,7 @@ async function renderResearchRobustness(force) {
     };
     let wfHtml;
     if (!wf) {
-        wfHtml = '<div class="institution-status">' + t('Not enough trades (need ≥6).') + '</div>';
+        wfHtml = '<div class="institution-status">Not enough trades (need ≥6).</div>';
     } else {
         // 每段長度相同(依時間三等分),所以段月數 = 總月數 / 3
         const segMonths = spanMonths ? spanMonths / 3 : null;
@@ -10453,11 +9964,11 @@ async function renderResearchRobustness(force) {
         + '</div>';
     content.innerHTML = summaryHtml
         + '<div class="institution-grid">'
-        + '<div class="institution-card rob-mc-card"><h3>' + t('MONTE CARLO')
+        + '<div class="institution-card rob-mc-card"><h3>MONTE CARLO'
         + (mc ? ' ' + _robBadge(mc.pass, 'PASS', 'FAIL') : '') + '</h3>' + mcHtml + '</div>'
-        + '<div class="institution-card rob-wf-card"><h3>' + t('WALK-FORWARD')
+        + '<div class="institution-card rob-wf-card"><h3>WALK-FORWARD'
         + (wf ? ' ' + _robBadge(wf.pass, 'PASS', 'FAIL') : '') + '</h3>' + wfHtml + '</div>'
-        + '<div class="institution-card institution-wide rob-slip-card"><h3>' + t('SLIPPAGE')
+        + '<div class="institution-card institution-wide rob-slip-card"><h3>SLIPPAGE'
         + ' ' + _robBadge(usedStats.pf >= 1.5, 'PF OK AFTER SLIP', 'PF DEGRADES BELOW 1.5') + '</h3>'
         + slipHtml + '</div>'
         + topstepHtml
@@ -10649,9 +10160,6 @@ function _restoreBacktestCache() {
 }
 // Script tag is at end of <body>, so the DOM is already parsed here.
 _restoreBacktestCache();
-// 1.0.9: 啟動即載入上一次 sweep 結果 → PRESETS 分頁一開就有可排序/可加入的榜單
-try { loadSweepResults(); } catch (e) {}
-
 // ════════════════════════════════════════════════════════════════════════
 // 1.0.9: Live account slots - ACCOUNT MAIN / ACCOUNT MINOR.
 //   GO LIVE 對真實帳號下單,由使用者手動觸發;app 絕不自動下單。
@@ -10776,7 +10284,9 @@ async function liveSlotGoLive(slot) {
     const preset = _presetsCache.presets[presetName];
     const body = Object.assign({}, preset, { account_id: accId });
     body.strategy = normalizeStrategyName(body.strategy);
-    if (!body.contract_id) body.contract_id = fv('contract-id', 'CON.F.US.MNQ.U26');
+    if (!body.contract_id) {
+        body.contract_id = document.getElementById('contract-id')?.value || defaultContractId();
+    }
     try {
         const resp = await fetch(API + '/live/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const data = await resp.json();
@@ -10910,294 +10420,6 @@ function pollLiveSlots(options) {
 
 
 // ════════════════════════════════════════════════════════════════════════
-// UI language switch (1.0.9) — EN ⇄ 繁體中文.
-// Static chrome is translated by walking text nodes against I18N_ZH (original
-// English kept on each node, so switching back is lossless). Dynamic strings
-// rendered by JS go through t(). A MutationObserver re-translates any DOM the
-// app renders later (tables, panels) while Chinese is active.
-// ════════════════════════════════════════════════════════════════════════
-
-const UI_LANG_KEY = 'ancserTPX.uiLang';
-let UI_LANG = 'en';
-try { UI_LANG = localStorage.getItem(UI_LANG_KEY) === 'zh' ? 'zh' : 'en'; } catch (e) {}
-
-const I18N_ZH = {
-    // header / tabs
-    'Research': '研究', 'Backtest': '回測', 'Live': '實盤',
-    'USERNAME': '帳號', 'API KEY': 'API 金鑰', 'CONTRACT': '合約', 'CONTRACT ID': '合約代碼',
-    'INTERVAL': '週期', 'BARS': 'K棒數', 'FETCH FULL DATA': '抓取完整數據', 'CONNECT': '連線',
-    'MNQ (Micro NQ — $2/pt)': 'MNQ(微型 NQ — $2/點)', 'NQ (Mini NQ — $20/pt)': 'NQ(迷你 NQ — $20/點)',
-    'CUSTOM…': '自訂…', 'MNQ ($2/pt)': 'MNQ($2/點)', 'NQ ($20/pt)': 'NQ($20/點)',
-    'DISCONNECTED': '未連線', 'CONNECTED': '已連線',
-    // sidebar
-    'ENVIRONMENT': '環境', 'PRESET': '預設組', 'SAVE': '儲存', 'DEL': '刪除',
-    'SIZE': '手數', 'MODEL': '模型', 'RETRAIN': '重新訓練',
-    'TREND': 'TREND 趨勢突破',
-    'DAY ZONE Prev-Day VA Revert': 'DAY ZONE 前日VA回歸',
-    'DISTRIBUTION Rolling Fade': 'DISTRIBUTION 滾動分佈回歸',
-    'MIN PROB': '最低勝率', 'EV FLOOR': 'EV 下限',
-    'OFF (use win-rate gate)': 'OFF(用勝率門檻)', '≥0 (all positive EV)': '≥0(所有正期望值)',
-    'BAND (ticks)': '帶寬(ticks)', 'MIN DISTINCT TF': '最少獨立TF',
-    '(library · select = active)': '(版本庫 · 選擇即啟用)',
-    '(fixed 1–6 · 0.25 step)': '(固定 1–6 · 支援 0.25)',
-    'RISK MANAGEMENT': '風險管理', 'MAX RISK': '最大風險',
-    'TRAIL TP TRIGGER': '移動停利觸發', 'SL REF TF': 'SL 參考TF',
-    'LARGEST': '最大', 'SMALLEST': '最小',
-    'SESSION MAX TRADE LIMIT': '單一時段限單', 'MARKET LIMIT': '交易時段',
-    'ALL': '全部', 'ASIA + PRE': '亞盤+盤前',
-    'ASIA': '亞盤', 'EURO': '歐盤', 'PRE': '盤前', 'RTH': '早盤', 'AH': '盤後',
-    'MODEL SETTINGS': '模型設定', 'ENTRY TRIGGER': '進場觸發',
-    '(fixed by model)': '(底層模型決定,不可改)',
-    'TIMEFRAMES': '時間框架', '(pick 1 = single; pick 2+ = overlap)': '(選1=單一;選2+=重疊)',
-    'TRADE ZONE': '交易區間', 'Merged overlap': '合併重疊區', 'Smallest selected TF': '最小已選TF',
-    'AREA %': '區間 %', 'CONFIRM': '確認K數',
-    'DAY ZONE ENTRY MODE': 'DAY ZONE 進場模式',
-    'LIMIT resting at VAL (safest)': 'LIMIT 直接掛 VAL(最穩)',
-    'REJECTION sweep-back market': 'REJECTION 掃回後市價',
-    'OR15 open fake-break (2-way market)': 'OR15 開盤假突破(雙向·市價)',
-    'FACTOR FAMILY': '因子族', 'SIDE': '方向', 'BOTH': '雙向',
-    'LONG ONLY': '只做多', 'SHORT ONLY': '只做空',
-    'SIGNAL MODE': '訊號模式', 'NORMAL': '標準', 'EARLY': '提早',
-    'VA FILTER': 'VA 過濾', 'OUTSIDE VA80': 'VA80 之外',
-    'SL ANCHOR': 'SL 錨點', 'SL INPUT': 'SL 參數', 'LONG SL': '多單 SL',
-    'TP ANCHOR': 'TP 錨點', 'FIXED RATIO': '固定比例', 'LADDER RATIO': '階梯比例',
-    'TP INPUT': 'TP 參數', 'LADDER INPUT': '階梯參數', '(engine fixed)': '(引擎固定)',
-    'TRAIL SL': '移動停損',
-    // Canonical-English strategy controls (BT and Live share these keys).
-    'EMAPMO THRESHOLD': 'EMAPMO 門檻',
-    '-0.050 LOOSE': '-0.050 鬆', '-0.100 ORIGINAL': '-0.100 原始', '-0.120 TIGHT': '-0.120 緊',
-    'OBSERVATION WINDOW': '觀察窗', '(N minutes after open)': '(開盤後 N 分鐘)',
-    '15 minutes': '15 分鐘', '30 minutes (22/22 overlap)': '30 分鐘 (交集 22/22)',
-    '45 minutes': '45 分鐘', '60 minutes': '60 分鐘', '90 minutes': '90 分鐘',
-    'ENTRY HOUR': '進場時',
-    '(UTC · negligible difference at 17–20)': '(UTC · 17~20 差異極小)',
-    'Discord alerts · QQQ→MNQ · SPY→MES · circles are large-only; π is medium/small':
-        'Discord 推播驅動 · QQQ→MNQ · SPY→MES · 圈圈只有大尺寸、π 只有中小',
-    'SIGNAL SET': '使用訊號', '(level combination)': '(級別組合)',
-    'PI SIGNAL LEVELS': 'PI 訊號級別', 'PI SIGNAL LEVELS (SIGNAL SET)': '使用訊號 · PI 級別',
-    'LONG': '做多', 'SHORT': '做空',
-    'PI': 'π', 'LEVEL 2': '級別 2', 'LEVEL 1': '級別 1',
-    'LONG ONLY · π LEVELS (RECOMMENDED)': '只做多 · π 級別 (推薦)',
-    'LONG ONLY · ALL BLUE (INCLUDES LIGHT-BLUE CIRCLE)': '只做多 · 全部藍系 (含淡藍圈)',
-    'π LEVELS + DARK-BLUE CIRCLE (INCLUDES SHORTS)': 'π 級別 + 深藍圈 (含做空)',
-    'PURE π ONLY (CYAN π / PINK π)': '只做純 π (青π / 粉π)',
-    'ALL BLUE/PURPLE (INCLUDES WEAK SIGNALS)': '全部藍/紫 (含弱訊號)',
-    'DIRECTION': '方向', '(tested shorts lose net · PF 0.91)': '(空方實測淨虧 PF 0.91)',
-    'LONG ONLY (RECOMMENDED)': '只做多 (推薦)', 'LONG + SHORT': '多空皆做',
-    'MAX SIGNAL AGE': '訊號過期上限',
-    '(Discord source timestamp · discard older)': '(Discord 發文時間 · 超過丟棄)',
-    'RTH 06:30–13:00 PT impulse leg → move within range → wait for a pullback during the entry window':
-        '白天 RTH 06:30–13:00 PT 量推動腿 → 漲幅落在區間內 → 於進場時窗等回撤',
-    'MOVE MIN': '漲幅下限', '(% · 0 = no filter)': '(% · 0 = 不篩選)',
-    '0 (NO FILTER)': '0 (不篩選)',
-    'MOVE MAX': '漲幅上限', '(% · 0 = unlimited)': '(% · 0 = 無上限)',
-    '0 (UNLIMITED)': '0 (無上限)',
-    'ENTRY FIB': '進場 Fib', '(1.0 = impulse-leg endpoint)': '(1.0 = 推動腿終點)',
-    '0.854 (VERY SHALLOW)': '0.854 (極淺)',
-    '0.786 (94% OF OVERNIGHT SESSIONS TOUCH)': '0.786 (94% 夜盤會觸及)',
-    '0.382 (G5 CROSS-SYMBOL WINNER)': '0.382 (G5 雙商品勝出)',
-    'FIB ANCHOR': 'Fib 錨點', '(how the impulse leg is measured)': '(推動腿怎麼量)',
-    'SWING LOW → HIGH': '擺動低 → 高', 'RTH OPEN → CLOSE (MES FAILS)': 'RTH open → close (MES 全崩)',
-    'ENTRY WINDOW': '進場時窗', '(ET · pullback limit-order window)': '(紐約時間 · 掛單等回撤的時段)',
-    'FULL OVERNIGHT (4pm → next day 9:30am ET)': '整個夜盤 (紐約 4pm → 隔日 9:30am)',
-    '6pm – 9pm ET': '紐約 6pm – 9pm', '6pm – MIDNIGHT ET': '紐約 6pm – 午夜',
-    '9pm – 3am ET': '紐約 9pm – 3am',
-    '6pm – 3am ET (FULL ASIA)': '紐約 6pm – 3am (ASIA 全段)',
-    '3am – 9am ET (EURO + PRE)': '紐約 3am – 9am (EURO + PRE)',
-    'Directional PI exits · 0 = OFF for no time exit': 'PI 多空獨立出場 · 0 = 關閉時間出場',
-    'SHORT SL': '空單 SL', 'LONG TIME EXIT': '多單時間出場', 'SHORT TIME EXIT': '空單時間出場',
-    '(minutes · 0=OFF)': '(分鐘 · 0=關閉)', '0 (OFF)': '0 (關閉)',
-    '(must be < entry fib)': '(必須 < 進場 fib)',
-    '0 (IMPULSE-LEG START)': '0 (推動腿起點)',
-    'SL < ENTRY < TP, OR 0 TRADES': 'SL < 進場 < TP,否則 0 筆交易',
-    '(must be > entry fib)': '(必須 > 進場 fib)',
-    '1.000 (IMPULSE-LEG END)': '1.000 (推動腿終點)',
-    '1.272 (EXTENSION)': '1.272 (延伸)',
-    '(per-trade profit cap · 0=unlimited)': '(單筆獲利上限 · 0=不限)',
-    'Determined by SL fib': '由 SL fib 決定',
-    // Chart-side labels use the same canonical-English source convention.
-    'PI π / CIRCLES': 'PI π / 圈', 'TRADE BOXES SL/TP': '交易框 SL/TP',
-    'MREV BUBBLES': 'MREV 泡泡', 'KDJMA DOTS': 'KDJMA 圓點',
-    'INTRAMOM ARROWS': 'INTRAMOM 箭頭', 'VAH/VAL/POC LINES': 'VAH/VAL/POC 線',
-    'BETAFIB LEVELS': 'BETAFIB 水位', 'DAY ZONE LEVELS': 'DAY ZONE 水位',
-    'PI CYAN/PINK LONG/SHORT': 'PI 青/粉 LONG/SHORT',
-    'PI DARK BLUE=HIGH POWER / LIGHT BLUE=LOW POWER': 'PI 深藍=大威力 / 淡藍=小威力',
-    'DAILY MAX TRADE LIMIT': '每日最大交易數',
-    'FULL LOSS LOCK': '日虧鎖單',
-    '(bot only · N daily losses stop new orders, 0=OFF)': '(僅程序交易;當日虧 N 單停新單,0=OFF)',
-    'FULL WIN LOCK': '日贏落袋',
-    '(bank N daily wins then stop, 0=OFF)': '(當日贏 N 單落袋停手,0=OFF)',
-    'HIGH VOLATILITY LOCK': '高波動鎖',
-    '(prev-day high vol pauses today, 0=OFF)': '(前日高波動→今日停手,0=OFF)',
-    'last 10d': '近10日', 'last 15d': '近15日', 'last 20d': '近20日',
-    'EXECUTE BACKTEST': '執行回測', 'SWEEP': '掃描', 'SWEEP MODEL': '掃描模型',
-    'MNQx1 + risk locked': 'MNQx1 + 風控鎖定',
-    'ALL MODELS': '全部模型', 'FACTOR ONLY': '只掃 FACTOR', 'TREND ONLY': '只掃 TREND',
-    'DAY ZONE ONLY': '只掃 DAY ZONE', 'DISTRIBUTION ONLY': '只掃 DISTRIBUTION',
-    'PERFORMANCE': '績效', 'BACKTEST': '回測',
-    // live panel
-    'ACCOUNT MAIN': '主帳號', 'ACCOUNT MINOR': '副帳號',
-    'GO LIVE': '啟動實盤', 'STOP': '停止', 'FLAT': '平倉',
-    '-- SELECT ACCOUNT --': '── 選擇帳號 ──', '-- SELECT PRESET --': '── 選擇預設組 ──',
-    'STATUS:': '狀態:', 'PHASE:': '階段:', 'MODE:': '模式:', 'MARKET:': '時段:',
-    'BOT LOSS LOCK:': '程序虧損鎖:', 'VOLATILITY GATE:': '波動閘:', 'DAILY PNL:': '當日損益:',
-    'STRAT:': '策略:', 'POSITION:': '持倉:', 'CAPITAL:': '資金:',
-    'RISK GATES': '風控閘', 'STATUS': '狀態', 'ACTIVE ZONE': '活躍區間',
-    'ML DECISION BASIS': 'ML 決策依據',
-    // bottom panel
-    'PRESETS': '預設組', 'BACKTEST TRADES': '回測交易', 'EXECUTE TRADES': '實盤成交',
-    'PNL CURVE': '損益曲線', 'SYSTEM LOG': '系統日誌',
-    'SWEEP RESULTS · ALL MODELS · SORTED BY PF': '掃描結果 · 全模型 · 依 PF 排序',
-    'ACC ★ pass only': '只顯示 ACC ★ 通過',
-    'No results yet — run sidebar': '尚無結果 — 用側欄', '(~10–15 min).': '(約 10–15 分鐘)。',
-    'No ACC ★ pass variants — untick the filter to see all.': '沒有通過 ACC ★ 的變體 — 取消勾選以看全部。',
-    'pass ACC ★': '通過 ACC ★', '★ pass': '★通過', 'all': '全部', 'variants': '變體',
-    'sort': '排序', 'click column header to change': '點欄位標題換排序',
-    'SYMBOL': '商品', 'ENTRY TIME': '進場時間', 'EXIT TIME': '出場時間', 'DURATION': '持倉時長',
-    'ENTRY': '進場價', 'EXIT': '出場價', 'P&L': '損益', 'COMMISSION': '佣金', 'FEES': '費用',
-    'DIR': '方向', 'WHY': '原因',
-    'No trades yet — run BACKTEST or load LIVE trades': '尚無成交 — 先跑回測或載入實盤交易',
-    // research view
-    'Today': '今天', '⟳ Live': '⟳ 實盤',
-    'BACKTEST P/L': '回測損益', 'LIVE P/L': '實盤損益', 'DIFF vs BT': '實盤 vs 回測',
-    'Sun': '日', 'Mon': '一', 'Tue': '二', 'Wed': '三', 'Thu': '四', 'Fri': '五', 'Week': '週',
-    'WEEKLY INCOME': '週收益', 'Backtest vs Live Curve': '回測 vs 實盤曲線',
-    'Run a backtest to compare curves.': '先跑回測以比較曲線。',
-    'ORDER COMPARISON': '訂單比對', 'Selected Preset vs Live Execution': '選定預設組 vs 實盤執行',
-    'Historical live rows may not include preset names.': '歷史實盤列可能沒有預設組名稱。',
-    'RESEARCH': '研究',
-    'Robustness': '穩健性',
-    'Latest backtest · metrics shown below.': '最近一次回測 · 指標如下。',
-    'TRADES': '交易數', 'DATE': '日期', 'PF': 'PF',
-    'PNL/MO': '月均損益', 'MAXDD': '最大回撤',
-    'PNL / MO': '月均損益', 'MAX DD': '最大回撤',
-    'Refresh': '刷新',
-    'Run a backtest first — analysis uses the latest backtest trades.': '先跑回測 — 分析使用最近一次回測交易。',
-    'trades': '筆交易',
-    'Not enough trades (need ≥10).': '交易數不足(需 ≥10)。',
-    'Not enough trades (need ≥6).': '交易數不足(需 ≥6)。',
-    'MONTE CARLO': '蒙地卡羅', 'WALK-FORWARD': '走查驗證', 'segments': '段',
-    'SLIPPAGE': '滑價',
-    'PASS': '通過', 'FAIL': '未過',
-    'PF OK AFTER SLIP': '滑價後 PF 合格', 'PF DEGRADES BELOW 1.5': '滑價後 PF < 1.5',
-    'Total PnL P5 / P50 / P95': '總損益 P5 / P50 / P95',
-    // 1.0.10: 月均損益 —— 不同長度的回測用總額比較沒有意義
-    'PnL/mo': '月均損益', 'PnL/mo P5 / P50 / P95': '月均損益 P5 / P50 / P95',
-    'total': '總計', 'months': '個月',
-    'P(total loss)': 'P(總體虧損)', 'maxDD P50 / P95': '最大回撤 P50 / P95',
-    'P(maxDD > $2k)': 'P(回撤 > $2k)', 'PF P5': 'PF P5',
-    'Segment': '分段', 'Win%': '勝率', 'original': '原始',
-    'Measured market-entry slip': '實測市價進場滑價',
-    'anchor — documented EMAPMO fill; market-like live sample': '錨點 — 有據 EMAPMO 成交;市價特徵樣本',
-    'median of live market-like fills': '實盤市價特徵成交中位數',
-    'RT slip': '往返滑價',
-    'Market entries pay the full slip each round turn (bracket follows the fill). Limit entries skip entry slip but miss fills instead. Small-SL variants lose PF fastest — check the 8t+ rows before moving a model to market entry.':
-        '市價進場每筆承擔全額往返滑價(bracket 跟隨成交價);限價進場無進場滑價但會漏單。小 SL 變體 PF 掉最快 — 改市價進場前先看 8t 以上列。',
-};
-
-function t(s) {
-    return (UI_LANG === 'zh' && I18N_ZH[s]) || s;
-}
-
-function _i18nTranslateTextNode(n) {
-    if (UI_LANG === 'zh') {
-        const raw = n.__i18nEn != null ? n.__i18nEn : n.nodeValue;
-        const key = String(raw).trim();
-        if (!key) return;
-        const zh = I18N_ZH[key];
-        if (zh) {
-            if (n.__i18nEn == null) n.__i18nEn = n.nodeValue;
-            n.nodeValue = String(raw).replace(key, zh);
-        }
-    } else if (n.__i18nEn != null) {
-        n.nodeValue = n.__i18nEn;
-        n.__i18nEn = null;
-    }
-}
-
-function _i18nTranslateTree(root) {
-    if (!root) return;
-    if (root.nodeType === 3) { _i18nTranslateTextNode(root); return; }
-    if (root.nodeType !== 1 && root.nodeType !== 9) return;
-    if (root.id === 'log-container' || (root.closest && root.closest('#log-container'))) return;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-        acceptNode(n) {
-            const p = n.parentNode;
-            if (!p) return NodeFilter.FILTER_REJECT;
-            if (p.nodeName === 'SCRIPT' || p.nodeName === 'STYLE') return NodeFilter.FILTER_REJECT;
-            if (p.closest && p.closest('#log-container')) return NodeFilter.FILTER_REJECT;
-            return NodeFilter.FILTER_ACCEPT;
-        }
-    });
-    const nodes = [];
-    while (walker.nextNode()) nodes.push(walker.currentNode);
-    nodes.forEach(_i18nTranslateTextNode);
-}
-
-function applyLanguage() {
-    document.documentElement.lang = UI_LANG === 'zh' ? 'zh-TW' : 'en';
-    _i18nTranslateTree(document.body);
-    const btn = document.getElementById('lang-toggle');
-    if (btn) {
-        const isZh = UI_LANG === 'zh';
-        /* The optical layer is prepended inside the live thumb and contains a
-           stage clone with its own glyph. Stay on the direct live path. */
-        const glyph = btn.querySelector(':scope > .lang-thumb > .lang-glyph');
-        btn.dataset.locale = UI_LANG;
-        /* Before Glass boots, .on seeds the tactile controller. Afterwards
-           its public setter keeps the spring position and UI_LANG aligned
-           without re-entering the controller callback. */
-        if (btn.tpxSetState) btn.tpxSetState(isZh);
-        else btn.classList.toggle('on', isZh);
-        btn.setAttribute('aria-checked', isZh ? 'true' : 'false');
-        btn.setAttribute('aria-label', isZh
-            ? '介面語言：繁體中文。切換為英文。'
-            : 'Interface language: English. Switch to Traditional Chinese.');
-        btn.title = isZh ? '切換為英文' : 'Switch to Traditional Chinese';
-        if (glyph) glyph.textContent = isZh ? '中' : 'En';
-    }
-    const layerButton = document.getElementById('chart-layer-btn');
-    if (layerButton) {
-        const label = UI_LANG === 'zh' ? '圖層' : 'Layers';
-        layerButton.title = label;
-        layerButton.setAttribute('aria-label', label);
-    }
-    ['bt', 'live'].forEach((mode) => {
-        syncStrategyDescription(mode);
-        renderCapUi(mode);
-        ['sl', 'tp'].forEach((kind) => {
-            const rule = document.getElementById('factor-' + kind + '-rule-' + mode);
-            if (rule && rule.value === 'fib') onFactorRiskAnchorChange(mode, kind);
-        });
-    });
-    document.querySelectorAll('.help-dot').forEach(_updateHelpDotLabel);
-    if (_activeHelpDot) showHelpTooltip(_activeHelpDot);
-}
-
-function toggleLanguage() {
-    UI_LANG = UI_LANG === 'zh' ? 'en' : 'zh';
-    try { localStorage.setItem(UI_LANG_KEY, UI_LANG); } catch (e) {}
-    applyLanguage();
-    // re-render views whose strings are built in JS with t()
-    try { renderSweepTable(); } catch (e) {}
-    try {
-        const cal = document.getElementById('calendar-view');
-        if (cal && !cal.classList.contains('hidden')) renderCalendar();
-    } catch (e) {}
-}
-
-// 動態渲染(表格/面板)在中文模式下持續翻譯;nodeValue 變更不觸發 childList,
-// 不會自迴圈。
-const _i18nObserver = new MutationObserver(muts => {
-    if (UI_LANG !== 'zh') return;
-    for (const m of muts) {
-        if (m.addedNodes) m.addedNodes.forEach(node => _i18nTranslateTree(node));
-    }
-});
-_i18nObserver.observe(document.body, { childList: true, subtree: true });
-applyLanguage();
-
-
 // ════════════════════════════════════════════════════════════════════════
 // 1.0.9: EMAPMO 進場門檻滑桿
 // PMO 由「百分比」ROC 疊三層 EMA 得到,門檻卻是寫死的絕對值(-0.100),
@@ -11260,20 +10482,22 @@ function updateRiskCapHint(mode) {
     };
     const risk = num('max-risk-ticks');
     const prof = num('max-profit-ticks');
-    if (!risk && !prof) { hint.textContent = '(兩者皆 OFF — 無上限)'; return; }
+    if (!risk && !prof) { hint.textContent = '(both OFF — no cap)'; return; }
     const cEl = document.getElementById('contract-' + mode);
     const cid = String((cEl && cEl.value) || '');
     // CON.F.US.<SYM>.<expiry> — ENQ = 迷你 NQ($20/pt),MNQ 微型($2),MES 微型 ES($5)
-    const sym = (cid.split('.')[3] || 'MNQ').toUpperCase();
-    const pv = { MNQ: 2, ENQ: 20, NQ: 20, MES: 5, ES: 50 }[sym] || 2;
+    const sym = (cid.split('.')[3] || cid || 'MNQ').toUpperCase();
+    const spec = SYSTEM_CONTRACT_SPECS[sym] || SYSTEM_CONTRACT_SPECS.MNQ || {};
+    const pv = Number(spec.point_value || 2);
+    const tickSize = Number(spec.tick_size || 0.25);
     const sEl = document.getElementById('size-' + mode);
     const size = (sEl ? parseInt(sEl.value, 10) : 1) || 1;
-    const tv = 0.25 * pv * size;
+    const tv = tickSize * pv * size;
     const parts = [];
     // 1.0.9: 兩個上限各自獨立夾,不再等比縮放 —— 壓 TP 不會動到 SL
-    if (risk) parts.push('風險 ≤ $' + Math.round(risk * tv));
-    if (prof) parts.push('獲利 ≤ $' + Math.round(prof * tv));
-    hint.textContent = '(' + parts.join(' · ') + ' @ ' + size + ' 口 · SL/TP 各自獨立)';
+    if (risk) parts.push('Risk ≤ $' + Math.round(risk * tv));
+    if (prof) parts.push('Profit ≤ $' + Math.round(prof * tv));
+    hint.textContent = '(' + parts.join(' · ') + ' @ ' + size + ' contracts · SL/TP independent)';
 }
 
 
@@ -11287,9 +10511,9 @@ function setPerfSource(info) {
     const who = info.preset || info.strategy || '?';
     const when = info.saved_at ? info.saved_at.slice(0, 16).replace('T', ' ') : '';
     if (info.stale) {
-        el.textContent = '⚠ 快取 · ' + who + (when ? ' · ' + when : '');
+        el.textContent = '⚠ Cached · ' + who + (when ? ' · ' + when : '');
         el.classList.add('stale');
-        el.title = '這是上次回測的結果,不是當前設定跑出來的。按 EXECUTE BACKTEST 重跑。';
+        el.title = 'These are results from an earlier backtest, not the current settings. Run EXECUTE BACKTEST again.';
     } else {
         el.textContent = who + (when ? ' · ' + when : '');
         el.classList.remove('stale');

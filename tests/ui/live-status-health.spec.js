@@ -7,7 +7,6 @@ const chartBundle = path.resolve(
 
 async function openApp(page) {
   await page.addInitScript(() => {
-    localStorage.setItem("ancserTPX.uiLang", "en");
     localStorage.setItem("ancserTPXTheme", "light");
   });
   await page.route("**/*", async (route) => {

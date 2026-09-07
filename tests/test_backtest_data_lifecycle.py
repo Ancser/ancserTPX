@@ -203,7 +203,6 @@ class TerminalProgressTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.original_candles = routes._historical_candles
         self.original_snapshot = routes._historical_working_snapshot
-        self.original_sweep = routes._sweep_running
         bars = _bars(2)
         self.snapshot = routes._publish_historical_candles(
             bars,
@@ -219,7 +218,6 @@ class TerminalProgressTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         routes._historical_candles = self.original_candles
         routes._historical_working_snapshot = self.original_snapshot
-        routes._sweep_running = self.original_sweep
 
     async def test_single_failure_publishes_terminal_error(self):
         req = routes.BacktestRequest(workset_token=self.snapshot.token)
@@ -231,16 +229,6 @@ class TerminalProgressTests(unittest.IsolatedAsyncioTestCase):
                 await routes.run_backtest(req)
 
         progress.assert_called_with("error", 0, 0, "boom", status="error")
-
-    async def test_sweep_stale_token_publishes_error_and_releases_lock(self):
-        req = routes.BacktestRequest(workset_token="superseded")
-        with patch.object(routes, "_update_bt_progress") as progress:
-            with self.assertRaises(HTTPException):
-                await routes.run_backtest_sweep(req)
-
-        self.assertFalse(routes._sweep_running)
-        self.assertEqual(progress.call_args.kwargs["status"], "error")
-        self.assertEqual(progress.call_args.args[0], "error")
 
     def test_done_is_published_after_response_construction(self):
         source = inspect.getsource(routes._run_trend_backtest)

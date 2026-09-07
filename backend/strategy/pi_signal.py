@@ -19,12 +19,13 @@ from __future__ import annotations
 import json
 import logging
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
 from backend.db.models import Candle, Direction
 from backend.strategy.research_lab import _ResearchBase, _utc
+from backend.timebase import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,8 @@ def _rows_to_signals(rows: list[dict]) -> list:
         except (KeyError, TypeError, ValueError):
             continue
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        ts = ts.astimezone(timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
+        ts = ts.astimezone(UTC)
         for mk in r.get("marks") or []:
             kind = mk.get("kind")
             d = DIRECTION.get(kind, 0)

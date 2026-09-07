@@ -42,7 +42,6 @@
         { group: "Optics", key: "thickness", label: "Thickness", min: 10, max: 220, step: 1, format: (v) => `${v}px` },
         // negative = magnify; the demo stopped at 0 (shrink only)
         { group: "Optics", key: "shrink", label: "Center shrink", min: -0.6, max: 0.6, step: 0.01, format: (v) => `${Math.round(Number(v) * 100)}%` },
-        { group: "Optics", key: "specular", label: "Specular", min: 0, max: 0.6, step: 0.01, format: (v) => Number(v).toFixed(2) },
         { group: "Optics", key: "blur", label: "Blur", min: 0, max: 2, step: 0.01, format: (v) => `${Number(v).toFixed(2)}px` },
         { group: "Optics", key: "saturation", label: "Saturation", min: 0.5, max: 3, step: 0.01, format: (v) => `${Number(v).toFixed(2)}x` },
         { group: "Motion", key: "idleScale", label: "Idle scale", min: 0.45, max: 1.2, step: 0.01, format: (v) => Number(v).toFixed(2) },
@@ -117,14 +116,12 @@
         const body = el("div", "tuner-body");
         panel.appendChild(body);
 
-        // Baked map previews — the fastest way to see what a knob did.
+        // Baked displacement preview — the fastest way to see what a knob did.
         const kernel = el("div", "tuner-kernel");
         const dispImg = el("img", "tuner-map", { alt: "Displacement map" });
-        const specImg = el("img", "tuner-map", { alt: "Specular map" });
         const kernelNote = el("span", "tuner-kernel-note");
-        kernelNote.textContent = "displacement / specular";
+        kernelNote.textContent = "displacement";
         kernel.appendChild(dispImg);
-        kernel.appendChild(specImg);
         kernel.appendChild(kernelNote);
         panel.appendChild(kernel);
 
@@ -139,7 +136,6 @@
             kernel.classList.toggle("is-empty", !has);
             if (!has) return;
             dispImg.src = maps.displacement;
-            specImg.src = maps.specular;
         }
 
         function markModified() {

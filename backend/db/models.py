@@ -10,9 +10,14 @@
 # ============================================================
 from __future__ import annotations
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from enum import Enum
+
+from backend.timebase import UTC, as_utc, utc_now
+
+if TYPE_CHECKING:
+    from backend.strategy.exit_policy import ExitPolicy
 
 
 # ── 枚舉 ─────────────────────────────────────────────
@@ -216,6 +221,10 @@ class TradeSignal:
     breakout_range: Optional[float] = None  # |H100-VAH| or |VAL-L100|, for TP recalc
     order_type: str = "limit"         # "limit" | "market"
     meta: Dict[str, Any] = field(default_factory=dict)
+    # Resolved once from the selected model, then consumed by both execution
+    # adapters. Models may provide an explicit policy; otherwise the engine
+    # attaches the canonical policy before accepting the signal.
+    exit_policy: Optional["ExitPolicy"] = None
 
     @property
     def sl_points(self) -> float:
@@ -267,12 +276,6 @@ class Trade:
     vol_ratio: Optional[float] = None
     is_big_trend: bool = False
     breakout_range: Optional[float] = None  # for TP timeout recalc
-    # Post-breakout 60-minute path tracking (filled by backtest engine after exit)
-    post_breakout_max_favorable_ticks: Optional[float] = None
-    post_breakout_max_adverse_ticks: Optional[float] = None
-    post_breakout_broke_trail_first: Optional[bool] = None
-    post_breakout_broke_sl_first: Optional[bool] = None
-    post_breakout_reached_tp: Optional[bool] = None
     # Confluence research metadata: {mode, side, weight, tfs, labels, band_pct, wait_min}
     meta: Dict[str, Any] = field(default_factory=dict)
 
@@ -363,7 +366,7 @@ class StrategyParams:
     # Candle interval (seconds)
     candle_seconds: int = 60             # v1.0.6 uses completed 1m bars in live and backtest
     # Contract & sizing (v1.0.6) — preferred default 3 × Micro NQ
-    contract_id: str = "CON.F.US.MNQ.M26"  # full contractId (NQ=ENQ, MNQ=MNQ)
+    contract_id: str = field(default_factory=lambda: current_quarterly_contract_id("MNQ"))
     contract_size: int = 3                 # number of contracts per order (1..N)
     market_clock_version: str = "america-new-york-v1"
     # Full TP lock: 0=OFF, 1/2/3 = stop new entries after N full TP exits. Resets next Topstep session.
@@ -380,7 +383,7 @@ class StrategyParams:
     area_timeframe: str = "15m"            # "15m" | "30m" | "1h" | "4h"
     value_area_pct: float = 0.80           # value-area width fraction (0.50..0.95)
     # Zone method (v1.0.6): "single" = one timeframe; "overlap" = require 2..5
-    # timeframes' value areas to overlap (identical to backtest/ML overlap sweep).
+    # timeframes' value areas to overlap (the shared multi-timeframe rule).
     method: str = "single"                 # "single" | "overlap"
     tf_combo: List[str] = field(default_factory=list)  # overlap timeframes, e.g. ["15m","30m"]
     tr_overlap_trade_tf: str = "merged"    # "merged" original overlap zone | "smallest" trade smallest TF zone
@@ -578,19 +581,6 @@ class Metrics:
     total_gain: float = 0.0
     total_loss: float = 0.0
     daily_pnl: Dict[str, float] = field(default_factory=dict)
-    # Post-breakout 1-hour path statistics (averaged across all confirmed-breakout trades)
-    post_breakout_sample_size: int = 0          # how many trades produced these stats
-    post_breakout_avg_max_fav_ticks: float = 0.0  # avg MFE in ticks within 60m
-    post_breakout_avg_max_adv_ticks: float = 0.0  # avg MAE in ticks within 60m
-    post_breakout_tp_clean: int = 0             # trades that hit TP without ever touching trail level
-    post_breakout_tp_after_trail: int = 0       # hit TP but first crossed trail-trigger
-    post_breakout_tp_after_sl: int = 0          # hit TP but first crossed SL price
-    # Zone-source performance: v1.0.6 only trades the current mature zone.
-    current_zone_trades: int = 0
-    current_zone_wins: int = 0
-    current_zone_win_rate: float = 0.0
-    current_zone_avg_pnl: float = 0.0
-    current_zone_total_pnl: float = 0.0
     # 按策略分類
     trend_follow_metrics: Optional[Metrics] = None
 
@@ -698,20 +688,17 @@ def current_quarterly_contract_id(symbol: str = "MNQ", now: "Optional[datetime]"
     到期前 8 天視為已換月(對齊 Topstep 慣例的提前 roll)。
     e.g. 2026-07-02 → CON.F.US.MNQ.U26;2026-09-11 → Z26。
     """
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    now = now or _dt.now(_tz.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=_tz.utc)
+    now = as_utc(now or utc_now())
     codes = {3: "H", 6: "M", 9: "U", 12: "Z"}
 
-    def _third_friday(y: int, m: int) -> "_dt":
-        fridays = [d for d in range(1, 22) if _dt(y, m, d, tzinfo=_tz.utc).weekday() == 4]
-        return _dt(y, m, fridays[2], tzinfo=_tz.utc)
+    def _third_friday(y: int, m: int) -> datetime:
+        fridays = [d for d in range(1, 22) if datetime(y, m, d, tzinfo=UTC).weekday() == 4]
+        return datetime(y, m, fridays[2], tzinfo=UTC)
 
     sym = str(symbol or "MNQ").upper()
     for yy in (now.year, now.year + 1):
         for mm in (3, 6, 9, 12):
-            if now < _third_friday(yy, mm) - _td(days=8):
+            if now < _third_friday(yy, mm) - timedelta(days=8):
                 return f"CON.F.US.{sym}.{codes[mm]}{str(yy)[-2:]}"
     return f"CON.F.US.{sym}.H{str(now.year + 2)[-2:]}"
 
@@ -719,12 +706,28 @@ def current_quarterly_contract_id(symbol: str = "MNQ", now: "Optional[datetime]"
 def normalize_contract_id_to_front(contract_id: str) -> str:
     """1.0.8: 把任何 CON.F.US.<SYM>.<到期> 改寫成目前前月季約(auto-renew)。
     非標準格式原樣返回。"""
-    if not contract_id or not str(contract_id).upper().startswith("CON.F.US."):
+    if not contract_id:
         return contract_id
-    sym = _extract_symbol(contract_id)
+    raw = str(contract_id).strip().upper()
+    if raw in _QUARTERLY_ROLL_SYMBOLS:
+        return current_quarterly_contract_id(raw)
+    if not raw.startswith("CON.F.US."):
+        return contract_id
+    sym = _extract_symbol(raw)
     if sym not in _QUARTERLY_ROLL_SYMBOLS:
         return contract_id
     return current_quarterly_contract_id(sym)
+
+
+def contract_specs_manifest() -> Dict[str, Dict[str, Any]]:
+    """JSON-safe copy of the canonical instrument economics table."""
+    return {symbol: dict(spec) for symbol, spec in _CONTRACT_SPECS.items()}
+
+
+def strategy_param(params: StrategyParams, suffix: str, fallback: Any = None) -> Any:
+    """Resolve a trend-prefixed strategy value with the shared fallback rule."""
+    prefixed = getattr(params, f"tr_{suffix}", None)
+    return prefixed if prefixed is not None else getattr(params, suffix, fallback)
 
 
 def get_point_value(contract_id: str) -> float:
@@ -739,6 +742,16 @@ def get_tick_size(contract_id: str) -> float:
     sym = _extract_symbol(contract_id)
     spec = _CONTRACT_SPECS.get(sym)
     return float(spec["tick_size"]) if spec else 0.25
+
+
+def get_tick_value(contract_id: str, fallback_contract_id: Optional[str] = None) -> float:
+    """Return dollars per tick from the canonical contract specification."""
+    spec = _CONTRACT_SPECS.get(_extract_symbol(contract_id))
+    if spec is None and fallback_contract_id:
+        spec = _CONTRACT_SPECS.get(_extract_symbol(fallback_contract_id))
+    if spec is None:
+        return 20.0 * 0.25
+    return float(spec["point_value"]) * float(spec["tick_size"])
 
 
 def get_contract_label(contract_id: str) -> str:

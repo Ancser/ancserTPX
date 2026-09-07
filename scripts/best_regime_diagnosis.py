@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import sys
 from collections import defaultdict
-from datetime import date, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,25 +24,9 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from backend.api.routes import BacktestRequest, _build_strategy_params_from_request
 from backend.backtest.engine import BacktestEngine, BacktestConfig
-from backend.backtest.sweep import _extract_symbol
 from backend.data import candle_store
-from backend.db.models import Candle
-
-try:
-    from backend.backtest.costs import get_commission_rt, get_fees_rt
-except ImportError:
-    from backend.backtest.sweep import get_commission_rt, get_fees_rt
-
-
-def _utc(t):
-    return t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t
-
-
-def topstep_trade_date(dt) -> date:
-    """Topstep 交易日以 17:00 CT 換日。夏令 = 22:00 UTC。"""
-    d = _utc(dt)
-    return (d.date() if d.hour < 22 else
-            (d + __import__("datetime").timedelta(days=1)).date())
+from backend.db.models import Candle, _extract_symbol, get_commission_rt, get_fees_rt
+from backend.timebase import as_utc as _utc, topstep_trade_date
 
 
 def build_params(preset_name="BEST"):
@@ -104,7 +87,7 @@ def main():
     by_month = defaultdict(list)
     src_of_month = {}
     for t in trades:
-        k = f"{topstep_trade_date(t.entry_time):%Y-%m}"
+        k = topstep_trade_date(t.entry_time)[:7]
         by_month[k].append((t.pnl or 0.0) * size)
     # 每月資料來源
     for b in bars:

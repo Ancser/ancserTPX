@@ -17,7 +17,6 @@ const canonicalModels = [
 
 async function openApp(page) {
   await page.addInitScript(() => {
-    localStorage.setItem("ancserTPX.uiLang", "en");
     localStorage.setItem("ancserTPXTheme", "light");
   });
   await page.route("**/*", async (route) => {
@@ -176,27 +175,6 @@ async function settleTwoFrames(page) {
 
 async function stageCopyCount(page) {
   return page.evaluate(() => document.querySelectorAll(".optical-stage-copy").length);
-}
-
-async function localeMaterialSnapshot(page) {
-  return page.evaluate(() => {
-    const live = document.querySelector("#lang-toggle");
-    const copy = live?.querySelector(
-      ':scope > .lang-thumb > .optical-layer '
-      + '.optical-stage-copy[data-stage="switch"].lang-toggle.glass-switch',
-    );
-    const material = (node) => {
-      if (!node) return null;
-      const style = getComputedStyle(node);
-      return {
-        on: node.classList.contains("on"),
-        background: style.backgroundColor,
-        borderColor: style.borderTopColor,
-        trackColor: style.getPropertyValue("--switch-track-color").trim(),
-      };
-    };
-    return { live: material(live), copy: material(copy) };
-  });
 }
 
 async function popupMaterialSnapshot(page) {
@@ -360,80 +338,15 @@ test("releasing a switch never repaints the thumb solid --bg", async ({ page }) 
   }
 });
 
-test("sweep model scope opens as a glass-switch dropdown", async ({ page }) => {
-  await openApp(page);
-  await selectPiPreset(page);
-
-  const trigger = page.locator("#sweep-model-btn");
-  await expect(trigger).toBeVisible();
-  await expect(trigger).toHaveText("…");
-  await trigger.click();
-
-  const popup = page.locator("#sweep-model-pop");
-  await expect(popup).toBeVisible();
-  await expect(trigger).toHaveAttribute("aria-expanded", "true");
-  const switches = popup.locator('.sweep-model-row > .sweep-model-switch[role="switch"]');
-  // ALL + one switch per backend-dispatchable model. The exact roster is
-  // owned by test_sweep_model_scope.py (it is checked against the backend);
-  // this test only cares that every offered model is a working glass switch.
-  // Count live switches only: every optical surface leaves a stage copy in the
-  // DOM carrying the same data- attributes, so a bare querySelectorAll double
-  // counts. This is the same filter _sweepModelButtons() applies in the app.
-  const modelCount = await page.evaluate(() => [...document.querySelectorAll(
-    "#sweep-model-pop [data-sweep-model]",
-  )].filter((n) => !n.closest(".optical-stage-copy")).length - 1);
-  expect(modelCount).toBeGreaterThan(0);
-  await expect(switches).toHaveCount(modelCount + 1);
-  await expect(switches.first()).toHaveAttribute("aria-checked", "true");
-  const actionGeometry = await page.evaluate(() => {
-    const sweep = document.querySelector("#btn-sweep").getBoundingClientRect();
-    const execute = document.querySelector("#btn-backtest").getBoundingClientRect();
-    const model = document.querySelector("#sweep-model-btn").getBoundingClientRect();
-    return {
-      executeHeight: Math.round(execute.height),
-      sweepHeight: Math.round(sweep.height),
-      modelHeight: Math.round(model.height),
-      modelWidth: Math.round(model.width),
-      modelThumb: (() => {
-        const thumb = document.querySelector(
-          "#sweep-model-pop > .sweep-model-row > .glass-switch > .switch-thumb",
-        );
-        const rect = thumb?.getBoundingClientRect();
-        return rect ? [Math.round(rect.width), Math.round(rect.height)] : null;
-      })(),
-    };
-  });
-  expect(actionGeometry.executeHeight).toBe(42);
-  expect(actionGeometry.sweepHeight).toBe(actionGeometry.executeHeight);
-  expect(actionGeometry.modelHeight).toBe(actionGeometry.executeHeight);
-  expect(actionGeometry.modelWidth).toBe(actionGeometry.modelHeight);
-  expect(actionGeometry.modelThumb).toEqual([32, 22]);
-  const geometry = await page.evaluate(() => {
-    const track = document.querySelector("#sweep-model-pop > .sweep-model-row > .glass-switch");
-    const thumb = track?.querySelector(":scope > .switch-thumb");
-    const param = document.querySelector("#pi-matrix-bt-long-pi.glass-switch");
-    const paramThumb = param?.querySelector(":scope > .switch-thumb");
-    const size = (node, child) => [
-      parseFloat(getComputedStyle(node).width),
-      parseFloat(getComputedStyle(node).height),
-      parseFloat(getComputedStyle(child).width),
-      parseFloat(getComputedStyle(child).height),
-    ];
-    return {
-      sweep: size(track, thumb),
-      param: size(param, paramThumb),
-    };
-  });
-  expect(geometry.sweep.map(Math.round)).toEqual(geometry.param.map(Math.round));
-
-  await switches.nth(1).click({ delay: 60 });
-  await expect(switches.nth(1)).toHaveAttribute("aria-checked", "true");
-  await expect(switches.first()).toHaveAttribute("aria-checked", "false");
-  await expect(trigger).toHaveAttribute("aria-expanded", "true");
-  await trigger.click();
-  await expect(popup).toBeHidden();
+test("removed sweep controls and result tab are not rendered", async ({ page }) => {
+  await expect(page.locator("#btn-sweep")).toHaveCount(0);
+  await expect(page.locator("#sweep-model-btn")).toHaveCount(0);
+  await expect(page.locator("#sweep-model-pop")).toHaveCount(0);
+  await expect(page.locator('.bottom-tab[data-btab="presets"]')).toHaveCount(0);
+  await expect(page.locator("#btab-presets")).toHaveCount(0);
+  await expect(page.locator("#preset-bt")).toBeVisible();
+  await expect(page.locator("#preset-live")).toHaveCount(1);
 });
-
 async function expectMainLensAt(page, target) {
   const box = await target.boundingBox();
   expect(box).not.toBeNull();
@@ -644,7 +557,7 @@ test("Precision Lens mirrors current preset, account, and PI exit values", async
   }
 });
 
-test("model identities and language state have one presentation truth", async ({ page }) => {
+test("model identities and English presentation have one truth", async ({ page }) => {
   for (const id of ["strategy-bt", "strategy-live"]) {
     const options = await page.locator(`#${id} option`).evaluateAll((nodes) => (
       nodes.map((node) => [node.value, node.textContent.trim()])
@@ -667,114 +580,10 @@ test("model identities and language state have one presentation truth", async ({
     ), mode)).toBe("momentum");
   }
 
-  const language = page.locator("#lang-toggle");
-  const languageThumb = language.locator(
-    ":scope > .lang-thumb[data-optical=\"switch\"]",
-  );
-  await expect(language).toHaveCount(1);
-  await expect(language).toHaveAttribute("role", "switch");
-  await expect(language).toHaveClass(/\bglass-switch\b/);
-  await expect(language).toHaveAttribute("data-stage", "switch");
-  await expect(language).toHaveAttribute("aria-checked", "false");
-  const languageGlyph = languageThumb.locator(":scope > .lang-glyph");
-  await expect(languageGlyph).toHaveText("En");
-  await expect(languageGlyph).toHaveCSS("opacity", "1");
-  await expect.poll(() => languageThumb.locator(
-    ":scope > .optical-layer .optical-stage-copy[data-stage=\"switch\"]",
-  ).count()).toBeGreaterThan(0);
-  expect(await languageThumb.locator(
-    ":scope > .optical-layer .optical-stage-copy:not([data-stage=\"switch\"])",
-  ).count()).toBe(0);
-  const topbarGeometry = await page.evaluate(() => {
-    const box = (node) => {
-      const rect = node.getBoundingClientRect();
-      return [rect.width, rect.height];
-    };
-    const locale = document.querySelector("#lang-toggle");
-    const themeSwitch = document.querySelector("#theme-switch");
-    return {
-      localeTrack: box(locale),
-      themeTrack: box(themeSwitch),
-      localeThumb: box(locale.querySelector(":scope > .lang-thumb")),
-      themeThumb: box(themeSwitch.querySelector(":scope > .switch-thumb")),
-    };
-  });
-  expect(topbarGeometry.localeTrack).toEqual(topbarGeometry.themeTrack);
-  expect(topbarGeometry.localeThumb).toEqual(topbarGeometry.themeThumb);
-  await expect(page.locator("html")).toHaveAttribute("lang", "en");
-
-  await expect.poll(async () => {
-    const material = await localeMaterialSnapshot(page);
-    return material.copy !== null
-      && JSON.stringify(material.copy) === JSON.stringify(material.live);
-  }).toBe(true);
-  const englishMaterial = await localeMaterialSnapshot(page);
-  expect(englishMaterial.copy).toEqual(englishMaterial.live);
-  await page.evaluate(() => {
-    const toggle = window.toggleLanguage;
-    window.__tpxLanguageToggleCalls = 0;
-    window.toggleLanguage = (...args) => {
-      window.__tpxLanguageToggleCalls += 1;
-      return toggle(...args);
-    };
-  });
-
-  const languageBox = await language.boundingBox();
-  expect(languageBox).not.toBeNull();
-  await page.mouse.move(
-    languageBox.x + languageBox.width / 2,
-    languageBox.y + languageBox.height / 2,
-  );
-  await page.mouse.down();
-  await expect(language).toHaveClass(/\binteracting\b/);
-  await expect(languageGlyph).toHaveCSS("opacity", "0");
-  await page.mouse.up();
-  await expect.poll(() => page.evaluate(() => window.__tpxLanguageToggleCalls)).toBe(1);
-  await expect(language).toHaveAttribute("aria-checked", "true");
-  await expect(language).toHaveClass(/\bon\b/);
-  await expect(languageGlyph).toHaveText("中");
-  await expect.poll(() => language.evaluate((node) => (
-    !node.classList.contains("interacting")
-  )), { timeout: 8_000 }).toBe(true);
-  await expect(languageGlyph).toHaveCSS("opacity", "1");
-  await expect(page.locator("html")).toHaveAttribute("lang", "zh-TW");
-  expect(await page.evaluate(() => localStorage.getItem("ancserTPX.uiLang"))).toBe("zh");
-  await expect.poll(async () => {
-    const material = await localeMaterialSnapshot(page);
-    return material.copy?.on === true
-      && JSON.stringify(material.copy) === JSON.stringify(material.live);
-  }).toBe(true);
-  const chineseMaterial = await localeMaterialSnapshot(page);
-  expect(chineseMaterial.copy).toEqual(chineseMaterial.live);
-  expect(chineseMaterial.live.background).toBe(englishMaterial.live.background);
-  expect(chineseMaterial.live.borderColor).toBe(englishMaterial.live.borderColor);
-  for (const mode of ["bt", "live"]) {
-    await expect(page.locator(`#strategy-${mode} option:checked`)).toHaveText("MOMENTUM");
-    await expect(page.locator(`#strategy-desc-${mode}`)).toHaveText("日內動能延續。");
-  }
-
-  await language.focus();
-  await language.press("Enter");
-  await expect.poll(() => page.evaluate(() => window.__tpxLanguageToggleCalls)).toBe(2);
-  await expect(language).toHaveAttribute("aria-checked", "false");
-  await expect(language).not.toHaveClass(/\bon\b/);
-  await expect(languageGlyph).toHaveText("En");
-  await expect(page.locator("html")).toHaveAttribute("lang", "en");
-  expect(await page.evaluate(() => localStorage.getItem("ancserTPX.uiLang"))).toBe("en");
-
-  await language.press(" ");
-  await expect.poll(() => page.evaluate(() => window.__tpxLanguageToggleCalls)).toBe(3);
-  await expect(language).toHaveAttribute("aria-checked", "true");
-  await expect(page.locator("html")).toHaveAttribute("lang", "zh-TW");
-
-  await page.evaluate(() => document.querySelector("#lang-toggle").click());
-  await expect.poll(() => page.evaluate(() => window.__tpxLanguageToggleCalls)).toBe(4);
-  await expect(language).toHaveAttribute("aria-checked", "false");
-  await expect(languageGlyph).toHaveText("En");
+  await expect(page.locator("#lang-toggle")).toHaveCount(0);
   await expect(page.locator("html")).toHaveAttribute("lang", "en");
 });
-
-test("English parameter chrome is canonical and round-trips to Chinese", async ({ page }) => {
+test("English parameter chrome remains canonical", async ({ page }) => {
   await page.evaluate(() => {
     for (const mode of ["bt", "live"]) {
       applyStrategyParams(mode, {
@@ -802,27 +611,15 @@ test("English parameter chrome is canonical and round-trips to Chinese", async (
     ".sidebar label, .sidebar option, .sidebar .lbl-hint:not(.validation-hint)",
   )].filter((node) => !node.closest(".optical-layer, .optical-stage-copy"))
     .map((node) => node.textContent.trim())
-    .filter((text) => /[\u3400-\u9fff]/u.test(text)))).toEqual([]);
+    .filter((value) => /[\u3400-\u9fff]/u.test(value)))).toEqual([]);
 
   await expect(page.locator("#pi-params-bt label").first()).toContainText("SIGNAL SET");
   await expect(page.locator("#tp-cap-hint-bt")).toHaveText(
     "(per-trade profit cap · 0=unlimited)",
   );
-
-  await page.evaluate(() => window.toggleLanguage());
-  await expect(page.locator("#pi-params-bt label").first()).toContainText("使用訊號");
-  await expect(page.locator("#pi-signal-set-bt option:checked")).toHaveText(
-    "只做多 · π 級別 (推薦)",
-  );
-  await expect(page.locator("#tp-cap-hint-bt")).toHaveText(
-    "(單筆獲利上限 · 0=不限)",
-  );
-
-  await page.evaluate(() => window.toggleLanguage());
-  await expect(page.locator("#pi-params-bt label").first()).toContainText("SIGNAL SET");
-  await expect(page.locator("#pi-signal-set-bt option:checked")).toHaveText(
-    "LONG ONLY · π LEVELS (RECOMMENDED)",
-  );
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.locator("body")).not.toContainText("使用訊號");
+  await expect(page.locator("body")).not.toContainText("單筆獲利上限");
 
   await page.evaluate(() => {
     const strategy = document.querySelector("#strategy-bt");
@@ -835,12 +632,8 @@ test("English parameter chrome is canonical and round-trips to Chinese", async (
   await expect(page.locator("#factor-sl-value-bt option").first()).toHaveText(
     "Determined by SL fib",
   );
-  await page.evaluate(() => window.toggleLanguage());
-  await expect(page.locator("#factor-sl-value-bt option").first()).toHaveText(
-    "由 SL fib 決定",
-  );
+  await expect(page.locator("#lang-toggle")).toHaveCount(0);
 });
-
 test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset payloads", async ({ page }) => {
   await page.evaluate(() => {
     applyStrategyParams("bt", {
@@ -940,22 +733,16 @@ test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset p
   expect(payload.pi_short_kinds).toEqual(["粉π"]);
 });
 
-test("parameter help tooltip follows the single UI locale", async ({ page }) => {
+test("parameter help tooltip uses the canonical English copy", async ({ page }) => {
   const help = page.locator(
     ".form-group:has(> #preset-bt) > label .help-dot",
   );
   const tooltip = page.locator("#global-help-tooltip");
   await expect(help).toHaveAttribute("data-tip-en", /Load or save/);
-  await expect(help).toHaveAttribute("data-tip-zh", /載入或保存/);
+  await expect(help).not.toHaveAttribute("data-tip-zh");
 
   await help.focus();
   await expect(tooltip).toBeVisible();
-  await expect(tooltip).toHaveText("Load or save the current parameter set.");
-  expect(await tooltip.evaluate((node) => /[\u3400-\u9fff]/u.test(node.textContent))).toBe(false);
-
-  await page.evaluate(() => window.toggleLanguage());
-  await expect(tooltip).toContainText("載入或保存目前所有參數設定");
-  await page.evaluate(() => window.toggleLanguage());
   await expect(tooltip).toHaveText("Load or save the current parameter set.");
   expect(await tooltip.evaluate((node) => /[\u3400-\u9fff]/u.test(node.textContent))).toBe(false);
 });
@@ -1132,7 +919,7 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
     const style = getComputedStyle(popupCopy);
     return style.display !== "none"
       && style.backgroundColor !== "rgba(0, 0, 0, 0)"
-      && Number.parseFloat(style.borderTopWidth) >= 1;
+      && Number.parseFloat(style.borderTopWidth) === 0;
   })).toBe(true);
 
   const assertPopupMaterial = (material) => {
@@ -1141,6 +928,8 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
     expect(material.live.borderWidth).toBe(material.lens.borderWidth);
     expect(material.live.borderColor).toBe(material.lens.borderColor);
     expect(material.live.shadow).toBe(material.lens.shadow);
+    expect(material.live.borderWidth).toBe("0px");
+    expect(material.live.shadow).toBe("none");
     expect(material.live.backdrop).toContain("blur(20px)");
     expect(material.live.before).toBe("none");
     expect(material.live.after).toBe("none");

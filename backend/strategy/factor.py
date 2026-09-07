@@ -12,36 +12,20 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Optional
-from zoneinfo import ZoneInfo
 
 from backend.db.models import Candle, Direction, StrategyType, TradeSignal, get_tick_size
 from backend.strategy.volume_profile import VolumeProfileCalculator
 from backend.strategy.session_filter import market_session_id
+from backend.timebase import as_utc as _utc, topstep_trade_date as _topstep_trade_date
 
-
-_UTC = timezone.utc
-_CT = ZoneInfo("America/Chicago")
 
 # FACTOR backtests and live trading intentionally recalculate EMAPMO from this
 # bounded completed-5m history.  Read-only chart overlays must use the same
 # window; seeding the EMA from the full chart history can move SIG across an
 # entry threshold even though the trading strategy has no signal.
 FACTOR_EMAPMO_HISTORY_BARS = 320
-
-
-def _utc(ts: datetime) -> datetime:
-    if ts.tzinfo is None:
-        return ts.replace(tzinfo=_UTC)
-    return ts.astimezone(_UTC)
-
-
-def _topstep_trade_date(ts: datetime) -> str:
-    ct = _utc(ts).astimezone(_CT)
-    if ct.hour >= 17:
-        ct = ct + timedelta(days=1)
-    return ct.strftime("%Y-%m-%d")
 
 
 def _session_id(ts: datetime) -> str:

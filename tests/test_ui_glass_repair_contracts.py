@@ -1,9 +1,9 @@
-"""Presentation contracts for the 1.0.10 Glass/UI repair.
+"""Presentation contracts for the current Glass/UI surface.
 
 These are deliberately static contracts.  The real-browser smoke suite proves
 paint/timing; these tests keep presentation-only edits from changing strategy
-values, duplicating locale state, or turning popup controls into optical
-surfaces that each allocate a stage clone.
+values or turning popup controls into optical surfaces that each allocate a
+stage clone.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ CSS = (STATIC / "ancserTPX.css").read_text(encoding="utf-8")
 GLASS_CSS = (STATIC / "tpx-glass.css").read_text(encoding="utf-8")
 GLASS_JS = (STATIC / "tpx-glass.js").read_text(encoding="utf-8")
 SKIN_JS = (STATIC / "tpx-glass-skin.js").read_text(encoding="utf-8")
+MESSENGER = (ROOT / "backend" / "live" / "emapmo_messenger.py").read_text(encoding="utf-8")
 
 
 def _code(source: str) -> str:
@@ -99,21 +100,21 @@ def test_option_wall_primary_strict_controls_and_signal_date_scope_are_explicit(
     assert "switchingFromAutoScopedDate" in scope
 
 
-def test_strategy_descriptions_are_separate_and_follow_selection_and_language():
+def test_strategy_descriptions_are_separate_and_follow_selection():
     for mode in ("bt", "live"):
         assert f'aria-describedby="strategy-desc-{mode}"' in HTML
         assert f'id="strategy-desc-{mode}" class="strategy-description"' in HTML
     for strategy, display in CANONICAL:
         assert re.search(
             rf"\b{strategy}:\s*\{{.*?displayName:\s*'{display}'.*?"
-            rf"description:\s*\{{\s*en:\s*'[^']+'.*?zh:\s*'[^']+'",
+            rf"description:\s*'[^']+'",
             JS,
             re.DOTALL,
         )
     assert "syncStrategyDescription(mode);" in _function_source("_setStrategySelect")
-    apply = _function_source("applyLanguage")
-    assert "['bt', 'live'].forEach((mode) =>" in apply
-    assert "syncStrategyDescription(mode);" in apply
+    sync = _function_source("syncStrategyDescription")
+    assert "target.textContent = meta.description;" in sync
+    assert "UI_LANG" not in sync
 
 
 def test_status_and_new_preset_names_use_canonical_identity_but_legacy_names_parse():
@@ -144,49 +145,29 @@ def test_inline_prose_migrates_to_keyboard_and_pointer_help_but_validation_stays
     assert "event.key !== 'Escape'" in configure
     assert "document.createElement('button')" in _function_source("_newHelpDot")
     assert "role', 'tooltip'" in _function_source("getHelpTooltip")
-    localized = _function_source("_localizedHelpTip")
-    assert "return { en: value, zh: value }" in localized
+    english = _function_source("_englishHelpTip")
+    assert "return String(tip || '').trim();" in english
+    assert "tip.zh" not in english
     add = _function_source("addHelpDot")
-    assert "const attr = 'data-tip-' + lang" in add
+    assert "data-tip-en" in add
+    assert "data-tip-zh" not in add
     show = _function_source("showHelpTooltip")
-    assert "dot.getAttribute('data-tip-' + UI_LANG)" in show
+    assert "dot.getAttribute('data-tip-en')" in show
     assert "dot.getAttribute('data-tip')" not in show
 
 
-def test_language_switch_is_one_current_locale_thumb_on_the_existing_authority():
-    assert HTML.count('id="lang-toggle"') == 1
+def test_language_switch_is_removed_and_english_is_the_only_ui_locale():
     assert '<html lang="en">' in HTML
-    assert (
-        'id="lang-toggle" class="lang-toggle glass-switch topbar-lang" role="switch"'
-        in HTML
-    )
-    assert 'data-locale="en" data-stage="switch"' in HTML
-    assert (
-        '<span class="optical-surface switch-thumb lang-thumb" '
-        'data-optical="switch" aria-hidden="true">'
-        in HTML
-    )
-    assert (
-        '<span class="surface-content switch-state-icon lang-glyph">En</span>'
-        in HTML
-    )
-    language_markup = HTML[HTML.index('id="lang-toggle"'):HTML.index('</button>', HTML.index('id="lang-toggle"'))]
-    assert 'onclick="toggleLanguage()"' not in language_markup
-    apply = _function_source("applyLanguage")
-    assert "btn.dataset.locale = UI_LANG" in apply
-    assert "btn.querySelector(':scope > .lang-thumb > .lang-glyph')" in apply
-    assert "if (btn.tpxSetState) btn.tpxSetState(isZh)" in apply
-    assert "else btn.classList.toggle('on', isZh)" in apply
-    assert "btn.setAttribute('aria-checked', isZh ? 'true' : 'false')" in apply
-    assert "glyph.textContent = isZh ? '中' : 'En'" in apply
-    assert "document.documentElement.lang = UI_LANG === 'zh' ? 'zh-TW' : 'en'" in apply
-    assert "btn.textContent" not in apply
-    assert ".lang-toggle.glass-switch," in CSS
-    assert ".lang-toggle.glass-switch.on {" in CSS
-    assert "#lang-toggle.glass-switch" not in CSS
+    assert 'id="lang-toggle"' not in HTML
+    assert "toggleLanguage" not in JS
+    assert "UI_LANG" not in JS
+    assert "I18N_ZH" not in JS
+    assert "tip.zh" not in JS
+    assert "lang-toggle" not in CSS
+    assert "lang-toggle" not in SKIN_JS
 
 
-def test_language_and_theme_marks_share_the_existing_thumb_and_hide_while_moving():
+def test_theme_mark_uses_the_existing_thumb_and_hides_while_moving():
     theme = SKIN_JS[SKIN_JS.index('themeTrack.id = "theme-switch"'):]
     theme = theme[:theme.index("right.appendChild(themeTrack)")]
     assert '"span", "surface-content switch-state-icon theme-state-icon"' in theme
@@ -281,7 +262,7 @@ def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
         "PI π / CIRCLES",
         "BETAFIB LEVELS",
     ):
-        assert f"'{english}':" in JS
+        assert english in HTML
 
 
 def test_pi_matrix_is_two_column_glass_switch_ui_and_keeps_legacy_wire_fields():
@@ -369,7 +350,6 @@ def test_pi_directional_exits_use_matching_atr_options_and_two_half_column_rows(
 
     assert "slRow.classList.toggle('pi-dual-sl', isPi)" in JS
     assert "longSlLabel.textContent = isPi ? 'LONG SL' : 'SL INPUT'" in JS
-    assert "'LONG SL': '多單 SL'" in JS
     assert "pi_long_hold_min: _int('pi-long-hold-' + mode, 0)" in JS
     assert "pi_short_hold_min: _int('pi-short-hold-' + mode, 60)" in JS
     assert ".factor-sl-row.pi-dual-sl" in CSS
@@ -432,13 +412,12 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     assert ".chart-layer-pop {" in CSS
     assert ':root[data-glass-edge-debug="on"] .chart-layer-pop' in CSS
     popup_rule = CSS[CSS.index(".chart-layer-pop {"):CSS.index(".chart-layer-pop.hidden")]
-    assert "border: 1px solid var(--glass-rim" in popup_rule
-    assert "box-shadow: var(--glass-relief" in popup_rule
+    assert "border: 0;" in popup_rule
+    assert "box-shadow: none;" in popup_rule
     assert "backdrop-filter: blur(20px) saturate(1.3)" in popup_rule
     assert ".chart-layer-pop::before" not in CSS
     assert ".chart-layer-pop::after" not in CSS
-    assert ".chart-layer-pop .glass-switch," in CSS
-    assert ".sweep-model-pop .glass-switch" in CSS
+    assert ".chart-layer-pop .glass-switch {" in CSS
     # 1.0.10p: a thumb is the lens, never something to occlude.  Two rules
     # that hid it are gone for good -- one blanked the thumb inside every
     # stage copy, the other hid the LIVE thumb whenever Precision passed over
@@ -453,6 +432,23 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     layer_sync = _function_source("buildChartLayerMenu")
     assert "const current = tr.getAttribute('aria-checked') === 'true';" in layer_sync
     assert layer_sync.index("if (current === on) return;") < layer_sync.index("tr.tpxSetState(on)")
+
+
+def test_liquid_glass_has_no_specular_pass_or_decorative_frame():
+    glass_js = _code(GLASS_JS).lower()
+    glass_css = _code(GLASS_CSS)
+    messenger = MESSENGER.lower()
+    assert "specular" not in glass_js
+    assert "strokestyle" not in glass_js
+    assert "createSpecularMap" not in glass_js
+    assert "specular" not in messenger
+    assert "screen-blend" not in messenger
+    assert "--glass-border:    transparent;" in GLASS_CSS
+    assert "--glass-rim:    transparent;" in GLASS_CSS
+    assert "--glass-relief: none;" in GLASS_CSS
+    surface = glass_css[glass_css.index(".optical-surface {"):glass_css.index("}", glass_css.index(".optical-surface {"))]
+    assert "border: 0;" in surface
+    assert "box-shadow: none;" in surface
 
 
 def test_chart_layer_choices_are_restored_and_persisted_through_one_state_path():
@@ -571,30 +567,22 @@ def test_stage_clones_never_paint_the_lens_up_switch_material():
     assert blocks.index(".glass-switch.interacting") < blocks.index('data-glass-tier="1"')
 
 
-def test_sweep_model_dropdown_contract_uses_glass_switches_and_preserves_scope_names():
-    start = HTML.index('<div class="sweep-action-row"')
-    end = HTML.index('<div id="backtest-progress-wrap"', start)
-    sweep = HTML[start:end]
-    assert 'id="btn-sweep"' in sweep
-    assert 'id="sweep-model-btn"' in sweep
-    assert 'onclick="toggleSweepModelMenu()"' in sweep
-    assert 'id="sweep-model-pop" class="sweep-model-pop hidden"' in sweep
-    # 1.0.10p: derive the count from the markup instead of hardcoding it.
-    # WHICH models are offered is owned by test_sweep_model_scope.py, which
-    # checks them against the backend dispatch; pinning a number here as well
-    # only means every model added or removed breaks an unrelated test.
-    models = re.findall(r'data-sweep-model="([^"]+)"', sweep)
-    assert "ALL" in models
-    assert len(models) >= 2, "dropdown needs ALL plus at least one model"
-    assert sweep.count('class="glass-switch sweep-model-switch') == len(models)
-    # The trigger is intentionally a regular Sweep-style button. Only the
-    # popup thumbs use optical sampling; the trigger must not inherit a
-    # shrink lens or clone the sidebar behind its square affordance.
-    assert 'sweep-model-trigger-glass' not in sweep
-    assert sweep.count('data-optical="switch"') == len(models)
-    assert sweep.count('data-stage="switch"') == len(models)
-    assert 'data-optical="switch"' not in sweep.split('id="sweep-model-pop"', 1)[0].split('id="sweep-model-btn"', 1)[0]
-    assert "height: 42px;" in CSS
-    assert "function _sweepModelSelection()" in JS
-    assert "const _mm = _sweepModelSelection();" in _function_source("runBacktestSweep")
-    assert "sweep-model-scope-bt" not in JS
+def test_cross_model_sweep_controls_and_result_view_are_removed():
+    for token in (
+        'id="btn-sweep"',
+        'id="sweep-model-btn"',
+        'id="sweep-model-pop"',
+        'data-sweep-model=',
+        'data-btab="presets"',
+        'id="btab-presets"',
+        "runBacktestSweep",
+        "renderSweepTable",
+        "loadSweepResults",
+        "saveSweepPreset",
+    ):
+        assert token not in HTML
+        assert token not in JS
+        assert token not in CSS
+
+    assert 'id="preset-bt"' in HTML
+    assert 'id="preset-live"' in HTML

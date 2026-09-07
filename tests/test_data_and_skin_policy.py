@@ -82,42 +82,24 @@ class TestStoreIsNotVersioned:
         assert mb < 25, f"{f.name} 已經 {mb:.1f}MB —— seed 是開機種子,不是資料庫"
 
 
-class TestSkinDoesNotRemoveFunctionality:
-    """UI-001:套用皮膚不得移除語言切換。
+class TestLanguageSwitchRemoved:
+    """UI-001 is retired because the product now has one English UI."""
 
-    2026-08-08 修復前,`tpx-glass-skin.js` 直接
-    `document.querySelector("#lang-toggle")?.remove()` —— 套上玻璃皮膚之後
-    使用者就再也切不了語言。
-
-    皮膚是外觀,不該拿掉功能。而且因為 base DOM 裡按鈕還在,
-    任何只看 HTML 的檢查都會以為它還在。
-    """
-
-    def test_skin_does_not_remove_the_language_toggle(self):
-        src = SKIN.read_text(encoding="utf-8")
-        for bad in ('#lang-toggle")?.remove()',
-                    "#lang-toggle')?.remove()",
-                    '#lang-toggle").remove()'):
-            assert bad not in src, f"皮膚又把語言切換刪掉了: {bad}"
-
-    def test_skin_reparents_the_existing_button(self):
-        """必須是**搬移**既有節點,不是複製一個新的。
-
-        複製的話 onclick / i18n 的 DOM walker 會對到兩個 id 相同的元素。
-        """
-        src = SKIN.read_text(encoding="utf-8")
-        assert 'byId("lang-toggle")' in src
-        assert "appendChild(lang)" in src
-
-    def test_base_html_still_provides_the_button(self):
-        """正向斷言:base DOM 沒有按鈕的話,上面兩條都沒意義。"""
+    def test_language_switch_code_and_markup_are_removed(self):
         html = (ROOT / "frontend" / "static" / "ancserTPX.html").read_text(encoding="utf-8")
-        assert 'id="lang-toggle"' in html
-        assert "toggleLanguage()" in html
+        js = (ROOT / "frontend" / "static" / "ancserTPX.js").read_text(encoding="utf-8")
+        css = (ROOT / "frontend" / "static" / "ancserTPX.css").read_text(encoding="utf-8")
+        skin = SKIN.read_text(encoding="utf-8")
 
-    def test_skin_removes_the_header_after_moving_the_button(self):
-        """皮膚會 `header.remove()`。按鈕必須在那之前被搬走,否則一起消失。"""
-        src = SKIN.read_text(encoding="utf-8")
-        i_move = src.index("appendChild(lang)")
-        i_kill = src.index("header.remove()")
-        assert i_move < i_kill, "語言按鈕在 header 被移除之後才搬 —— 已經來不及了"
+        assert '<html lang="en">' in html
+        assert 'id="lang-toggle"' not in html
+        assert "toggleLanguage" not in js
+        assert "UI_LANG" not in js
+        assert "tip.zh" not in js
+        assert "lang-toggle" not in skin
+        assert ".lang-toggle" not in css
+
+    def test_normal_preset_controls_are_not_removed_with_language_switch(self):
+        html = (ROOT / "frontend" / "static" / "ancserTPX.html").read_text(encoding="utf-8")
+        assert 'id="preset-bt"' in html
+        assert 'id="preset-live"' in html

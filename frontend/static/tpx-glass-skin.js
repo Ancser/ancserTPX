@@ -189,19 +189,8 @@
         account.appendChild(orb);
         account.appendChild(panel);
 
-        // Right cluster: language + theme switch sit immediately left of the orb.
+        // Right cluster: the theme switch sits immediately left of the orb.
         const right = el("div", "topbar-right");
-
-        // Keep one authoritative locale control. Move the existing
-        // #lang-toggle instead of cloning it: applyLanguage()/toggleLanguage()
-        // and the tactile Glass controller must all update this same node.
-        // The skin runs before that controller, so it initializes normally
-        // after the node reaches its final topbar location.
-        const lang = byId("lang-toggle");
-        if (lang) {
-            lang.classList.add("topbar-lang");
-            right.appendChild(lang);
-        }
         const themeTrack = el("button", "glass-switch topbar-theme", {
             type: "button", role: "switch", title: "Light / dark",
         });

@@ -24,7 +24,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Optional
 from zoneinfo import ZoneInfo
 
@@ -35,6 +35,7 @@ from backend.data.pi_live_audit import (
     load_message_ids,
     load_message_timestamps,
 )
+from backend.timebase import LOS_ANGELES, PI_SOURCE_TIMEZONE_NAME, UTC, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ SHORT_BUBBLE_KINDS = frozenset(
 # 所以使用者指示直接**整段砍掉 07:00 之前**:85/259 筆。
 #
 # 拿重播回測 = 用今天的價格交易昨天的訊號。實盤照它下單更糟。
-PI_TZ = ZoneInfo("America/Los_Angeles")
+PI_TZ = LOS_ANGELES
 SESSION_START_PT = (7, 0)
 # The listener intentionally avoids an unbounded Discord history replay.  On
 # window entry it seeds the newest message, then only requests newer messages
@@ -78,7 +79,7 @@ HISTORY_FETCH_MODE = "seed_latest_then_after_cursor"
 def is_pre_session(ts: datetime) -> bool:
     """該訊息是否在美西 07:00 之前(開盤後半小時的重播區)。"""
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.replace(tzinfo=UTC)
     t = ts.astimezone(PI_TZ)
     return (t.hour, t.minute) < SESSION_START_PT
 
@@ -101,8 +102,8 @@ def message_source_timestamp(msg: dict) -> Optional[datetime]:
     except (AttributeError, TypeError, ValueError):
         return None
     if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=timezone.utc)
-    return stamp.astimezone(timezone.utc)
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC)
 
 
 _SYM = re.compile(r"[（(]\s*(QQQ|SPY)\s*[）)]")
@@ -162,7 +163,7 @@ def parse_message(msg: dict) -> list[PiSignal]:
             continue
         out.append(PiSignal(
             message_id=str(msg["id"]),
-            ts=ts.astimezone(timezone.utc),
+            ts=ts.astimezone(UTC),
             equity=equity,
             future=SYMBOL_MAP[equity],
             direction=d,
@@ -202,7 +203,7 @@ class PiListener:
                  channel_id: str = CHANNEL_ID,
                  window_start: tuple[int, int] = (6, 30),
                  window_end: tuple[int, int] = (13, 0),
-                 tz_name: str = "America/Los_Angeles",
+                 tz_name: str = PI_SOURCE_TIMEZONE_NAME,
                  record_only: bool = False):
         self._token = token
         self._cb = on_signal
@@ -260,7 +261,7 @@ class PiListener:
             self._audit_write_errors += 1
 
     def in_window(self, now: Optional[datetime] = None) -> bool:
-        t = (now or datetime.now(timezone.utc)).astimezone(self._tz)
+        t = (now or utc_now()).astimezone(self._tz)
         cur = (t.hour, t.minute)
         return self._win_start <= cur < self._win_end
 
@@ -390,7 +391,7 @@ class PiListener:
                 )
             except (AttributeError, TypeError, ValueError):
                 continue
-            source_times.append(stamp.astimezone(timezone.utc))
+            source_times.append(stamp.astimezone(UTC))
         self._last_fetch_source_ts = max(source_times) if source_times else None
         self._audit_status(
             "fetch_success",
@@ -430,13 +431,13 @@ class PiListener:
         except (TypeError, ValueError):
             page_limit = 200
 
-        local_now = (now or datetime.now(timezone.utc)).astimezone(self._tz)
+        local_now = (now or utc_now()).astimezone(self._tz)
         cutoff_local = datetime.combine(
             local_now.date() - timedelta(days=day_count - 1),
             datetime.min.time(),
             tzinfo=self._tz,
         )
-        cutoff = cutoff_local.astimezone(timezone.utc)
+        cutoff = cutoff_local.astimezone(UTC)
         # The audit stream can grow over a long-running installation; keep
         # its restart scan off the asyncio event loop.
         known_ids, known_timestamps = await asyncio.gather(
@@ -699,7 +700,7 @@ class PiListener:
                 )
                 continue
             for sig in sigs:
-                received_at = datetime.now(timezone.utc)
+                received_at = utc_now()
                 sig.received_at = received_at
                 # Record before strategy filtering/callback so a signal that
                 # is intentionally not traded is still auditable.

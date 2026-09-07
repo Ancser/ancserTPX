@@ -48,21 +48,17 @@
     --chart-bg:        #08090d;
     --glass-bg:        rgba(12, 15, 22, 0.42);
     --glass-bg-strong: rgba(18, 22, 31, 0.62);
-    --glass-border:    rgb(var(--cream-rgb) / 0.26);
-    --glass-edge:      rgb(var(--cream-rgb) / 0.40);
+    --glass-border:    transparent;
+    --glass-edge:      transparent;
     --glass-shadow:    rgba(0, 0, 0, 0.34);
     --glass-radius:    0.9167rem;   /* 22px */
     --glass-radius-sm: 0.6667rem;   /* 16px */
 
-    /* Surface treatment copied from the demo's .optical-surface.
-       Kept as tokens so the dock / FAB / slider thumb / switch thumb
-       cannot drift apart. */
-    --glass-rim:    rgb(var(--cream-rgb) / 0.42);
+    /* Glass surfaces keep their frost and refraction, but have no decorative
+       rim, inset highlight, or default frame. */
+    --glass-rim:    transparent;
     --glass-tint:   rgb(var(--cream-rgb) / 0.008);
-    --glass-relief:
-        inset 0 1px 1px rgb(var(--cream-rgb) / 0.18),
-        inset 0 -1px 1px rgb(0 0 0 / 0.34),
-        0 0.4167rem 1.0833rem rgb(0 0 0 / 0.22);   /* 10px 26px */
+    --glass-relief: none;
 }
 
 :root[data-theme="light"] {
@@ -91,19 +87,13 @@
 
     --glass-bg:        rgb(var(--cream-rgb) / 0.58);
     --glass-bg-strong: rgb(var(--cream-rgb) / 0.78);
-    --glass-border:    rgba(18, 28, 44, 0.14);
-    --glass-edge:      rgba(18, 28, 44, 0.24);
+    --glass-border:    transparent;
+    --glass-edge:      transparent;
     --glass-shadow:    rgba(30, 45, 70, 0.14);
 
-    /* The demo's rim/relief assume a dark backdrop; on light they read
-       as grime. Flip to a dark-edged rim so the lens still has a
-       silhouette. */
-    --glass-rim:  rgb(18 28 44 / 0.22);
+    --glass-rim:  transparent;
     --glass-tint: rgb(var(--cream-rgb) / 0.18);
-    --glass-relief:
-        inset 0 1px 1px rgb(var(--cream-rgb) / 0.65),
-        inset 0 -1px 1px rgb(18 28 44 / 0.12),
-        0 0.4167rem 1.0833rem rgb(30 45 70 / 0.16);
+    --glass-relief: none;
 }
 
 :root[data-theme="light"] body {
@@ -123,10 +113,10 @@
     position: absolute;
     z-index: 5;
     overflow: hidden;
-    border: 1px solid var(--glass-rim);
+    border: 0;
     border-radius: 999px;
     background: var(--glass-tint);
-    box-shadow: var(--glass-relief);
+    box-shadow: none;
     contain: paint;
     clip-path: inset(0 round 999px);
     -webkit-clip-path: inset(0 round 999px);
@@ -381,7 +371,7 @@
     align-items: center;
     height: 4rem;                   /* 96px */
     padding: 0.375rem;              /* 9px */
-    border: 1px solid rgb(var(--cream-rgb) / 0.10);
+    border: 0;
     border-radius: 999px;
     background: rgb(0 0 0 / 0.30);
     touch-action: none;
@@ -396,7 +386,6 @@
 }
 
 :root[data-theme="light"] .glass-dock {
-    border-color: rgb(18 28 44 / 0.10);
     background: rgb(var(--cream-rgb) / 0.48);
 }
 
@@ -465,7 +454,7 @@
     height: 1.75rem;                /* 42px (demo 66px) */
     margin: 0.25rem 0.5rem;
     padding: 0.1667rem;             /* 4px — demo value */
-    border: 1px solid rgb(var(--cream-rgb) / 0.10);
+    border: 0;
     border-radius: 999px;
     background: rgb(0 0 0 / 0.30);
     touch-action: none;
@@ -514,9 +503,9 @@
 }
 
 /* ── Independent dock content pass ────────────────────────────────
-   Both selectors sample their backdrop/frame with shrink enabled, then
+   Both selectors sample their backdrop with shrink enabled, then
    sample icon/title glyphs from their local track through a second pass
-   whose shrink and specular are zero, matching the APX drag dock. */
+   whose shrink is zero, matching the APX drag dock. */
 .glass-dock .control-source-content,
 .glass-segment .control-source-content {
     z-index: 8;
@@ -574,7 +563,7 @@
 /* 1.0.10p: `.precision-under-lens > .switch-thumb { visibility: hidden }` used
    to live here, stamped on whichever popup switch the Precision cursor was
    over. `visibility` INHERITS, so it took the .optical-layer nested inside the
-   thumb down with it: press or drag a CHART LAYERS / SWEEP MODEL switch and
+   thumb down with it: press or drag a CHART LAYERS switch and
    both the cream thumb and its glass lens vanished, leaving a bare green pill.
    The switch still toggled, which is why it read as "works but has no active
    state". A thumb is never occluded — it is the lens. Do not re-add this. */
@@ -619,9 +608,9 @@
 
 .glass-dock.interacting .dock-bubble,
 .glass-segment.interacting .segment-indicator {
-    border-color: var(--glass-rim);
+    border-color: transparent;
     background: var(--glass-tint);
-    box-shadow: var(--glass-relief);
+    box-shadow: none;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
 }
@@ -671,10 +660,10 @@
     place-items: center;
     width: 2.625rem;                /* 63px */
     height: 2.625rem;
-    border: 1px solid var(--glass-rim);
+    border: 0;
     border-radius: 999px;
     background: var(--glass-tint);
-    box-shadow: var(--glass-relief);
+    box-shadow: none;
     color: var(--text);
     font-family: 'Rajdhani', sans-serif;
     font-size: 1rem;                /* 24px */
@@ -732,7 +721,7 @@
     display: none;
     width: min(16.3333rem, calc(100vw - 1.3333rem)); /* 392px = +40% */
     padding: 0.5rem;
-    border: 1px solid var(--glass-border);
+    border: 0;
     border-radius: var(--glass-radius);
     background: var(--glass-bg-strong);
     box-shadow: 0 0.75rem 1.9167rem var(--glass-shadow);
@@ -865,10 +854,10 @@
     position: absolute;
     display: grid;
     place-items: center;
-    border: 1px solid var(--glass-rim);
+    border: 0;
     border-radius: 999px;
     background: var(--glass-tint);
-    box-shadow: var(--glass-relief);
+    box-shadow: none;
     padding: 0;
     color: var(--text);
     cursor: pointer;
@@ -965,9 +954,9 @@
 .slider-thumb .optical-layer { opacity: var(--slider-glass, 0); }
 
 .glass-slider.interacting .slider-thumb {
-    border-color: var(--glass-rim);
+    border-color: transparent;
     background: var(--glass-tint);
-    box-shadow: var(--glass-relief);
+    box-shadow: none;
 }
 
 /* Value readout rides above the track, right-aligned with the label. */
@@ -1142,13 +1131,13 @@
 }
 
 .glass-switch.interacting .switch-thumb {
-    border-color: var(--glass-rim);
-    box-shadow: var(--glass-relief);
+    border-color: transparent;
+    box-shadow: none;
 }
 
 .glass-switch.interacting .switch-thumb .optical-layer { opacity: 1; }
 
-/* 1.0.10p: the lens-up material above is a PAIR — the --bg backdrop only
+/* 1.0.10p: the lens-up appearance above is a PAIR — the --bg backdrop only
    reads as glass because the .optical-layer above it comes up at the same
    time. Stage clones are built in buildOpticalSurfaces() BEFORE any optical
    layer is mounted, so a clone's thumb has no lens inside it. But class and
@@ -1159,10 +1148,10 @@
 
    That is only visible where a clone is actually painted — Precision's
    tier-2 copy, which is why it hit CHART LAYERS (inside the chart stage the
-   Precision lens samples) and not SWEEP MODEL (sidebar). Dragging a layer
+   Precision lens samples). Dragging a layer
    switch drew a black pill over the correctly-rendered live thumb.
 
-   A clone is a still frame of the material, never the lens. Zeroing the
+   A clone is a still frame of the appearance, never the lens. Zeroing the
    variable is what makes that true, and it has to beat the mirrored inline
    style, hence !important. */
 .optical-stage-copy .glass-switch,
@@ -1182,9 +1171,9 @@
     opacity: 1;
 }
 
-/* Language/theme state marks are presentation inside the existing thumb,
-   never another optical surface. Hide them for the full press + spring travel
-   so the refraction/shrink reads cleanly, then restore them after settle. */
+/* Theme state marks are presentation inside the existing thumb, never another
+   optical surface. Hide them for the full press + spring travel so the
+   refraction/shrink reads cleanly, then restore them after settle. */
 .switch-thumb > .switch-state-icon {
     position: absolute;
     inset: 0;
@@ -1308,29 +1297,6 @@
     width: 100% !important;
 }
 
-/* Sweep is an intentional two-column action row, not a form/select row.  Keep
-   this override after the generic single-column rule so an older cached skin
-   hook cannot stack the compact model trigger under SWEEP. */
-:root[data-tpx-glass-skin="on"] .sidebar .sweep-action-row {
-    display: flex !important;
-    grid-template-columns: minmax(0, 1fr) 2.4rem;
-    align-items: stretch !important;
-}
-:root[data-tpx-glass-skin="on"] .sidebar .sweep-action-row > #btn-sweep {
-    width: auto !important;
-    flex: 1 1 auto;
-}
-:root[data-tpx-glass-skin="on"] .sidebar .sweep-action-row > .sweep-model-trigger {
-    width: 42px !important;
-    min-width: 42px !important;
-    height: 42px !important;
-    min-height: 42px !important;
-    flex: 0 0 42px;
-    align-self: stretch;
-}
-
-/* The scope trigger stays a regular Sweep-style amber button. Popup thumbs
-   below are the interactive optical surfaces; the trigger itself is not. */
 :root[data-theme="light"][data-tpx-glass-skin="on"] #signal-legend,
 :root[data-theme="light"][data-tpx-glass-skin="on"] #lv-levels-panel,
 :root[data-theme="light"][data-tpx-glass-skin="on"] .glass-signal-legend,
@@ -1460,16 +1426,14 @@
     gap: 0.625rem;                      /* 15px */
 }
 
-.topbar-theme,
-.glass-topbar .topbar-lang {
+.topbar-theme {
     width: 4.25rem;                     /* 102px */
     min-width: 4.25rem;
     height: 1.75rem;                    /* 42px */
     padding: 0;
 }
 
-.topbar-theme .switch-thumb,
-.glass-topbar .topbar-lang .switch-thumb {
+.topbar-theme .switch-thumb {
     left: 0.125rem;                     /* 3px */
     top: 0.125rem;
     width: 2rem;                        /* 48px */
@@ -1601,10 +1565,10 @@
     place-items: center;
     width: 2.625rem;                    /* 63px, exact .account-orb geometry */
     height: 2.625rem;
-    border: 1px solid var(--glass-rim);
+    border: 0;
     border-radius: 999px;
     background: var(--glass-tint);
-    box-shadow: var(--glass-relief);
+    box-shadow: none;
     color: var(--text2);
     font-size: 0.6667rem;
     line-height: 1;
@@ -1614,7 +1578,7 @@
 }
 
 .glass-tuner .tuner-trigger:hover { color: var(--cyan); }
-.glass-tuner.open .tuner-trigger { color: var(--cyan); border-color: var(--cyan); }
+.glass-tuner.open .tuner-trigger { color: var(--cyan); }
 
 /* Anchored to the VIEWPORT, not to .glass-tuner: the right cluster can
    be pushed past the window edge on a narrow viewport and an absolutely
@@ -1630,7 +1594,7 @@
     max-height: min(34rem, calc(100vh - 5rem));
     overflow-y: auto;
     padding: 0.5rem;
-    border: 1px solid var(--glass-border);
+    border: 0;
     border-radius: var(--glass-radius);
     background: var(--glass-bg-strong);
     box-shadow: 0 0.75rem 1.9167rem var(--glass-shadow);
@@ -1782,9 +1746,8 @@
 
 /* ── Avatar orb: real glass, same material as the chart menu ───────
    tpx-glass-skin.js now mounts the orb as an optical surface under the
-   `fab` tuning, so it carries an actual lens rather than only the glass
-   border and relief. These override the parts of .optical-surface that
-   assume an absolutely-positioned chip — the orb has to stay in the top
+   `fab` tuning, so it carries an actual lens. These override the parts of
+   .optical-surface that assume an absolutely-positioned chip — the orb has to stay in the top
    bar's flex row — while keeping the clipping the lens needs. */
 .glass-account .account-orb.optical-surface {
     position: relative;             /* .optical-surface defaults to absolute */
@@ -1827,11 +1790,4 @@
    so a fog pinned to the top of the viewport would cover the wrong pane. */
 @media (max-width: 900px) {
     .sidebar-fog { display: none; }
-}
-
-/* The original locale node is now a real tactile Glass switch. Geometry and
-   material come from .glass-switch plus the shared topbar rules above; this
-   hook only preserves its place in the flex row. */
-.glass-topbar .topbar-lang {
-    flex: none;
 }

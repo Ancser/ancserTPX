@@ -20,7 +20,6 @@ import time as time_mod
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from zoneinfo import ZoneInfo
 import httpx
 
 from backend.db.models import (
@@ -28,7 +27,7 @@ from backend.db.models import (
     ConsolidationZone, Direction, StrategyType, ZoneStatus, BarUnit,
     StrategyParams, get_point_value, get_tick_size,
     get_commission_rt, get_fees_rt,
-    FACTOR_PIPELINE_STRATEGIES,
+    FACTOR_PIPELINE_STRATEGIES, strategy_param,
 )
 from backend.strategy.consolidation import SessionZoneDetector, build_zone_detector
 from backend.strategy.session_filter import (
@@ -40,7 +39,17 @@ from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.factor import FactorSignalStrategy
 from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
-from backend.backtest.engine import _topstep_trade_date  # 1.0.8: K線時間→交易日(fade 分日)
+from backend.timebase import CHICAGO, UTC, topstep_trade_date, utc_now, utc_now_naive
+from backend.strategy.exit_policy import (
+    ExitAction,
+    ExitDecision,
+    ExitState,
+    ExitTrailMode,
+    ensure_exit_policy,
+    evaluate_exit_operation,
+    rejected_exit_state,
+    resolve_exit_policy,
+)
 from backend.broker.topstepx import TopstepXClient, order_error_meaning
 from backend.live.emapmo_messenger import EMAPMOSignalMessenger
 from backend.live.manual_guardian_launcher import (
@@ -58,8 +67,8 @@ ENGINE_VERSION = "1.0.10"
 POINT_VALUE = 20.0
 TICK_SIZE = 0.25
 
-_CT = ZoneInfo("America/Chicago")
-_UTC_TZ = ZoneInfo("UTC")
+_CT = CHICAGO
+_UTC_TZ = UTC
 
 
 def _conf_ev_floor(val) -> Optional[float]:
@@ -77,7 +86,6 @@ def _conf_ev_floor(val) -> Optional[float]:
 class LiveTradingEngine:
     """即時交易引擎 — Session 模式 (1m K 線, 晚盤 overnight zone)"""
 
-    TRAIL_TICK_STEP = 5
     MIN_STOP_BRACKET_TICKS = 4
     MIN_TP_BRACKET_TICKS = 1
     AUTO_OCO_FAILSAFE_SECONDS = 5 * 60
@@ -141,7 +149,7 @@ class LiveTradingEngine:
         tf_combo = list(getattr(self.strategy_params, "tf_combo", None) or [])
 
         # Clock-bucket zone detector — single timeframe, or multi-timeframe
-        # OVERLAP (identical to the backtest/ML overlap sweep) when method=overlap
+        # OVERLAP uses the shared multi-timeframe rule when method=overlap.
         # with 2+ timeframes. Keeps the recent 10 reference zones.
         overlap_combo = tf_combo if (method == "overlap" and len(tf_combo) >= 2) else None
         self.detector = build_zone_detector(
@@ -196,15 +204,17 @@ class LiveTradingEngine:
             self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
         # 1.0.8: fade 前日 VP 計算器(僅 fade 模式使用)
         self._fade_vp = VolumeProfileCalculator(self.tick_size, value_area_pct)
-        # Exit mode: "tp" fixed target, or "ladder" for TREND/FACTOR.
+        # Resolve model exits through the same immutable contract as backtest.
+        # PI direction-specific hold times are rebound when a signal arrives.
+        self._default_exit_policy = resolve_exit_policy(
+            self.strategy_params, self.strategy_mode, Direction.BUY,
+        )
         self._tr_exit_mode = (
             "ladder"
-            if str(getattr(self.strategy_params, "tr_exit_mode", "tp") or "tp").lower() == "ladder"
+            if self._default_exit_policy.trail_mode == ExitTrailMode.LADDER
             else "tp"
         )
-        self.LADDER_TRIGGER_R = 2.0       # 浮盈 2R 啟動(SL→entry)
-        self.LADDER_GAP_R = 2.0           # 恆落後峰值整數 R 2R
-        self.LADDER_FAR_TP_TICKS = 2000   # ladder 模式 TP bracket 推遠(500pt,永遠打不到)
+        self.NO_HARD_TP_BRACKET_TICKS = 2000  # required Auto OCO TP sentinel (500pt)
         self._ladder_max_r: float = 0.0
         self._ladder_lock_r: Optional[float] = None
         # 1.0.8: 日虧斷路器 — 當日虧損單數達 N 停新單(0=OFF)
@@ -217,18 +227,6 @@ class LiveTradingEngine:
         self._tr_daily_profit_stop = max(0.0, float(
             getattr(self.strategy_params, "tr_daily_profit_stop", 0) or 0))
         self._daily_profit_td: float = 0.0
-        # 1.0.9: prevRV regime gate — 前一日高波動 → 今日封鎖新單(0=OFF)
-        if self.strategy_mode == "factor":
-            self._pmo_max_hold_minutes = (
-                max(0, int(getattr(self.strategy_params, "factor_max_hold_bars", 0) or 0))
-                * max(1, int(getattr(self.strategy_params, "factor_timeframe_minutes", 5) or 5))
-            )
-        elif self.strategy_mode == "optionwall":
-            self._pmo_max_hold_minutes = max(1, int(getattr(
-                self.strategy_params, "option_wall_max_hold_min", 60,
-            ) or 60))
-        else:
-            self._pmo_max_hold_minutes = 0
         if self.strategy_mode == "confluence":
             try:
                 conf_wait = int(getattr(self.strategy_params, "conf_wait_minutes", 1) or 1)
@@ -287,7 +285,8 @@ class LiveTradingEngine:
         self._active_signal: Optional[TradeSignal] = None  # preserved after fill for SL/TP
         self._position_just_closed: bool = False  # skip strategy eval on same tick as close
         self._position_age: int = 0              # candles since position opened (for display)
-        self._trail_sl_triggered: bool = False    # trailing SL: one-time trigger per position
+        self._exit_state = ExitState()
+        self._trail_sl_triggered: bool = False    # compatibility/status mirror of ExitState
         self._protection_synced: bool = False     # Auto OCO child orders moved to strategy prices
         self._auto_oco_fail_safe_triggered: bool = False
         self._last_auto_oco_retry_ts: float = 0.0
@@ -377,39 +376,53 @@ class LiveTradingEngine:
         )
         # daily_capital.json removed — PnL now read directly from API
 
-    @classmethod
-    def _floor_ticks_to_step(cls, ticks: float) -> int:
-        try:
-            n = abs(float(ticks))
-        except (TypeError, ValueError):
-            return 0
-        return int(n // cls.TRAIL_TICK_STEP) * cls.TRAIL_TICK_STEP
-
     @staticmethod
     def _strategy_group(strategy) -> str:
         return "tr"
 
-    def _strategy_param(self, strategy, suffix: str, fallback):
-        key = self._strategy_group(strategy)
-        prefixed = getattr(self.strategy_params, f"{key}_{suffix}", None)
-        if prefixed is not None:
-            return prefixed
-        return getattr(self.strategy_params, suffix, fallback)
+    def _exit_policy_for_signal(self, signal: Optional[TradeSignal]):
+        if signal is None:
+            return self._default_exit_policy
+        return ensure_exit_policy(signal, self.strategy_params, self.strategy_mode)
 
-    def _strategy_trail_enabled(self, strategy) -> bool:
-        return bool(self._strategy_param(strategy, "trail_enabled", True))
+    def _current_exit_state(self) -> ExitState:
+        return ExitState(
+            trail_triggered=self._trail_sl_triggered,
+            ladder_max_r=self._ladder_max_r,
+            ladder_lock_r=self._ladder_lock_r,
+        )
 
-    def _strategy_trigger_pct(self, strategy) -> float:
-        trigger_pct = self._strategy_param(strategy, "trail_trigger_pct", 0.30)
-        if trigger_pct is None:
-            trigger_pct = 0.30
-        if trigger_pct > 1:
-            trigger_pct = trigger_pct / 100.0
-        return trigger_pct
+    def _store_exit_state(self, state: ExitState) -> None:
+        self._exit_state = state
+        self._trail_sl_triggered = state.trail_triggered
+        self._ladder_max_r = state.ladder_max_r
+        self._ladder_lock_r = state.ladder_lock_r
+
+    def _evaluate_active_exit(self, held_minutes: float) -> ExitDecision:
+        sig = self._active_signal
+        if not sig:
+            return ExitDecision(action=ExitAction.NONE, state=self._current_exit_state())
+        entry = float(self._fill_price if self._fill_price is not None else sig.entry_price)
+        # A broker position can appear one sync before averagePrice is copied
+        # locally. Time exits must still work; a zero-move fallback cannot fire
+        # trailing while the fill/market reference is unavailable.
+        market = float(self._last_market_price if self._last_market_price is not None else entry)
+        return evaluate_exit_operation(
+            policy=self._exit_policy_for_signal(sig),
+            state=self._current_exit_state(),
+            direction=sig.direction,
+            entry_price=entry,
+            current_sl=float(sig.sl_price),
+            original_sl=float(getattr(sig, "original_sl_price", None) or sig.sl_price),
+            tp_price=float(sig.tp_price),
+            market_price=market,
+            held_minutes=held_minutes,
+            tick_size=self.tick_size,
+        )
 
     def _full_tp_lock_for_strategy(self, strategy) -> int:
         try:
-            lock = int(self._strategy_param(strategy, "full_tp_lock", 0) or 0)
+            lock = int(strategy_param(self.strategy_params, "full_tp_lock", 0) or 0)
         except (TypeError, ValueError):
             lock = 0
         return max(0, min(3, lock))
@@ -429,33 +442,6 @@ class LiveTradingEngine:
     def _any_full_tp_locked(self) -> bool:
         lock = self._full_tp_lock_for_strategy(StrategyType.TREND_FOLLOW)
         return lock > 0 and self._full_tp_counts.get("tr", 0) >= lock
-
-    def _resolved_trail_ticks(self, strategy=None) -> int:
-        sl_ticks = abs(int(self._strategy_param(strategy, 'sl_ticks', 50) or 50))
-        tp_ticks = abs(int(self._strategy_param(strategy, 'tp_ticks', 0) or 0))
-        trail_ticks = int(self._strategy_param(strategy, 'trail_sl_ticks', 5) or 0)
-        trigger_pct = self._strategy_trigger_pct(strategy)
-        if trigger_pct <= 0:
-            return 0
-
-        max_positive = max(0, self._floor_ticks_to_step(tp_ticks * trigger_pct) - self.TRAIL_TICK_STEP)
-        return max(0, min(min(tp_ticks, max_positive), trail_ticks))
-
-    def _confluence_exit_style(self):
-        """ML/confluence trail knobs use the ML panel's conf_* fields.
-
-        Trend trailing is expressed as fixed ticks; confluence trailing is
-        expressed as percentages of the actual entry→TP distance, matching the
-        confluence backtester exactly.
-        """
-        from backend.strategy.exit_policy import ConfluenceExitStyle
-
-        return ConfluenceExitStyle(
-            trail_trigger_pct=float(getattr(self.strategy_params, "conf_trail_trigger_pct", 0.0) or 0.0),
-            trail_lock_pct=float(getattr(self.strategy_params, "conf_trail_lock_pct", 0.0) or 0.0),
-            full_tp_lock=int(getattr(self.strategy_params, "conf_full_tp_lock", 0) or 0),
-            session_limit=bool(getattr(self.strategy_params, "conf_session_limit", True)),
-        )
 
     def _confluence_session_allowed(self, ts: datetime) -> bool:
         return is_allowed_session(ts, self._conf_allowed_sessions)
@@ -970,7 +956,7 @@ class LiveTradingEngine:
         self._protection_synced = ok
         return ok
 
-    async def _sweep_contract_open_orders(self, label: str) -> int:
+    async def _cancel_contract_open_orders(self, label: str) -> int:
         try:
             open_orders = await self.client.get_open_orders(self.account_id)
         except Exception as e:
@@ -983,9 +969,9 @@ class LiveTradingEngine:
                 continue
             oid = self._order_id(od)
             if oid:
-                cancel_tasks.append(self._cancel_with_retry(oid, f"SWEEP ({label})"))
+                cancel_tasks.append(self._cancel_with_retry(oid, f"RESIDUAL ({label})"))
         if cancel_tasks:
-            self._log_event(f"{label} sweep found {len(cancel_tasks)} open order(s) -> cancel")
+            self._log_event(f"{label} found {len(cancel_tasks)} residual open order(s) -> cancel")
             await asyncio.gather(*cancel_tasks, return_exceptions=True)
         return len(cancel_tasks)
 
@@ -1014,7 +1000,7 @@ class LiveTradingEngine:
             zones = self.detector.get_all_zones()
             active = self.detector.get_active_zone()
             data = {
-                "saved_at": datetime.utcnow().isoformat(),
+                "saved_at": utc_now_naive().isoformat(),
                 "market_clock_version": MARKET_CLOCK_VERSION,
                 "active_zone_id": active.zone_id if active else None,
                 "zones": [],
@@ -1057,7 +1043,7 @@ class LiveTradingEngine:
 
             # Check freshness — only use if saved within last 6 hours
             saved_at = datetime.fromisoformat(data["saved_at"])
-            age_hours = (datetime.utcnow() - saved_at).total_seconds() / 3600
+            age_hours = (utc_now_naive() - saved_at).total_seconds() / 3600
             if age_hours > 6:
                 self._log_event(f"Zone snapshot expired ({age_hours:.1f}h); rebuilding")
                 return False
@@ -1233,7 +1219,7 @@ class LiveTradingEngine:
             if sid not in seen:
                 rec = {
                     "snapshot_id": sid,
-                    "created_at": datetime.utcnow().isoformat(),
+                    "created_at": utc_now_naive().isoformat(),
                     "account_id": self.account_id,
                     **core,
                 }
@@ -1712,7 +1698,7 @@ class LiveTradingEngine:
             return
 
         data["locks"] = kept
-        data["saved_at"] = datetime.utcnow().isoformat()
+        data["saved_at"] = utc_now_naive().isoformat()
         try:
             os.makedirs(os.path.dirname(self._breakout_locks_file), exist_ok=True)
             with open(self._breakout_locks_file, "w", encoding="utf-8") as f:
@@ -1757,9 +1743,9 @@ class LiveTradingEngine:
             "entry_price": signal.entry_price,
             "order_id": self._pending_order_id,
             "status": "pending_entry",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": utc_now_naive().isoformat(),
         })
-        data["saved_at"] = datetime.utcnow().isoformat()
+        data["saved_at"] = utc_now_naive().isoformat()
         data["locks"] = records[-1000:]
         try:
             os.makedirs(os.path.dirname(self._breakout_locks_file), exist_ok=True)
@@ -1829,7 +1815,7 @@ class LiveTradingEngine:
             return
 
         data["locks"] = kept
-        data["saved_at"] = datetime.utcnow().isoformat()
+        data["saved_at"] = utc_now_naive().isoformat()
         try:
             os.makedirs(os.path.dirname(self._breakout_locks_file), exist_ok=True)
             with open(self._breakout_locks_file, "w", encoding="utf-8") as f:
@@ -2141,16 +2127,13 @@ class LiveTradingEngine:
 
     def _get_topstep_trade_date(self) -> str:
         """Current TopStep trade date (CT 17:00 boundary)."""
-        now = datetime.utcnow().replace(tzinfo=_UTC_TZ)
-        ct = now.astimezone(_CT)
-        if ct.hour >= 17:
-            return (ct + timedelta(days=1)).strftime("%Y-%m-%d")
-        return ct.strftime("%Y-%m-%d")
+        return topstep_trade_date(utc_now())
 
     def get_status(self) -> Dict:
         """Return current engine state for frontend."""
         # Use active_signal (after fill) or pending_signal (before fill)
         sig = self._pending_signal or self._active_signal
+        status_exit_policy = self._exit_policy_for_signal(sig)
         sig_payload = (
             self._pending_conf_payload
             or self._active_conf_payload
@@ -2267,14 +2250,10 @@ class LiveTradingEngine:
                 else {"status": "inactive", "running": False}
             ),
             "trail_sl_triggered": self._trail_sl_triggered,
-            "trail_trigger_pct": (
-                float(getattr(self.strategy_params, "conf_trail_trigger_pct", 0.0) or 0.0)
-                if self.strategy_mode == "confluence"
-                else self._strategy_trigger_pct(StrategyType.TREND_FOLLOW)
-            ),
+            "trail_trigger_pct": status_exit_policy.trail_trigger_pct,
             "trail_lock_pct": (
-                float(getattr(self.strategy_params, "conf_trail_lock_pct", 0.0) or 0.0)
-                if self.strategy_mode == "confluence"
+                status_exit_policy.trail_lock_pct
+                if status_exit_policy.model == "confluence"
                 else None
             ),
             "daily_pnl": self._daily_pnl,
@@ -2925,7 +2904,7 @@ class LiveTradingEngine:
             if self._pending_signal:
                 self._persist_trade_record(
                     exit_reason="cancelled", entry_time=self._entry_time,
-                    exit_time=datetime.utcnow(), entry_price=None,
+                    exit_time=utc_now_naive(), entry_price=None,
                     signal=self._pending_signal,
                     conf_payload=self._pending_conf_payload,
                     trail_triggered=False, status="cancelled",
@@ -3036,23 +3015,23 @@ class LiveTradingEngine:
         except Exception as e:
             self._log_event(f"Emergency flatten failed: {e}", "error")
 
-        # ── Final sweep: query broker for ANY remaining open orders on our
+        # ── Final residual-order cleanup: query the broker for any remaining
         # contract and force-cancel them. Catches orders we lost track of
         # (e.g., after a restart) or whose cancel call dropped silently.
         try:
             open_orders = await self.client.get_open_orders(self.account_id)
-            sweep_tasks = []
+            cancel_tasks = []
             for od in open_orders:
                 if od.get("contractId") != self.contract_id:
                     continue
                 oid = od.get("id") or od.get("orderId")
                 if oid:
-                    sweep_tasks.append(self._cancel_with_retry(oid, "SWEEP (flatten)"))
-            if sweep_tasks:
+                    cancel_tasks.append(self._cancel_with_retry(oid, "RESIDUAL (flatten)"))
+            if cancel_tasks:
                 self._log_event(
-                    f"Found {len(sweep_tasks)} residual working order(s) after flatten; cancelling"
+                    f"Found {len(cancel_tasks)} residual working order(s) after flatten; cancelling"
                 )
-                await asyncio.gather(*sweep_tasks, return_exceptions=True)
+                await asyncio.gather(*cancel_tasks, return_exceptions=True)
         except Exception as e:
             self._log_event(f"Post-flatten residual-order scan failed: {e}", "error")
 
@@ -3068,9 +3047,7 @@ class LiveTradingEngine:
         self._pending_created_at = None
         self._active_signal = None
         self._fill_price = None
-        self._trail_sl_triggered = False
-        self._ladder_max_r = 0.0       # 1.0.8: ladder 狀態歸零
-        self._ladder_lock_r = None
+        self._store_exit_state(ExitState())
         self._protection_synced = False
         self._position_open_ts = 0.0
         self._last_auto_oco_retry_ts = 0.0
@@ -3555,7 +3532,7 @@ class LiveTradingEngine:
 
     async def _tick(self):
         """One iteration of the trading loop (1m candles — 30s bars stale on TopstepX)."""
-        now = datetime.utcnow()
+        now = utc_now_naive()
 
         # Reset daily counters at CT 17:00 (CME new session = TopStep day boundary)
         ts_date = self._get_topstep_trade_date()
@@ -3732,31 +3709,25 @@ class LiveTradingEngine:
         # Auto OCO protection is monitored before the candle gate; trailing still needs price.
         if self._open_position:
             self._position_age += 1   # track for display only
-            _hold = self._pmo_max_hold_minutes
-            if self.strategy_mode == "pi" and self._active_signal is not None:
-                _hold_field = (
-                    "pi_long_hold_min"
-                    if self._active_signal.direction == Direction.BUY
-                    else "pi_short_hold_min"
+            if self._active_signal is not None:
+                held = (
+                    (utc_now_naive() - self._entry_time).total_seconds() / 60.0
+                    if self._entry_time is not None else 0.0
                 )
-                _hold = max(0, int(getattr(
-                    self.strategy_params, _hold_field, 0) or 0))
-            if (
-                self._active_signal is not None
-                and self.strategy_mode in FACTOR_PIPELINE_STRATEGIES
-                and _hold > 0
-                and self._entry_time is not None
-            ):
-                held = (datetime.utcnow() - self._entry_time).total_seconds() / 60.0
-                if held >= _hold:
+                decision = self._evaluate_active_exit(held)
+                if decision.action == ExitAction.CLOSE:
+                    policy = self._exit_policy_for_signal(self._active_signal)
                     direction = self._active_signal.direction.value.upper()
                     self._log_event(
-                        f"{self.strategy_mode.upper()} {direction} max hold {_hold}m reached -> flatten"
+                        f"{policy.model.upper()} {direction} max hold "
+                        f"{policy.max_hold_minutes}m reached -> flatten"
                     )
                     await self.flatten_now()
                     return
-            if self._active_signal is not None and self._last_market_price:
-                await self._check_trailing_sl_live()
+                if decision.action == ExitAction.MOVE_SL:
+                    await self._check_trailing_sl_live(decision)
+                else:
+                    self._store_exit_state(decision.state)
             return
 
         # ── Safety: cancel orphaned SL/TP if FLAT ──
@@ -3826,6 +3797,8 @@ class LiveTradingEngine:
             signal.zone_source = (
                 "option_wall" if self.strategy_mode == "optionwall" else self.strategy_mode
             )
+        if signal:
+            self._exit_policy_for_signal(signal)
 
         # Report the actionable indicator TradeSignal itself. This is before
         # broker/risk-gate I/O, and enqueue_from_live only copies bounded arrays
@@ -4138,14 +4111,16 @@ class LiveTradingEngine:
 
         Returns True if order was placed, False if blocked.
         """
+        exit_policy = self._exit_policy_for_signal(signal)
         # Round all prices to valid tick size (0.25)
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
         signal.original_entry_price = signal.entry_price
-        # 1.0.8/1.0.10: ladder exit for TREND-compatible market-entry strategies.
-        if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
-            far = self.LADDER_FAR_TP_TICKS * self.tick_size
+        # TopstepX requires an attached TP child even when the model has no
+        # hard target, so represent that policy with an unreachable bracket.
+        if not exit_policy.hard_tp_enabled:
+            far = self.NO_HARD_TP_BRACKET_TICKS * self.tick_size
             signal.tp_price = self._round_to_tick(
                 signal.entry_price + far
                 if signal.direction == Direction.BUY
@@ -4221,7 +4196,7 @@ class LiveTradingEngine:
                 self._pending_order_id = resp.order_id
                 self._pending_signal = signal
                 self._pending_age = 0
-                self._pending_created_at = datetime.utcnow()
+                self._pending_created_at = utc_now_naive()
                 signal.meta.setdefault("order_plan", {})
                 signal.meta["order_plan"].update({
                     "order_id": resp.order_id,
@@ -4252,9 +4227,17 @@ class LiveTradingEngine:
 
     async def _place_market_entry(self, signal: TradeSignal) -> bool:
         """Place a market entry with atomic attached Auto OCO protection."""
+        exit_policy = self._exit_policy_for_signal(signal)
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
         signal.tp_price = self._round_to_tick(signal.tp_price)
+        if not exit_policy.hard_tp_enabled:
+            far = self.NO_HARD_TP_BRACKET_TICKS * self.tick_size
+            signal.tp_price = self._round_to_tick(
+                signal.entry_price + far
+                if signal.direction == Direction.BUY
+                else signal.entry_price - far
+            )
         signal.original_entry_price = signal.entry_price
         signal.original_sl_price = signal.sl_price
         signal.original_tp_price = signal.tp_price
@@ -4305,7 +4288,7 @@ class LiveTradingEngine:
                 self._pending_order_id = resp.order_id
                 self._pending_signal = signal
                 self._pending_age = 0
-                self._pending_created_at = datetime.utcnow()
+                self._pending_created_at = utc_now_naive()
                 signal.meta.setdefault("order_plan", {})
                 signal.meta["order_plan"].update({
                     "order_id": resp.order_id,
@@ -4331,136 +4314,45 @@ class LiveTradingEngine:
             self._log_event(f"Market-order error: {e}", "error")
             return False
 
-    async def _check_trailing_sl_live(self):
-        """Live trailing SL: trigger at a configured fraction of TP, once.
+    async def _check_trailing_sl_live(
+        self,
+        decision: Optional[ExitDecision] = None,
+    ) -> None:
+        """Execute the shared exit kernel's stop move through TopstepX."""
 
-        1.0.8/1.0.10: tr_exit_mode="ladder" runs the multi-step ladder for
-        TREND/FACTOR.
-        """
-        if self.strategy_mode == "optionwall":
-            return
-        if self._tr_exit_mode == "ladder" and self.strategy_mode in ("trend", "factor"):
-            await self._check_ladder_sl_live()
-            return
-        if self._trail_sl_triggered or not self._active_signal or not self._fill_price:
-            return
         sig = self._active_signal
-        if self.strategy_mode == "confluence":
-            style = self._confluence_exit_style()
-            if not style.trail_enabled:
-                return
-            mkt = self._last_market_price
-            if mkt is None:
-                return
-            from backend.strategy.exit_policy import maybe_trail_sl
+        if not sig or self._fill_price is None or self._last_market_price is None:
+            return
+        previous = self._current_exit_state()
+        decision = decision or self._evaluate_active_exit(0.0)
+        if decision.action != ExitAction.MOVE_SL or decision.stop_price is None:
+            self._store_exit_state(decision.state)
+            return
 
-            entry = float(self._fill_price or sig.entry_price)
-            new_sl, triggered = maybe_trail_sl(
-                sig.direction,
-                entry,
-                sig.tp_price,
-                sig.sl_price,
-                self._trail_sl_triggered,
-                float(mkt),
-                style,
-            )
-            if not triggered:
-                return
-
-            self._trail_sl_triggered = True
-            new_sl = self._round_to_tick(new_sl)
-            tp_dist = abs(sig.tp_price - entry)
+        policy = self._exit_policy_for_signal(sig)
+        label = "LADDER" if policy.trail_mode == ExitTrailMode.LADDER else "TRAIL SL"
+        if policy.trail_mode == ExitTrailMode.LADDER:
             self._log_event(
-                f"[TRAIL SL] ML {style.trail_trigger_pct:.0%} TP -> SL {new_sl:.2f} "
-                f"(entry={entry:.2f}, lock={style.trail_lock_pct:.0%} TP, mkt={float(mkt):.2f})"
+                f"[LADDER] Peak {decision.state.ladder_max_r:.2f}R -> "
+                f"SL {decision.stop_price:.2f} "
+                f"(entry{'+' if (decision.lock_r or 0) >= 0 else ''}"
+                f"{decision.lock_r or 0:g}R)"
             )
-
-            if not self._sl_order_id or not self._protection_synced:
-                synced = await self._sync_auto_oco_protection(sig, wait_seconds=2.0)
-                if not synced or not self._sl_order_id:
-                    self._log_event(
-                        "[TRAIL SL] No modifiable Auto OCO SL found; preserving the "
-                        "existing protection order and retrying later",
-                        "error",
-                    )
-                    self._trail_sl_triggered = False
-                    return
-
-            try:
-                resp = await self.client.modify_order(
-                    self.account_id,
-                    self._sl_order_id,
-                    size=self.contract_size,
-                    stop_price=new_sl,
-                )
-                if resp.success:
-                    self._log_event(f"[TRAIL SL] SL #{self._sl_order_id} -> {new_sl:.2f}")
-                    sig.sl_price = new_sl
-                    if tp_dist > 0:
-                        sig.entry_price = entry
-                    self._protection_synced = True
-                else:
-                    self._log_event(
-                        f"[TRAIL SL] Failed to modify SL: {resp.error_message}; "
-                        "existing Auto OCO SL unchanged",
-                        "error",
-                    )
-                    self._trail_sl_triggered = False
-            except Exception as e:
-                self._log_event(
-                    f"[TRAIL SL] SL modification error: {e}; existing Auto OCO SL unchanged",
-                    "error",
-                )
-                self._trail_sl_triggered = False
-            return
-
-        if not self._strategy_trail_enabled(sig.strategy):
-            return
-        mkt = self._last_market_price
-        if mkt is None:
-            return
-        if sig.direction == Direction.BUY:
-            ticks_moved = (mkt - self._fill_price) / self.tick_size
         else:
-            ticks_moved = (self._fill_price - mkt) / self.tick_size
-
-        # v1.0.6: TP is RR-based (TP = entry ± sl_dist × RR), so the static tp_ticks
-        # param is no longer the real target. Derive the trigger from the actual
-        # signal's planned TP distance — IDENTICAL to the backtest engine's
-        # _check_trailing_sl, so live trails at the same point that was backtested.
-        tp_ticks = abs(sig.tp_price - sig.entry_price) / self.tick_size
-        if tp_ticks <= 0:
-            # Fallback to the legacy static param if the signal has no usable TP.
-            tp_ticks = abs(int(self._strategy_param(sig.strategy, 'tp_ticks', 0) or 0))
-        trigger_pct = self._strategy_trigger_pct(sig.strategy)
-        if trigger_pct <= 0:
-            return
-        trigger_ticks = max(1.0, tp_ticks * trigger_pct)
-        if ticks_moved < trigger_ticks:
-            return
-
-        self._trail_sl_triggered = True
-        trail_ticks = self._resolved_trail_ticks(sig.strategy)
-        trail_pts = trail_ticks * self.tick_size
-        if sig.direction == Direction.BUY:
-            new_sl = self._fill_price + trail_pts
-        else:
-            new_sl = self._fill_price - trail_pts
-        new_sl = self._round_to_tick(new_sl)
-        self._log_event(
-            f"[TRAIL SL] +{ticks_moved:.0f} ticks ({trigger_pct:.0%} TP) -> SL {new_sl:.2f} "
-            f"(entry={self._fill_price:.2f}, offset={trail_ticks}t)"
-        )
+            self._log_event(
+                f"[TRAIL SL] +{decision.favourable_ticks:.0f} ticks "
+                f"({policy.trail_trigger_pct:.0%} TP) -> SL {decision.stop_price:.2f}"
+            )
 
         if not self._sl_order_id or not self._protection_synced:
             synced = await self._sync_auto_oco_protection(sig, wait_seconds=2.0)
             if not synced or not self._sl_order_id:
                 self._log_event(
-                    "[TRAIL SL] No modifiable Auto OCO SL found; preserving the "
+                    f"[{label}] No modifiable Auto OCO SL found; preserving the "
                     "existing protection order and retrying later",
                     "error",
                 )
-                self._trail_sl_triggered = False
+                self._store_exit_state(rejected_exit_state(previous, decision.state))
                 return
 
         try:
@@ -4468,110 +4360,29 @@ class LiveTradingEngine:
                 self.account_id,
                 self._sl_order_id,
                 size=self.contract_size,
-                stop_price=new_sl,
+                stop_price=decision.stop_price,
             )
             if resp.success:
-                self._log_event(f"[TRAIL SL] SL #{self._sl_order_id} -> {new_sl:.2f}")
-                sig.sl_price = new_sl
+                self._log_event(
+                    f"[{label}] SL #{self._sl_order_id} -> {decision.stop_price:.2f}"
+                )
+                sig.sl_price = decision.stop_price
+                sig.entry_price = float(self._fill_price)
+                self._store_exit_state(decision.state)
                 self._protection_synced = True
             else:
                 self._log_event(
-                    f"[TRAIL SL] Failed to modify SL: {resp.error_message}; "
+                    f"[{label}] Failed to modify SL: {resp.error_message}; "
                     "existing Auto OCO SL unchanged",
                     "error",
                 )
-                self._trail_sl_triggered = False
+                self._store_exit_state(rejected_exit_state(previous, decision.state))
         except Exception as e:
             self._log_event(
-                f"[TRAIL SL] SL modification error: {e}; existing Auto OCO SL unchanged",
+                f"[{label}] SL modification error: {e}; existing Auto OCO SL unchanged",
                 "error",
             )
-            self._trail_sl_triggered = False
-        return
-
-    async def _check_ladder_sl_live(self):
-        """1.0.8: 無 TP 階梯滾動出場(trend 專用;回測 +8044 vs 固定TP +7181)。
-
-        浮盈首達 +2R → SL 移到 entry;之後每 +1R 跟 1R(恆落後峰值 2R)。
-        與一次性 trail 不同:可多次觸發,每級用 modify_order 改 Auto-OCO SL。
-        修改失敗 → 該級不記錄,下一 tick 自動重試(棘輪只上不下)。
-        """
-        sig = self._active_signal
-        if not sig or not self._fill_price:
-            return
-        mkt = self._last_market_price
-        if mkt is None:
-            return
-        entry = float(self._fill_price)
-        orig_sl = float(getattr(sig, "original_sl_price", None) or sig.sl_price)
-        risk = abs(entry - orig_sl)
-        if risk <= 0:
-            return
-
-        if sig.direction == Direction.BUY:
-            fav = float(mkt) - entry
-        else:
-            fav = entry - float(mkt)
-        r = fav / risk
-        if r > self._ladder_max_r:
-            self._ladder_max_r = r
-        if self._ladder_max_r < self.LADDER_TRIGGER_R:
-            return
-
-        lock_r = math.floor(self._ladder_max_r) - self.LADDER_GAP_R  # 2R→0(entry), 3R→+1R…
-        if self._ladder_lock_r is not None and lock_r <= self._ladder_lock_r:
-            return
-
-        if sig.direction == Direction.BUY:
-            new_sl = self._round_to_tick(entry + lock_r * risk)
-            if new_sl <= sig.sl_price:      # 不比現有 SL 好 → 記級距即可
-                self._ladder_lock_r = lock_r
-                return
-        else:
-            new_sl = self._round_to_tick(entry - lock_r * risk)
-            if new_sl >= sig.sl_price:
-                self._ladder_lock_r = lock_r
-                return
-
-        self._log_event(
-            f"[LADDER] Peak {self._ladder_max_r:.2f}R -> SL {new_sl:.2f} "
-            f"(entry{'+' if lock_r >= 0 else ''}{lock_r:g}R, R={risk:.2f}pt)"
-        )
-
-        if not self._sl_order_id or not self._protection_synced:
-            synced = await self._sync_auto_oco_protection(sig, wait_seconds=2.0)
-            if not synced or not self._sl_order_id:
-                self._log_event(
-                    "[LADDER] No modifiable Auto OCO SL found; retrying on the next tick",
-                    "error",
-                )
-                return
-
-        try:
-            resp = await self.client.modify_order(
-                self.account_id,
-                self._sl_order_id,
-                size=self.contract_size,
-                stop_price=new_sl,
-            )
-            if resp.success:
-                self._log_event(f"[LADDER] SL #{self._sl_order_id} -> {new_sl:.2f}")
-                sig.sl_price = new_sl
-                self._ladder_lock_r = lock_r
-                self._trail_sl_triggered = True   # 出場歸類 trail_sl
-                self._protection_synced = True
-            else:
-                self._log_event(
-                    f"[LADDER] Failed to modify SL: {resp.error_message}; "
-                    "preserving the existing SL and retrying on the next tick",
-                    "error",
-                )
-        except Exception as e:
-            self._log_event(
-                f"[LADDER] SL modification error: {e}; preserving the existing SL "
-                "and retrying on the next tick",
-                "error",
-            )
+            self._store_exit_state(rejected_exit_state(previous, decision.state))
 
     async def _cancel_with_retry(self, order_id: Optional[int], label: str):
         """Cancel an order with retry."""
@@ -4714,7 +4525,7 @@ class LiveTradingEngine:
                         self._persist_trade_record(
                             exit_reason="cancelled",
                             entry_time=self._entry_time,
-                            exit_time=datetime.utcnow(),
+                            exit_time=utc_now_naive(),
                             entry_price=None,
                             signal=self._pending_signal,
                             conf_payload=self._pending_conf_payload,
@@ -4744,7 +4555,7 @@ class LiveTradingEngine:
             self._persist_trade_record(
                 exit_reason="cancelled",
                 entry_time=self._entry_time,
-                exit_time=datetime.utcnow(),
+                exit_time=utc_now_naive(),
                 entry_price=None,
                 signal=self._pending_signal,
                 conf_payload=self._pending_conf_payload,
@@ -4931,7 +4742,7 @@ class LiveTradingEngine:
                         self._active_conf_payload = (
                             self._pending_conf_payload
                         )
-                        self._entry_time = datetime.utcnow()
+                        self._entry_time = utc_now_naive()
                         self._position_open_ts = time_mod.time()
                         self._force_exit_reason = "flatten"
                         self._log_event(
@@ -4955,7 +4766,7 @@ class LiveTradingEngine:
                     sig_dir = sig.direction.value
                 conf_payload = self._pending_conf_payload or {}
                 self._trades.append({
-                    "time": datetime.utcnow().isoformat(),
+                    "time": utc_now_naive().isoformat(),
                     "type": "entry",
                     "direction": sig_dir,
                     "price": self._fill_price,
@@ -5004,16 +4815,14 @@ class LiveTradingEngine:
                     self._pending_conf_payload
                 )  # carry the "why"
                 self._pending_conf_payload = None
-                self._entry_time = datetime.utcnow()
+                self._entry_time = utc_now_naive()
                 self._force_exit_reason = None
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_age = 0
                 self._pending_created_at = None
                 self._position_age = 0
-                self._trail_sl_triggered = False
-                self._ladder_max_r = 0.0       # 1.0.8: 新倉 → ladder 狀態歸零
-                self._ladder_lock_r = None
+                self._store_exit_state(ExitState())
 
             # ── Transition 1b: Position exists but engine didn't place it ──
             # Double-fill scenario: both SL and TP filled in rapid succession,
@@ -5082,7 +4891,7 @@ class LiveTradingEngine:
                     pnl_info += f" | topstep_pnl=${topstep_pnl:+.2f}"
 
                 entry_fill = self._fill_price  # save before clearing
-                exit_time_dt = topstep_exit_time or datetime.utcnow()
+                exit_time_dt = topstep_exit_time or utc_now_naive()
 
                 self._log_event(
                     f"Position closed ({exit_reason.upper()} triggered){pnl_info}"
@@ -5151,7 +4960,7 @@ class LiveTradingEngine:
                 self._pending_created_at = None
 
                 if _sig_for_log is not None:
-                    await self._sweep_contract_open_orders("close")
+                    await self._cancel_contract_open_orders("close")
                 else:
                     self._log_event(
                         "[RISK] manual/untracked close: preserving external contract orders"
@@ -5284,7 +5093,7 @@ class LiveTradingEngine:
         prev_candles: List[Candle] = []
         prev_date = None
         for c in self._all_candles:
-            d = _topstep_trade_date(c.timestamp)
+            d = topstep_trade_date(c.timestamp)
             if d >= today:
                 continue
             if d != prev_date:

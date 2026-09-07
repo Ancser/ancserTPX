@@ -1,11 +1,8 @@
 """Concepts that must be defined exactly once.
 
-Why this exists: walk-forward was implemented three times — inline in
-`sweep.py` since 1.0.8g, again in the frontend, and a third time in
-`robustness.py` when the research maths moved to the backend. Nothing failed.
-The only guard was a test asserting that `sweep.py` still *contained a
-particular line of source text*, which compared spelling rather than numbers,
-so the two could have scored differently and no test would have noticed.
+Why this exists: calculations previously drifted between production, research,
+and frontend implementations without a failing test. Matching the definition
+site keeps each registered concept in one executable source of truth.
 
 The failure mode is not "someone wrote sloppy code". It is that an agent (or a
 person) working inside one file has no reason to look in the other five, and
@@ -50,28 +47,45 @@ def _strip_comments(text: str, py: bool) -> str:
 
 # concept -> (regex matching a DEFINITION, allowed files, what a second copy breaks)
 SINGLE_DEFINITION = {
+    "model exit-policy resolution": (
+        r"def resolve_exit_policy\b",
+        {"backend/strategy/exit_policy.py"},
+        "A second resolver lets the same model select different time/trail "
+        "semantics in live and backtest.",
+    ),
+    "active-position exit decision": (
+        r"def evaluate_exit_operation\b",
+        {"backend/strategy/exit_policy.py"},
+        "Duplicated time/trail/ladder decisions let live and backtest drift "
+        "even when they receive the same TradeSignal.",
+    ),
     "monthly normalisation (30.44 days)": (
         r"(DAYS_PER_MONTH|_ROB_DAYS_PER_MONTH)\s*=\s*30\.44|=\s*30\.44\b",
         {"backend/backtest/robustness.py"},
-        "Two constants means two definitions of 'per month'; a sweep row and "
-        "the RESEARCH panel would disagree on the same run.",
+        "Two constants means two definitions of 'per month'; reports could "
+        "disagree on the same run.",
     ),
     "walk-forward segmentation": (
         r"def segment_index|min\(2,\s*int\(off\s*\*\s*3",
         {"backend/backtest/robustness.py"},
         "The split decides which trades land in which third. Two copies means "
-        "'walk-forward PASS' can mean different things in a sweep and a panel.",
+        "'walk-forward PASS' can mean different things in different reports.",
     ),
-    "contract point value table": (
-        r"(POINT_VALUE|_ROB_POINT_VALUE)\s*=\s*[\{\(]",
-        {"backend/backtest/robustness.py"},
+    "contract economics table": (
+        r"_CONTRACT_SPECS\s*=\s*\{",
+        {"backend/db/models.py"},
         "A stale copy silently prices P&L wrong for whichever symbol drifted.",
+    ),
+    "strategy parameter fallback": (
+        r"def strategy_param\b",
+        {"backend/db/models.py"},
+        "A second tr_* fallback rule can resolve different exits in live and backtest.",
     ),
     "monte carlo bootstrap": (
         r"def monte_carlo\b|function _robMonteCarlo\b",
         {"backend/backtest/robustness.py"},
         "The reason the maths moved out of the browser: a second bootstrap "
-        "cannot be reached by the sweep, by pytest, or by a research script.",
+        "can drift outside pytest and backend reports.",
     ),
     "equity series stats (PF / maxDD walk)": (
         r"def series_stats\b|function _robSeriesStats\b",
@@ -80,44 +94,6 @@ SINGLE_DEFINITION = {
         "table; a second copy lets all three drift at once.",
     ),
 }
-
-# Duplicates that are known, tracked, and NOT yet merged. Listing them here is
-# the point: an accepted duplicate should be a decision on the record, not an
-# absence of a rule. Anything added here needs the reason and the cost of
-# fixing it, so the next person can weigh it instead of rediscovering it.
-KNOWN_UNMERGED = {
-    "monthly run-rate arithmetic": {
-        "sites": {
-            "backend/backtest/robustness.py": "monthly_pnl(): fractional days "
-                                              "from trade timestamps",
-            "backend/backtest/sweep.py": "monthly_rate: whole INCLUSIVE day "
-                                         "count from trade-date keys",
-        },
-        "why_not_merged":
-            "Same formula (pnl * 30.44 / days) over different day counts. "
-            "Merging changes every stored `monthly_avg`, so it needs its own "
-            "parity run against a saved sweep before the numbers can move.",
-    },
-}
-
-
-def test_known_unmerged_duplicates_still_exist_where_recorded():
-    """If a tracked duplicate disappears, drop it from the list.
-
-    A stale entry here is worse than none: it documents a hazard that is gone
-    and trains people to skim the section.
-    """
-    for concept, info in KNOWN_UNMERGED.items():
-        for rel in info["sites"]:
-            assert (ROOT / rel).exists(), f"{concept!r}: missing {rel}"
-        assert info["why_not_merged"].strip(), f"{concept!r} has no stated reason"
-
-    text = (ROOT / "backend" / "backtest" / "sweep.py").read_text(encoding="utf-8")
-    assert "30.44" in text, (
-        "sweep.py no longer computes its own monthly rate — if it now calls "
-        "robustness.monthly_pnl, delete this entry from KNOWN_UNMERGED"
-    )
-
 
 def _definition_sites(pattern: str) -> dict[str, list[int]]:
     found: dict[str, list[int]] = {}

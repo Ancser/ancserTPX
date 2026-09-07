@@ -38,12 +38,12 @@ import calendar
 import threading
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from zoneinfo import ZoneInfo
 
 from backend.db.models import Candle
+from backend.timebase import CHICAGO, NEW_YORK, UTC, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +66,8 @@ _MIN_WEEKEND_GAP_HOURS = 36         # anything ≥36h spanning a Sat → weekend
 # 實測 2020–2026 的 101 個 <10 分鐘破洞**全部在 RTH 之外**,所以這條不會遮蔽
 # RTH 的真實遺失。RTH 內即使 1 分鐘的洞仍會被標記。
 _MIN_THIN_GAP_MIN = 10
-_CT = ZoneInfo("America/Chicago")
-_ET = ZoneInfo("America/New_York")
+_CT = CHICAGO
+_ET = NEW_YORK
 
 # CME session boundary: bars stop appearing around 22:00 UTC and resume ~23:00
 # UTC.  A "complete trading day" ends just before the maintenance gap.
@@ -78,8 +78,8 @@ _SESSION_CLOSE_UTC_HOUR = 22        # 22:00 UTC ≈ 3pm PT (summer)
 
 def _as_utc(ts: datetime) -> datetime:
     if ts.tzinfo is None:
-        return ts.replace(tzinfo=timezone.utc)
-    return ts.astimezone(timezone.utc)
+        return ts.replace(tzinfo=UTC)
+    return ts.astimezone(UTC)
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
@@ -157,8 +157,7 @@ def _seed_path(symbol: str = "MNQ", base: int = 1) -> Path:
 # mtime 變了就自動失效,所以 save() 之後一定讀得到新資料。
 #
 # ⚠️ 記憶體代價:每根 Candle 約 576 bytes → 233 萬根約 1.25GB/商品。
-# 這是 web server 程序常駐的量。sweep 是另開子程序,不共用這份快取
-# (見 memory project_sweep_memory_limit)。
+# 這是 web server 程序常駐的量。
 @dataclass(frozen=True)
 class CandleSnapshot:
     """Immutable index over one sorted persistent-store generation.
@@ -387,7 +386,7 @@ def _merge_locked(new_bars: List[Candle], symbol: str,
             "created. (This is the 2026-06-11 bug class.)", symbol, offset)
         new_bars = [_shift(b, offset) for b in new_bars]
         _record_seam(symbol, base, {
-            "at": datetime.now(timezone.utc).isoformat(),
+            "at": utc_now().isoformat(),
             "kind": "reanchor_corrected",
             "offset": offset,
             "bars": len(new_bars),
@@ -610,6 +609,6 @@ def advance_frozen(candles: List[Candle], symbol: str = "MNQ",
         if candles:
             meta["first_ts"] = _as_utc(candles[0].timestamp).isoformat()
             meta["last_ts"] = _as_utc(candles[-1].timestamp).isoformat()
-        meta["updated_at"] = datetime.now(timezone.utc).isoformat()
+        meta["updated_at"] = utc_now().isoformat()
         save_meta(meta, symbol, base)
         logger.info(f"[CandleStore] frozen_through advanced to {boundary.isoformat()}")

@@ -21,7 +21,7 @@ import os
 import sqlite3
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 from zoneinfo import ZoneInfo
@@ -29,20 +29,20 @@ from zoneinfo import ZoneInfo
 import httpx
 from dotenv import load_dotenv
 
+from backend.timebase import TOPSTEP_TIMEZONE_NAME, UTC, as_utc, utc_now
+
 
 logger = logging.getLogger(__name__)
 
-_UTC = timezone.utc
+_UTC = UTC
 _PLOT_LOCK = threading.Lock()
 _STOP_TIMEOUT_SECONDS = 8.0
 
 
 def _utc(value: Optional[datetime]) -> datetime:
     if value is None:
-        return datetime.now(_UTC)
-    if value.tzinfo is None:
-        return value.replace(tzinfo=_UTC)
-    return value.astimezone(_UTC)
+        return utc_now()
+    return as_utc(value)
 
 
 def _iso_utc(value: datetime) -> str:
@@ -51,7 +51,7 @@ def _iso_utc(value: datetime) -> str:
 
 def _display_timezone(name: str):
     try:
-        return ZoneInfo(str(name or "America/Chicago"))
+        return ZoneInfo(str(name or TOPSTEP_TIMEZONE_NAME))
     except Exception:
         return _UTC
 
@@ -439,8 +439,8 @@ _LINE_SL = "#ff4060"
 
 
 # ── liquid glass, ported from frontend/static/tpx-glass.js ─────────────
-# capsuleCoordinate / createDisplacementMap / createShrinkMap /
-# createSpecularMap and the feFilter chain, reproduced on the rendered
+# capsuleCoordinate / createDisplacementMap / createShrinkMap and the
+# refraction chain, reproduced on the rendered
 # raster.  The frontend hands these maps to feDisplacementMap; numpy does
 # the same resample here, so the alert carries the app's actual optics
 # rather than a lookalike.
@@ -455,7 +455,6 @@ _LENS_BEZEL = 30.0
 _LENS_THICKNESS = 150.0
 _LENS_REFRACTION = 1.5
 _LENS_SHRINK = -0.20
-_LENS_SPECULAR = 0.60
 _LENS_BLUR = 0.0
 _LENS_SATURATION = 1.30
 
@@ -553,32 +552,6 @@ def _shrink_map(width, height, shrink):
     return red, green, (maximum * 2.0 if shrink else 0.0)
 
 
-def _specular_map(width, height, radius):
-    """createSpecularMap(): lit rim, 1.8px wide, from a fixed key light."""
-    import numpy as np
-    import math
-
-    ys, xs = np.mgrid[0:height, 0:width]
-    cx = _capsule_coordinate(xs, width, radius)
-    cy = _capsule_coordinate(ys, height, radius)
-    squared = cx * cx + cy * cy
-    outer_squared = (radius + 1.0) ** 2
-    inner_squared = max(0.0, radius - 1.8) ** 2
-    band = (squared <= outer_squared) & (squared >= inner_squared)
-
-    light_x = math.cos(-math.pi * 0.72)
-    light_y = math.sin(-math.pi * 0.72)
-    distance = np.sqrt(np.maximum(squared, 1e-12))
-    normal_x = np.where(distance > 0, cx / distance, 0.0)
-    normal_y = np.where(distance > 0, -cy / distance, 0.0)
-    dot = np.abs(normal_x * light_x + normal_y * light_y)
-    edge = np.clip((radius - distance) / 1.8, 0.0, 1.0)
-    curve = dot * np.sqrt(np.clip(1.0 - (1.0 - edge) ** 2, 0.0, None))
-    channel = np.where(band, np.clip(255.0 * curve, 0, 255), 0.0)
-    alpha = np.where(band, np.clip(channel * curve, 0, 255), 0.0)
-    return channel, alpha
-
-
 def _displace(source, origin_x, origin_y, red, green, scale, box):
     """One feDisplacementMap pass over `box` = (x0, y0, x1, y1).
 
@@ -625,7 +598,7 @@ def _apply_glass_lens(buffer, centre_x, centre_y):
     """Run the app's filter chain over a .chart-lens-sized box.
 
     Order matches the SVG exactly: blur -> shrink displacement -> bezel
-    displacement -> saturate -> screen-blend the specular.
+    displacement -> saturate.
     """
     import numpy as np
 
@@ -642,7 +615,6 @@ def _apply_glass_lens(buffer, centre_x, centre_y):
     )
     disp_scale = maximum * _LENS_REFRACTION
     shrink_r, shrink_g, shrink_scale = _shrink_map(lens_w, lens_h, _LENS_SHRINK)
-    spec_channel, spec_alpha = _specular_map(lens_w, lens_h, radius)
 
     # The second pass reads what the first produced at displaced
     # coordinates, so the first has to cover that reach.
@@ -668,13 +640,6 @@ def _apply_glass_lens(buffer, centre_x, centre_y):
     rgb = refracted[..., :3]
     grey = rgb.mean(axis=-1, keepdims=True)
     rgb = np.clip(grey + (rgb - grey) * _LENS_SATURATION, 0.0, 255.0)
-
-    # feComponentTransfer slope on alpha, then feBlend mode="screen".
-    spec_rgb = (spec_channel / 255.0)[..., None]
-    spec_a = ((spec_alpha / 255.0) * _LENS_SPECULAR)[..., None]
-    premultiplied = spec_rgb * spec_a
-    base = rgb / 255.0
-    rgb = np.clip(base + premultiplied - base * premultiplied, 0.0, 1.0) * 255.0
 
     # Clip to the capsule, feathered over the last pixel.
     ys, xs = np.mgrid[0:lens_h, 0:lens_w]
@@ -932,7 +897,7 @@ class EMAPMOSignalMessenger:
         history_days: int = 30,
         chart_bars: int = 96,
         queue_size: int = 8,
-        timezone_name: str = "America/Chicago",
+        timezone_name: str = TOPSTEP_TIMEZONE_NAME,
         transport: Optional[Any] = None,
         now_fn: Optional[Callable[[], datetime]] = None,
     ):
@@ -941,7 +906,7 @@ class EMAPMOSignalMessenger:
         # typo to silently turn this into an unbounded long-term ledger.
         self.history_days = max(1, min(30, int(history_days)))
         self.chart_bars = max(20, min(320, int(chart_bars)))
-        requested_timezone = str(timezone_name or "America/Chicago").strip()
+        requested_timezone = str(timezone_name or TOPSTEP_TIMEZONE_NAME).strip()
         self.timezone_name = (
             requested_timezone
             if _display_timezone(requested_timezone) is not _UTC or requested_timezone.upper() == "UTC"
@@ -951,7 +916,7 @@ class EMAPMOSignalMessenger:
             maxsize=max(1, min(64, int(queue_size)))
         )
         self._db_path = self.root / "data" / "messenger" / "emapmo_signals.sqlite3"
-        self._now_fn = now_fn or (lambda: datetime.now(_UTC))
+        self._now_fn = now_fn or utc_now
         credentials_ok = transport is not None or bool(str(webhook_url or "").strip()) or bool(
             str(token or "").strip() and str(channel_id or "").strip()
         )
@@ -992,7 +957,7 @@ class EMAPMOSignalMessenger:
             history_days=_env_int("EMAPMO_SIGNAL_HISTORY_DAYS", 30, 1, 30),
             chart_bars=_env_int("EMAPMO_SIGNAL_CHART_BARS", 96, 20, 320),
             queue_size=_env_int("EMAPMO_SIGNAL_QUEUE_SIZE", 8, 1, 64),
-            timezone_name=os.getenv("EMAPMO_SIGNAL_TIMEZONE", "America/Chicago").strip(),
+            timezone_name=os.getenv("EMAPMO_SIGNAL_TIMEZONE", TOPSTEP_TIMEZONE_NAME).strip(),
         )
 
     @property

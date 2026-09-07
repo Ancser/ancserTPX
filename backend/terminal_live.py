@@ -31,6 +31,7 @@ from backend.live.engine import LiveTradingEngine
 from backend.live.engine_lease import LiveEngineLease
 from backend.live.warmup import signal_warmup_progress
 from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, normalize_allowed_sessions
+from backend.timebase import utc_now_naive
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -648,7 +649,7 @@ async def _fetch_warmup_candles(
     contract_id: str,
     params: Optional[StrategyParams] = None,
 ):
-    now = datetime.utcnow()
+    now = utc_now_naive()
     end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     best: List = []
     best_completed = -1

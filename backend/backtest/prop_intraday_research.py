@@ -26,11 +26,10 @@ import csv
 import math
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from statistics import fmean, pstdev
 from typing import Iterable, Optional, Sequence, Union
-from zoneinfo import ZoneInfo
 
 from backend.backtest.intrabar import resolve_same_bar_exit
 from backend.backtest.robustness import evaluate as evaluate_robustness
@@ -43,10 +42,10 @@ from backend.db.models import (
     get_point_value,
     get_tick_size,
 )
+from backend.timebase import NEW_YORK, UTC
 
 
-ET = ZoneInfo("America/New_York")
-UTC = timezone.utc
+ET = NEW_YORK
 RTH_OPEN = time(9, 30)
 RTH_CLOSE = time(16, 0)
 ENTRY_CUTOFF = time(15, 0)
