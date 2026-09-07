@@ -97,6 +97,19 @@ if errorlevel 1 (
 )
 echo         All packages installed
 
+:: The native desktop launcher needs pywebview even when an older install
+:: already has a dependency marker.
+"%PYEXE%" -c "import webview" >nul 2>&1
+if errorlevel 1 (
+    echo         Installing native desktop window dependency...
+    "%PYEXE%" -m pip install "pywebview>=5.3" --quiet
+    if errorlevel 1 (
+        echo  [ERROR] Failed to install pywebview.
+        pause
+        exit /b 1
+    )
+)
+
 :: ── [4/4] .env ──
 echo  [4/4] Checking .env...
 if exist ".env" (
@@ -127,7 +140,8 @@ if exist ".env" (
 echo.
 echo  ========================================
 echo   Setup complete!
-echo   Run "ancserTPX web win.bat" for Web
+echo   Double-click "ancserTPX app win.vbs" for the native WebView2 app
+echo   ("ancserTPX web win.bat" remains a compatibility shortcut)
 echo   Run "ancserTPX terminal win.bat" for terminal-only LIVE
 echo  ========================================
 echo.

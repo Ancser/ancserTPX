@@ -444,6 +444,31 @@ test.beforeEach(async ({ page }) => {
   await openApp(page);
 });
 
+test("contract controls keep roots and do not expose an expiry option", async ({ page }) => {
+  const state = await page.evaluate(() => {
+    // Simulate the /config response and a legacy saved preset that contained
+    // the resolved U26 id. The UI must keep only the product root; the backend
+    // resolves that root again when data or trading is requested.
+    Object.assign(window.ANCSER_SYSTEM.frontMonthContracts, {
+      MNQ: "CON.F.US.MNQ.U26",
+      ENQ: "CON.F.US.ENQ.U26",
+    });
+    document.getElementById("contract-id").value = "CON.F.US.MNQ.U26";
+    refreshContractOptions();
+    applyStrategyParams("bt", { contract_id: "CON.F.US.MNQ.U26" });
+    return {
+      connection: document.getElementById("contract-id").value,
+      backtest: document.getElementById("contract-bt").value,
+      options: [...document.querySelectorAll("#contract-bt option")]
+        .map((option) => option.value),
+    };
+  });
+
+  expect(state.connection).toBe("MNQ");
+  expect(state.backtest).toBe("MNQ");
+  expect(state.options).toEqual(["MNQ", "ENQ"]);
+});
+
 test("Precision Lens mirrors current preset, account, and PI exit values", async ({ page }) => {
   // Apply the exact Backtest preset without POSTing /presets/use.  This keeps
   // the browser contract deterministic without rewriting last_used_bt in the

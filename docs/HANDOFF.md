@@ -1,12 +1,12 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-06. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-07. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            569 pytest passing + 8 subtests + 36 Chromium interaction tests
-invariants       85 documented / 81 active / 4 explicitly retired
+tests            574 pytest passing + 8 subtests + 38 Chromium interaction tests
+invariants       87 documented / 83 active / 4 explicitly retired
 strategies       factor · momentum · betafib · pi · optionwall · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
@@ -19,7 +19,7 @@ presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MN
 | Parameter defaults | `backend/db/models.py::StrategyParams` (routes reads `_PARAM_DEFAULTS`) |
 | PI historical signals | `backend/data/pi_history.py::load_rows` — the **only** reader |
 | Option Wall replay signals | `backend/data/option_wall_signals.py::load_primary_strict_signals` — causal entry columns only |
-| Local Web security boundary | `backend/web_security.py` + WEB-001..005 |
+| Local Web security boundary | `backend/web_security.py` + WEB-001..007 |
 | Behavioural invariants | `docs/INVARIANTS.md` |
 
 Do not infer architecture from `README.md` or from `docs/1.0.x_*.md`.
@@ -240,6 +240,28 @@ the current quarterly front month and publishes that mapping, contract economics
 clock version, and timezone names through `/api/config`; the browser consumes
 that manifest. Fixed expiry strings remain only where tests deliberately exercise
 historical parsing, rollover boundaries, or immutable fixtures.
+
+### R0.13 — Native Windows desktop launcher (2026-09-06)
+
+Windows now has a single-process native app entry point, `ancserTPX app win.vbs`.
+The hidden host starts `backend.desktop_app`, which owns both Uvicorn and an
+embedded Edge WebView2 window on fixed loopback `127.0.0.1:8001`. A per-user OS
+lock prevents duplicate app processes. Closing the window runs the normal FastAPI
+lifespan shutdown: Web-owned engines stop, account leases and the broker client
+are released, pending entries are cancelled, and broker-side protection on an
+open position is preserved. The old `ancserTPX web win.bat` is only a compatibility
+wrapper; it no longer opens a browser or force-kills arbitrary port processes.
+
+### R0.14 — Safe Windows launcher handoff (2026-09-07)
+
+The former `backend/kill_old.ps1` was removed. Windows startup now uses
+`backend/stop_legacy_instances.ps1`, which matches only known ancserTPX Web and
+Terminal workers, closes their matching legacy BAT parent CMD, and never scans
+ports `8000-8010`; it cannot terminate the native App's `pythonw` process or
+its `8001` listener. The native page also polls `/api/health` every three
+seconds. If the backend disappears while the WebView remains alive, the
+account avatar becomes red with `BACKEND OFFLINE` and the page stays open; a
+recovered backend restores the previous connection state.
 
 ### R0.7 — Research robustness presentation (2026-09-01)
 

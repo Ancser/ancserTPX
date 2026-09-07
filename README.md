@@ -156,16 +156,26 @@ Run the matching files for your operating system:
 ### Windows 11
 
 - First-time install: double-click `ancserTPX install win.bat`
-- Web app: double-click `ancserTPX web win.bat`
+- Native desktop app: double-click `ancserTPX app win.vbs`
+- `ancserTPX web win.bat` remains a compatibility shortcut to the native app
 - Terminal-only LIVE: double-click `ancserTPX terminal win.bat`
 
-The Web control plane listens on local `127.0.0.1` only. Open the
-`http://localhost:<port>` URL printed by the launcher on this computer; do not
-change the bind address back to `0.0.0.0` or port-forward it. Same-origin
-session/CSRF protection is automatic. If the first control action after a
-backend restart returns 403, refresh the local page. HTML/JS/CSS are served with
-no-store, so changing ports is not required to load a new build. API docs are off
-by default.
+The native app uses the Microsoft Edge WebView2 runtime as an embedded window;
+it does not open a browser tab or leave a server CMD window running. The API
+still listens on fixed local `127.0.0.1:8001` only. A per-user instance lock
+prevents duplicate app processes. Closing the app window first stops Web-owned
+engines and background tasks, releases the broker client, and then exits. An
+open bot position keeps its broker-side protection; a pending entry is
+cancelled. App startup first stops known legacy Web/Terminal launchers. If
+port 8001 is still occupied by an unrecognized local process, close it and
+open the app again. Same-origin session/CSRF
+protection is automatic, and API docs are off by default.
+
+Windows startup only stops known legacy ancserTPX Web/Terminal workers and
+their matching old BAT CMD window. It does not scan or kill ports `8000-8010`,
+so it does not terminate the native App.
+If the App backend becomes unavailable after the window is open, its account
+avatar turns red with `BACKEND OFFLINE` while the page remains visible.
 
 > If Windows shows a SmartScreen warning, click **More info → Run anyway**.
 
@@ -203,8 +213,9 @@ The terminal launcher skips the web UI and starts LIVE directly. It uses `.env`
 credentials, `TOPSTEPX_ACCOUNT_ID` when set, otherwise the first practice
 account, and the last used live preset from `data/presets.json`.
 
-Starting either Web or Terminal first stops any older ancserTPX Web/Terminal
-process and clears app ports `8000-8010`, so only one trading engine can run.
+The native Web app owns one process and one window. Terminal-only LIVE remains a
+separate explicit launcher; the account-level live-engine lease still prevents
+the same account from being owned twice.
 
 ### EMAPMO Discord signal chart
 

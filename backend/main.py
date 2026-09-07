@@ -71,6 +71,11 @@ async def lifespan(app: FastAPI):
     from backend.live.pi_recorder import start_pi_recorder, stop_pi_recorder
     await start_pi_recorder()
     yield
+    try:
+        from backend.api.routes import shutdown_live_engines
+        await shutdown_live_engines()
+    except Exception:
+        logger.exception("Live engine shutdown during backend exit failed")
     await stop_pi_recorder()
     _accum_task.cancel()    # 1.0.9
     _shadow_task.cancel()   # 1.0.9

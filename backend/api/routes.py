@@ -3821,6 +3821,45 @@ def _sync_primary_engine():
     _live_engine = _primary_live_engine()
 
 
+async def shutdown_live_engines() -> None:
+    """Gracefully release all Web-owned engines before process shutdown.
+
+    Closing the native desktop window must not leave a live engine, account
+    lease, or broker websocket owned by a dead API process. ``LiveTradingEngine.stop``
+    keeps broker-side protection on an open bot position; it only cancels a
+    pending entry and releases this process's ownership.
+    """
+    global _live_engine, _live_engines, _topstepx_client
+
+    engines = []
+    for engine in list(_live_engines.values()) + [_live_engine]:
+        if engine is not None and not any(engine is existing for existing in engines):
+            engines.append(engine)
+
+    for engine in engines:
+        try:
+            await engine.stop()
+        except Exception:
+            logger.exception(
+                "Live engine shutdown failed for account %s",
+                getattr(engine, "account_id", "?"),
+            )
+            release = getattr(engine, "_release_owner_lease", None)
+            if callable(release):
+                release()
+
+    _live_engines.clear()
+    _sync_primary_engine()
+
+    client = _topstepx_client
+    _topstepx_client = None
+    if client is not None:
+        try:
+            await client.disconnect()
+        except Exception:
+            logger.exception("TopstepX client shutdown failed")
+
+
 class LiveStartRequest(BaseModel):
     account_id: int
     pi_long_only: bool = True

@@ -74,6 +74,8 @@
 | WEB-003 | 所有 `/api` POST/PUT/PATCH/DELETE 必須同時具備 process-local HttpOnly session cookie、port-scoped CSRF cookie 及相同 CSRF header；跨 Origin 或缺 token 不得執行 route | `test_web_security.py` + `tests/ui/web-security.spec.js` |
 | WEB-004 | Web 回應必須拒絕 framing、禁止 MIME sniff、限制 referrer/resource；OpenAPI/Swagger 預設關閉，只能以本機 development env 明確啟用 | `test_web_security.py` |
 | WEB-005 | Root、API 與 `/static/` 前端資產必須回傳 `Cache-Control: no-store`；後端重啟後重新整理同一端口即可取得目前程式，不得依賴換 port 逃避舊快取 | `test_web_security.py` + `tests/ui/web-security.spec.js` |
+| WEB-006 | Windows native launcher 以單一程序擁有 Uvicorn 與 WebView2；固定使用 loopback port、單實例鎖，關閉視窗會 graceful-stop engine/client；Windows cleanup 不得 broad-kill desktop App 或任意 loopback port | `test_desktop_launcher.py` + `test_windows_launchers.py` |
+| WEB-007 | Native UI 必須週期性檢查自己的 `/api/health`；後端埠消失時保留頁面並把帳戶 avatar 標為紅色 error，恢復後還原先前連線狀態 | `tests/ui/live-status-health.spec.js` |
 
 ## PI — 外部訊號
 
@@ -160,7 +162,7 @@
 
 ## 目前的覆蓋缺口(誠實版)
 
-**82 條 active invariant 目前都已有自動化保護。** UI-002…026 的 paint/timing／表單鏡像／Research 呈現行為由
+**83 條 active invariant 目前都已有自動化保護。** UI-002…026 的 paint/timing／表單鏡像／Research 呈現行為由
 `tests/ui/glass-ui.spec.js` 與 `tests/ui/research-robustness.spec.js` 在 Chromium 驗證;小型架構接縫另由 pytest static
 contracts 快速擋回歸。CI 的 browser job 以 `--lifespan off` 啟動 app,不得啟動
 candle accumulator / shadow replay / broker 連線。

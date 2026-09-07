@@ -14,13 +14,12 @@ cd /d "%~dp0"
 python --version >nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] Python not found!
-    pause
     exit /b 1
 )
 
-:: Kill old web/terminal instances and occupied app ports
-echo  Stopping old ancserTPX instances...
-powershell -ExecutionPolicy Bypass -File "%~dp0backend\kill_old.ps1"
+:: Stop known legacy Web/Terminal workers. Never touch the desktop App or 8001.
+echo  Stopping existing ancserTPX Web/Terminal workers...
+powershell -ExecutionPolicy Bypass -File "%~dp0backend\stop_legacy_instances.ps1"
 timeout /t 2 /nobreak >nul
 
 :: Clear cache
@@ -63,4 +62,3 @@ python -m backend.terminal_live
 
 echo.
 echo  ancserTPX terminal stopped.
-pause

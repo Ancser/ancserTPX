@@ -28,6 +28,7 @@ REQ_DEV = ROOT / "requirements-dev.txt"
 # 發行套件名 → import 名。只列名稱對不上的。
 DIST_TO_IMPORT = {
     "python-dotenv": "dotenv",
+    "pywebview": "webview",
     "pytest-subtests": "pytest_subtests",
     "signalrcore": "signalrcore",
     "tzdata": None,          # 只提供資料給 zoneinfo,沒有 import 名

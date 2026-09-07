@@ -144,14 +144,21 @@ API 保護契約：
 ### Windows 11
 
 - 首次安裝：雙擊 `ancserTPX install win.bat`
-- Web 版：雙擊 `ancserTPX web win.bat`
+- 原生桌面 App：雙擊 `ancserTPX app win.vbs`
+- `ancserTPX web win.bat` 仍保留為啟動原生 App 的相容捷徑
 - Terminal-only LIVE：雙擊 `ancserTPX terminal win.bat`
 
-Web 控制台只監聽本機 `127.0.0.1`，只能在這台電腦用啟動器顯示的
-`http://localhost:<port>` 開啟。請勿改回 `0.0.0.0` 或做路由器 port-forward。
-瀏覽器的同源 session／CSRF 由程式自動處理；後端重啟後若第一個操作顯示
-403，重新整理本機頁面即可。HTML／JS／CSS 不使用舊快取，因此不需要靠換
-端口取得新版；API docs 預設關閉。
+原生 App 使用 Microsoft Edge WebView2 作為內嵌視窗，不會開啟瀏覽器分頁，
+也不會留下需要操作的 server CMD。API 固定只監聽本機 `127.0.0.1:8001`。
+每位使用者有單實例鎖，避免重複開啟兩個 App。關閉 App 視窗時，程式會先
+停止 Web 所有的 engine 與背景任務、釋放 broker client，再結束程序；已開倉位
+保留 broker 端保護單，尚未成交的 entry 會取消。App 啟動時會先停止已知的舊 Web／Terminal
+啟動器；若 8001 仍被無法辨識的本機程序佔用，請先關閉該程序，再重新雙擊 App。Same-origin session／CSRF
+由程式自動處理，API docs 預設關閉。
+
+Windows 啟動只會停止已知的 ancserTPX 舊 Web／Terminal 程序及其對應的舊 BAT CMD，
+不會掃描或強制關閉 `8000-8010` 的 port，因此不會殺掉原生 App。App 已開啟後若後端
+失效，帳戶 avatar 會變紅並顯示 `BACKEND OFFLINE`，頁面仍會保留。
 
 > 若 Windows 跳出 SmartScreen 警告，點 **「其他資訊」→「仍要執行」**。
 
@@ -189,8 +196,8 @@ Terminal 啟動檔不會開網頁，會直接啟動 LIVE engine。它會使用 `
 裡的 TopstepX email/API key；如果有設定 `TOPSTEPX_ACCOUNT_ID` 就使用該帳戶，
 否則自動選第一個 practice 帳戶；策略參數使用 `data/presets.json` 裡最後使用的 live preset。
 
-啟動 Web 或 Terminal 任一版本前，都會先停止舊的 ancserTPX Web/Terminal process，
-並清掉 app ports `8000-8010`，避免同時跑兩個 trading engine。
+原生 Web App 由單一程序與單一視窗管理。Terminal-only LIVE 仍是另外的明確
+啟動器；account-level live-engine lease 仍會阻止同一帳戶被兩個 engine 同時擁有。
 
 ### EMAPMO Discord 訊號圖
 

@@ -93,19 +93,39 @@ function defaultContractId() {
     return FRONT_MONTH_CONTRACTS.MNQ || 'MNQ';
 }
 
-// The backend owns front-month calculation. Before /config returns, bare roots
-// remain valid inputs and are resolved by the broker/backend.
+function contractRootFromId(contractId) {
+    const raw = String(contractId || '').trim().toUpperCase();
+    if (!raw) return '';
+
+    const parts = raw.split('.');
+    let root = (parts.length >= 5 && parts[0] === 'CON' && parts[1] === 'F')
+        ? parts[3]
+        : raw;
+    const short = /^([A-Z]+?)[FGHJKMNQUVXZ]\d{2}$/.exec(root);
+    if (short) root = short[1];
+
+    // ProjectX calls the E-mini Nasdaq product ENQ, while the user-facing
+    // label remains NQ. Keep one canonical value in the controls.
+    return root === 'NQ' ? 'ENQ' : root;
+}
+
+function contractUiValue(contractId) {
+    const raw = String(contractId || '').trim().toUpperCase();
+    const root = contractRootFromId(raw);
+    return FRONT_MONTH_CONTRACTS[root] ? root : raw;
+}
+
+// The backend owns front-month calculation. The browser stores only a bare
+// product root, so a rollover can never leave an expiry-looking option behind.
 function refreshContractOptions() {
     document.querySelectorAll('[data-contract-root]').forEach(option => {
         const root = String(option.dataset.contractRoot || '').toUpperCase();
-        option.value = FRONT_MONTH_CONTRACTS[root] || root;
+        option.value = root;
     });
     const cidInput = document.getElementById('contract-id');
     if (cidInput) {
         const raw = String(cidInput.value || 'MNQ').toUpperCase();
-        const match = /^CON\.F\.US\.([A-Z]+)\./.exec(raw);
-        const root = match ? match[1] : raw;
-        if (FRONT_MONTH_CONTRACTS[root]) cidInput.value = FRONT_MONTH_CONTRACTS[root];
+        cidInput.value = contractUiValue(raw) || 'MNQ';
     }
 }
 document.addEventListener('DOMContentLoaded', refreshContractOptions);
@@ -1486,7 +1506,10 @@ function applyStrategyParams(mode, params) {
     _set('tr-overlap-trade-tf-' + mode, normalizeTrendOverlapTradeTf(p.tr_overlap_trade_tf));
     const cidEl = document.getElementById('contract-' + mode);
     if (cidEl) {
-        const wanted = p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id;
+        // Older saved presets contain a resolved expiry such as U26. It is
+        // historical input, not a selectable UI contract; show its root and
+        // let the backend resolve the current front month on execution.
+        const wanted = contractUiValue(p.contract_id || DEFAULT_STRATEGY_PARAMS.contract_id);
         if (!Array.from(cidEl.options).some(o => o.value === wanted)) {
             const opt = document.createElement('option');
             opt.value = wanted; opt.textContent = wanted;
@@ -1703,7 +1726,7 @@ function onContractPresetChange() {
     const sel = document.getElementById('contract-preset');
     const inp = document.getElementById('contract-id');
     if (!sel || !inp) return;
-    if (sel.value) inp.value = sel.value;
+    if (sel.value) inp.value = contractUiValue(sel.value);
     inp.focus();
 }
 
@@ -2895,6 +2918,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initPresetDirtyTracking();
     decorateParamHelpDots();
     checkHealth();
+    setInterval(checkHealth, 3000);
     const envConfigReady = loadEnvConfig();
     updateClock();
     setInterval(updateClock, 1000);
@@ -3048,7 +3072,9 @@ async function loadEnvConfig() {
             document.getElementById('username').value = cfg.username;
             document.getElementById('apikey').placeholder = cfg.api_key_preview + ' (from .env)';
             document.getElementById('apikey').value = '';
-            document.getElementById('contract-id').value = cfg.contract_id || defaultContractId();
+            document.getElementById('contract-id').value = contractUiValue(
+                cfg.contract_id || defaultContractId()
+            ) || 'MNQ';
             log('.env loaded: username=' + cfg.username + ', key=' + cfg.api_key_preview, 'success');
             log('Credentials from .env -- click CONNECT to fetch data', 'info');
 
@@ -6041,13 +6067,47 @@ function drawBacktestZones(zones) {
 
 // -- API Calls -------------------------------------
 
+let _healthProbeInFlight = false;
+let _healthBackendOffline = false;
+let _healthStatusBeforeOffline = null;
+
 async function checkHealth() {
+    if (_healthProbeInFlight) return;
+    _healthProbeInFlight = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2500);
     try {
-        const resp = await fetch(API + '/health');
+        const resp = await fetch(API + '/health', {
+            cache: 'no-store',
+            signal: controller.signal,
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
-        setStatus(data.status === 'ok' ? 'ok' : 'err', data.status === 'ok' ? 'ONLINE' : 'ERROR');
+        if (data.status !== 'ok' || data.service !== 'ancserTPX') {
+            throw new Error('Unexpected health response');
+        }
+        if (_healthBackendOffline) {
+            _healthBackendOffline = false;
+            const previous = _healthStatusBeforeOffline || { type: 'ok', text: 'ONLINE' };
+            _healthStatusBeforeOffline = null;
+            setStatus(previous.type, previous.text);
+            log('Backend health restored.', 'success');
+        } else if (_connectionStatusKind === 'idle') {
+            setStatus('ok', 'ONLINE');
+        }
     } catch(e) {
-        setStatus('err', 'OFFLINE');
+        if (!_healthBackendOffline) {
+            _healthStatusBeforeOffline = {
+                type: _connectionStatusKind,
+                text: _connectionStatusText,
+            };
+            _healthBackendOffline = true;
+            log('Backend health lost: ' + (e.name === 'AbortError' ? 'timeout' : e.message), 'error');
+        }
+        setStatus('err', 'BACKEND OFFLINE');
+    } finally {
+        clearTimeout(timeout);
+        _healthProbeInFlight = false;
     }
 }
 

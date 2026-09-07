@@ -22,6 +22,8 @@ pandas==2.2.3
 # emapmo_messenger renders the 1280x720 signal chart. Imported lazily but with
 # no fallback -- missing it is a hard failure, not a degraded mode.
 matplotlib==3.10.8
+# Native Windows desktop window (Microsoft Edge WebView2 runtime).
+pywebview==6.2.1
 # Slim Linux containers often ship no system tzdata and zoneinfo then raises
 # ZoneInfoNotFoundError. Trade-date boundaries, the PI pre-session filter and
 # session gating all depend on zoneinfo -- do not leave it to chance.
