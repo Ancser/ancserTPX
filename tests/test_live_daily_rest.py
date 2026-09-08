@@ -113,7 +113,7 @@ class RestGateThresholds(unittest.TestCase):
             eng = LiveTradingEngine(MagicMock(), 1, CONTRACT,
                                     contract_size=1, strategy_params=params)
         eng._daily_risk_state_file = str(self.root / "risk.json")
-        eng._trades_file = str(self.root / "t.json")
+        eng._trades_file = str(self.root / "trades.json")
         eng._exits_file = str(self.root / "e.json")
         eng._log = []
         return eng

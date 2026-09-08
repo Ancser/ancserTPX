@@ -345,13 +345,12 @@ class LiveTradingEngine:
         self._last_status_log_minute: int = -1  # track minute for periodic status log
         self._zone_file = str(market_data.runtime_path("state", "live_zones.json"))
         self._exits_file = str(market_data.runtime_path("state", "live_exits.json"))
+        # Durable executed-trade ledger.  It contains closed execution facts
+        # and the parameter-snapshot reference, but no decision explanation.
+        self._trades_file = str(market_data.runtime_path("state", "trades.json"))
         self._breakout_locks_file = str(
             market_data.runtime_path("state", "live_breakout_locks.json")
         )
-        # Durable per-trade ledger: every closed position is appended here with
-        # its full explainable confluence payload (weights x features, prob,
-        # score, scorer version) + all params + outcome. Capped at 10k rows.
-        self._trades_file = str(market_data.runtime_path("state", "trades.json"))
         # Bot-only daily win/loss counters.  This is deliberately separate
         # from account DAILY PNL: discretionary/manual fills still belong in
         # the account PnL display, but must not consume strategy risk gates.
@@ -1225,70 +1224,57 @@ class LiveTradingEngine:
 
     def _persist_trade_record(
         self,
-        exit_reason: str,
         entry_time: Optional[datetime],
         exit_time: datetime,
         entry_price: Optional[float],
         signal: Optional[TradeSignal],
-        conf_payload: Optional[Dict],
         trail_triggered: bool,
         status: str = "closed",
         exit_price: Optional[float] = None,
         topstep_pnl: Optional[float] = None,
     ):
-        """Append one fully-explainable order record to external runtime/trades.json.
+        """Append one completed execution to runtime/trades.json.
 
-        `status` captures the order's final disposition:
-          - "closed"    : filled then exited (won/exit_price from TP/SL)
-          - "cancelled" : placed as a LIMIT but never filled (price never touched),
-                          cancelled by timeout / pre-flatten / manual / shutdown.
-                          won = null, no exit_price — but the FULL "why" (weights x
-                          features) is still recorded, so unfilled signals are
-                          auditable too (為何下單、為何沒成交).
-
-        Each row carries the confluence weights/feature contributions, the scorer
-        version, all signal/config params, and the outcome — permanently replayable
-        and auditable (可解釋 + 可複刻), surviving restarts. Best-effort, capped at
-        10k rows. Trend-only orders store null confluence weights.
+        This is an execution audit record, not a decision-explanation store.
+        Strategy parameters remain canonical in strategy_snapshots.jsonl and
+        are linked here by ``param_snapshot_id``.  Unfilled/cancelled orders
+        are intentionally not written to this completed-trade ledger.
         """
+        if status != "closed":
+            return
         try:
-            filled = status == "closed"
-            if filled and topstep_pnl is not None:
-                won = topstep_pnl > 0
-            else:
-                won = (exit_reason == "tp") if filled else None
-            # Prefer the actual Topstep closing fill price.  Only fall back to
-            # the intended bracket when the broker fill is not yet available.
-            if filled and exit_price is None and signal is not None:
-                exit_price = signal.tp_price if exit_reason == "tp" else signal.sl_price
-
-            scorer = getattr(self.confluence, "scorer", None) if self.confluence else None
-            cfg = getattr(self.confluence, "cfg", None) if self.confluence else None
-            order_plan = {}
+            order_plan: Dict[str, Any] = {}
             if signal is not None:
                 try:
                     order_plan = dict((signal.meta or {}).get("order_plan") or {})
                 except Exception:
                     order_plan = {}
+
             intended_entry = None
             if signal is not None:
                 intended_entry = order_plan.get(
                     "intended_entry_price",
                     getattr(signal, "original_entry_price", signal.entry_price),
                 )
+
             entry_fill = entry_price
             slip_ticks = None
             slip_points = None
             slip_dollars = None
             try:
                 if intended_entry is not None and entry_fill is not None:
-                    direction_mult = 1 if signal and signal.direction == Direction.BUY else -1
-                    slip_points = (float(entry_fill) - float(intended_entry)) * direction_mult
+                    direction_mult = (
+                        1 if signal and signal.direction == Direction.BUY else -1
+                    )
+                    slip_points = (
+                        float(entry_fill) - float(intended_entry)
+                    ) * direction_mult
                     slip_ticks = slip_points / self.tick_size
                     slip_dollars = slip_points * self.point_value * self.contract_size
             except Exception:
                 slip_ticks = slip_points = slip_dollars = None
 
+            won = topstep_pnl > 0 if topstep_pnl is not None else None
             record = {
                 "exit_time": exit_time.isoformat() if exit_time else None,
                 "entry_time": entry_time.isoformat() if entry_time else None,
@@ -1300,19 +1286,20 @@ class LiveTradingEngine:
                 "account_id": self.account_id,
                 "contract_id": self.contract_id,
                 "strategy": self.strategy_mode,
-                # 1.0.8: 出場模式/斷路器 + 參數快照引用(策略考古用)
                 "exit_mode": self._tr_exit_mode,
                 "daily_loss_stop": self._tr_daily_loss_stop,
                 "param_snapshot_id": getattr(self, "_param_snapshot_id", None),
-                "status": status,
+                "status": "closed",
                 "direction": signal.direction.value if signal else None,
                 "managed_by_engine": bool(signal is not None),
-                "lock_eligible": bool(signal is not None and status == "closed"),
+                "lock_eligible": bool(signal is not None),
                 "size": self.contract_size,
                 "order_id": order_plan.get("order_id"),
                 "sl_order_id": order_plan.get("sl_order_id", self._sl_order_id),
                 "tp_order_id": order_plan.get("tp_order_id", self._tp_order_id),
-                "order_type": order_plan.get("order_type") or (getattr(signal, "order_type", None) if signal else None),
+                "order_type": order_plan.get("order_type") or (
+                    getattr(signal, "order_type", None) if signal else None
+                ),
                 "order_submitted_at": order_plan.get("submitted_at"),
                 "market_price_at_submit": order_plan.get("market_price_at_submit"),
                 "intended_entry_price": intended_entry,
@@ -1334,7 +1321,6 @@ class LiveTradingEngine:
                 "topstep_pnl": topstep_pnl,
                 "sl_price": signal.sl_price if signal else None,
                 "tp_price": signal.tp_price if signal else None,
-                "signal_reason": signal.reason if signal else None,
                 "original_sl_price": (
                     getattr(signal, "original_sl_price", signal.sl_price)
                     if signal else None
@@ -1343,54 +1329,10 @@ class LiveTradingEngine:
                     getattr(signal, "original_tp_price", signal.tp_price)
                     if signal else None
                 ),
-                "exit_reason": exit_reason,
                 "won": won,
                 "trail_triggered": trail_triggered,
                 "shadow": bool(self._conf_shadow),
-                # ── explainable confluence payload (None for trend trades) ──
-                "confluence": None,
             }
-
-            if conf_payload:
-                record["confluence"] = {
-                    "mode": conf_payload.get("mode"),
-                    "side": conf_payload.get("side"),
-                    "prob": conf_payload.get("prob"),
-                    "score": conf_payload.get("score"),
-                    "cluster_weight": conf_payload.get("weight"),
-                    "tfs": conf_payload.get("tfs"),
-                    "largest_tf": conf_payload.get("largest_tf"),
-                    "risk_tf": conf_payload.get("risk_tf"),
-                    "wall_id": conf_payload.get("wall_id"),
-                    "labels": conf_payload.get("labels"),
-                    "primary_zone": conf_payload.get("primary_zone"),
-                    "reason": conf_payload.get("reason"),
-                    # full per-feature breakdown: (name, value, weight, contribution)
-                    "contributions": [
-                        {"feature": n, "value": v, "weight": w, "contribution": c}
-                        for (n, v, w, c) in conf_payload.get("explain", [])
-                    ],
-                }
-            if scorer is not None:
-                record["scorer"] = {
-                    "source": self.confluence.scorer_source,
-                    "bias": scorer.bias,
-                    "weights": dict(scorer.weights),
-                    "trained_at": scorer.meta.get("trained_at"),
-                    "train_auc": scorer.meta.get("train_auc"),
-                    "n_samples": scorer.meta.get("n_samples"),
-                }
-            if cfg is not None:
-                record["config"] = {
-                    "band_ticks": cfg.band_ticks,
-                    "min_distinct_tf": cfg.min_distinct_tf,
-                    "rr": cfg.rr,
-                    "base_minutes": self.confluence.base_minutes,
-                    "min_score": self.confluence.min_score,
-                    "ev_floor": getattr(cfg, "ev_floor", None),
-                    "gate": ("ev" if getattr(cfg, "ev_floor", None) is not None else "prob"),
-                    "rr_grid": (list(cfg.rr_grid) if getattr(cfg, "rr_grid", None) else None),
-                }
 
             existing: List[dict] = []
             if os.path.exists(self._trades_file):
@@ -2893,14 +2835,6 @@ class LiveTradingEngine:
                     )
             except Exception as e:
                 self._log_event(f"Failed to cancel pending order: {e}", "error")
-            if self._pending_signal:
-                self._persist_trade_record(
-                    exit_reason="cancelled", entry_time=self._entry_time,
-                    exit_time=utc_now_naive(), entry_price=None,
-                    signal=self._pending_signal,
-                    conf_payload=self._pending_conf_payload,
-                    trail_triggered=False, status="cancelled",
-                )
             self._pending_order_id = None
             self._pending_signal = None
             self._pending_conf_payload = None
@@ -3938,7 +3872,7 @@ class LiveTradingEngine:
         else:
             placed = await self._place_order(signal)
         if placed:
-            # carry the explainable payload through to the trade ledger on exit
+            # keep optional decision metadata for the operational exit record
             self._pending_conf_payload = payload
             self._mark_session_direction_locked(signal)
             self._log_event(
@@ -4513,17 +4447,6 @@ class LiveTradingEngine:
                     self.trend_follow.notify_order_cancelled()
                     if release_breakout_lock and not maybe_close:
                         self._release_breakout_lock(self._pending_signal)
-                    if not maybe_close:
-                        self._persist_trade_record(
-                            exit_reason="cancelled",
-                            entry_time=self._entry_time,
-                            exit_time=utc_now_naive(),
-                            entry_price=None,
-                            signal=self._pending_signal,
-                            conf_payload=self._pending_conf_payload,
-                            trail_triggered=False,
-                            status="cancelled",
-                        )
                 self._pending_order_id = None
                 self._pending_signal = None
                 self._pending_conf_payload = None
@@ -4542,19 +4465,6 @@ class LiveTradingEngine:
             self.trend_follow.notify_order_cancelled()
             if release_breakout_lock:
                 self._release_breakout_lock(self._pending_signal)
-            # Record the unfilled order (placed but price never touched) with its
-            # full explainable payload — so cancelled signals are auditable too.
-            self._persist_trade_record(
-                exit_reason="cancelled",
-                entry_time=self._entry_time,
-                exit_time=utc_now_naive(),
-                entry_price=None,
-                signal=self._pending_signal,
-                conf_payload=self._pending_conf_payload,
-                trail_triggered=False,
-                status="cancelled",
-            )
-
         self._pending_order_id = None
         self._pending_signal = None
         self._pending_conf_payload = None
@@ -4805,7 +4715,7 @@ class LiveTradingEngine:
                 self._active_signal = self._pending_signal  # keep for SL/TP reference
                 self._active_conf_payload = (
                     self._pending_conf_payload
-                )  # carry the "why"
+                )  # optional metadata for exit correlation
                 self._pending_conf_payload = None
                 self._entry_time = utc_now_naive()
                 self._force_exit_reason = None
@@ -4993,15 +4903,13 @@ class LiveTradingEngine:
                     managed_by_engine=_sig_for_log is not None,
                 )
 
-                # Durable explainable trade ledger (data/trades.json):
-                # weights x features + scorer version + all params + outcome.
+                # Persist the complete executed-trade facts without the
+                # decision explanation fields removed from the product.
                 self._persist_trade_record(
-                    exit_reason=exit_reason,
                     entry_time=_entry_t,
                     exit_time=exit_time_dt,
                     entry_price=entry_fill,
                     signal=_sig_for_log,
-                    conf_payload=_conf_payload,
                     trail_triggered=self._trail_sl_triggered,
                     exit_price=actual_exit_price,
                     topstep_pnl=topstep_pnl,

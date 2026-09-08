@@ -7,8 +7,7 @@
 #       重跑回測,逐筆 DIFF 實盤成交 → 吻合率日報 + 告警。
 # 通過標準(1.0.9 P0): 連續 2 週 match_rate ≥ 0.9 才允許新策略上真錢。
 # 關聯: → backend/api/routes.py  (/live/shadow-replay 端點 + 每日排程)
-#       → ancserMarketData/runtime/state/strategy_snapshots.jsonl (參數快照庫,1.0.8)
-#       → ancserMarketData/runtime/state/trades.json             (實盤逐筆記錄)
+#       → ancserMarketData/runtime/state/strategy_snapshots.jsonl (strategy parameter snapshots)
 #       → docs/1.0.9_SKILL_REPORT.md   (P0 規格)
 # ============================================================
 """P0 影子重放:實盤 vs 同參數回測 逐筆對賬。"""
@@ -17,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -32,7 +30,6 @@ from backend.db.models import (
 
 logger = logging.getLogger(__name__)
 
-TRADES_FILE = market_data.runtime_path("state", "trades.json")
 TRADE_HISTORY_FILE = market_data.runtime_path("state", "trade_history.json")
 SNAPSHOTS_FILE = market_data.runtime_path("state", "strategy_snapshots.jsonl")
 REPORT_DIR = market_data.runtime_path("shadow_replay")
@@ -111,7 +108,7 @@ def _load_live_fills(trade_date: str, main_acct: Optional[str] = None) -> List[d
     """1.0.9: 當日主帳號 broker 真相成交(準 net pnl,對得上 Topstep)。
 
     來源改為 trade_history.json(broker 原始),只取主帳號、當交易日的 round-trip。
-    trades.json 因 exit_price/pnl 有 bug 只用於補策略 tag(不用於 pnl)。
+    Broker trade history is the execution source; strategy parameters come from snapshots.
     """
     hist = _load_trade_history()
     if not hist:
@@ -134,33 +131,38 @@ def _load_live_fills(trade_date: str, main_acct: Optional[str] = None) -> List[d
             "entry_price": float(r["entry_price"]),
             "direction": str(r.get("direction") or "").lower(),
             "strategy": "trend",
-            "snapshot_id": None,       # broker 檔無 tag,params 由 _day_snapshot_id 補
+            "snapshot_id": None,       # broker data has no tag; the caller uses the strategy snapshot
             "pnl": float(pnl) if pnl is not None else None,
         })
     fills.sort(key=lambda x: x["entry_time"])
     return fills
 
 
-def _day_snapshot_id(trade_date: str, main_acct: Optional[str]) -> Optional[str]:
-    """當日主帳號使用的 param snapshot(從 trades.json 的 tag 取,只為還原參數)。
-    取當日出現最多的 snapshot_id;無則 None(交由 caller fallback 最新 snapshot)。"""
-    if not TRADES_FILE.exists():
-        return None
-    try:
-        rows = json.loads(TRADES_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    counts: Dict[str, int] = {}
-    for r in rows:
-        if main_acct is not None and str(r.get("account_id") or "") != str(main_acct):
+def _day_snapshot_id(
+    trade_date: str,
+    main_acct: Optional[str],
+    snapshots: Optional[Dict[str, dict]] = None,
+) -> Optional[str]:
+    """Choose the latest strategy snapshot available by the trading day.
+
+    The parameter snapshot is written when the live engine starts.  A separate
+    per-trade ledger is unnecessary for shadow replay and used to duplicate
+    broker data, so historical selection is based on the canonical snapshot
+    file instead.
+    """
+    snapshots = snapshots if snapshots is not None else _load_snapshots()
+    candidates = []
+    for sid, record in snapshots.items():
+        if main_acct is not None and str(record.get("account_id") or "") != str(main_acct):
             continue
-        et = _parse_ts(r.get("entry_time"))
-        if et is None or _topstep_trade_date(et) != trade_date:
+        created_at = _parse_ts(record.get("created_at"))
+        if created_at is None:
             continue
-        sid = r.get("param_snapshot_id")
-        if sid:
-            counts[sid] = counts.get(sid, 0) + 1
-    return max(counts, key=counts.get) if counts else None
+        if _topstep_trade_date(created_at) <= trade_date:
+            candidates.append((created_at, str(sid)))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[0], item[1]))[1]
 
 
 def _params_from_snapshot(snap: dict) -> Optional[StrategyParams]:
@@ -296,8 +298,8 @@ def run_shadow_replay(
     fills = _load_live_fills(trade_date, main_acct)
     snaps = _load_snapshots()
 
-    # 當日主帳號用的參數快照(單一 dominant);無 tag → fallback 最新快照
-    sid = _day_snapshot_id(trade_date, main_acct)
+    # Select the latest strategy snapshot available for this trading day.
+    sid = _day_snapshot_id(trade_date, main_acct, snaps)
     if not sid:
         if snaps:
             sid = max(snaps.values(), key=lambda r: str(r.get("created_at") or ""))["snapshot_id"]

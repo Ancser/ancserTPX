@@ -167,6 +167,28 @@ def test_language_switch_is_removed_and_english_is_the_only_ui_locale():
     assert "lang-toggle" not in SKIN_JS
 
 
+def test_trade_tables_keep_time_labels_on_one_line_without_why_column():
+    assert "<th>ID</th>" not in HTML
+    assert HTML.count('<th style="width:36px;">SIZE</th>') == 2
+    assert HTML.count('<th style="width:48px;">SYMBOL</th>') == 2
+    assert HTML.index('<th style="width:36px;">SIZE</th>') < HTML.index('<th style="width:48px;">SYMBOL</th>')
+    assert HTML.count("<th>ENTRY TIME</th>") == 2
+    assert HTML.count("<th>EXIT TIME</th>") == 2
+    assert "WHY" not in HTML
+    assert HTML.count("<th>ENTRY</th>") == 2
+    assert HTML.count("<th>EXIT</th>") == 2
+    assert "ENTRY PRICE" not in HTML
+    assert "EXIT PRICE" not in HTML
+
+    assert ".trade-table-wrap table {" in CSS
+    assert "min-width: 0;" in CSS
+    assert ".trade-table-wrap th { white-space: nowrap; }" in CSS
+
+    assert "colspan=\"12\"" not in JS
+    assert JS.count("colspan=\"11\"") == 2
+    assert "explainTrade" not in JS
+
+
 def test_theme_mark_uses_the_existing_thumb_and_hides_while_moving():
     theme = SKIN_JS[SKIN_JS.index('themeTrack.id = "theme-switch"'):]
     theme = theme[:theme.index("right.appendChild(themeTrack)")]

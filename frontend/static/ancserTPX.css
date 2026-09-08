@@ -820,7 +820,16 @@
         /* ── Tables ── */
         /* No inner scroll — let .bottom-content handle scrolling so sticky thead
            works against that container without two nested scrollbars. */
-        .trade-table-wrap { }
+        .trade-table-wrap {
+            max-width: 100%;
+            overflow-x: auto;
+        }
+        .trade-table-wrap table {
+            width: 100%;
+            min-width: 0;
+            table-layout: auto;
+        }
+        .trade-table-wrap th { white-space: nowrap; }
         table { width: 100%; border-collapse: collapse; }
         th {
             background: var(--bg3);

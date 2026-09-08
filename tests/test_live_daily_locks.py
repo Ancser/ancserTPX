@@ -134,6 +134,20 @@ class LiveDailyRiskStateTests(unittest.TestCase):
         self.assertEqual(price, 90.0)
         self.assertEqual(pnl, -676.50)
 
+    def test_cancelled_order_is_not_written_to_executed_trade_ledger(self):
+        engine = _engine(self.root)
+
+        engine._persist_trade_record(
+            entry_time=None,
+            exit_time=datetime(2026, 7, 16, 23, 30, tzinfo=UTC),
+            entry_price=None,
+            signal=_signal(),
+            trail_triggered=False,
+            status="cancelled",
+        )
+
+        self.assertFalse(Path(engine._trades_file).exists())
+
 
 class LiveDailyRiskSyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -172,9 +186,17 @@ class LiveDailyRiskSyncTests(unittest.IsolatedAsyncioTestCase):
         engine._cancel_contract_open_orders.assert_not_awaited()
         engine.trend_follow.notify_trade_closed.assert_not_called()
         rows = json.loads(Path(engine._trades_file).read_text(encoding="utf-8"))
-        self.assertEqual(rows[-1]["exit_reason"], "manual")
-        self.assertFalse(rows[-1]["managed_by_engine"])
-        self.assertFalse(rows[-1]["lock_eligible"])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "closed")
+        self.assertEqual(rows[0]["strategy"], "factor")
+        self.assertIn("param_snapshot_id", rows[0])
+        self.assertEqual(rows[0]["exit_price"], 90.0)
+        self.assertEqual(rows[0]["topstep_pnl"], -100.0)
+        self.assertFalse(rows[0]["managed_by_engine"])
+        self.assertFalse(rows[0]["lock_eligible"])
+        self.assertNotIn("exit_reason", rows[0])
+        self.assertNotIn("signal_reason", rows[0])
+        self.assertNotIn("confluence", rows[0])
 
     async def test_observed_bot_loss_locks_and_persists(self):
         engine = await self._run_close(program_owned=True)

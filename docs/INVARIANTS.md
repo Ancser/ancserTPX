@@ -56,6 +56,7 @@
 | LIVE-009 | 歷史資料 fetch 不得 disconnect/replace 已被 running 或 starting live engine 擁有的 client/contract;每個 start reservation 必須 ref-counted,history-only client 必須關閉 | `test_historical_range_cache.py` |
 | LIVE-010 | 同一帳號跨 web/terminal 只能有一個 live engine；啟動競態必須在產生第二個 PI callback 前拒絕 | `test_engine_lease.py` + `test_historical_range_cache.py` |
 | LIVE-011 | 手動／未追蹤倉位屬於外部所有權：只阻擋 Bot 新開倉；Bot 不得替它掛、改、撤 SL/TP，不得因盤末、max-hold、trailing 或缺 Auto OCO 自動平倉。倉位消失後可恢復訊號；明確 `/live/flatten` 仍由使用者控制 | `test_live_manual_guardian_integration.py` |
+| LIVE-012 | The live engine persists each completed execution in `trades.json` with execution, order, cost, and parameter-snapshot fields, but does not persist decision-reason/explain fields there. `strategy_snapshots.jsonl` remains the canonical strategy-parameter record; broker trade history and `live_exits` remain operational sources for execution, PnL, and exit correlation. | `test_live_daily_locks.py` + `test_shadow_replay.py` |
 
 ## CLOCK — 市場時鐘
 
@@ -158,6 +159,7 @@
 | UI-024 | The product UI/API must not expose cross-model sweep controls, result tabs, sweep preset generation, or the `/backtest/sweep` route. Normal preset save/load/use/delete controls and routes remain available. | `test_product_scope.py` + `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
 | UI-025 | Liquid Glass may keep backdrop sampling/refraction, but must not render a decorative default frame, white rim, specular pass, or edge stroke on its optical surfaces; the same rule applies to the Live/Discord chart lens. | `test_ui_glass_repair_contracts.py` |
 | UI-026 | Product-rendered UI copy is canonical English only: no language toggle, translation map, locale observer, or alternate Chinese presentation; the document root remains `lang="en"`. | `test_data_and_skin_policy.py` + `test_ui_glass_repair_contracts.py` + `tests/ui/glass-ui.spec.js` |
+| UI-027 | Backtest and Execute Trades tables retain ENTRY TIME/EXIT TIME and ENTRY/EXIT labels, keep each header on one line, and have no WHY column; the empty state spans the 12 remaining columns. | `test_ui_glass_repair_contracts.py` |
 | RES-001 | **走查分段只能有一份定義。** 所有保留的研究／RESEARCH 面板走查都必須使用 `robustness.segment_index()`；不得在 script、前端或另一個 backend 模組重建相似的三分段公式 | `test_robustness.py` + `test_single_definition.py` |
 
 ---

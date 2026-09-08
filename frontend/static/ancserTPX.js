@@ -8690,7 +8690,7 @@ function renderMetrics(m, backtestTrades) {
 function renderTrades(trades) {
     const tbody = document.getElementById('trades-tbody');
     if (!trades || trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
         return;
     }
 
@@ -8700,8 +8700,6 @@ function renderTrades(trades) {
         const tb = b.entry_time ? new Date(b.entry_time).getTime() : 0;
         return tb - ta;
     });
-    const totalN = sorted.length;
-
     const fmtTime = (iso) => {
         if (!iso) return '--';
         const d = new Date(iso);
@@ -8723,20 +8721,6 @@ function renderTrades(trades) {
         const p = (n) => n < 10 ? '0' + n : '' + n;
         return p(hh) + ':' + p(mm) + ':' + p(ss);
     };
-    const esc = (s) => String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    const explainTrade = (t) => {
-        if (t.reason) return String(t.reason);
-        const labels = Array.isArray(t.labels) ? t.labels.join(', ') : '';
-        if (t.or_range) {
-            const r = t.or_range || {};
-            const side = _tradeIsBuy(t) ? 'OR low fake -> long' : 'OR high fake -> short';
-            return 'OR15 ' + side + ' | OR ' + Number(r.or_low).toFixed(2) + '~' + Number(r.or_high).toFixed(2);
-        }
-        return labels || t.zone_id || '--';
-    };
-
     tbody.innerHTML = sorted.map((t, i) => {
         const netPnl = t.pnl || 0;
         const commission = (t.commission != null) ? t.commission : 1.0;
@@ -8748,16 +8732,10 @@ function renderTrades(trades) {
         const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
         const symbol = displaySymbolFromTrade(t);
         const size = t.size || t.contracts || 1;
-        // Short trade ID (last 6 chars) so column stays narrow
-        const id = t.trade_id ? String(t.trade_id).slice(-6) : (totalN - i);
         const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
-        const why = explainTrade(t);
-        const whyShort = why.length > 96 ? why.slice(0, 93) + '...' : why;
-
         return '<tr>' +
-            '<td style="color:var(--text2);">' + id + '</td>' +
-            '<td style="width:48px;">' + symbol + '</td>' +
             '<td style="width:36px;text-align:right;">' + size + '</td>' +
+            '<td style="width:48px;">' + symbol + '</td>' +
             '<td style="font-family:\'IBM Plex Mono\',monospace;">' + fmtTime(t.entry_time) + '</td>' +
             '<td style="font-family:\'IBM Plex Mono\',monospace;">' + fmtTime(t.exit_time) + '</td>' +
             '<td>' + fmtDuration(t.entry_time, t.exit_time) + '</td>' +
@@ -8767,7 +8745,6 @@ function renderTrades(trades) {
             '<td class="pnl-neg">$-' + commission.toFixed(2) + '</td>' +
             '<td class="pnl-neg">$-' + fees.toFixed(2) + '</td>' +
             '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
-            '<td title="' + esc(why) + '" style="color:var(--text2);font-family:\'IBM Plex Mono\',monospace;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(whyShort) + '</td>' +
         '</tr>';
     }).join('');
 }
@@ -8778,7 +8755,7 @@ function renderExecuteTrades(trades) {
     if (!tbody) return;
     if (!trades || trades.length === 0) {
         _executeLatestTradeKey = '';
-        tbody.innerHTML = '<tr><td colspan="13" style="text-align:center;color:var(--text2);padding:20px;">NO EXECUTE TRADE DATA</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text2);padding:20px;">NO EXECUTE TRADE DATA</td></tr>';
         return;
     }
 
@@ -8811,20 +8788,6 @@ function renderExecuteTrades(trades) {
         const p = (n) => n < 10 ? '0' + n : '' + n;
         return p(hh) + ':' + p(mm) + ':' + p(ss);
     };
-    const esc = (s) => String(s == null ? '' : s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    const explainTrade = (t) => {
-        if (t.reason) return String(t.reason);
-        const labels = Array.isArray(t.labels) ? t.labels.join(', ') : '';
-        if (t.or_range) {
-            const r = t.or_range || {};
-            const side = _tradeIsBuy(t) ? 'OR low fake -> long' : 'OR high fake -> short';
-            return 'OR15 ' + side + ' | OR ' + Number(r.or_low).toFixed(2) + '~' + Number(r.or_high).toFixed(2);
-        }
-        return labels || t.zone_id || '--';
-    };
-
     tbody.innerHTML = sorted.map((t) => {
         const grossPnl = (t.gross_pnl != null)
             ? Number(t.gross_pnl)
@@ -8836,15 +8799,10 @@ function renderExecuteTrades(trades) {
         const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
         const symbol = displaySymbolFromTrade(t);
         const size = t.size || 1;
-        const id = t.trade_id ? String(t.trade_id).split('_')[0].slice(-6) : '--';
         const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
-        const why = explainTrade(t);
-        const whyShort = why.length > 96 ? why.slice(0, 93) + '...' : why;
-
         return '<tr>' +
-            '<td style="color:var(--text2);">' + id + '</td>' +
-            '<td style="width:48px;">' + symbol + '</td>' +
             '<td style="width:36px;text-align:right;">' + size + '</td>' +
+            '<td style="width:48px;">' + symbol + '</td>' +
             '<td style="font-family:\'IBM Plex Mono\',monospace;">' + fmtTime(t.entry_time) + '</td>' +
             '<td style="font-family:\'IBM Plex Mono\',monospace;">' + fmtTime(t.exit_time) + '</td>' +
             '<td>' + fmtDuration(t.entry_time, t.exit_time) + '</td>' +
@@ -8854,7 +8812,6 @@ function renderExecuteTrades(trades) {
             '<td class="pnl-neg">$-' + commission.toFixed(2) + '</td>' +
             '<td class="pnl-neg">$-' + fees.toFixed(2) + '</td>' +
             '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
-            '<td title="' + esc(why) + '" style="color:var(--text2);font-family:\'IBM Plex Mono\',monospace;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + esc(whyShort) + '</td>' +
         '</tr>';
     }).join('');
     if (newestChanged && executeTradesTabIsActive()) revealNewestExecuteTrade();
