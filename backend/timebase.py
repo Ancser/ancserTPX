@@ -7,7 +7,7 @@ system timezone for display.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from types import MappingProxyType
 from zoneinfo import ZoneInfo
 
@@ -53,6 +53,22 @@ def topstep_trade_date(value: datetime) -> str:
     if local.hour >= 17:
         local += timedelta(days=1)
     return local.date().isoformat()
+
+
+def topstep_trade_date_bounds(trade_date: str) -> tuple[datetime, datetime]:
+    """Return the DST-aware UTC window for one Topstep trade date.
+
+    A trade date named ``YYYY-MM-DD`` starts at 17:00 America/Chicago on the
+    preceding calendar date and ends at 17:00 America/Chicago on that date.
+    Keeping this beside :func:`topstep_trade_date` prevents chart annotations
+    from inventing a second daily boundary.
+    """
+    day = date.fromisoformat(str(trade_date))
+    start_local = datetime.combine(
+        day - timedelta(days=1), time(17, 0), tzinfo=CHICAGO,
+    )
+    end_local = datetime.combine(day, time(17, 0), tzinfo=CHICAGO)
+    return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
 
 def time_zone_manifest() -> dict[str, str]:

@@ -15,6 +15,7 @@ from scripts.option_wall_ml_study import (
     extract_wall_features,
     train_models,
 )
+from backend.data import market_data
 
 
 def _profile():
@@ -34,7 +35,9 @@ def _profile():
 
 
 def test_default_mnq_source_is_the_current_ancsertpx_store():
-    assert DEFAULT_MNQ_PATH == Path(__file__).resolve().parents[1] / "data" / "store" / "MNQ_accumulated_1m.pkl"
+    assert DEFAULT_MNQ_PATH == (
+        market_data.candle_store_dir() / "MNQ_accumulated_1m.pkl"
+    )
 
 
 def test_closed_market_symbology_error_is_skippable_but_other_errors_are_not():

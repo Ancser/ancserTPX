@@ -1,7 +1,8 @@
 """Read-only loader for the causal Option Wall strategy signal tape.
 
 The paid Databento-derived data stays outside the application repository under
-``ancserData``.  Production code deliberately reads only entry-time columns;
+the canonical ``ancserMarketData/source/options/qqq_option_ml`` tree.
+Production code deliberately reads only entry-time columns;
 PnL and future-path columns in the research artifact are never loaded.
 """
 from __future__ import annotations
@@ -15,12 +16,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from backend.data import market_data
 from backend.timebase import UTC
 
 
-DEFAULT_DATA_ROOT = (
-    Path(__file__).resolve().parents[3] / "ancserData" / "qqq_option_ml"
-)
+DEFAULT_DATA_ROOT = market_data.option_wall_root()
 SIGNAL_FILE = "option_wall_gamma_gate_trades.csv.gz"
 PRIMARY_STRICT_GATE = "gate_consensus_article_alignment_wall_room"
 

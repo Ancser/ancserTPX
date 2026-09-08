@@ -48,7 +48,12 @@ from backend.data.candle_store import (
     _store_path as _store_file_path,
     _as_utc as _store_utc,
 )
-from backend.strategy.volume_profile import VolumeProfileCalculator
+from backend.data import market_data
+from backend.strategy.volume_profile import (
+    PREVIOUS_DAY_VALUE_AREA_PCT,
+    VolumeProfileCalculator,
+    calculate_previous_day_value_areas,
+)
 from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, MARKET_CLOCK_VERSION, allowed_sessions_label,
     as_new_york, normalize_allowed_sessions, rth_session_date,
@@ -1937,6 +1942,105 @@ async def get_stored_candles(
     }
 
 
+def _daily_profile_candles(
+    start: Optional[datetime],
+    end: Optional[datetime],
+    symbol: str,
+) -> Tuple[List[Candle], str]:
+    """Select a bounded chart/profile workset without forcing full history."""
+    memory = sorted(_historical_candles, key=_candle_time)
+    if memory:
+        first = _candle_time(memory[0])
+        last = _candle_time(memory[-1])
+        if (
+            (start is None or first <= start)
+            and (end is None or last >= end)
+        ):
+            return memory, "working_set"
+
+    # A left-panned chart has already explicitly opted into persistent
+    # history.  Reuse the cached store snapshot and select only the chart
+    # window plus a bounded look-back needed to find the preceding trade day.
+    requested_symbol = _extract_symbol(symbol or _live_contract_id or "MNQ")
+    symbols = list(dict.fromkeys([requested_symbol, "MNQ"]))
+    profile_start = start - timedelta(days=14) if start is not None else None
+    profile_end = end + timedelta(days=1) if end is not None else None
+    for store_symbol in symbols:
+        _store_merge_pending(store_symbol, 1)
+        snapshot = _store_load_snapshot(store_symbol)
+        if not snapshot.bars:
+            continue
+        selected = _store_select_range(snapshot, profile_start, profile_end)
+        if selected:
+            return selected, "persistent_store"
+    return [], "none"
+
+
+@router.get("/data/previous-day-value-areas")
+async def get_previous_day_value_areas(
+    start: str = "",
+    end: str = "",
+    symbol: str = "MNQ",
+):
+    """Return prior trade-day 70% VAH/VAL/POC lines for the chart.
+
+    ``trade_date`` is the day on which the three lines are displayed;
+    ``source_trade_date`` is the completed preceding trade day used to
+    calculate them.  The calculation runs off the event loop because a chart
+    page may contain many 1m candles.
+    """
+    start_dt = _parse_iso_utc(start) if start else None
+    end_dt = _parse_iso_utc(end) if end else None
+    if start and start_dt is None:
+        raise HTTPException(status_code=400, detail="start must be an ISO timestamp")
+    if end and end_dt is None:
+        raise HTTPException(status_code=400, detail="end must be an ISO timestamp")
+    if start_dt is not None and end_dt is not None and end_dt < start_dt:
+        raise HTTPException(status_code=400, detail="end must not be earlier than start")
+
+    try:
+        candles, source = await asyncio.to_thread(
+            _daily_profile_candles, start_dt, end_dt, symbol,
+        )
+        if not candles:
+            return {
+                "areas": [],
+                "count": 0,
+                "value_area_pct": PREVIOUS_DAY_VALUE_AREA_PCT,
+                "source": source,
+            }
+        tick_size = get_tick_size(symbol or _live_contract_id or "MNQ")
+        areas = await asyncio.to_thread(
+            calculate_previous_day_value_areas,
+            candles,
+            tick_size=tick_size,
+            value_area_pct=PREVIOUS_DAY_VALUE_AREA_PCT,
+        )
+        if start_dt is not None or end_dt is not None:
+            visible = []
+            for area in areas:
+                area_start = _parse_iso_utc(area.get("start_at", ""))
+                area_end = _parse_iso_utc(area.get("end_at", ""))
+                if area_start is None or area_end is None:
+                    continue
+                if start_dt is not None and area_end < start_dt:
+                    continue
+                if end_dt is not None and area_start > end_dt:
+                    continue
+                visible.append(area)
+            areas = visible
+        return {
+            "areas": areas,
+            "count": len(areas),
+            "value_area_pct": PREVIOUS_DAY_VALUE_AREA_PCT,
+            "source": source,
+            "trade_date_boundary": "09:30-16:00 America/New_York",
+        }
+    except Exception as exc:
+        logger.exception("Previous-day value-area calculation failed")
+        raise HTTPException(status_code=500, detail=f"Could not calculate prior-day value areas: {exc}")
+
+
 @router.get("/data/mnq-signals")
 async def get_mnq_signal_markers(limit: int = 60000):
     """Return read-only MNQ factor markers for the 1m chart.
@@ -2003,7 +2107,7 @@ async def get_mnq_signal_markers(limit: int = 60000):
 @router.get("/research/institution/latest")
 async def institution_research_latest():
     """Latest hunter/liquidity research summary for the Data tab."""
-    path = Path("data") / "machinelearning" / "institution_research" / "latest.json"
+    path = market_data.derived_path("machinelearning", "institution_research", "latest.json")
     if not path.exists():
         return {
             "available": False,
@@ -2011,10 +2115,10 @@ async def institution_research_latest():
         }
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        validation_path = Path("data") / "machinelearning" / "edge_validation" / "latest.json"
+        validation_path = market_data.derived_path("machinelearning", "edge_validation", "latest.json")
         if validation_path.exists():
             data["edge_validation"] = json.loads(validation_path.read_text(encoding="utf-8"))
-        futures_port_path = Path("data") / "machinelearning" / "futures_repo_port" / "latest.json"
+        futures_port_path = market_data.derived_path("machinelearning", "futures_repo_port", "latest.json")
         if futures_port_path.exists():
             data["futures_repo_port"] = json.loads(futures_port_path.read_text(encoding="utf-8"))
         data["available"] = True
@@ -2917,7 +3021,7 @@ async def aggregate_data():
     }
 
 
-_BT_PROGRESS_FILE = Path("data") / "backtest_progress.json"
+_BT_PROGRESS_FILE = market_data.runtime_path("state", "backtest_progress.json")
 _bt_progress_state = {
     "status": "idle",
     "stage": "idle",
@@ -3467,7 +3571,7 @@ def _write_backtest_csv(req, config, strategy_params, method, tf_combo,
     Returns the path of the per-trade CSV. A companion *_summary.csv carries
     the config + headline metrics so each run is self-describing.
     """
-    out_dir = Path(__file__).resolve().parents[2] / "data" / "backtest"
+    out_dir = market_data.derived_path("backtest")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -4437,19 +4541,13 @@ async def live_account_state():
 
 import json as _json
 
-_TRADE_HISTORY_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "data", "trade_history.json"
-)
+_TRADE_HISTORY_FILE = str(market_data.runtime_path("state", "trade_history.json"))
 
 # Live engine writes confirmed exit reasons here (TP / SL / TRAIL_SL / FLATTEN).
 # We merge by (account_id, contract_id, exit_time) so live trade history can
 # accurately bucket trail-SL exits — without this, TP-vs-SL is inferred from
 # pnl sign which collapses TRAIL into TP/SL.
-_LIVE_EXITS_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "data", "live_exits.json"
-)
+_LIVE_EXITS_FILE = str(market_data.runtime_path("state", "live_exits.json"))
 
 # The browser polls this endpoint through a disk cache so it does not issue a
 # 60-day Trade/search on every live-status tick.  The cache used to have no
@@ -4901,10 +4999,7 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
 
 # ── Presets (JSON file) ────────────────────────────────
 
-_PRESETS_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "data", "presets.json"
-)
+_PRESETS_FILE = str(market_data.repository_data_path("presets.json"))
 
 _PRESET_SCHEMA_VERSION = "2026-08-30-new-york-market-clock-v1"
 _DEFAULT_PRESET_NAME = "TREND MNQx1 DEFAULT"

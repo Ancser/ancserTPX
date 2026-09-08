@@ -6,7 +6,7 @@
   - 不用 leader/follower —— 直接每帳號指定 preset;最多 **2 個帳號** 可 live + 記錄。
   - **main account** 是固定的那個 live 主帳號(trade-history 預設過濾 + shadow replay 用)。
 
-設定持久化於 data/account_roles.json:
+設定持久化於 ancserMarketData/runtime/state/account_roles.json:
 {
   "email": "<主 Topstep 登入 email>",
   "main_account_id": "<固定主帳號 id>",
@@ -22,7 +22,9 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-ROLES_PATH = os.path.join("data", "account_roles.json")
+from backend.data import market_data
+
+ROLES_PATH = str(market_data.runtime_path("state", "account_roles.json"))
 MAX_LIVE = 2
 
 

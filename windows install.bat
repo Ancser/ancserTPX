@@ -15,8 +15,8 @@ set "PYEXE=python"
 set "PY_VERSION=3.13.1"
 set "PY_INSTALL_DIR=%LOCALAPPDATA%\Programs\Python\Python313"
 
-:: ── [1/4] Locate or auto-install Python ──
-echo  [1/4] Checking Python...
+:: ── [1/5] Locate or auto-install Python ──
+echo  [1/5] Checking Python...
 %PYEXE% --version >nul 2>&1
 if not errorlevel 1 goto PY_OK
 
@@ -71,8 +71,8 @@ exit /b 1
 :PY_OK
 for /f "tokens=2" %%v in ('"%PYEXE%" --version 2^>^&1') do echo         Python %%v ready
 
-:: ── [2/4] pip ──
-echo  [2/4] Checking pip...
+:: ── [2/5] pip ──
+echo  [2/5] Checking pip...
 "%PYEXE%" -m pip --version >nul 2>&1
 if errorlevel 1 (
     echo         pip missing - bootstrapping with ensurepip...
@@ -86,8 +86,8 @@ if errorlevel 1 (
 )
 echo         pip OK
 
-:: ── [3/4] Dependencies ──
-echo  [3/4] Installing dependencies...
+:: ── [3/5] Dependencies ──
+echo  [3/5] Installing dependencies...
 "%PYEXE%" -m pip install --upgrade pip --quiet
 "%PYEXE%" -m pip install -r backend\requirements.txt --quiet
 if errorlevel 1 (
@@ -110,8 +110,8 @@ if errorlevel 1 (
     )
 )
 
-:: ── [4/4] .env ──
-echo  [4/4] Checking .env...
+:: ── [4/5] .env ──
+echo  [4/5] Checking .env...
 if exist ".env" (
     echo         .env found
 ) else (
@@ -135,6 +135,26 @@ if exist ".env" (
     echo   Click CONNECT and enter your email + API key
     echo  ============================================
     echo.
+)
+
+:: [5/5] Canonical market-data roots and automatic mirror
+echo  [5/5] Preparing MarketData roots...
+set "MARKET_DATA_ROOT=%~dp0..\ancserMarketData"
+if not exist "%MARKET_DATA_ROOT%" mkdir "%MARKET_DATA_ROOT%"
+if exist "E:\" (
+    if not exist "E:\ancserMarketData" mkdir "E:\ancserMarketData"
+    echo         Primary: %MARKET_DATA_ROOT%
+    echo         Mirror : E:\ancserMarketData
+) else (
+    echo         WARNING: E: drive is unavailable; primary remains usable.
+)
+echo         Installing scheduled MarketData mirror ^(every hour^)...
+schtasks /create /tn "ancserTPX MarketData Sync" /sc hourly /mo 1 /tr "cmd /d /c \"\"%~dp0windows_market_data_sync.bat\"\"" /f >nul 2>&1
+if errorlevel 1 (
+    echo         WARNING: could not register the scheduled mirror.
+    echo         Run windows_market_data_sync.bat manually or create the task later.
+) else (
+    echo         Scheduled mirror ready.
 )
 
 echo.

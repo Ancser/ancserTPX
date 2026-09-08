@@ -104,10 +104,11 @@
 | DATA-003 | 換月判準是 `instrument_id`,**不是跳幅大小**。用跳幅猜會把真實行情(2026-04-10 +69 點)當成換月抹平,而且不可逆 | `test_roll_detection.py` |
 | DATA-004 | `load()` **兩條路徑**(快取命中與未命中)都要回傳淺拷貝。呼叫端會就地 `sort()`,共用 list 會污染快取 | `test_candle_store_anchor.py`(2026-08-08 修復:未命中路徑原本直接回傳快取本體) |
 | DATA-005 | 缺口偵測不得把常態休市誤報:16:15–16:30 ET 收盤休止、盤外極短破洞、假日 | `test_candle_store.py` |
-| DATA-006 | 完整 store(210MB/商品)不進版控;`data/store/seed/` 的開機種子只含自家 TopstepX 抓的資料,不含 Databento(授權) | `test_data_and_skin_policy.py` |
+| DATA-006 | 完整 store(210MB/商品)不進版控；唯一正式資料根目錄是 sibling `ancserMarketData/source/futures/continuous_1m/`，`data/store/seed/` 只保留自家 TopstepX 開機種子，不含 Databento(授權) | `test_data_and_skin_policy.py` + `test_market_data_paths.py` |
 | DATA-007 | API 載入/寫入 store、缺口掃描、frozen 推進、百萬根 merge/sort、workset slice/copy/publish **不得阻塞 asyncio event loop**;券商 I/O 維持 async,CPU/磁碟工作走 worker thread | `test_historical_range_cache.py` + `test_backtest_data_lifecycle.py` |
 | DATA-008 | 回測資料由 backend token 綁定單一 immutable workset 與 resolved contract economics。Live tail 不得改寫已解析的回測輸入;新選擇必須釋放舊的大型 generation;range cache 只能使用 observed/validated coverage,且 store/seed generation 變更後不得命中舊快取 | `test_historical_range_cache.py` + `test_backtest_data_lifecycle.py` |
 | DATA-009 | 啟動與 CONNECT 只能抓取最近增量；背景自動保存寫入去重 pending journal，不得為了保存而解包完整 MNQ/MES store。只有 backtest、store-only 或圖表拖到左界時才合併 pending 並載入完整 pkl；未使用 MES 不加入背景追蹤 | `test_lazy_candle_store.py` + `test_accumulator_event_loop.py` + `test_historical_range_cache.py` |
+| DATA-010 | 所有 canonical MarketData 穩定檔案以 `F:\ancserQuant\ancserMarketData` 為唯一主來源；store 寫入後立即鏡像，Windows 排程每小時將完整樹同步到 `E:\ancserMarketData`。同步使用暫存檔後原子替換；一般排程不刪除備份多出的檔案，只有完成驗證的遷移才可明確 `--prune` | `test_market_data_paths.py` |
 
 ## BACKTEST — 回測生命週期
 

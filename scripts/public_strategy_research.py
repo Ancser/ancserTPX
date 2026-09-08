@@ -30,6 +30,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from backend.data import market_data  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -216,7 +217,7 @@ def main():
             if i % 20 == 0 or i == len(jobs):
                 LOG(f"  {i}/{len(jobs)}  ({time.time()-t0:.0f}s)")
 
-    out = Path(f"data/research/public_strategies_{args.symbol}.json")
+    out = market_data.derived_path("research", f"public_strategies_{args.symbol}.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"created_at": datetime.now(timezone.utc).isoformat(),
                                "symbol": args.symbol, "results": rows},

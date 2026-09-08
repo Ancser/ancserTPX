@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 from typing import Optional, Union
 
+from backend.data import market_data
 from backend.timebase import utc_now
 
 
@@ -27,8 +28,9 @@ class LiveEngineLease:
     def __init__(self, account_id: int, path: Optional[PathLike] = None):
         self.account_id = int(account_id)
         if path is None:
-            root = Path(__file__).resolve().parents[2]
-            path = root / "data" / "logs" / f"live_engine_{self.account_id}.lock"
+            path = market_data.runtime_path(
+                "logs", f"live_engine_{self.account_id}.lock"
+            )
         self.path = Path(path)
         self._handle = None
         self._locked = False

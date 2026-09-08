@@ -21,7 +21,8 @@ Examples (``end`` is exclusive)::
         --start 2025-09-04 --end 2026-09-04 --max-cost 65
 
 Raw/licensed output and fitted artifacts default to
-``F:/ancserQuant/ancserData/qqq_option_ml`` and remain outside the repository.
+``F:/ancserQuant/ancserMarketData/source/options/qqq_option_ml`` and remain
+outside the repository.
 MNQ labels default to the same stitched multi-year 1-minute store used by
 ancserTPX; a separately acquired raw continuous file is only a fallback.
 """
@@ -59,6 +60,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.db.models import get_commission_rt, get_fees_rt, get_point_value
+from backend.data import market_data
 from scripts.option_wall_demo import (
     _contract_profile,
     _gamma_flip,
@@ -70,8 +72,8 @@ from scripts.option_wall_demo import (
 
 UTC = timezone.utc
 NY = ZoneInfo("America/New_York")
-DEFAULT_DATA_ROOT = ROOT.parent / "ancserData" / "qqq_option_ml"
-DEFAULT_MNQ_PATH = ROOT / "data" / "store" / "MNQ_accumulated_1m.pkl"
+DEFAULT_DATA_ROOT = market_data.option_wall_root()
+DEFAULT_MNQ_PATH = market_data.candle_store_dir() / "MNQ_accumulated_1m.pkl"
 RESEARCH_MNQ_FILE = "mnq_v0_ohlcv_1m.csv.gz"
 FEATURE_VERSION = 2
 SCHEMA_FILES = {

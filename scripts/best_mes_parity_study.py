@@ -11,7 +11,7 @@ preset 是 **TP7.5**,兩者不同,所以這裡直接讀 data/presets.json 的原
 
 用法:
   python scripts/best_mes_parity_study.py
-  python scripts/best_mes_parity_study.py --lots 18 --out data/research/best_mes_parity.json
+  python scripts/best_mes_parity_study.py --lots 18 --out ancserMarketData/derived/research/best_mes_parity.json
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ except Exception:
 from backend.api.routes import BacktestRequest, _build_strategy_params_from_request  # noqa: E402
 from backend.backtest.engine import BacktestConfig, BacktestEngine  # noqa: E402
 from backend.data import candle_store  # noqa: E402
+from backend.data import market_data  # noqa: E402
 from backend.db.models import (  # noqa: E402
     _extract_symbol, current_quarterly_contract_id, get_commission_rt,
     get_fees_rt, get_point_value,
@@ -50,7 +51,7 @@ LOG = lambda *a: (print(*a), sys.stdout.flush())
 # ── 受測策略 ─────────────────────────────────────────────────
 
 def load_variants() -> list[dict]:
-    presets = json.loads(Path("data/presets.json").read_text(encoding="utf-8"))["presets"]
+    presets = json.loads(market_data.repository_data_path("presets.json").read_text(encoding="utf-8"))["presets"]
     out = [
         {"name": "BEST (live preset)", "params": dict(presets["BEST"])},
         {"name": "SECOND BEST (live preset)", "params": dict(presets["SECOND BEST"])},
@@ -231,7 +232,10 @@ def _utc(ts) -> datetime:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lots", type=int, default=18, help="6 accounts x 3 contracts")
-    ap.add_argument("--out", default="data/research/best_mes_parity.json")
+    ap.add_argument(
+        "--out",
+        default=str(market_data.derived_path("research", "best_mes_parity.json")),
+    )
     args = ap.parse_args()
 
     data = {}

@@ -4,7 +4,7 @@ Examples:
 
     python scripts/prop_intraday_research.py
     python scripts/prop_intraday_research.py --symbols MNQ MES --start 2020-01-01
-    python scripts/prop_intraday_research.py --news-csv data/research/news_events.csv
+    python scripts/prop_intraday_research.py --news-csv ancserMarketData/derived/research/news_events.csv
 
 The optional news CSV needs a ``timestamp_et`` (preferred) or ``timestamp``
 column.  A missing news file is reported as an uncovered filter; the script
@@ -40,6 +40,7 @@ from backend.backtest.prop_intraday_research import (  # noqa: E402
     result_to_dict,
     run_config,
 )
+from backend.data import market_data  # noqa: E402
 
 
 def _json_default(value: Any):
@@ -55,7 +56,7 @@ def _parse_day(value: str | None) -> date | None:
 
 
 def _store_meta(symbol: str) -> dict:
-    path = ROOT / "data" / "store" / f"{symbol}_accumulated_1m.meta.json"
+    path = market_data.candle_store_dir() / f"{symbol}_accumulated_1m.meta.json"
     if not path.exists():
         return {"path": str(path), "exists": False}
     try:
@@ -160,7 +161,7 @@ def main() -> int:
     parser.add_argument("--mc-iters", type=int, default=1000)
     parser.add_argument(
         "--output",
-        default="data/research/prop_intraday_research_current.json",
+        default=str(market_data.derived_path("research", "prop_intraday_research_current.json")),
         help="JSON report path; .csv and .md companions are written beside it",
     )
     parser.add_argument("--include-trades", action="store_true")
@@ -294,4 +295,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

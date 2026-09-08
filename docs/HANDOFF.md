@@ -30,7 +30,7 @@ only as a FACTOR-family alias.
 
 `OPTION WALL` is now a registered Backtest model with one first-version
 sub-model, `PRIMARY STRICT`.  It reads a fixed causal signal tape from the
-external `ancserData/qqq_option_ml/` artifact, maps those QQQ hourly decisions
+external `ancserMarketData/source/options/qqq_option_ml/` artifact, maps those QQQ hourly decisions
 onto MNQ 1-minute execution candles, and deliberately ignores every PnL and
 future-path column.  It is MNQ/RTH historical replay only: `/live/start`
 explicitly refuses the model until a real causal live option feed exists.
@@ -112,7 +112,7 @@ repair missing audit/chart rows without replaying the strategy.
 When the user explicitly runs a PI Backtest, the route now adds any in-range
 `received`/`recorded` audit marks as a temporary, deduplicated replay overlay.
 This makes a signal received today visible to the calculation immediately after
-clicking Backtest, while leaving `data/research/pi_signals.json` and the Live
+clicking Backtest, while leaving `ancserMarketData/source/discord/pi/pi_signals.json` and the Live
 listener untouched. A normal historical run still uses the immutable history
 file only. Since 2026-08-31, one Discord message that parses to two or more
 supported PI marks is rejected as an aggregate/opening-summary message. The
@@ -272,13 +272,25 @@ Python/WebView process owns the backend data objects, whereas Chrome reports
 only its browser process separately.
 
 Startup and CONNECT now fetch only a recent working window. New closed bars are
-deduplicated into `data/store/{symbol}_accumulated_1m.pending.jsonl`, so the
+deduplicated into `ancserMarketData/source/futures/continuous_1m/{symbol}_accumulated_1m.pending.jsonl`, so the
 background saver remains automatic without loading the canonical pickle. MNQ
 is active by default; MES is activated after explicit MES/ES contract use.
 Backtest, store-only history, chart left-edge pagination, and manual shadow
 replay are the explicit full-history boundaries: they merge the pending journal
 once, then may materialize the canonical store. The pending sidecars are
 runtime-only and ignored by Git.
+
+### R0.16 — Canonical MarketData tree and dual-disk mirror (2026-09-07)
+
+Large downloaded/generated data is now external to the repository. The primary
+tree is the sibling `ancserMarketData` with `source/futures/continuous_1m`,
+`source/options/qqq_option_ml`, `source/orderflow/mnq_mbo`, and
+`source/discord/pi`; `derived` contains research/backtest output and `runtime`
+contains logs/state. The tracked preset, model registry, and small seed remain
+bootstrap files only. Windows installation registers an hourly mirror to
+`E:\\ancserMarketData`; `ANCSER_MARKET_DATA_ROOT` and
+`ANCSER_MARKET_DATA_BACKUP_ROOTS` configure other machines. The migration tool
+copies and SHA-256 verifies before removing old copies.
 
 ### R0.7 — Research robustness presentation (2026-09-01)
 

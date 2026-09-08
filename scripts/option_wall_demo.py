@@ -1,7 +1,7 @@
 """Build a point-in-time QQQ 0DTE option-wall demo from local Databento exports.
 
 This script does not download data.  It consumes the licensed, git-ignored CSV
-exports under ``data/research/option_wall_demo/<date>/`` and publishes a small
+exports under ``ancserMarketData/source/options/qqq_option_ml/<date>/`` and publishes a small
 derived JSON file for the read-only chart layer plus a static review figure.
 
 The exposure model is deliberately labelled as a proxy:
@@ -33,6 +33,7 @@ import numpy as np
 import pandas as pd
 from matplotlib.patches import Rectangle
 
+from backend.data import market_data
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -337,7 +338,9 @@ def build_demo(data_dir: Path, session_date: str) -> tuple[dict, pd.DataFrame, d
     qqq_bbo["minute_end"] = qqq_bbo["ts"].dt.floor("min") + pd.Timedelta(minutes=1)
     qqq_minute = qqq_bbo.groupby("minute_end")["mid"].last()
 
-    mnq = _load_mnq_bars(ROOT / "data" / "store" / "MNQ_accumulated_1m.pkl", session_date)
+    mnq = _load_mnq_bars(
+        market_data.candle_store_dir() / "MNQ_accumulated_1m.pkl", session_date
+    )
     mnq_minute = mnq["close"].copy()
     mnq_minute.index = mnq_minute.index + pd.Timedelta(minutes=1)
 
@@ -585,7 +588,7 @@ def main() -> None:
     parser.add_argument("--output-json", type=Path)
     parser.add_argument("--output-png", type=Path)
     args = parser.parse_args()
-    data_dir = args.data_dir or ROOT / "data" / "research" / "option_wall_demo" / args.date
+    data_dir = args.data_dir or market_data.derived_path("option_wall_demo", args.date)
     output_json = args.output_json or data_dir / "derived.json"
     output_png = args.output_png or data_dir / f"option_wall_demo_{args.date.replace('-', '')}.png"
     payload, mnq, profiles = build_demo(data_dir, args.date)

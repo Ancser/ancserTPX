@@ -67,7 +67,7 @@ Web 回測在**獨立子進程**（`ProcessPoolExecutor`）中運行，擁有自
 
 ### 資料持久化
 
-歷史 1 分鐘 K 線持久化到 `data/store/MNQ_accumulated_1m.pkl` —— 一個只增不減的累積庫。啟動／CONNECT 只抓最近工作窗口，新的已完成 K 線先寫入去重 pending journal，不會為了保存而解包完整 store。只有明確執行 backtest、store-only，或圖表拖到最左端時才：
+歷史 1 分鐘 K 線持久化到 `ancserMarketData/source/futures/continuous_1m/MNQ_accumulated_1m.pkl` —— 一個只增不減的累積庫。啟動／CONNECT 只抓最近工作窗口，新的已完成 K 線先寫入去重 pending journal，不會為了保存而解包完整 store。只有明確執行 backtest、store-only，或圖表拖到最左端時才：
 1. 把 pending journal 合併進本機累積庫
 2. 載入／選取要求的歷史範圍
 3. 要求範圍超出本機庫時才做增量 API 抓取

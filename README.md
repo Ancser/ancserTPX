@@ -77,7 +77,7 @@ Web backtests run in a **dedicated child process** (`ProcessPoolExecutor`) with 
 
 ### Data persistence
 
-Historical 1-minute candles are persisted to `data/store/MNQ_accumulated_1m.pkl` — an append-only store that never truncates. Startup/CONNECT fetches only a recent working window and saves new closed bars to a deduplicated pending journal, so it does not decode the full store. On an explicit backtest, store-only request, or chart left-edge pan:
+Historical 1-minute candles are persisted to `ancserMarketData/source/futures/continuous_1m/MNQ_accumulated_1m.pkl` — an append-only store that never truncates. Startup/CONNECT fetches only a recent working window and saves new closed bars to a deduplicated pending journal, so it does not decode the full store. On an explicit backtest, store-only request, or chart left-edge pan:
 1. Merge the pending journal into the local store
 2. Load/select the requested range
 3. Incremental API fetch when the requested range extends past the store
@@ -86,6 +86,17 @@ Historical 1-minute candles are persisted to `data/store/MNQ_accumulated_1m.pkl`
 The background saver tracks MNQ by default and activates MES only after that product is explicitly selected. The pending journal is private runtime data and is consolidated on the next full-history operation.
 
 The store survives server restarts, so subsequent launches need only a few hundred bars of incremental data instead of the full 60-day re-download.
+
+All downloaded and generated data lives outside the source repository under the
+canonical sibling `ancserMarketData` tree: futures in
+`source/futures/continuous_1m`, option-wall data in
+`source/options/qqq_option_ml`, order-flow/MBO in `source/orderflow/mnq_mbo`,
+PI history in `source/discord/pi`, derived research in `derived`, and runtime
+state/logs in `runtime`. The tracked `data/presets.json`, model registry, and
+small `data/store/seed` remain bootstrap configuration. On Windows the install
+batch creates `F:\\ancserQuant\\ancserMarketData` and mirrors it every hour
+to `E:\\ancserMarketData`; other machines can set
+`ANCSER_MARKET_DATA_ROOT` and `ANCSER_MARKET_DATA_BACKUP_ROOTS`.
 
 ### ML production model
 
@@ -237,7 +248,7 @@ EMAPMO_SIGNAL_HISTORY_DAYS=30
 For compatibility with `ancserMessenger`, you may instead set `DISCORD_TOKEN`,
 `EMAPMO_DISCORD_CHANNEL_ID`, and `EMAPMO_DISCORD_AUTH_MODE`. Automating a personal
 user token may violate Discord's terms; prefer a webhook or bot token. Metadata-only
-history is stored in `data/messenger/emapmo_signals.sqlite3`, deduplicated across
+history is stored in `ancserMarketData/runtime/messenger/emapmo_signals.sqlite3`, deduplicated across
 Web/Terminal/accounts, and retained for 30 days. PNG files and full history are not
 kept in memory.
 

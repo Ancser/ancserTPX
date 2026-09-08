@@ -7,8 +7,8 @@
 #       重跑回測,逐筆 DIFF 實盤成交 → 吻合率日報 + 告警。
 # 通過標準(1.0.9 P0): 連續 2 週 match_rate ≥ 0.9 才允許新策略上真錢。
 # 關聯: → backend/api/routes.py  (/live/shadow-replay 端點 + 每日排程)
-#       → data/strategy_snapshots.jsonl (參數快照庫,1.0.8)
-#       → data/trades.json             (實盤逐筆記錄)
+#       → ancserMarketData/runtime/state/strategy_snapshots.jsonl (參數快照庫,1.0.8)
+#       → ancserMarketData/runtime/state/trades.json             (實盤逐筆記錄)
 #       → docs/1.0.9_SKILL_REPORT.md   (P0 規格)
 # ============================================================
 """P0 影子重放:實盤 vs 同參數回測 逐筆對賬。"""
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.backtest.engine import BacktestEngine
+from backend.data import market_data
 from backend.timebase import UTC, topstep_trade_date as _topstep_trade_date, utc_now
 from backend.db.models import (
     BacktestConfig, StrategyParams,
@@ -31,10 +32,10 @@ from backend.db.models import (
 
 logger = logging.getLogger(__name__)
 
-TRADES_FILE = Path("data") / "trades.json"                 # 加料版(strategy/snapshot tag,pnl 有 bug)
-TRADE_HISTORY_FILE = Path("data") / "trade_history.json"    # 1.0.9: broker 真相(準,對得上 Topstep)
-SNAPSHOTS_FILE = Path("data") / "strategy_snapshots.jsonl"
-REPORT_DIR = Path("data") / "shadow_replay"
+TRADES_FILE = market_data.runtime_path("state", "trades.json")
+TRADE_HISTORY_FILE = market_data.runtime_path("state", "trade_history.json")
+SNAPSHOTS_FILE = market_data.runtime_path("state", "strategy_snapshots.jsonl")
+REPORT_DIR = market_data.runtime_path("shadow_replay")
 
 # 配對容忍度 — P0 要判的是「同一個決策」(同時間±12分 + 同方向),不是逐 tick 對價。
 # live 的 limit 常在回撤時以更好價成交(vs 回測假設剛好在 zone 邊界成交),故

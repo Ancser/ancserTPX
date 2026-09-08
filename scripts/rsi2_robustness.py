@@ -42,6 +42,7 @@ except Exception:
 from public_strategy_research import (  # noqa: E402
     MEASURED_SLIP_TICKS, MIN_TRADES, _init, _run_job, evaluate, tick_value,
 )
+from backend.data import market_data  # noqa: E402
 
 GRID = {
     "research_rsi_len":   [2, 3, 4, 5],
@@ -78,7 +79,7 @@ def main() -> None:
             if i % 100 == 0 or i == len(jobs):
                 LOG(f"  {i}/{len(jobs)}  ({time.time()-t0:.0f}s)")
 
-    out = Path(f"data/research/rsi2_robustness_{args.symbol}.json")
+    out = market_data.derived_path("research", f"rsi2_robustness_{args.symbol}.json")
     out.write_text(json.dumps({"created_at": datetime.now(timezone.utc).isoformat(),
                                "symbol": args.symbol, "grid": GRID, "results": rows},
                               indent=1, default=str), encoding="utf-8")

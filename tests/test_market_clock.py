@@ -18,6 +18,7 @@ from backend.strategy.session_filter import (
     market_session,
     market_session_code,
     market_session_id,
+    rth_session_bounds,
     rth_session_date,
 )
 from backend.strategy.sigma import _session_for
@@ -97,6 +98,17 @@ def test_market_session_spans_the_spring_dst_jump_without_fixed_offset_math():
     assert market_session(_utc(2026, 3, 8, 7, 0)) == (
         "EURO",
         _utc(2026, 3, 8, 7, 0),
+    )
+
+
+def test_rth_session_bounds_are_dst_aware_and_end_at_1600_new_york():
+    assert rth_session_bounds("2026-07-15") == (
+        _utc(2026, 7, 15, 13, 30),
+        _utc(2026, 7, 15, 20, 0),
+    )
+    assert rth_session_bounds("2026-01-15") == (
+        _utc(2026, 1, 15, 14, 30),
+        _utc(2026, 1, 15, 21, 0),
     )
 
 

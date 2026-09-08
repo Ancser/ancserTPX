@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from dotenv import load_dotenv
 
+from backend.data import market_data
 from backend.timebase import TOPSTEP_TIMEZONE_NAME, UTC, as_utc, utc_now
 
 
@@ -915,7 +916,12 @@ class EMAPMOSignalMessenger:
         self._queue: asyncio.Queue[_SignalSnapshot] = asyncio.Queue(
             maxsize=max(1, min(64, int(queue_size)))
         )
-        self._db_path = self.root / "data" / "messenger" / "emapmo_signals.sqlite3"
+        runtime_base = (
+            market_data.runtime_root()
+            if self.root == market_data.PROJECT_ROOT.resolve()
+            else self.root / "data"
+        )
+        self._db_path = runtime_base / "messenger" / "emapmo_signals.sqlite3"
         self._now_fn = now_fn or utc_now
         credentials_ok = transport is not None or bool(str(webhook_url or "").strip()) or bool(
             str(token or "").strip() and str(channel_id or "").strip()

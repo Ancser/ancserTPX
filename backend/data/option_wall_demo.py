@@ -17,12 +17,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from backend.data import market_data
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[2] / "data" / "research" / "option_wall_demo"
-DEFAULT_HOURLY_PATH = (
-    Path(__file__).resolve().parents[3]
-    / "ancserData" / "qqq_option_ml" / "option_wall_ml_dataset.csv.gz"
-)
+DEFAULT_ROOT = market_data.derived_path("option_wall_demo")
+DEFAULT_HOURLY_PATH = market_data.option_wall_root() / "option_wall_ml_dataset.csv.gz"
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 

@@ -34,6 +34,7 @@ except Exception:
 from best_mes_parity_study import run_variant  # noqa: E402
 from backend.backtest.engine import _topstep_trade_date  # noqa: E402
 from backend.data import candle_store  # noqa: E402
+from backend.data import market_data  # noqa: E402
 
 SIZE = 2          # 目前 BEST 的手數
 PV = 2.0          # MNQ $/point
@@ -77,7 +78,7 @@ def stats(trades) -> dict:
 
 
 def main() -> None:
-    best = json.loads(Path("data/presets.json").read_text(encoding="utf-8"))["presets"]["BEST"]
+    best = json.loads(market_data.repository_data_path("presets.json").read_text(encoding="utf-8"))["presets"]["BEST"]
     bars = sorted(candle_store.load("MNQ", 1), key=lambda c: c.timestamp)
 
     LOG(f"BEST @ {SIZE} 口 MNQ — SL/TP 上下限的代價 (1 tick = ${TICK_VALUE * SIZE:.2f})\n")
@@ -118,7 +119,7 @@ def main() -> None:
             f"{s['best_day']:>+9.0f}{s['worst_day']:>+9.0f}"
             f"{100 * s['best_day_share']:>10.1f}%")
 
-    out = Path("data/research/clamp_cap_study.json")
+    out = market_data.derived_path("research", "clamp_cap_study.json")
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(rows, indent=1, default=str), encoding="utf-8")
     LOG(f"\nreport: {out}")

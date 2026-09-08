@@ -4434,6 +4434,7 @@ async function pollLiveCandle() {
         if (updated > 0) {
             window._lastChartData.sort((a, b) => a.time - b.time);
             refreshTfZones(!(_tfAllZones && _tfAllZones.length));
+            if (layerOn('prevday70')) refreshPreviousDayValueAreas(false);
             refreshIndicatorSignalMarkers(false);
             refreshPiSignalMarkers();
             _refreshAllMarkers();
@@ -4555,6 +4556,7 @@ async function loadOlderChartHistory() {
             _chartHistoryExhausted = data.has_more_before === false;
         }
         scheduleChartOverlayRedraw();
+        if (layerOn('prevday70')) refreshPreviousDayValueAreas(true);
         log('Loaded ' + added + ' older chart candles (' + (data.source || 'history') + ')', 'info');
         return true;
     } catch (error) {
@@ -4649,6 +4651,7 @@ function initChart() {
 
 let vpOverlayCanvas = null;
 let fadeLevelsCanvas = null;
+let previousDayValueAreaCanvas = null;
 let positionLines = [];
 let _cachedVPZones = null;  // cached for redraw on scroll/zoom
 
@@ -4671,6 +4674,17 @@ function createFadeLevelsCanvas() {
     canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
     container.appendChild(canvas);
     fadeLevelsCanvas = canvas;
+    return canvas;
+}
+
+function createPreviousDayValueAreaCanvas() {
+    if (previousDayValueAreaCanvas) return previousDayValueAreaCanvas;
+    const container = document.getElementById('chart-container');
+    const canvas = document.createElement('canvas');
+    canvas.id = 'previous-day-va-overlay';
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
+    container.appendChild(canvas);
+    previousDayValueAreaCanvas = canvas;
     return canvas;
 }
 
@@ -4861,6 +4875,7 @@ const CHART_LAYERS = [
     { key: 'sessva',   label: 'Session VA development',  on: false },
     { key: 'fib',      label: 'BETAFIB levels',          on: false },
     { key: 'dayzone',  label: 'DAY ZONE prior levels',   on: false },
+    { key: 'prevday70',label: 'PRIOR DAY 70% VAH/VAL/POC', on: false },
     { key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false },
 ];
 const CHART_LAYER_STORAGE_KEY = 'ancserTPX.chartLayers';
@@ -4926,6 +4941,7 @@ function toggleChartLayer(key, on) {
     _persistChartLayerPreferences();
     if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
     if (key === 'optionwall' && on && !_optionWallSnapshots.length) { refreshOptionWallLayer(); return; }
+    if (key === 'prevday70' && on) { refreshPreviousDayValueAreas(true); return; }
     try { redrawAllOverlays(); } catch (e) {}
 }
 
@@ -4944,6 +4960,7 @@ function redrawAllOverlays() {
     try { drawOptionWallOverlay(); } catch (e) {}
     try { if (_cachedVPZones) drawVolumeProfile(_cachedVPZones); } catch (e) {}
     try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
+    try { drawPreviousDayValueAreas(); } catch (e) {}
     try { drawPositionTools(backtestData && backtestData.trades ? backtestData.trades : []); } catch (e) {}
 }
 
@@ -4963,6 +4980,7 @@ function scheduleChartOverlayRedraw() {
                 drawFadeDailyLevels(_overlaySyncData.zones);
             }
         } catch (e) {}
+        try { drawPreviousDayValueAreas(); } catch (e) {}
         window.TpxGlass?.sync?.();
     });
 }
@@ -5637,6 +5655,166 @@ function drawFadeDailyLevels(zones) {
     ctx.restore();
 }
 
+// -- Prior trade-day 70% value area overlay -----------------
+// This is deliberately separate from the strategy's configurable 80% zones.
+// Each row describes the completed source day and the following trade-day
+// window on which its VAH/VAL/POC are displayed.
+let _previousDayValueAreas = [];
+let _previousDayValueAreasLoading = false;
+let _previousDayValueAreasQueued = false;
+let _previousDayValueAreasLastKey = '';
+let _previousDayValueAreasLastRequestAt = 0;
+const PREVIOUS_DAY_VALUE_AREA_REFRESH_MS = 60 * 1000;
+
+function _previousDayValueAreaQuery() {
+    const buf = _rawCandleBuffer || [];
+    if (!buf.length) return null;
+    const firstMs = chartTimeToUtcMs(Number(buf[0].time));
+    const lastMs = chartTimeToUtcMs(Number(buf[buf.length - 1].time));
+    if (!Number.isFinite(firstMs) || !Number.isFinite(lastMs)) return null;
+    const contractEl = document.getElementById('contract-id');
+    const symbol = (contractEl && contractEl.value && contractEl.value.trim()) || 'MNQ';
+    return {
+        start: new Date(Math.min(firstMs, lastMs)).toISOString(),
+        end: new Date(Math.max(firstMs, lastMs)).toISOString(),
+        symbol,
+        key: [firstMs, lastMs, symbol].join('|'),
+    };
+}
+
+async function refreshPreviousDayValueAreas(force) {
+    if (!layerOn('prevday70')) {
+        _previousDayValueAreas = [];
+        try { _clearCanvas('previous-day-va-overlay'); } catch (e) {}
+        return;
+    }
+    const query = _previousDayValueAreaQuery();
+    if (!query) {
+        _previousDayValueAreas = [];
+        try { _clearCanvas('previous-day-va-overlay'); } catch (e) {}
+        return;
+    }
+    if (_previousDayValueAreasLoading) {
+        _previousDayValueAreasQueued = true;
+        return;
+    }
+    const now = Date.now();
+    if (!force && query.key === _previousDayValueAreasLastKey) {
+        drawPreviousDayValueAreas();
+        return;
+    }
+    // Live candles update every minute, but prior-day values only change at a
+    // trade-day rollover. Keep the layer responsive without issuing a profile
+    // calculation for every incoming candle.
+    if (!force && now - _previousDayValueAreasLastRequestAt < PREVIOUS_DAY_VALUE_AREA_REFRESH_MS) {
+        drawPreviousDayValueAreas();
+        return;
+    }
+
+    _previousDayValueAreasLoading = true;
+    _previousDayValueAreasLastRequestAt = now;
+    try {
+        const url = API + '/data/previous-day-value-areas'
+            + '?start=' + encodeURIComponent(query.start)
+            + '&end=' + encodeURIComponent(query.end)
+            + '&symbol=' + encodeURIComponent(query.symbol);
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        _previousDayValueAreas = Array.isArray(data.areas) ? data.areas : [];
+        _previousDayValueAreasLastKey = query.key;
+    } catch (e) {
+        // Optional chart annotation: keep the last successful values on a
+        // transient backend/store error rather than blanking the chart.
+    } finally {
+        _previousDayValueAreasLoading = false;
+        drawPreviousDayValueAreas();
+        if (_previousDayValueAreasQueued) {
+            _previousDayValueAreasQueued = false;
+            refreshPreviousDayValueAreas(false);
+        }
+    }
+}
+
+function drawPreviousDayValueAreas() {
+    if (!layerOn('prevday70') || !chart || !candleSeries) {
+        try { _clearCanvas('previous-day-va-overlay'); } catch (e) {}
+        return;
+    }
+    if (!_previousDayValueAreas.length) {
+        try { _clearCanvas('previous-day-va-overlay'); } catch (e) {}
+        return;
+    }
+
+    const canvas = createPreviousDayValueAreaCanvas();
+    const container = document.getElementById('chart-container');
+    const dpr = window.devicePixelRatio || 1;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    let vFrom = null;
+    let vTo = null;
+    try {
+        const range = chart.timeScale().getVisibleRange();
+        if (range) { vFrom = range.from; vTo = range.to; }
+    } catch (_) {}
+
+    const rightEdge = Math.max(0, W - 60);
+    const timeToX = (sec) => {
+        if (sec == null || !Number.isFinite(sec)) return null;
+        try {
+            const x = chart.timeScale().timeToCoordinate(sec);
+            if (x !== null && x !== undefined) return x;
+        } catch (_) {}
+        if (vFrom === null || vTo === null || vTo <= vFrom) return null;
+        return (sec - vFrom) * (W / (vTo - vFrom));
+    };
+    const drawLine = (x0, x1, price, color, dash) => {
+        const y = candleSeries.priceToCoordinate(price);
+        if (y === null || y < -80 || y > H + 80) return;
+        if (x1 < -20 || x0 > W + 20 || x1 <= x0 + 2) return;
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.25;
+        ctx.setLineDash(dash);
+        ctx.beginPath();
+        ctx.moveTo(Math.max(0, x0), y);
+        ctx.lineTo(Math.min(rightEdge, x1), y);
+        ctx.stroke();
+        ctx.restore();
+    };
+
+    _previousDayValueAreas.forEach(area => {
+        const start = area.start_at ? isoToChartTime(String(area.start_at)) : null;
+        const end = area.end_at ? isoToChartTime(String(area.end_at)) : null;
+        if (start === null || end === null || !Number.isFinite(start) || !Number.isFinite(end)) return;
+        if (vFrom !== null && vTo !== null && (end < vFrom || start > vTo)) return;
+
+        let x0 = timeToX(start);
+        let x1 = timeToX(end);
+        if (x0 === null && vFrom !== null && start <= vFrom) x0 = 0;
+        if (x1 === null && vTo !== null && end >= vTo) x1 = rightEdge;
+        if (x0 === null || x1 === null || x1 <= x0) return;
+
+        const vah = Number(area.vah_70);
+        const val = Number(area.val_70);
+        const poc = Number(area.poc);
+        // Exactly three lines per displayed trade day: VAH70, VAL70, and POC.
+        if (Number.isFinite(vah)) drawLine(x0, x1, vah, 'rgba(80, 210, 255, 0.88)', []);
+        if (Number.isFinite(val)) drawLine(x0, x1, val, 'rgba(80, 210, 255, 0.88)', []);
+        if (Number.isFinite(poc)) drawLine(x0, x1, poc, 'rgba(255, 165, 0, 0.96)', [5, 4]);
+    });
+}
+
 // -- Decision-zone overlay --
 // Draw only the primary VAH/VAL range used by each trade decision.
 
@@ -6305,6 +6483,7 @@ function showCandleData(candles) {
     drawSessionDividers();
     // Populate the all-timeframe zone cache so the filter draws lines immediately.
     refreshTfZones(true);
+    if (layerOn('prevday70')) refreshPreviousDayValueAreas(true);
     refreshIndicatorSignalMarkers(true);
     refreshPiSignalMarkers();
     if (layerOn('optionwall')) refreshOptionWallLayer();
@@ -7712,6 +7891,7 @@ function renderChart(data) {
 
     // Draw zones (VP overlay + legend)
     drawBacktestZones(data.zones);
+    if (layerOn('prevday70')) refreshPreviousDayValueAreas(true);
 
     // Draw decision overlays (entry marker + primary VAH/VAL zone)
     drawPositionTools([...(data.trades || []), ...(window._liveCompletedTrades || [])]);

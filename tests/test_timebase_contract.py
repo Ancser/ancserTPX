@@ -8,7 +8,14 @@ import re
 
 from backend.api.routes import get_config
 from backend.db.models import StrategyParams, current_quarterly_contract_id
-from backend.timebase import CHICAGO, NEW_YORK, UTC, topstep_trade_date, utc_now
+from backend.timebase import (
+    CHICAGO,
+    NEW_YORK,
+    UTC,
+    topstep_trade_date,
+    topstep_trade_date_bounds,
+    utc_now,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +42,16 @@ def test_topstep_trade_date_uses_the_single_chicago_1700_boundary():
     assert before.astimezone(CHICAGO).hour == 16
     assert topstep_trade_date(before) == "2026-07-15"
     assert topstep_trade_date(after) == "2026-07-16"
+
+
+def test_topstep_trade_date_bounds_are_dst_aware_and_match_the_boundary():
+    summer_start, summer_end = topstep_trade_date_bounds("2026-07-16")
+    winter_start, winter_end = topstep_trade_date_bounds("2026-01-16")
+
+    assert summer_start == datetime(2026, 7, 15, 22, 0, tzinfo=UTC)
+    assert summer_end == datetime(2026, 7, 16, 22, 0, tzinfo=UTC)
+    assert winter_start == datetime(2026, 1, 15, 23, 0, tzinfo=UTC)
+    assert winter_end == datetime(2026, 1, 16, 23, 0, tzinfo=UTC)
 
 
 def test_backend_uses_canonical_timezone_constructors_and_aware_utc_now():

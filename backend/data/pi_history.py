@@ -36,12 +36,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
+from backend.data import market_data
 from backend.live.pi_listener import DIRECTION, SYMBOL_MAP, is_pre_session
 from backend.timebase import UTC
 
 logger = logging.getLogger(__name__)
 
-HIST_PATH = Path(__file__).resolve().parents[2] / "data" / "research" / "pi_signals.json"
+HIST_PATH = market_data.pi_source_root() / "pi_signals.json"
 
 
 def parse_ts(value: str) -> datetime:

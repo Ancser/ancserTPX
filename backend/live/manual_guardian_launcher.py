@@ -20,10 +20,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from backend.data import market_data
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDIAN_SCRIPT = REPO_ROOT / "scripts" / "manual_position_guardian.py"
-GUARDIAN_DATA_DIR = REPO_ROOT / "data" / "position_guardian"
+GUARDIAN_DATA_DIR = market_data.runtime_path("position_guardian")
 GUARDIAN_OWNER = "ancserTPX-position-guardian-v1"
 DEFAULT_MAX_LOG_BYTES = 512 * 1024
 WINDOWS = os.name == "nt"

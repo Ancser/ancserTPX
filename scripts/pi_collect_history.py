@@ -13,7 +13,7 @@
 會回 401,裸 token 才 200)。以個人 token 讀取屬於 self-botting,違反 Discord ToS,
 帳號有被停權風險。這是使用者已知情的既有設定,本腳本沿用,但只做**讀取**。
 
-輸出 data/research/pi_signals.json,欄位保留原始 content,方便日後重解析。
+輸出 ancserMarketData/source/discord/pi/pi_signals.json,欄位保留原始 content,方便日後重解析。
 
 用法:
     python scripts/pi_collect_history.py                # 全歷史
@@ -38,12 +38,13 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from dotenv import load_dotenv  # noqa: E402
 
 from backend.live.pi_listener import is_pre_session  # noqa: E402
+from backend.data import market_data  # noqa: E402
 load_dotenv(ROOT / ".env")
 import httpx  # noqa: E402
 
 CHANNEL_ID = "1478899539845972078"
 BOT_ID = "1514456965622005870"
-OUT = ROOT / "data" / "research" / "pi_signals.json"
+OUT = market_data.pi_source_root() / "pi_signals.json"
 
 # QQQ → MNQ(Nasdaq 100)、SPY → MES(S&P 500)。使用者指定的對應。
 SYMBOL_MAP = {"QQQ": "MNQ", "SPY": "MES"}

@@ -29,9 +29,9 @@ for /d /r "backend" %%d in (__pycache__) do (
 )
 
 :: Reset zone cache
-if exist "data\live_zones.json" (
+if exist "%~dp0..\ancserMarketData\runtime\state\live_zones.json" (
     echo  Resetting zone cache...
-    echo {"saved_at":"","active_zone_id":null,"zones":[]}> "data\live_zones.json"
+    echo {"saved_at":"","active_zone_id":null,"zones":[]}> "%~dp0..\ancserMarketData\runtime\state\live_zones.json"
 )
 
 :: Install deps if needed

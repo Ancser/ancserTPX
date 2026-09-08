@@ -186,10 +186,11 @@ cython_debug/
 /.playwright-output/
 
 # ─── /data retention policy (1.0.9) ──────────────────────────────────────────
-# Keep ONLY the accumulated candle store under /data; ignore everything else so
-# backtest / sweep / ML / live-state / trades / ACCOUNT data are never uploaded.
+# Active market data and generated state live outside the repository in the
+# sibling ancserMarketData tree; repository leftovers stay ignored.  Only the
+# small tracked bootstrap/configuration files needed by a fresh clone remain.
 # Strategy presets stay private on this machine and must never be tracked.
-#   • data/store/         — accumulated 1m candle store (*.pkl + meta)
+#   • data/store/         — tracked seed only; the full accumulated store is external
 # NOTE on branch switching: git leaves *ignored* files alone on checkout, so the
 # ignored data below is NOT lost when you switch branches — it just isn't tracked
 # or uploaded. Keep private preset backups outside this repository.
@@ -209,7 +210,7 @@ scratchpad/
 # 會讓 repo 無上限膨脹,而且 >100MB 直接推不上 GitHub。
 #
 # 這份資料是**可重建的**:scripts/databento_backfill.py + accumulator。
-# 完整備份在版控外的 F:/ancserQuant/ancserData/(見該處 MANIFEST.json)。
+# 完整備份在版控外的 F:/ancserQuant/ancserMarketData/，並自動鏡像到 E:/ancserMarketData。
 #
 # 例外:data/store/seed/ 有進版控 —— 那是 6MB 的開機種子,只含自家 TopstepX
 # 抓的 2026-06 之後資料,給全新環境跑 warm-up / 回測用。
@@ -225,3 +226,9 @@ data/store/*.pending.meta.json.tmp
 data/store/*_accumulated_*.meta.json
 data/store/*_accumulated_*.meta.json.tmp
 !data/store/seed/*.pkl
+
+# Production no longer writes market data into this repository. The canonical
+# tree is the sibling ancserMarketData directory and is mirrored by the
+# scheduled sync task; it is intentionally outside Git and outside releases.
+# Keep the tracked data/store/seed files above only as a small fresh-clone
+# bootstrap. Never copy licensed Databento files into the seed directory.

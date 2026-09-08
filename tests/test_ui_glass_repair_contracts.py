@@ -397,14 +397,14 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     assert 'data-glass-scene="chart"' in popup
     assert 'data-glass-tier="1"' in popup
     assert 'data-glass-material="popup"' in popup
-    assert popup.count('data-glass-material="local"') == 11
+    assert popup.count('data-glass-material="local"') == 12
     # Repeated rows use the PI matrix's real optical thumb path, with the
     # ordinary switch geometry AND the ordinary switch optics.  1.0.10p: a
     # per-surface data-glass-shrink="0.20" override made these the only
     # switches on the page with their own sampling; the brief was parity with
     # the parameter switches, so shrink comes from settings.switch alone.
     assert 'data-glass-sampling="material-only"' not in popup
-    assert popup.count('data-optical="switch"') == 11
+    assert popup.count('data-optical="switch"') == 12
     assert "data-glass-shrink" not in popup
     assert "dataset.glassShrink" not in _code(GLASS_JS)
     assert "const config = settings[surface.component];" in GLASS_JS
@@ -498,6 +498,17 @@ def test_option_wall_demo_is_an_opt_in_read_only_chart_layer():
     assert "const visiblePoints = []" in draw
     assert draw.count("_indicatorTimeToX(row.chartTime") == 1
     assert "visiblePoints.push({ x1, x2, session:" in draw
+
+
+def test_prior_day_70_value_area_is_a_separate_three_line_chart_layer():
+    assert "{ key: 'prevday70',label: 'PRIOR DAY 70% VAH/VAL/POC', on: false }" in JS
+    assert 'data-switch-proxy="lp-prevday70" aria-checked="false"' in HTML
+    assert "API + '/data/previous-day-value-areas'" in JS
+    draw = _function_source("drawPreviousDayValueAreas")
+    assert "vah_70" in draw
+    assert "val_70" in draw
+    assert "Number(area.poc)" in draw
+    assert "Exactly three lines per displayed trade day" in draw
 
 
 def test_left_history_paging_does_not_recompute_signals_or_duplicate_canvas_work():

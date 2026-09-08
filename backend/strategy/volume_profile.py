@@ -30,10 +30,81 @@ Volume Profile 計算引擎
 
 from typing import Dict, List, Tuple
 from backend.db.models import Candle, VolumeProfileResult
+from backend.strategy.session_filter import (
+    market_session_code,
+    rth_session_bounds,
+    rth_session_date,
+)
 
 # 1.0.8: single source of truth — 原本 confluence.py 另有一份重複定義。
 # Value-area 百分位帶 (POC 向外擴展涵蓋 20/40/60/80/100% 成交量)。
 VA_BAND_PCTS = (20, 40, 60, 80, 100)
+PREVIOUS_DAY_VALUE_AREA_PCT = 0.70
+
+
+def calculate_previous_day_value_areas(
+    candles: List[Candle],
+    *,
+    tick_size: float = 0.25,
+    value_area_pct: float = PREVIOUS_DAY_VALUE_AREA_PCT,
+) -> List[dict]:
+    """Calculate one prior-RTH-day 70% profile reference for every RTH day.
+
+    The returned row is keyed by the day on which its lines are displayed;
+    ``source_trade_date`` identifies the completed RTH day whose candles
+    produced the values.  Only candles classified as New York ``RTH`` are
+    included, so overnight volume cannot widen or move the reference levels.
+    Empty calendar days are skipped, so Monday correctly uses Friday's
+    completed RTH profile.  The current day's partial profile is never used as
+    the source for its own lines.
+
+    This is a chart annotation helper, deliberately separate from strategy
+    parameters.  Strategies continue to use their configured value-area width
+    (currently 80%).
+    """
+    if not candles:
+        return []
+
+    by_trade_date: Dict[str, List[Candle]] = {}
+    for candle in candles:
+        if market_session_code(candle.timestamp) != "RTH":
+            continue
+        trade_date = rth_session_date(candle.timestamp).isoformat()
+        by_trade_date.setdefault(trade_date, []).append(candle)
+
+    calculator = VolumeProfileCalculator(
+        tick_size=tick_size,
+        value_area_pct=float(value_area_pct),
+    )
+    completed_profiles: List[tuple[str, List[Candle], VolumeProfileResult]] = []
+    for trade_date in sorted(by_trade_date):
+        day_candles = by_trade_date[trade_date]
+        try:
+            profile = calculator.calculate(day_candles)
+        except ValueError:
+            # A day containing no positive-volume bars cannot produce a
+            # meaningful reference level and should not break later days.
+            continue
+        completed_profiles.append((trade_date, day_candles, profile))
+
+    areas: List[dict] = []
+    for index in range(1, len(completed_profiles)):
+        display_date, _display_candles, _display_profile = completed_profiles[index]
+        source_date, source_candles, source_profile = completed_profiles[index - 1]
+        start_at, end_at = rth_session_bounds(display_date)
+        areas.append({
+            "trade_date": display_date,
+            "source_trade_date": source_date,
+            "start_at": start_at.isoformat(),
+            "end_at": end_at.isoformat(),
+            "poc": float(source_profile.poc),
+            "vah_70": float(source_profile.vah),
+            "val_70": float(source_profile.val),
+            "source_candles": len(source_candles),
+            "source_volume": int(source_profile.total_volume),
+            "value_area_pct": float(value_area_pct),
+        })
+    return areas
 
 
 class VolumeProfileCalculator:

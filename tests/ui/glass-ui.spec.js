@@ -889,13 +889,14 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
     "SESSION VA",
     "BETAFIB LEVELS",
     "DAY ZONE LEVELS",
+    "PRIOR DAY 70% VAH/VAL/POC",
   ]);
   const popupSwitches = popup.locator('.layer-row > .glass-switch[role="switch"]');
   expect(await popupSwitches.count()).toBeGreaterThan(0);
   await expect(popupSwitches.first()).toHaveAttribute("data-glass-material", "local");
   await expect(popup.locator(
     '.layer-row > .glass-switch > .switch-thumb.optical-surface[data-optical="switch"]',
-  )).toHaveCount(11);
+  )).toHaveCount(12);
   // 1.0.10p: no per-popup optics override — these sample exactly like the
   // parameter switches do.
   await expect(popup.locator(

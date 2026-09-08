@@ -1,6 +1,6 @@
 """1.0.9: MES 深度歷史回補 — 探測券商可給的最大回溯,並按季約拼接前月序列。
 
-問題: data/store/MES_accumulated_1m.pkl 只有 2026-06-07 起,且前 8 天是 U26
+問題: ancserMarketData/source/futures/continuous_1m/MES_accumulated_1m.pkl 只有 2026-06-07 起,且前 8 天是 U26
 換月前的稀薄成交(日量 1.6k~66k vs 換月後 ~945k),這段會污染回測 fill 假設。
 
 做法:

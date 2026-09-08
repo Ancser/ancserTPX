@@ -35,6 +35,7 @@ except Exception:
 import public_strategy_research as R  # noqa: E402
 from best_mes_parity_study import run_variant, series_stats  # noqa: E402
 from backend.data import candle_store  # noqa: E402
+from backend.data import market_data  # noqa: E402
 
 TICKV = {"MNQ": 0.5, "MES": 1.25}
 SLIP = 14.0
@@ -78,7 +79,7 @@ def stat(trades, sym):
 
 
 def main() -> None:
-    presets = json.loads(Path("data/presets.json").read_text(encoding="utf-8"))["presets"]
+    presets = json.loads(market_data.repository_data_path("presets.json").read_text(encoding="utf-8"))["presets"]
     engine_cands = [
         ("BEST   (preset)", dict(presets["BEST"])),
         ("BETTER (preset)", {**presets["BEST"], "factor_pmo_early_scale": 0.9}),
@@ -120,7 +121,7 @@ def main() -> None:
         LOG(f"{label:<20}{a['n']:>7}{a['pf']:>9.3f}{ea:>10.1f}t"
             f"{b['n']:>7}{b['pf']:>9.3f}{eb:>10.1f}t   {verdict}")
 
-    out = Path("data/research/cross_symbol_validation.json")
+    out = market_data.derived_path("research", "cross_symbol_validation.json")
     out.write_text(json.dumps([{"label": l, **r} for l, r in rows],
                               indent=1, default=str), encoding="utf-8")
     LOG(f"\nreport: {out}")

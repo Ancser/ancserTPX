@@ -38,6 +38,7 @@ except Exception:
     pass
 
 from backend.data import candle_store  # noqa: E402
+from backend.data import market_data  # noqa: E402
 from backend.strategy.factor import calculate_emapmo_series  # noqa: E402
 
 LONG_TH = -0.10   # 現行 normal_long / early_long 門檻
@@ -148,7 +149,7 @@ def main() -> None:
     LOG(f"  LONG  {LONG_TH:+.3f} → {LONG_TH*k:+.4f}")
     LOG(f"  SHORT {SHORT_TH:+.3f} → {SHORT_TH*k:+.4f}")
 
-    rep = Path("data/research/emapmo_vol_calibration.json")
+    rep = market_data.derived_path("research", "emapmo_vol_calibration.json")
     rep.parent.mkdir(parents=True, exist_ok=True)
     rep.write_text(json.dumps({
         "current_thresholds": {"long": LONG_TH, "short": SHORT_TH},

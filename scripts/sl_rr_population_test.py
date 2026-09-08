@@ -31,6 +31,7 @@ except Exception:
     pass
 
 from backend.data import candle_store  # noqa: E402
+from backend.data import market_data  # noqa: E402
 from backend.strategy.factor import calculate_emapmo_series  # noqa: E402
 
 PV, SIZE = 2.0, 1               # 1 口口徑(PF/勝率與手數無關)
@@ -177,15 +178,16 @@ def main() -> None:
         LOG(f"{f'SL{mult:g}/RR{rr}':<14}{pf_of(p):>12.2f}{pf_of(p[keep]):>15.2f}"
             f"{pf_of(p[keep]) - pf_of(p):>+10.2f}")
 
-    Path("data/research").mkdir(parents=True, exist_ok=True)
-    Path("data/research/sl_rr_population_test.json").write_text(json.dumps({
+    out = market_data.derived_path("research", "sl_rr_population_test.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps({
         "signals": len(idx),
         "grid": {f"SL{m:g}_RR{r}": {"pf": pf_of(v), "win": float((v > 0).mean()),
                                     "mean": float(v.mean()), "n": int(v.size)}
                  for (m, r), v in grid.items()},
         "atr_floor": thr,
     }, indent=1), encoding="utf-8")
-    LOG("\nreport: data/research/sl_rr_population_test.json")
+    LOG(f"\nreport: {out}")
 
 
 if __name__ == "__main__":

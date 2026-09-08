@@ -39,6 +39,7 @@ from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.factor import FactorSignalStrategy
 from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
 from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
+from backend.data import market_data
 from backend.timebase import CHICAGO, UTC, topstep_trade_date, utc_now, utc_now_naive
 from backend.strategy.exit_policy import (
     ExitAction,
@@ -342,32 +343,23 @@ class LiveTradingEngine:
         self._trades: List[Dict] = []
         self._log: List[str] = []
         self._last_status_log_minute: int = -1  # track minute for periodic status log
-        self._zone_file = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "data", "live_zones.json"
-        )
-        self._exits_file = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "data", "live_exits.json"
-        )
-        self._breakout_locks_file = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "data", "live_breakout_locks.json"
+        self._zone_file = str(market_data.runtime_path("state", "live_zones.json"))
+        self._exits_file = str(market_data.runtime_path("state", "live_exits.json"))
+        self._breakout_locks_file = str(
+            market_data.runtime_path("state", "live_breakout_locks.json")
         )
         # Durable per-trade ledger: every closed position is appended here with
         # its full explainable confluence payload (weights x features, prob,
         # score, scorer version) + all params + outcome. Capped at 10k rows.
-        self._trades_file = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "data", "trades.json"
-        )
+        self._trades_file = str(market_data.runtime_path("state", "trades.json"))
         # Bot-only daily win/loss counters.  This is deliberately separate
         # from account DAILY PNL: discretionary/manual fills still belong in
         # the account PnL display, but must not consume strategy risk gates.
         # One file per account avoids cross-account overwrite races.
-        self._daily_risk_state_file = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-            "data", f"live_daily_risk_{int(self.account_id)}.json"
+        self._daily_risk_state_file = str(
+            market_data.runtime_path(
+                "state", f"live_daily_risk_{int(self.account_id)}.json"
+            )
         )
         # One bounded signal-only notifier per live engine. Cross-account and
         # cross-process idempotency is enforced by its 30-day SQLite ledger.
@@ -1132,7 +1124,7 @@ class LiveTradingEngine:
         original_tp_price: Optional[float] = None,
         managed_by_engine: bool = False,
     ):
-        """Append a single exit record to data/live_exits.json so trade-history
+        """Append a single exit record to external runtime/live_exits.json so trade-history
         can map fills (which only carry pnl) to true exit reason buckets
         (TP / SL / TRAIL_SL / FLATTEN / MANUAL).
 
@@ -1188,7 +1180,7 @@ class LiveTradingEngine:
             logger.warning(f"Failed to persist exit record: {e}")
 
     def _register_param_snapshot(self) -> Optional[str]:
-        """1.0.8: 永久參數快照庫 — data/strategy_snapshots.jsonl(append-only)。
+        """1.0.8: 永久參數快照庫 — external runtime/strategy_snapshots.jsonl(append-only)。
 
         引擎啟動時把完整 StrategyParams + 策略模式/合約/手數做 canonical JSON,
         取 sha1 前 12 碼當 snapshot_id;同配置只存一次。交易記錄引用該 id →
@@ -1207,7 +1199,7 @@ class LiveTradingEngine:
             }
             blob = json.dumps(core, sort_keys=True, ensure_ascii=False, default=str)
             sid = hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
-            path = os.path.join("data", "strategy_snapshots.jsonl")
+            path = str(market_data.runtime_path("state", "strategy_snapshots.jsonl"))
             seen = set()
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
@@ -1244,7 +1236,7 @@ class LiveTradingEngine:
         exit_price: Optional[float] = None,
         topstep_pnl: Optional[float] = None,
     ):
-        """Append one fully-explainable order record to data/trades.json.
+        """Append one fully-explainable order record to external runtime/trades.json.
 
         `status` captures the order's final disposition:
           - "closed"    : filled then exited (won/exit_price from TP/SL)

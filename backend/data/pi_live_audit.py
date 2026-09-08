@@ -6,8 +6,9 @@ separate JSONL stream.  It records the Discord event timestamp *and* the local
 dispatch timestamp so a missing marker can be separated into a stale source
 event, a poll gap, a parser problem, or a strategy filter.
 
-The file lives under ``data/`` (which is intentionally ignored by git) and is
-best-effort: a full/read-only disk must never stop the PI listener.
+The file lives under the external ``ancserMarketData/runtime`` tree (which is
+intentionally outside git) and is best-effort: a full/read-only disk must
+never stop the PI listener.
 """
 from __future__ import annotations
 
@@ -17,11 +18,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+from backend.data import market_data
 from backend.timebase import UTC, utc_now
 
 logger = logging.getLogger(__name__)
 
-AUDIT_PATH = Path(__file__).resolve().parents[2] / "data" / "logs" / "pi_live_signals.jsonl"
+AUDIT_PATH = market_data.runtime_path("logs", "pi_live_signals.jsonl")
 
 
 def _iso(value: Any) -> str | None:

@@ -7,7 +7,7 @@
 # ============================================================
 """Persistent, append-only candle store for MNQ/NQ 1m bars.
 
-Location: ``data/store/{symbol}_accumulated_1m.pkl``
+Location: ``ancserMarketData/source/futures/continuous_1m/``
 
 Recent bars may first land in a small append journal
 ``…_accumulated_1m.pending.jsonl``.  The journal is intentionally separate
@@ -51,12 +51,17 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from backend.db.models import Candle
+from backend.data import market_data
+from backend.data.market_data_sync import mirror_files
 from backend.timebase import CHICAGO, NEW_YORK, UTC, utc_now
 
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]           # project root
-STORE_DIR = ROOT / "data" / "store"
+# Keep this public module variable: tests and isolated research jobs replace it
+# with a temporary directory. Production always uses the external canonical
+# MarketData tree.
+STORE_DIR = market_data.candle_store_dir()
 
 # ── Expected gap patterns (NOT missing data) ──────────────────────────────
 # CME Equity Index futures: daily maintenance 16:00–17:00 America/Chicago.
@@ -334,7 +339,9 @@ def _save_pending_meta_state(count: int, first: Optional[datetime],
 
 def _write_pending_locked(bars: List[Candle], symbol: str, base: int) -> None:
     if not bars:
+        paths = (_pending_path(symbol, base), _pending_meta_path(symbol, base))
         _write_pending_meta([], symbol, base)
+        mirror_files(paths, delete_missing=True)
         return
     ordered = sorted(bars, key=lambda c: _as_utc(c.timestamp))
     path = _pending_path(symbol, base)
@@ -346,6 +353,7 @@ def _write_pending_locked(bars: List[Candle], symbol: str, base: int) -> None:
             fh.write("\n")
     tmp.replace(path)
     _write_pending_meta(ordered, symbol, base)
+    mirror_files((path, _pending_meta_path(symbol, base)))
 
 
 def append_pending(new_bars: List[Candle], symbol: str = "MNQ",
@@ -399,6 +407,7 @@ def append_pending(new_bars: List[Candle], symbol: str = "MNQ",
             latest = max(last, max(incoming_by_ts))
             count = meta["count"] + new_count
             _save_pending_meta_state(count, first, latest, symbol, base)
+            mirror_files((_pending_path(symbol, base), _pending_meta_path(symbol, base)))
             return count, len(to_append)
 
         # First write, or recovery from a stale/missing sidecar: do a journal-
@@ -414,6 +423,7 @@ def append_pending(new_bars: List[Candle], symbol: str = "MNQ",
         changed = sum(1 for ts, record in after.items() if before.get(ts) != record)
         if changed:
             _write_pending_locked(ordered, symbol, base)
+            mirror_files((_pending_path(symbol, base), _pending_meta_path(symbol, base)))
         return len(ordered), changed
 
 
@@ -499,11 +509,17 @@ def lightweight_status(symbol: str = "MNQ", base: int = 1) -> dict:
 #
 # 只有在完整 store 不存在時才會用到(全新 clone),本機有完整檔就一律優先。
 def _seed_path(symbol: str = "MNQ", base: int = 1) -> Path:
-    return STORE_DIR / "seed" / f"{symbol}_seed_{base}m.pkl"
+    external = STORE_DIR / "seed" / f"{symbol}_seed_{base}m.pkl"
+    if external.exists() or STORE_DIR != market_data.candle_store_dir():
+        return external
+    return market_data.repository_seed_dir() / f"{symbol}_seed_{base}m.pkl"
 
 
 def _seed_meta_path(symbol: str = "MNQ", base: int = 1) -> Path:
-    return STORE_DIR / "seed" / f"{symbol}_seed_{base}m.meta.json"
+    external = STORE_DIR / "seed" / f"{symbol}_seed_{base}m.meta.json"
+    if external.exists() or STORE_DIR != market_data.candle_store_dir():
+        return external
+    return market_data.repository_seed_dir() / f"{symbol}_seed_{base}m.meta.json"
 
 
 # ── Core: load / save / merge ─────────────────────────────────────────────
@@ -681,6 +697,7 @@ def _save_locked(bars: List[Candle], symbol: str, base: int) -> None:
         # A metadata failure must not turn a successfully persisted candle
         # generation into a failed trading/data request.
         logger.warning("[CandleStore] bounds metadata update failed: %s", exc)
+    mirror_files((p, _meta_path(symbol, base)))
     logger.info(f"[CandleStore] saved {len(bars)} bars → {p.name}")
 
 
@@ -956,6 +973,7 @@ def save_meta(meta: dict, symbol: str = "MNQ", base: int = 1) -> None:
     p = _meta_path(symbol, base)
     with open(p, "w", encoding="utf-8") as fh:
         json.dump(meta, fh, indent=2, default=str)
+    mirror_files((p,))
 
 
 # ── Known-bad seam registry (1.0.10) ──────────────────────────────────────

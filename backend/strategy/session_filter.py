@@ -88,6 +88,23 @@ def rth_session_date(ts: datetime) -> date:
     return day
 
 
+def rth_session_bounds(session_date: date | str) -> tuple[datetime, datetime]:
+    """Return the DST-aware UTC bounds for one New York RTH session."""
+    if not isinstance(session_date, date):
+        session_date = date.fromisoformat(str(session_date))
+    start_local = datetime.combine(
+        session_date,
+        _SESSION_STARTS["RTH"],
+        tzinfo=MARKET_TIMEZONE,
+    )
+    end_local = datetime.combine(
+        session_date,
+        _SESSION_STARTS["AH"],
+        tzinfo=MARKET_TIMEZONE,
+    )
+    return start_local.astimezone(UTC), end_local.astimezone(UTC)
+
+
 def market_close_phase(ts: datetime) -> str:
     """Classify the 15:30/15:45 ET pending-cancel and flatten windows."""
     tod = as_new_york(ts).time().replace(tzinfo=None)

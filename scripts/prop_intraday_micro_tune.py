@@ -29,6 +29,7 @@ from typing import Any, Iterable, Sequence
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+from backend.data import market_data  # noqa: E402
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -727,7 +728,7 @@ def main() -> int:
     parser.add_argument("--mc-iters", type=int, default=250)
     parser.add_argument(
         "--output",
-        default="data/research/prop_intraday_micro_tune_current.json",
+        default=str(market_data.derived_path("research", "prop_intraday_micro_tune_current.json")),
     )
     args = parser.parse_args()
     if args.mc_iters <= 0:
