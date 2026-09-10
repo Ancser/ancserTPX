@@ -5,7 +5,7 @@ Updated 2026-09-09. Current HEAD + the uncommitted fixes listed below.
 ## State
 
 ```
-tests            636 pytest passing + 8 subtests + 38 Chromium interaction tests
+tests            649 pytest passing + 8 subtests + 39 Chromium interaction tests
 invariants       87 documented / 83 active / 4 explicitly retired
 strategies       factor · momentum · betafib · pi · optionwall · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
@@ -35,13 +35,22 @@ tree under `orderflow_event_engine_study`; Live and presets are unchanged.
 
 The footprint canvas now has two display densities. At overview scale it
 aggregates cells into screen buckets, keeps only the strongest price area per
-column and its dominant side, draws at most four depth walls per side, and
-suppresses small passive outlines, tier beads, and imbalance labels. Bubble
-radius is tied to quantity bands (50–99 / 100–149 / 150+), while passive
-activity changes fill opacity only. At detail scale the exact size bands return
-and up to eight strongest continuous depth levels are shown. The raw response remains intact in `_footprintBars`; this is a paint
-budget, not a data filter. The chart legend is also capped and wraps active
-keys into a compact box.
+column and its dominant side, applies a 50-contract minimum when possible,
+draws at most four depth walls per side, and suppresses small passive outlines,
+tier beads, and imbalance labels. Quiet columns retain their strongest cell so
+the price path does not disappear. Bubble radius is tied to quantity bands
+(50–99 / 100–149 / 150+), while passive activity changes fill opacity only. At
+detail scale the exact size bands return and up to eight strongest continuous
+depth levels are shown. The raw response remains intact in `_footprintBars`;
+this is a paint budget, not a data filter. A 1000-contract minimum would blank
+the current MNQ 1m cache (sample maximum 257), so it is deliberately not used.
+The chart legend is also capped and wraps active keys into a compact box.
+
+The chart-only generic VAH/VAL/POC timeframe renderer, Session VA overlay, and
+BETAFIB level overlay are retired. Their frontend layer rows, chart transport,
+and dedicated marker payload are gone. BETAFIB execution and strategy-side
+session filters remain separate production behavior; PRIOR DAY 70% VAH/VAL/POC
+is still the retained three-line chart layer.
 
 | Question | Authority |
 |---|---|
@@ -267,9 +276,10 @@ parity gap found during integration.
 All backend instants are based on aware UTC from `backend/timebase.py`.
 Session rules convert that instant to New York, Topstep accounting converts to
 Chicago with the 17:00 boundary, and PI source rules convert to Los Angeles.
-The chart receives UTC instants and shifts only presentation to the browser/OS
-local timezone. UTC is not New York time: New York is UTC−5 in standard time
-and UTC−4 during daylight saving time.
+The chart receives UTC instants and shifts only presentation to the configured
+market timezone, America/New_York. It therefore shows the same wall-clock time
+on every laptop/monitor and on Windows/macOS. UTC is not New York: New York is
+UTC−5 in standard time and UTC−4 during daylight saving time.
 
 Production defaults no longer name a fixed M26/U26 expiry. The backend computes
 the current quarterly front month and publishes that mapping, contract economics,

@@ -205,6 +205,18 @@ def test_frontend_footprint_is_lazy_visible_window_layer():
     assert "_compactFootprintBars" in js
     assert "FOOTPRINT COMPACT · ZOOM IN FOR LEVELS" in js
     assert "ORDERFLOW_COMPACT_COLUMN_LIMIT = 1" in js
+    assert "ORDERFLOW_COMPACT_MIN_VOLUME = 50" in js
+    assert "eligible.length ? eligible : allItems" in js
+    assert "let _orderflowRequestSerial = 0" in js
+    assert "requestId !== _orderflowRequestSerial" in js
+    assert "function _sizeOrderflowCanvas" in js
+    draw_start = js.index("function drawIndicatorSignalOverlay")
+    draw_end = js.index("function drawPiSignalOverlay", draw_start)
+    indicator = js[draw_start:draw_end]
+    assert "_sizeOrderflowCanvas(canvas, container, dpr);" in indicator
+    assert "canvas.width = W * dpr" not in indicator
+    assert "markOrderflowInteraction();" in js
+    assert "performance.now() < _orderflowInteractionUntil" in js
     assert "const bubbles = compactMode" in js
     assert "function _footprintBubbleRadius" in js
     assert "bubble.passive &&" not in js

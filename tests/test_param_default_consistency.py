@@ -33,7 +33,7 @@ ROUTES = ROOT / "backend" / "api" / "routes.py"
 # 會直接改變交易行為的參數。這些欄位的 fallback 必須等於 dataclass 預設,
 # 否則「改預設」這個動作會靜默失效。
 BEHAVIOUR_PARAMS = {
-    "pi_long_only", "pi_signal_set", "pi_max_signal_age_min",
+    "pi_long_only", "pi_signal_set", "pi_short_levels", "pi_max_signal_age_min",
     "pi_short_sl_value", "pi_long_hold_min", "pi_short_hold_min",
     "option_wall_submodel", "option_wall_side_mode",
     "option_wall_long_sl_atr", "option_wall_short_sl_atr",
@@ -159,9 +159,26 @@ def test_pi_defaults_agree_across_all_three_layers():
     assert _PARAM_DEFAULTS.pi_signal_set == dc.pi_signal_set
     assert _PARAM_DEFAULTS.pi_long_hold_min == dc.pi_long_hold_min == 0
     assert _PARAM_DEFAULTS.pi_short_hold_min == dc.pi_short_hold_min == 60
+    assert _PARAM_DEFAULTS.pi_short_levels is dc.pi_short_levels is None
     assert strat.pi_long_hold == 0
     assert strat.pi_short_hold == 60
     assert strat.pi_short_kinds == (), "策略層仍然允許做空"
+
+
+def test_pi_short_level_request_is_normalized_to_level_one_and_two():
+    from types import SimpleNamespace
+
+    from backend.api.routes import _build_strategy_params_from_request
+
+    params = _build_strategy_params_from_request(
+        SimpleNamespace(
+            strategy="pi",
+            pi_short_levels=[2, "1", 3, "bad", 2],
+        ),
+        contract_size=1,
+    )
+
+    assert params.pi_short_levels == [1, 2]
 
 
 def test_pi_time_exit_explicit_zero_survives_route_construction():

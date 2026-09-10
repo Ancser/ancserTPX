@@ -183,6 +183,7 @@ class TestLivePath:
         assert (signal.equity, signal.kind, signal.size, signal.direction) == (
             equity, kind, size, direction
         )
+        assert signal.level == int(size.rsplit(" ", 1)[1])
         assert signal.future == {"QQQ": "MNQ", "SPY": "MES"}[equity]
 
     def test_run_loop_guards_parse_message(self):
@@ -366,8 +367,8 @@ class TestSizeIsNotUsedForFiltering:
         assert s.pi_long_kinds == ("青π",)
         assert s.pi_short_kinds == ("粉π",)
 
-    def test_short_bubbles_are_record_only_even_when_explicitly_selected(self):
-        """Circle level/size confusion must not re-enable short entries."""
+    def test_short_bubbles_are_selectable_by_source_level(self):
+        """Purple circles use source Level 1/2, not presentation size."""
         from types import SimpleNamespace
 
         from backend.db.models import StrategyParams
@@ -378,13 +379,30 @@ class TestSizeIsNotUsedForFiltering:
             pi_long_kinds=["青π"],
             pi_short_kinds=["粉π", "紫圈"],
         ))
-        assert s.pi_short_kinds == ("粉π",)
+        assert s.pi_short_kinds == ("粉π", "紫圈")
         base = dict(message_id="short-bubble", future="MNQ", equity="QQQ", size="中",
                     pos=None, raw="")
-        assert not s.push(SimpleNamespace(direction=-1, kind="紫圈", **base))
+        assert s.push(SimpleNamespace(direction=-1, kind="紫圈", level=1,
+                                     **base))
         assert s.push(SimpleNamespace(direction=-1, kind="粉π", **{
             **base, "message_id": "short-pi",
         }))
+
+        selected = PiSignalStrategy(StrategyParams(
+            pi_long_only=False,
+            pi_long_kinds=["青π"],
+            pi_short_kinds=["紫圈"],
+            pi_short_levels=[2],
+        ))
+        assert selected.pi_short_levels == (2,)
+        assert selected.push(SimpleNamespace(
+            direction=-1, kind="紫圈", level=2, size="Level 2",
+            message_id="level-2", future="MNQ", equity="QQQ", pos=None, raw="",
+        ))
+        assert not selected.push(SimpleNamespace(
+            direction=-1, kind="紫圈", level=1, size="Level 1",
+            message_id="level-1", future="MNQ", equity="QQQ", pos=None, raw="",
+        ))
 
     def test_empty_matrix_side_is_disabled(self):
         """Turning every switch off must not silently mean "allow all"."""
@@ -402,3 +420,20 @@ class TestSizeIsNotUsedForFiltering:
                     pos=None, raw="")
         assert not s.push(SimpleNamespace(direction=1, kind="青π", **base))
         assert not s.push(SimpleNamespace(direction=-1, kind="粉π", **base))
+
+    def test_same_message_different_short_levels_do_not_collide(self):
+        """Live de-duplication must preserve two purple source levels."""
+        from types import SimpleNamespace
+
+        from backend.db.models import StrategyParams
+        from backend.strategy.pi_signal import PiSignalStrategy
+
+        s = PiSignalStrategy(StrategyParams(
+            pi_long_only=False,
+            pi_short_kinds=["紫圈"],
+            pi_short_levels=[1, 2],
+        ))
+        base = dict(message_id="same-post", future="MNQ", equity="QQQ",
+                    kind="紫圈", direction=-1, pos=None, raw="")
+        assert s.push(SimpleNamespace(level=1, size="Level 1", **base))
+        assert s.push(SimpleNamespace(level=2, size="Level 2", **base))

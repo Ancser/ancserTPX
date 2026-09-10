@@ -68,6 +68,7 @@ def parse(content: str) -> dict | None:
             "kind": mk.group("kind"),
             "count": int(mk.group("count")),
             "size": size,
+            "level": int(level) if level else None,
             "pos": (mk.group("pos") or "").strip() or None,
         })
     if not marks:

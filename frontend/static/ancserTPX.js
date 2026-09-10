@@ -71,21 +71,15 @@ const CHART_HISTORY_PAGE_SIZE = 5000;
 const CHART_HISTORY_TRIGGER_BARS = 120;
 let chart = null;
 let candleSeries = null;
-let volumeSeries = null;   // kept for live-update guard; no longer rendered
 let _rawCandleBuffer = []; // [{time(unix), open, high, low, close, volume}]
 let _chartHistoryLoading = false;
 let _chartHistoryApplying = false;
 let _chartHistoryExhausted = false;
 let _chartHistorySuppressUntil = 0;
 let _chartOverlayRafId = null;
-let zoneRectangles = [];
-let tradeMarkers = [];
 let backtestData = null;
 let currentAccount = null;
 let allAccounts = [];
-let pocLine = null;
-let vahLine = null;
-let valLine = null;
 
 // -- Strategy Params & Presets ----------------------
 
@@ -202,6 +196,9 @@ const DEFAULT_STRATEGY_PARAMS = {
     factor_max_hold_bars: 0,   // 1.0.9: HOLD 5m system removed → SL/TP-only exits
     factor_max_trades_per_day: 3,
     factor_warmup_bars: 150,
+    // Optional source levels for short circle signals.  null preserves the
+    // legacy kind-only behavior; [] intentionally disables both levels.
+    pi_short_levels: null,
     pi_short_sl_value: 2.5,
     pi_long_hold_min: 0,
     pi_short_hold_min: 60,
@@ -467,13 +464,10 @@ function onRrChange(mode) {
 // SINGLE vs OVERLAP method. Overlap reveals the timeframe multi-select and uses
 // the merged synthetic zone (avg VAH/VAL/POC) only when all selected TFs' value
 // areas overlap. Single uses one AREA TF zone.
-// Timeframe checkbox changed → re-detect zones at the new area TF and redraw.
+// Timeframe checkbox changed → keep the strategy's execution selection in sync.
 function onTfSelectionChange(mode) {
     enforceSessionTfExclusive(mode);   // 1.0.8: SESSION 與其他 TF 互斥
     updateOverlapTradeTfControl(mode);
-    syncZoneFilterUI();
-    onAreaConfigChange(mode);
-    refreshTfZones(true);
 }
 
 // 1.0.8: SESSION(0.15.5 式整段 session 生長區間)勾選時,其他 TF 全部
@@ -1123,80 +1117,6 @@ function onStrategyChange(mode) {
     _scopeDatesForStrategy(mode, normalizeStrategyName(strat));
 }
 
-// Re-detect zones at the selected area timeframe + value-area % and redraw VAH/VAL/POC.
-async function onAreaConfigChange(mode) {
-    const sp = collectStrategyParams(mode);
-    // Value-area width changed → refresh the all-timeframe zone cache for the filter.
-    refreshTfZones(true);
-    try {
-        const resp = await fetch(API + '/data/detect-zones', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                value_area_pct: sp.value_area_pct,
-                area_timeframe: sp.area_timeframe,
-            }),
-        });
-        if (!resp.ok) return;
-        const data = await resp.json();
-        if (data.zones && data.zones.length > 0) {
-            _cachedVPZones = data.zones;
-            log('Area ' + sp.area_timeframe + ' / ' + Math.round(sp.value_area_pct * 100) + '%: ' + data.zones.length + ' zones', 'info');
-        }
-    } catch (e) {
-        log('Area re-detect failed: ' + e.message, 'warn');
-    }
-}
-
-// ML: overlay every timeframe's VAH/VAL/POC on the chart at once.
-let _allTfZonesActive = false;
-
-async function toggleAllTimeframeZones() {
-    const btn = document.getElementById('btn-draw-all-tf');
-    // Toggle OFF: revert to the single-timeframe view for the bt panel.
-    if (_allTfZonesActive) {
-        _allTfZonesActive = false;
-        if (btn) {
-            btn.classList.remove('btn-green');
-            btn.textContent = 'SHOW ALL TF ZONES';
-        }
-        await onAreaConfigChange('bt');
-        return;
-    }
-    const sp = collectStrategyParams('bt');
-    try {
-        if (btn) btn.textContent = 'LOADING...';
-        const resp = await fetch(API + '/data/detect-zones', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                value_area_pct: sp.value_area_pct,
-                all_timeframes: true,
-            }),
-        });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
-        if (data.zones && data.zones.length > 0) {
-            _cachedVPZones = data.zones;
-            drawVolumeProfile(data.zones);
-            drawBacktestZones(data.zones);
-            _allTfZonesActive = true;
-            if (btn) {
-                btn.classList.add('btn-green');
-                btn.textContent = 'HIDE ALL TF ZONES';
-            }
-            const tfs = (data.timeframes || []).join('/');
-            log('All-timeframe zones (' + tfs + '): ' + data.zones.length + ' zones', 'info');
-        } else {
-            log('No zones detected across timeframes', 'warn');
-            if (btn) btn.textContent = 'SHOW ALL TF ZONES';
-        }
-    } catch (e) {
-        log('All-TF zone draw failed: ' + e.message, 'error');
-        if (btn) btn.textContent = 'SHOW ALL TF ZONES';
-    }
-}
-
 // Read the ML (confluence) parameter block for a panel into a params object,
 // or null when the panel is not in ML mode. Base is always 1m (standardized).
 function collectConfluenceParams(mode) {
@@ -1376,7 +1296,7 @@ function collectStrategyParams(mode) {
     const dailyMaxTrades = Math.max(0, _paramInt('factor-max-trades', 'factor_max_trades_per_day', 3));
     const piMatrix = strategy === 'pi'
         ? _piMatrixPayload(mode)
-        : { pi_long_kinds: null, pi_short_kinds: null };
+        : { pi_long_kinds: null, pi_short_kinds: null, pi_short_levels: null };
     const params = {
         market_clock_version: MARKET_CLOCK_VERSION,
         strategy: strategy,
@@ -1446,6 +1366,7 @@ function collectStrategyParams(mode) {
         pi_long_only: _mlSelectValue('pi-long-only-' + mode, '1') === '1',
         pi_long_kinds: piMatrix.pi_long_kinds,
         pi_short_kinds: piMatrix.pi_short_kinds,
+        pi_short_levels: piMatrix.pi_short_levels,
         pi_max_signal_age_min: _int('pi-max-age-' + mode, 5),
         pi_short_sl_value: _float('pi-short-sl-' + mode, 2.5),
         pi_long_hold_min: _int('pi-long-hold-' + mode, 0),
@@ -1617,14 +1538,28 @@ function applyStrategyParams(mode, params) {
     _set('pi-long-only-' + mode, (p.pi_long_only === undefined ? true : p.pi_long_only) ? '1' : '0');
     // Render the new matrix from either explicit kind arrays or the legacy
     // signal-set fields.  Old presets therefore keep their exact behavior.
-    if (Array.isArray(p.pi_long_kinds) || Array.isArray(p.pi_short_kinds)) {
+    if (Array.isArray(p.pi_long_kinds) || Array.isArray(p.pi_short_kinds) ||
+            Array.isArray(p.pi_short_levels)) {
         const state = _piMatrixStateEmpty();
         const longKinds = new Set(Array.isArray(p.pi_long_kinds) ? p.pi_long_kinds : []);
         const shortKinds = new Set(Array.isArray(p.pi_short_kinds) ? p.pi_short_kinds : []);
+        const explicitShortLevels = Array.isArray(p.pi_short_levels);
+        const shortLevels = new Set(explicitShortLevels
+            ? p.pi_short_levels.map(Number).filter((level) => level === 1 || level === 2)
+            : []);
         ['long', 'short'].forEach((side) => {
             ['pi', 'level2', 'level1'].forEach((level) => {
                 const kind = PI_MATRIX_KIND_BY_SIDE_LEVEL[side][level];
-                state[side][level] = Boolean(kind && (side === 'long' ? longKinds : shortKinds).has(kind));
+                if (side === 'short' && level !== 'pi') {
+                    // New payloads select short circles by the source's
+                    // numeric Level N.  Legacy payloads only had 紫圈, so
+                    // keep both circle rows selected when levels are absent.
+                    state[side][level] = explicitShortLevels
+                        ? shortLevels.has(PI_MATRIX_LEVEL_BY_SIDE_LEVEL[side][level])
+                        : Boolean(kind && shortKinds.has(kind));
+                } else {
+                    state[side][level] = Boolean(kind && (side === 'long' ? longKinds : shortKinds).has(kind));
+                }
             });
         });
         if (p.pi_long_only) state.short = { pi: false, level2: false, level1: false };
@@ -1717,7 +1652,6 @@ function applyStrategyParams(mode, params) {
     // FACTOR/DAY ZONE/DISTRIBUTION presets cannot leave stale TREND-only UI.
     _setStrategySelect(mode, p.strategy);
     updateStrategyParamVisibility(mode);
-    syncZoneFilterUI();
     updateMlParamSummary(mode);
 }
 
@@ -1852,10 +1786,15 @@ function _namingModelFromParams(params) {
  */
 const PI_MATRIX_KIND_BY_SIDE_LEVEL = Object.freeze({
     long: Object.freeze({ pi: '青π', level2: '深蓝圈', level1: '淡蓝圈' }),
-    // Discord does not publish a distinct short Level 2 bubble.  紫圈 is the
-    // sole short-side circle and is therefore represented by Level 1; the
-    // Level 2 cell remains a real (disabled) glass switch for alignment.
-    short: Object.freeze({ pi: '粉π', level2: null, level1: '紫圈' }),
+    // Both short circle rows use the same visual kind.  Their source Level N
+    // is carried separately in pi_short_levels so Level 1 and Level 2 can be
+    // selected independently instead of being treated as one disabled row.
+    short: Object.freeze({ pi: '粉π', level2: '紫圈', level1: '紫圈' }),
+});
+
+const PI_MATRIX_LEVEL_BY_SIDE_LEVEL = Object.freeze({
+    long: Object.freeze({ pi: 3, level2: 2, level1: 1 }),
+    short: Object.freeze({ pi: 3, level2: 2, level1: 1 }),
 });
 
 const PI_MATRIX_SET_STATE = Object.freeze({
@@ -1863,10 +1802,9 @@ const PI_MATRIX_SET_STATE = Object.freeze({
     long_all: Object.freeze({ long: Object.freeze({ pi: true, level2: true, level1: true }), short: Object.freeze({ pi: false, level2: false, level1: false }) }),
     pi_only: Object.freeze({ long: Object.freeze({ pi: true, level2: true, level1: false }), short: Object.freeze({ pi: true, level2: false, level1: false }) }),
     pi_strict: Object.freeze({ long: Object.freeze({ pi: true, level2: false, level1: false }), short: Object.freeze({ pi: true, level2: false, level1: false }) }),
-    // Short bubbles remain visible in the matrix for source/audit
-    // transparency, but both circle levels are record-only and never
-    // selectable for trading.  SHORT PI remains a separate option.
-    all: Object.freeze({ long: Object.freeze({ pi: true, level2: true, level1: true }), short: Object.freeze({ pi: true, level2: false, level1: false }) }),
+    // ALL includes both short circle levels.  Their duplicate visual kind is
+    // de-duplicated on the legacy wire field and preserved by levels.
+    all: Object.freeze({ long: Object.freeze({ pi: true, level2: true, level1: true }), short: Object.freeze({ pi: true, level2: true, level1: true }) }),
 });
 
 const PI_MATRIX_SET_ORDER = Object.freeze(['long_pi_only', 'long_all', 'pi_only', 'pi_strict', 'all']);
@@ -1928,9 +1866,20 @@ function _piMatrixNearestSet(state) {
 function _piMatrixStateKinds(state, side) {
     const kinds = PI_MATRIX_KIND_BY_SIDE_LEVEL[side];
     if (!kinds) return [];
-    return ['pi', 'level2', 'level1']
-        .filter((level) => state?.[side]?.[level] && kinds[level])
-        .map((level) => kinds[level]);
+    const out = [];
+    ['pi', 'level2', 'level1'].forEach((level) => {
+        const kind = kinds[level];
+        if (state?.[side]?.[level] && kind && !out.includes(kind)) out.push(kind);
+    });
+    return out;
+}
+
+function _piMatrixStateLevels(state, side) {
+    const levels = PI_MATRIX_LEVEL_BY_SIDE_LEVEL[side];
+    if (!levels || side !== 'short') return [];
+    return ['level1', 'level2']
+        .filter((level) => state?.[side]?.[level] && Number.isFinite(levels[level]))
+        .map((level) => levels[level]);
 }
 
 function _piMatrixReadState(mode) {
@@ -1952,8 +1901,7 @@ function _piMatrixWriteState(mode, state) {
         ['pi', 'level2', 'level1'].forEach((level) => {
             const el = document.getElementById(_piMatrixSwitchId(mode, side, level));
             if (!el) return;
-            const shortBubble = side === 'short' && (level === 'level2' || level === 'level1');
-            const on = !shortBubble && Boolean(state?.[side]?.[level]);
+            const on = Boolean(state?.[side]?.[level]);
             if (el.tpxSetState) el.tpxSetState(on);
             else {
                 el.classList.toggle('on', on);
@@ -2004,20 +1952,17 @@ function _piMatrixSyncFromLegacy(mode) {
 function onPiMatrixProxy(mode, side, level) {
     const state = _piMatrixReadState(mode);
     if (!state) return;
-    // A short Level 2 cell has no corresponding Discord kind.  It is kept in
-    // the grid for column alignment but cannot be enabled.
-    if (!PI_MATRIX_KIND_BY_SIDE_LEVEL?.[side]?.[level]) return;
-    if (side === 'short' && (level === 'level2' || level === 'level1')) return;
     _piMatrixSyncLegacy(mode, state);
 }
 
 function _piMatrixPayload(mode) {
     const state = _piMatrixReadState(mode);
-    if (!state) return { pi_long_kinds: null, pi_short_kinds: null };
+    if (!state) return { pi_long_kinds: null, pi_short_kinds: null, pi_short_levels: null };
     _piMatrixSyncLegacy(mode, state);
     return {
         pi_long_kinds: _piMatrixStateKinds(state, 'long'),
         pi_short_kinds: _piMatrixStateKinds(state, 'short'),
+        pi_short_levels: _piMatrixStateLevels(state, 'short'),
     };
 }
 
@@ -2918,7 +2863,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initPresetDirtyTracking();
     decorateParamHelpDots();
     checkHealth();
-    setInterval(checkHealth, 3000);
+    setInterval(checkHealth, HEALTH_CHECK_INTERVAL_MS);
     const envConfigReady = loadEnvConfig();
     updateClock();
     setInterval(updateClock, 1000);
@@ -3336,35 +3281,6 @@ function updateLiveTopBar() {
     }
 }
 
-async function refreshLiveZoneOverlay(stratParams) {
-    try {
-        const zoneResp = await fetch(API + '/data/detect-zones', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                value_area_pct: stratParams.value_area_pct,
-                area_timeframe: stratParams.area_timeframe,
-            }),
-        });
-        if (zoneResp.ok) {
-            const zoneData = await zoneResp.json();
-            if (zoneData.zones && zoneData.zones.length > 0) {
-                drawVolumeProfile(zoneData.zones);
-                drawBacktestZones(zoneData.zones);
-                log('Detected ' + zoneData.zones.length + ' consolidation zone(s)', 'success');
-                if (window._lastChartData) {
-                    applyDefaultChartView(window._lastChartData, zoneData.zones);
-                }
-            } else {
-                log('No consolidation zones detected', 'info');
-            }
-        }
-    } catch(e) {
-        log('Zone detection failed: ' + e.message, 'warn');
-    }
-}
-
-
 async function goLive() {
     if (!liveAccount) { log('Select an account first', 'warn'); return; }
 
@@ -3420,21 +3336,11 @@ async function goLive() {
             + ' market=' + allowedSessionsLabel(stratParams.tr_allowed_sessions), 'info');
     }
 
-    // Switch the zone filter to LIVE and preselect the timeframe(s) being traded
-    // (overlap combo, or the single area timeframe).
-    _zoneFilter.mode = 'live';
-    const liveTfs = (stratParams.method === 'overlap' && stratParams.tf_combo && stratParams.tf_combo.length)
-        ? stratParams.tf_combo
-        : [stratParams.area_timeframe];
-    _zoneFilter.tfs = new Set(liveTfs);
-    syncZoneFilterUI();
-
     // Show live top bar (chart data stays as-is from connect)
     document.getElementById('live-top-bar').style.display = 'block';
     updateLiveTopBar();
 
     // ── Start candle polling + status polling (always, even if engine fails) ──
-    _cachedVPZones = null;  // clear backtest zones to avoid overlap with live zones
     _lastLiveCandleTime = '';  // reset
     if (_liveInterval) clearInterval(_liveInterval);
     _liveInterval = setInterval(pollLiveCandle, 1000); // every 1s (backend caches API calls)
@@ -3473,8 +3379,6 @@ async function goLive() {
         } else {
             engineStarted = true;
             log('Trading engine started successfully ✓', 'success');
-            refreshTfZones(true);
-            setTimeout(() => refreshLiveZoneOverlay(stratParams), 0);
         }
     } catch(e) {
         log('Trading engine connection failed: ' + e.message + ' (monitor-only mode)', 'warn');
@@ -4208,18 +4112,6 @@ function _renderLiveStatus(st) {
             clearLiveWorkingDecision();
         }
 
-        // ── Redraw zones from live status ──
-        if (st.zones && st.zones.length > 0) {
-            // Include POC/VAH/VAL + num_candles in key so VP redraws when zone updates
-            const zoneKey = st.zones.map(z => z.zone_id + z.status + z.poc.toFixed(2) + z.num_candles).join('|');
-            if (zoneKey !== window._lastLiveZoneKey) {
-                window._lastLiveZoneKey = zoneKey;
-                // Refresh the all-timeframe cache (throttled inside) so the LIVE
-                // filter shows the freshest currently-using zone per timeframe.
-                refreshTfZones();
-            }
-        }
-
         // ── Live realtime markers on chart (pending/open only) ──
         if (candleSeries) {
             if (st.trades) window._lastLiveTradeCount = st.trades.length;
@@ -4229,7 +4121,6 @@ function _renderLiveStatus(st) {
             if (sig) {
                 const sigDir = String(sig.direction || '').toLowerCase();
                 const isLong = sigDir === 'buy' || sigDir === 'long';
-                const localOffset = new Date().getTimezoneOffset() * -60;
                 const pseudoTrade = {
                     direction: isLong ? 'buy' : 'sell',
                     entry_price: sig.entry_price,
@@ -4238,7 +4129,7 @@ function _renderLiveStatus(st) {
                 };
                 const decision = _tradeDecisionPhrase(pseudoTrade);
                 liveMarkers.push({
-                    time: Math.floor(Date.now() / 1000) + localOffset,
+                    time: utcMsToChartTime(Date.now()),
                     position: isLong ? 'belowBar' : 'aboveBar',
                     color: '#ffa726',
                     shape: isLong ? 'arrowUp' : 'arrowDown',
@@ -4248,7 +4139,6 @@ function _renderLiveStatus(st) {
             // Show filled position as marker
             if (st.position && st.fill_price) {
                 const posIsLong = positionSideMeta(st.position).isLong;
-                const localOffset = new Date().getTimezoneOffset() * -60;
                 const pseudoTrade = {
                     direction: posIsLong ? 'buy' : 'sell',
                     entry_price: st.fill_price,
@@ -4257,7 +4147,7 @@ function _renderLiveStatus(st) {
                 };
                 const decision = _tradeDecisionPhrase(pseudoTrade);
                 liveMarkers.push({
-                    time: Math.floor(Date.now() / 1000) + localOffset,
+                    time: utcMsToChartTime(Date.now()),
                     position: posIsLong ? 'belowBar' : 'aboveBar',
                     color: '#ffa726',
                     shape: posIsLong ? 'arrowUp' : 'arrowDown',
@@ -4433,7 +4323,6 @@ async function pollLiveCandle() {
 
         if (updated > 0) {
             window._lastChartData.sort((a, b) => a.time - b.time);
-            refreshTfZones(!(_tfAllZones && _tfAllZones.length));
             if (layerOn('prevday70')) refreshPreviousDayValueAreas(false);
             if (layerOn('footprint') || layerOn('cvd')) scheduleFootprintRefresh();
             refreshIndicatorSignalMarkers(false);
@@ -4634,6 +4523,7 @@ function initChart() {
 
     // Redraw VP overlay on scroll / zoom — continuous following via rAF
     const _redrawOverlays = () => {
+        markOrderflowInteraction();
         try { maybeLoadOlderChartHistory(chart.timeScale().getVisibleLogicalRange()); } catch (_) {}
         scheduleChartOverlayRedraw();
         if (layerOn('footprint') || layerOn('cvd')) scheduleFootprintRefresh();
@@ -4648,28 +4538,11 @@ function initChart() {
     log('Chart initialized', 'info');
 }
 
-// -- Volume Profile Overlay (full-chart canvas) ---------------
-// Draws VP histogram at each zone's formed_at position
-// POC extends from zone start to the next session boundary.
-
-let vpOverlayCanvas = null;
+// -- Chart overlay canvases ------------------------------------
 let fadeLevelsCanvas = null;
 let previousDayValueAreaCanvas = null;
 let footprintCanvas = null;
 let cvdCanvas = null;
-let positionLines = [];
-let _cachedVPZones = null;  // cached for redraw on scroll/zoom
-
-function createVPOverlay() {
-    if (vpOverlayCanvas) return vpOverlayCanvas;
-    const container = document.getElementById('chart-container');
-    const canvas = document.createElement('canvas');
-    canvas.id = 'vp-overlay';
-    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
-    container.appendChild(canvas);
-    vpOverlayCanvas = canvas;
-    return canvas;
-}
 
 function createFadeLevelsCanvas() {
     if (fadeLevelsCanvas) return fadeLevelsCanvas;
@@ -4759,19 +4632,30 @@ const NY_OPEN_ZONE_WINDOWS = [
 ];
 
 function utcMsToChartTime(ms) {
-    const localOffset = new Date(ms).getTimezoneOffset() * -60;
-    return Math.floor(ms / 1000) + localOffset;
+    const instantMs = Number(ms);
+    if (!Number.isFinite(instantMs)) return NaN;
+    // lightweight-charts has no IANA timezone setting.  Store the instant as
+    // a New York wall-clock epoch so the chart is identical on a laptop,
+    // monitor, Windows, and macOS.  The offset is resolved for the instant,
+    // therefore EDT/EST transitions remain DST-aware.
+    const marketOffsetSec = _timeZoneOffsetMs(
+        SYSTEM_TIME_ZONES.market, instantMs,
+    ) / 1000;
+    return Math.floor(instantMs / 1000) + marketOffsetSec;
 }
 
-/* Inverse of utcMsToChartTime. Chart time is UTC seconds shifted by the local
-   offset, so recovering the instant needs that offset back out. Resolve it
-   from the approximate instant rather than from `now`: across a DST boundary
-   the two differ by an hour, and this feeds a staleness threshold. */
+/* Inverse of utcMsToChartTime. Chart time is UTC seconds shifted by the
+   configured New York market offset, so recovering the instant needs that
+   offset back out. Resolve it from the approximate instant, then re-check at
+   the candidate UTC instant for a DST boundary. */
 function chartTimeToUtcMs(chartTime) {
     const approxMs = Number(chartTime) * 1000;
     if (!Number.isFinite(approxMs)) return NaN;
-    const offsetSec = new Date(approxMs).getTimezoneOffset() * -60;
-    return (Number(chartTime) - offsetSec) * 1000;
+    const offsetMs = _timeZoneOffsetMs(SYSTEM_TIME_ZONES.market, approxMs);
+    let utcMs = approxMs - offsetMs;
+    const correctedOffsetMs = _timeZoneOffsetMs(SYSTEM_TIME_ZONES.market, utcMs);
+    if (correctedOffsetMs !== offsetMs) utcMs = approxMs - correctedOffsetMs;
+    return utcMs;
 }
 
 function _timeZoneOffsetMs(timeZone, utcMs) {
@@ -4898,9 +4782,6 @@ const CHART_LAYERS = [
     { key: 'mrev',     label: 'MREV bubbles',           on: false },
     { key: 'kdjma',    label: 'KDJMA dots',              on: false },
     { key: 'intramom', label: 'INTRAMOM arrows',         on: false },
-    { key: 'zonelines',label: 'VAH/VAL/POC lines',       on: false },
-    { key: 'sessva',   label: 'Session VA development',  on: false },
-    { key: 'fib',      label: 'BETAFIB levels',          on: false },
     { key: 'dayzone',  label: 'DAY ZONE prior levels',   on: false },
     { key: 'prevday70',label: 'PRIOR DAY 70% VAH/VAL/POC', on: false },
     { key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false },
@@ -4992,7 +4873,6 @@ function redrawAllOverlays() {
     try { drawIndicatorSignalOverlay(); } catch (e) {}
     try { drawPiSignalOverlay(); } catch (e) {}
     try { drawOptionWallOverlay(); } catch (e) {}
-    try { if (_cachedVPZones) drawVolumeProfile(_cachedVPZones); } catch (e) {}
     try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
     try { drawPreviousDayValueAreas(); } catch (e) {}
     try { drawFootprintLayer(); } catch (e) {}
@@ -5005,7 +4885,6 @@ function scheduleChartOverlayRedraw() {
     _chartOverlayRafId = requestAnimationFrame(() => {
         _chartOverlayRafId = null;
         if (_chartHistoryApplying) return;
-        try { renderTfZones(); } catch (e) {}
         try { redrawTradeDecisionOverlays(); } catch (e) {}
         try { drawSessionDividers(); } catch (e) {}
         try { drawIndicatorSignalOverlay(); } catch (e) {}
@@ -5150,7 +5029,7 @@ function drawSessionDividers() {
             const bMs = boundary.getTime();
             if (bMs < fromMs - dayMs || bMs > toMs + dayMs) return;
 
-            // Convert to lightweight-charts time (local offset hack used elsewhere)
+            // Convert to lightweight-charts time in the configured market zone.
             const chartTime = utcMsToChartTime(bMs);
             const x = chart.timeScale().timeToCoordinate(chartTime);
             if (x === null || x < 0 || x > W) return;
@@ -5177,8 +5056,8 @@ function drawNYOpenZoneBackgrounds(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
 
-    // Iterate a wider day span because chart timestamps are encoded in the
-    // browser's wall-clock timezone while these windows are New York local time.
+    // Iterate a wider day span because chart timestamps are encoded as New
+    // York wall-clock epochs while these windows are also New York local time.
     for (let d = startDayMs - dayMs; d <= endMs + dayMs; d += dayMs) {
         const day = new Date(d);
         NY_OPEN_ZONE_WINDOWS.forEach(w => {
@@ -5286,319 +5165,6 @@ function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
         });
     }
     ctx.restore();
-}
-
-// ── Timeframe zone filter state (bottom-left chart control) ──
-// Draws clean VAH/VAL/POC LINES per timeframe (no VP histogram). Line width
-// scales with timeframe size; colour = orange (live) / white (backtest).
-const TF_ORDER = ['15m', '30m', '1h', '4h'];
-const TF_LINE_WIDTH = { '15m': 1.3, '30m': 1.7, '1h': 2.1, '4h': 2.6 };
-let _zoneFilter = { tfs: new Set(['15m']), mode: 'backtest' };
-let _tfAllZones = [];          // all-timeframe zones (each tagged with .timeframe)
-let _tfZonesFetching = false;
-let _tfZonesLastFetch = 0;
-
-function _zoneFilterAreaPct() {
-    const live = document.getElementById('area-pct-live');
-    const bt = document.getElementById('area-pct-bt');
-    const el = (_zoneFilter.mode === 'live' && live) ? live : (bt || live);
-    const v = el ? parseFloat(el.value) : 0.80;
-    return (v >= 0.50 && v <= 0.95) ? v : 0.80;
-}
-
-// Which param panel drives the chart zones (live when running, else backtest).
-function _activeZonePanel() {
-    return (_zoneFilter.mode === 'live') ? 'live' : 'bt';
-}
-
-// Pull the chart-zone timeframes from the active param panel's TF selection.
-function syncZoneFilterUI() {
-    let sel = [];
-    try { sel = readOverlapTfCombo(_activeZonePanel()); } catch (e) {}
-    _zoneFilter.tfs = new Set(sel.length ? sel : ['15m']);
-}
-
-// Kept for back-compat callers: re-sync TFs from params, then refetch + redraw.
-function onZoneFilterChange() {
-    syncZoneFilterUI();
-    refreshTfZones(true);
-}
-
-// Fetch all-timeframe zones from the server (throttled), then render.
-async function refreshTfZones(force) {
-    const now = Date.now();
-    if (_tfZonesFetching) return;
-    if (!force && now - _tfZonesLastFetch < 15000) {
-        // A recent request may legitimately return no zones (for example
-        // before historical data is loaded). Do not bounce back into
-        // renderTfZones(), which would immediately call this function again.
-        if (_tfAllZones && _tfAllZones.length > 0) renderTfZones();
-        return;
-    }
-    _tfZonesFetching = true;
-    try {
-        const resp = await fetch(API + '/data/detect-zones', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ all_timeframes: true, value_area_pct: _zoneFilterAreaPct() }),
-        });
-        if (resp.ok) {
-            const data = await resp.json();
-            _tfAllZones = data.zones || [];
-        }
-    } catch (e) {
-        // silent — keep previous cache
-    } finally {
-        // Always advance throttle timestamp (even on error) so a failing
-        // request doesn't bypass the 15s throttle and spam the backend.
-        _tfZonesLastFetch = Date.now();
-        _tfZonesFetching = false;
-        renderTfZones();
-    }
-}
-
-// Draw one zone's VAH/VAL (solid) + POC (dashed) horizontal lines.
-// `op` is an opacity multiplier (backtest zones = 0.8, live active zone = 1.0).
-function _drawZoneLines(ctx, z, tf, lw, color, op, W, H, rightX, priceToY, tX) {
-    if (!layerOn('zonelines')) return;
-    const yVAH = priceToY(z.vah_80);
-    const yVAL = priceToY(z.val_80);
-    const yPOC = priceToY(z.poc);
-    if ([yVAH, yVAL, yPOC].every(y => y < 0 || y > H)) return;
-
-    // Always clamp the horizontal extent to the zone's own time range
-    // (formed_at → left_at) so the line spans exactly the bucket — never the
-    // full chart width — for both live and backtest.
-    const a = tX(z.formed_at);
-    const b = z.left_at ? tX(z.left_at) : null;
-    let x0 = (a !== null) ? a : 0;
-    let x1 = (b !== null) ? b : rightX;
-    if (x1 < 0 || x0 > W) return;
-    x0 = Math.max(0, x0);
-    x1 = Math.min(rightX, x1);
-    if (x1 <= x0 + 2) return;
-
-    ctx.lineWidth = lw;
-    // VAH / VAL — solid
-    ctx.setLineDash([]);
-    ctx.strokeStyle = `rgba(${color}, ${(0.9 * op).toFixed(3)})`;
-    if (yVAH >= 0 && yVAH <= H) { ctx.beginPath(); ctx.moveTo(x0, yVAH); ctx.lineTo(x1, yVAH); ctx.stroke(); }
-    if (yVAL >= 0 && yVAL <= H) { ctx.beginPath(); ctx.moveTo(x0, yVAL); ctx.lineTo(x1, yVAL); ctx.stroke(); }
-    // POC — dashed
-    ctx.setLineDash([4, 3]);
-    ctx.strokeStyle = `rgba(${color}, ${(0.65 * op).toFixed(3)})`;
-    if (yPOC >= 0 && yPOC <= H) { ctx.beginPath(); ctx.moveTo(x0, yPOC); ctx.lineTo(x1, yPOC); ctx.stroke(); }
-    ctx.setLineDash([]);
-
-    // No text labels here: zones are represented visually by the range lines.
-}
-
-function _drawSessionDevelopingVa(ctx, W, H, priceToY, tX, vFrom, vTo) {
-    // 1.0.9: 畫「每一個 session」的生長 VA 白線(波浪曲線),整段歷史都顯示;
-    // 移除延伸到圖表右邊的水平直線(使用者要求)。已完成但無曲線的 session,
-    // 只在它自己的時間範圍內畫一段(不延伸到右邊)。
-    const sessions = (_tfAllZones || [])
-        .filter(z => String(z.timeframe || '').toLowerCase() === 'session')
-        .filter(z => Number.isFinite(Number(z.vah_80)) && Number.isFinite(Number(z.val_80)));
-    if (!sessions.length) return;
-
-    const rightX = Math.max(0, W - 60);
-    const makePts = (z, key) => (z.va_curve || []).map(p => {
-        const ts = p.ts || p.time || p.timestamp;
-        const value = Number(p[key]);
-        if (!ts || !Number.isFinite(value)) return null;
-        const time = isoToChartTime(ts);
-        if (vFrom !== null && vTo !== null && (time < vFrom || time > vTo)) return null;
-        const x = tX(ts);
-        const y = priceToY(value);
-        if (x === null || y === null || y < -80 || y > H + 80) return null;
-        return { x, y };
-    }).filter(Boolean);
-
-    const drawPts = (pts) => {
-        if (pts.length < 2) return;
-        ctx.beginPath();
-        pts.forEach((p, i) => { if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y); });
-        ctx.stroke();
-    };
-
-    ctx.save();
-    ctx.lineWidth = 1.25;
-    ctx.strokeStyle = 'rgba(247, 239, 224, 0.90)';
-    ctx.setLineDash([]);
-    sessions.forEach(z => {
-        const vah = makePts(z, 'vah');
-        const val = makePts(z, 'val');
-        if (vah.length >= 2 || val.length >= 2) {
-            drawPts(vah);
-            drawPts(val);
-            return;
-        }
-        // 無生長曲線:進行中的 session 直接跳過(避免右延直線);
-        // 已完成的 session 只在 formed_at→left_at 之間畫一段。
-        if (!z.left_at) return;
-        const a = tX(z.formed_at);
-        const b = tX(z.left_at);
-        if (a === null || b === null) return;
-        const x0 = Math.max(0, a);
-        const x1 = Math.min(rightX, b);
-        if (x1 <= x0 + 2) return;
-        [Number(z.vah_80), Number(z.val_80)].forEach(v => {
-            const y = priceToY(v);
-            if (y === null || y < -80 || y > H + 80) return;
-            ctx.beginPath();
-            ctx.moveTo(x0, y);
-            ctx.lineTo(x1, y);
-            ctx.stroke();
-        });
-    });
-    ctx.restore();
-}
-
-// Render the selected-timeframe zones onto the VP overlay canvas.
-// 1.0.9: SESSFIB —— 每晚一條 fib 掛單線,橫跨該夜盤時段。
-// 琥珀色虛線 + 左端標籤,與 VAH/VAL(白/藍)和成交決策疊圖區隔。
-function _drawBetafibLevels(ctx, H, priceToY, tX) {
-    ctx.save();
-    _betafibLevels.forEach((lv) => {
-        const y = priceToY(Number(lv.level));
-        if (!(y >= 0 && y <= H)) return;
-        const x0 = tX(lv.t_from);
-        const x1 = tX(lv.t_to);
-        if (x0 === null || x1 === null || x1 <= x0) return;
-        ctx.strokeStyle = 'rgba(251, 191, 36, 0.85)';
-        ctx.lineWidth = 1.2;
-        ctx.setLineDash([5, 4]);
-        ctx.beginPath();
-        ctx.moveTo(x0, y);
-        ctx.lineTo(x1, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = 'rgba(251, 191, 36, 0.95)';
-        ctx.font = '10px ui-monospace, monospace';
-        ctx.textBaseline = 'bottom';
-        const tag = 'fib ' + Number(lv.entry_fib).toFixed(3)
-            + ' ' + (lv.direction === 'long' ? '↑' : '↓')
-            + ' ' + Number(lv.move_pct).toFixed(2) + '%';
-        ctx.fillText(tag, x0 + 3, y - 2);
-    });
-    ctx.restore();
-}
-
-function renderTfZones() {
-    // 1.0.10: VAH/VAL/POC 白線、session VA、fib 三者共用 vp-overlay,
-    // 全關時直接清畫布返回 —— 否則上一次畫的線會留在上面。
-    if (!layerOn('zonelines') && !layerOn('sessva') && !layerOn('fib')) {
-        try { clearVPOverlay(); } catch (e) {}
-        return;
-    }
-    const canvas = createVPOverlay();
-    const container = document.getElementById('chart-container');
-    const dpr = window.devicePixelRatio || 1;
-    const W = container.clientWidth;
-    const H = container.clientHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
-    const ctx = canvas.getContext('2d');
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, W, H);
-
-    const priceToY = (p) => { try { const y = candleSeries.priceToCoordinate(p); return y !== null ? y : -1; } catch (e) { return -1; } };
-    const tX = (iso) => { if (!iso) return null; try { return chart.timeScale().timeToCoordinate(isoToChartTime(iso)); } catch (e) { return null; } };
-
-    // Visible time range for viewport culling.
-    let vFrom = null, vTo = null;
-    try { const vr = chart.timeScale().getVisibleRange(); if (vr) { vFrom = vr.from; vTo = vr.to; } } catch (e) {}
-
-    // Always show the current session developing VA80 boundary in white.
-    if (_tfAllZones && _tfAllZones.length > 0) {
-        if (layerOn('sessva')) _drawSessionDevelopingVa(ctx, W, H, priceToY, tX, vFrom, vTo);
-    }
-
-    // 1.0.9: SESSFIB 掛單線。畫在早退(有成交決策疊圖時)之前,
-    // 否則一旦跑過回測就永遠看不到掛單位。
-    if (_betafibLevels.length) {
-        if (layerOn('fib')) _drawBetafibLevels(ctx, H, priceToY, tX);
-    }
-
-    // Once trade-decision overlays exist, suppress the generic bucket reference
-    // lines (the tiny per-candle VAH/VAL segments). The decision overlay now
-    // draws the exact primary zone used at entry.
-    const _allDecisionTrades = [
-        ...((backtestData && backtestData.trades) ? backtestData.trades : []),
-        ...(window._liveCompletedTrades || []),
-        ...(window._liveWorkingDecisionTrade ? [window._liveWorkingDecisionTrade] : []),
-    ];
-    if (_allDecisionTrades.length > 0) return;
-
-    const tfs = _zoneFilter.tfs;
-    if (!tfs || tfs.size === 0) return;
-    if (!_tfAllZones || _tfAllZones.length === 0) {
-        // Retry only after the throttle window. refreshTfZones() renders once
-        // in its finally block, so an immediate retry here would recurse when
-        // the response contains an empty zone list.
-        if (!_tfZonesFetching && Date.now() - _tfZonesLastFetch >= 15000) {
-            refreshTfZones();
-        }
-        return;
-    }
-
-    // Combined view (no filter): every completed reference zone is drawn as a
-    // "backtest" line at 80% opacity, and the most-recent completed zone per TF
-    // (the one the live engine is currently trading against) is redrawn on top
-    // at 100% opacity in orange.
-    const BT_COLOR = '247, 239, 224';   // backtest reference zones (milk-white)
-    const LIVE_COLOR = '255, 165, 0';   // current/live zone (bright)
-    const rightX = W - 60;
-
-    TF_ORDER.forEach(tf => {
-        if (!tfs.has(tf)) return;
-        const zonesTf = _tfAllZones.filter(z => z.timeframe === tf);
-        if (zonesTf.length === 0) return;
-        const lw = TF_LINE_WIDTH[tf] || 1.5;
-
-        // All completed zones in the viewport (backtest layer, 80% opacity).
-        const completed = zonesTf.filter(z => z.status === 'left');
-        const inView = [];
-        completed.forEach(z => {
-            const f = isoToChartTime(z.formed_at);
-            const l = z.left_at ? isoToChartTime(z.left_at) : f;
-            if (vFrom !== null && vTo !== null && (l < vFrom || f > vTo)) return;
-            inView.push(z);
-        });
-
-        // Most-recent completed zone = current/live reference (100% opacity).
-        let liveZone = null;
-        if (completed.length) {
-            const sorted = completed.slice().sort((a, b) => ((a.left_at || '') < (b.left_at || '')) ? 1 : -1);
-            liveZone = sorted[0];
-        }
-
-        inView.forEach(z => {
-            if (z === liveZone) return;   // drawn brighter below
-            _drawZoneLines(ctx, z, tf, lw, BT_COLOR, 0.8, W, H, rightX, priceToY, tX);
-        });
-        if (liveZone) _drawZoneLines(ctx, liveZone, tf, lw, LIVE_COLOR, 1.0, W, H, rightX, priceToY, tX);
-    });
-}
-
-// Back-compat shim: callers still pass single-TF zones; the actual rendering is
-// filter-driven from the all-TF cache. Keep _cachedVPZones for legacy redraw paths.
-function drawVolumeProfile(zones) {
-    if (zones && zones.length) _cachedVPZones = zones;
-    renderTfZones();
-}
-
-
-function clearVPOverlay() {
-    if (vpOverlayCanvas) {
-        const ctx = vpOverlayCanvas.getContext('2d');
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, vpOverlayCanvas.width, vpOverlayCanvas.height);
-    }
 }
 
 function clearFadeDailyLevels() {
@@ -5789,10 +5355,10 @@ function drawPreviousDayValueAreas() {
     const dpr = window.devicePixelRatio || 1;
     const W = container.clientWidth;
     const H = container.clientHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
+    // Reuse the guarded resize path used by footprint/CVD.  Assigning
+    // canvas.width/height on every scroll frame clears the backing store and
+    // can make the three overlay layers compete for a fresh GPU surface.
+    _sizeOrderflowCanvas(canvas, container, dpr);
 
     const ctx = canvas.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -5867,6 +5433,32 @@ let _footprintRefreshTimer = null;
 let _footprintAbortController = null;
 let _orderflowDataPromise = null;
 let _orderflowPendingKey = '';
+let _orderflowRequestSerial = 0;
+let _orderflowInteractionUntil = 0;
+let _orderflowSettleTimer = null;
+
+function markOrderflowInteraction() {
+    _orderflowInteractionUntil = Math.max(_orderflowInteractionUntil,
+        performance.now() + 260);
+    clearTimeout(_orderflowSettleTimer);
+    _orderflowSettleTimer = setTimeout(() => {
+        _orderflowInteractionUntil = 0;
+        _orderflowSettleTimer = null;
+        scheduleChartOverlayRedraw();
+    }, 280);
+}
+
+function _sizeOrderflowCanvas(canvas, container, dpr) {
+    const width = Math.max(1, Math.round(container.clientWidth * dpr));
+    const height = Math.max(1, Math.round(container.clientHeight * dpr));
+    // Assigning canvas.width/height resets the entire backing store.  The old
+    // renderer did that on every scroll frame, which caused visible flicker
+    // and unnecessary GPU allocation even when the panel size was unchanged.
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    canvas.style.width = container.clientWidth + 'px';
+    canvas.style.height = container.clientHeight + 'px';
+}
 
 // Order-flow data can be much denser than the chart can display.  These are
 // display-only limits: _footprintBars remains the complete response/cache,
@@ -5876,6 +5468,10 @@ let _orderflowPendingKey = '';
 const ORDERFLOW_DETAIL_CELL_LIMIT = 12000;
 const ORDERFLOW_COMPACT_CELL_LIMIT = 900;
 const ORDERFLOW_COMPACT_COLUMN_LIMIT = 1;
+// Overview-only noise gate.  The cache sample is contract quantity, not
+// dollars: MNQ 1m price cells top out around a few hundred contracts, so
+// 1000 would blank the overview rather than isolate useful institutional flow.
+const ORDERFLOW_COMPACT_MIN_VOLUME = 50;
 const ORDERFLOW_MAX_DEPTH_LEVELS = 8;
 
 // Keep the visual size tied to the same order-size bands used by the cache.
@@ -5935,8 +5531,15 @@ function _compactFootprintBars(prepared, spacing, tickSize, plotBottom) {
     const bars = [];
     let kept = 0;
     for (const column of [...columns.values()].sort((a, b) => a.x - b.x)) {
-        const cells = [...column.cells.values()]
-            .sort((a, b) => b.importance - a.importance)
+        const allItems = [...column.cells.values()];
+        const eligible = allItems.filter((item) => Math.max(
+            Number(item.cell[1] || 0), Number(item.cell[2] || 0),
+        ) >= ORDERFLOW_COMPACT_MIN_VOLUME);
+        // Keep the strongest visible price cell even when a quiet column has
+        // no 50-lot aggregate; otherwise the price path would disappear.
+        const source = (eligible.length ? eligible : allItems)
+            .sort((a, b) => b.importance - a.importance);
+        const cells = source
             .slice(0, ORDERFLOW_COMPACT_COLUMN_LIMIT)
             .map((item) => item.cell);
         if (!cells.length) continue;
@@ -5979,9 +5582,12 @@ async function _loadOrderflowData(force) {
     const windowRange = _footprintVisibleWindow();
     if (!windowRange) return false;
     if (windowRange.tooWide) {
+        _orderflowRequestSerial += 1;
+        _footprintAbortController?.abort();
         _footprintBars = [];
         _footprintMeta = null;
         _footprintRequestKey = '';
+        _orderflowPendingKey = '';
         return false;
     }
     const contract = String(document.getElementById('contract-id')?.value || 'MNQ');
@@ -5999,21 +5605,31 @@ async function _loadOrderflowData(force) {
         return true;
     }
     _footprintAbortController?.abort();
-    _footprintAbortController = new AbortController();
+    const requestId = ++_orderflowRequestSerial;
+    const controller = new AbortController();
+    _footprintAbortController = controller;
     _orderflowPendingKey = key;
     const request = (async () => {
         try {
             const response = await fetch(API + '/data/orderflow/footprint?' + key, {
-                signal: _footprintAbortController.signal,
+                signal: controller.signal,
             });
             if (!response.ok) throw new Error('HTTP ' + response.status);
             const payload = await response.json();
+            // AbortController is advisory: a mocked/browser-cached response
+            // can still resolve after abort.  Never let an old viewport paint
+            // over the newest one.
+            if (requestId !== _orderflowRequestSerial || controller.signal.aborted) {
+                return false;
+            }
             _footprintRequestKey = key;
             _footprintBars = Array.isArray(payload.bars) ? payload.bars : [];
             _footprintMeta = payload.meta || null;
             return true;
         } catch (error) {
-            if (error.name !== 'AbortError') log('Order-flow cache unavailable: ' + error.message, 'warn');
+            if (error.name !== 'AbortError' && requestId === _orderflowRequestSerial) {
+                log('Order-flow cache unavailable: ' + error.message, 'warn');
+            }
             return false;
         }
     })();
@@ -6059,10 +5675,7 @@ function drawFootprintLayer() {
     const target = createFootprintCanvas();
     const container = document.getElementById('chart-container');
     const dpr = window.devicePixelRatio || 1;
-    target.width = Math.round(container.clientWidth * dpr);
-    target.height = Math.round(container.clientHeight * dpr);
-    target.style.width = container.clientWidth + 'px';
-    target.style.height = container.clientHeight + 'px';
+    _sizeOrderflowCanvas(target, container, dpr);
     const ctx = target.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
@@ -6094,7 +5707,8 @@ function drawFootprintLayer() {
     const spacing = prepared.length > 1
         ? Math.abs(prepared[prepared.length - 1].x - prepared[0].x) / (prepared.length - 1)
         : 8;
-    const compactMode = spacing < 12 || rawCellCount > ORDERFLOW_DETAIL_CELL_LIMIT;
+    const compactMode = performance.now() < _orderflowInteractionUntil ||
+        spacing < 12 || rawCellCount > ORDERFLOW_DETAIL_CELL_LIMIT;
     const compacted = compactMode
         ? _compactFootprintBars(prepared, spacing, tickSize, plotBottom)
         : {bars: prepared, spacing};
@@ -6296,10 +5910,7 @@ function drawCvdLayer() {
     const target = createCvdCanvas();
     const container = document.getElementById('chart-container');
     const dpr = window.devicePixelRatio || 1;
-    target.width = Math.round(container.clientWidth * dpr);
-    target.height = Math.round(container.clientHeight * dpr);
-    target.style.width = container.clientWidth + 'px';
-    target.style.height = container.clientHeight + 'px';
+    _sizeOrderflowCanvas(target, container, dpr);
     const ctx = target.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
@@ -6680,7 +6291,6 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
             // both backtest and completed live decisions so SL/TP/zone style stays unified.
             drawLiveTradeMarkers(trades);
             if (_overlaySyncData) {
-                if (_cachedVPZones) drawVolumeProfile(_cachedVPZones);
                 drawFadeDailyLevels(_overlaySyncData.zones);
                 redrawTradeDecisionOverlays();
                 drawSessionDividers();
@@ -6782,15 +6392,8 @@ function clearPositionOverlay() {
 // -- Backtest Zone Drawing -------------------------
 
 function drawBacktestZones(zones) {
-    // Clear old price lines
-    zoneRectangles.forEach(l => { try { candleSeries.removePriceLine(l); } catch(e){} });
-    zoneRectangles = [];
+    // DAY ZONE is the only legacy zone overlay retained here.
     clearFadeDailyLevels();
-
-    if (!zones || zones.length === 0) return;
-
-    // Draw VP histogram + POC/VAH/VAL lines on full-chart canvas overlay
-    drawVolumeProfile(zones);
     drawFadeDailyLevels(zones);
 }
 
@@ -6799,12 +6402,17 @@ function drawBacktestZones(zones) {
 let _healthProbeInFlight = false;
 let _healthBackendOffline = false;
 let _healthStatusBeforeOffline = null;
+// The health endpoint is cheap, but chart projection/rendering can briefly
+// occupy the browser and the API worker. Keep real failures visible without
+// turning one transient scheduling delay into an OFFLINE flash.
+const HEALTH_CHECK_TIMEOUT_MS = 8000;
+const HEALTH_CHECK_INTERVAL_MS = 5000;
 
 async function checkHealth() {
     if (_healthProbeInFlight) return;
     _healthProbeInFlight = true;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2500);
+    const timeout = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS);
     try {
         const resp = await fetch(API + '/health', {
             cache: 'no-store',
@@ -6966,10 +6574,6 @@ async function connectAPI() {
         // Fetch and display chart data (1m bars from connect — fresh, no settle delay)
         await fetchAndShowChart('1m');
 
-        // 1.0.9: 連線後立刻抓多 TF + session 生長區,讓「白色 VAH/VAL」在啟動就畫出來。
-        // 先前只有跑完 backtest 才 refreshTfZones → 啟動看不到白線(codex 沒修到的點)。
-        try { refreshTfZones(true); } catch (e) {}
-
         // Fetch actual trades from TopstepX (refresh cache) for the active account
         const mainAcc = _focusMainLiveAccount() || getMainLiveAccount() || currentAccount;
         const accId = mainAcc ? mainAcc.id : 0;
@@ -7032,8 +6636,6 @@ function showCandleData(candles) {
 
     applyDefaultChartView(chartData);
     drawSessionDividers();
-    // Populate the all-timeframe zone cache so the filter draws lines immediately.
-    refreshTfZones(true);
     if (layerOn('prevday70')) refreshPreviousDayValueAreas(true);
     refreshIndicatorSignalMarkers(true);
     refreshPiSignalMarkers();
@@ -7382,9 +6984,6 @@ async function runBacktest() {
             'Win rate: ' + (backtestData.metrics.win_rate * 100).toFixed(1) + '% // ' +
             'PnL: $' + backtestData.metrics.total_pnl.toFixed(0), 'success');
 
-        // Clear old cached zone overlay before rendering new backtest
-        _cachedVPZones = null;
-
         renderChart(backtestData);
         renderMetrics(backtestData.metrics, backtestData.trades);
         renderTrades(backtestData.trades);
@@ -7454,9 +7053,6 @@ async function runBacktest() {
 let _overlaySyncRAF = null;
 let _overlaySyncData = null;
 let _indicatorSignalRows = [];
-// 1.0.9: SESSFIB 掛單線。點狀 marker 走 _indicatorSignalRows,
-// 水平線走這裡 —— 兩者的繪製路徑完全不同。
-let _betafibLevels = [];
 let _indicatorSignalCanvas = null;
 let _indicatorSignalsLoading = false;
 let _indicatorSignalsQueued = false;
@@ -7684,10 +7280,10 @@ function drawIndicatorSignalOverlay() {
     const dpr = window.devicePixelRatio || 1;
     const W = container.clientWidth;
     const H = container.clientHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
+    // Reuse the guarded resize path used by footprint/CVD.  Assigning
+    // canvas.width/height on every scroll frame clears the backing store and
+    // can make the three overlay layers compete for a fresh GPU surface.
+    _sizeOrderflowCanvas(canvas, container, dpr);
 
     const ctx = canvas.getContext('2d');
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -8205,7 +7801,12 @@ function _optionWallSessionCloseTime(row) {
 function _optionWallSegmentEndTime(row, next) {
     const sessionClose = _optionWallSessionCloseTime(row);
     if (_optionWallSameSession(row, next) && Number(next.chartTime) > Number(row.chartTime)) {
-        return Number.isFinite(sessionClose)
+        // A snapshot can legitimately arrive after the RTH close (for example
+        // while the data service is still publishing the final evening state).
+        // Do not clamp that segment backwards to 16:00; doing so makes the
+        // first after-hours rows disappear when the chart only has the recent
+        // window loaded.  Clamp only rows that are still before the close.
+        return Number.isFinite(sessionClose) && sessionClose > Number(row.chartTime)
             ? Math.min(next.chartTime, sessionClose)
             : Number(next.chartTime);
     }
@@ -8401,7 +8002,6 @@ async function refreshIndicatorSignalMarkers(logSummary) {
         const data = await resp.json();
         if (data.skipped) {
             _indicatorSignalRows = [];
-            _betafibLevels = [];
             applyIndicatorSignalCandleColors();
             _refreshAllMarkers();
             clearIndicatorSignalOverlay();
@@ -8420,10 +8020,8 @@ async function refreshIndicatorSignalMarkers(logSummary) {
             seen.add(key);
             return true;
         });
-        _betafibLevels = Array.isArray(data.betafib_levels) ? data.betafib_levels : [];
         applyIndicatorSignalCandleColors();
         _refreshAllMarkers();
-        if (typeof renderTfZones === 'function') renderTfZones();
 
         if (logSummary) {
             const counts = data.counts || {};
@@ -8453,12 +8051,7 @@ async function refreshIndicatorSignalMarkers(logSummary) {
 function renderChart(data) {
     if (!data) { log('No backtest data to render', 'warn'); return; }
 
-    // Backtest finished → switch the zone filter to BT and refresh the all-TF cache.
-    _zoneFilter.mode = 'backtest';
-    syncZoneFilterUI();
-    refreshTfZones(true);
-
-    // Draw zones (VP overlay + legend)
+    // Draw the strategy's day-zone overlay when the backtest provides one.
     drawBacktestZones(data.zones);
     if (layerOn('prevday70')) refreshPreviousDayValueAreas(true);
 
@@ -8537,8 +8130,7 @@ function isoToChartTime(iso) {
     let s = iso;
     if (!s.endsWith('Z') && !s.includes('+') && !s.includes('-', 10)) s += 'Z';
     const d = new Date(s);
-    const localOffsetSec = d.getTimezoneOffset() * -60;
-    return Math.floor(d.getTime() / 1000) + localOffsetSec;
+    return utcMsToChartTime(d.getTime());
 }
 
 function _tradeIsBuy(t) {
@@ -8613,7 +8205,6 @@ function updateLiveWorkingDecision(sig, isLong, sigSL, sigTP) {
         labels: sig.labels || [],
         primary_zone: sig.primary_zone,
     };
-    renderTfZones();
     redrawTradeDecisionOverlays();
 }
 
@@ -8622,7 +8213,6 @@ function clearLiveWorkingDecision() {
     window._liveWorkingDecisionTrade = null;
     window._liveWorkingDecisionKey = null;
     window._liveWorkingDecisionTs = null;
-    renderTfZones();
     redrawTradeDecisionOverlays();
 }
 
@@ -9046,20 +8636,16 @@ function renderMetrics(m, backtestTrades) {
     const pfLive = liveStats ? (liveStats.profit_factor != null ? liveStats.profit_factor : profitFactorOf(liveStats.total_gain, liveStats.total_loss)) : null;
     const fmtPF = (v) => (Number.isFinite(v) && v < 999) ? v.toFixed(2) : '∞';
 
-    // Week-to-week variation: σ of weekly PnL, with consistency (% of green weeks).
-    // Lower CV + higher consistency = steadier equity curve, less luck-dependent.
+    // Week-to-week variation: expose the coefficient of variation only.
+    // The card is a compact stability diagnostic; dollar σ and week-count
+    // context belong in the detail/research view, not in the metric grid.
     const wk = windowed ? _weeklyFromDaily(activeDaily) : (m.weekly_stats || {});
     const wkCount = wk.weekly_count || 0;
-    const wkStd = wk.weekly_std != null ? wk.weekly_std : 0;
     const wkCv = wk.weekly_cv != null ? wk.weekly_cv : 0;
     const wkConsist = wk.weekly_consistency != null ? wk.weekly_consistency : 0;
     const weeklyVarItem = {
-        label: 'WEEKLY VARIATION (σ/CV)',
-        value: wkCount > 0
-            ? ('$' + Math.round(wkStd) + ' / ' + wkCv.toFixed(2) +
-               ' <span class="metric-real">(' + Math.round(wkConsist * 100) + '% green, ' +
-               wkCount + 'w)</span>')
-            : '--',
+        label: 'WEEKLY CV',
+        value: wkCount > 0 ? wkCv.toFixed(2) : '--',
         // Steady = low CV. Flag green when weekly CV < 1 and most weeks positive.
         cls: wkCount > 0 ? ((wkCv < 1 && wkConsist >= 0.6) ? 'pos' : (wkCv > 2 ? 'neg' : '')) : '',
     };
@@ -11093,13 +10679,6 @@ function _startLiveChartForAccount(acc, stratParams) {
     if (mainAcc) liveAccount = mainAcc;
     stratParams = getMainLivePresetParams(stratParams);
     syncMainAccountPresetToPanels(true);
-    try {
-        _zoneFilter.mode = 'live';
-        const tfs = (stratParams.method === 'overlap' && stratParams.tf_combo && stratParams.tf_combo.length)
-            ? stratParams.tf_combo : [stratParams.area_timeframe];
-        _zoneFilter.tfs = new Set(tfs);
-        syncZoneFilterUI();
-    } catch (e) {}
     const topBar = document.getElementById('live-top-bar');
     if (topBar) topBar.style.display = 'block';
     try { updateLiveTopBar(); } catch (e) {}
@@ -11108,8 +10687,6 @@ function _startLiveChartForAccount(acc, stratParams) {
     _liveInterval = setInterval(pollLiveCandle, 1000); pollLiveCandle();
     if (_liveStatusInterval) clearInterval(_liveStatusInterval);
     _liveStatusInterval = setInterval(pollLiveStatus, 1000); pollLiveStatus({ restart: true });
-    try { refreshTfZones(true); } catch (e) {}
-    setTimeout(() => { try { refreshLiveZoneOverlay(stratParams); } catch (e) {} }, 0);
 }
 
 function _liveSlotRenderStatus(slot, statusMap, sess, pollStale) {

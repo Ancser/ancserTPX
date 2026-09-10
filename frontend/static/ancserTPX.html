@@ -23,7 +23,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z-cleanup1&intraarrow=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&slpair=1&multx=2&robustness=4&footprint=2&cvd=1&flowcompact=1">
-    <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10p-glass84">
+    <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10p-glass85&palette=apple-webull1">
 </head>
 <body>
 <!-- SVG filter host used by the production liquid-glass engine. -->
@@ -320,7 +320,7 @@
                 <div class="form-row">
                     <div class="form-group fx1">
                         <label>AREA %</label>
-                        <select id="area-pct-bt" onchange="onAreaConfigChange('bt')">
+                        <select id="area-pct-bt">
                             <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
                             <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
                         </select>
@@ -531,9 +531,9 @@
                                         onclick="onPiMatrixProxy('bt','long','level2')" tabindex="-1" aria-hidden="true"></button>
                             </div>
                             <div class="pi-matrix-cell">
-                                <button type="button" role="switch" class="glass-switch pi-matrix-switch pi-matrix-switch-disabled"
-                                        id="pi-matrix-bt-short-level2" data-stage="switch" disabled
-                                        data-switch-proxy="pi-matrix-source-bt-short-level2" aria-checked="false" aria-label="SHORT LEVEL 2 (UNAVAILABLE)">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch"
+                                        id="pi-matrix-bt-short-level2" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-bt-short-level2" aria-checked="false" aria-label="SHORT LEVEL 2">
                                     <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                                 </button>
                                 <button type="button" class="pi-matrix-source" id="pi-matrix-source-bt-short-level2"
@@ -551,9 +551,9 @@
                                         onclick="onPiMatrixProxy('bt','long','level1')" tabindex="-1" aria-hidden="true"></button>
                             </div>
                             <div class="pi-matrix-cell">
-                                <button type="button" role="switch" class="glass-switch pi-matrix-switch pi-matrix-switch-disabled"
-                                        id="pi-matrix-bt-short-level1" data-stage="switch" disabled
-                                        data-switch-proxy="pi-matrix-source-bt-short-level1" aria-checked="false" aria-label="SHORT LEVEL 1 (RECORD ONLY)">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch"
+                                        id="pi-matrix-bt-short-level1" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-bt-short-level1" aria-checked="false" aria-label="SHORT LEVEL 1">
                                     <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                                 </button>
                                 <button type="button" class="pi-matrix-source" id="pi-matrix-source-bt-short-level1"
@@ -1109,7 +1109,7 @@
                 <div class="form-row">
                     <div class="form-group fx1">
                         <label>AREA %</label>
-                            <select id="area-pct-live" onchange="onAreaConfigChange('live')">
+                            <select id="area-pct-live">
                                 <option value="0.50">50</option><option value="0.60">60</option><option value="0.70">70</option>
                                 <option value="0.80" selected>80</option><option value="0.90">90</option><option value="0.95">95</option>
                             </select>
@@ -1299,9 +1299,9 @@
                                         onclick="onPiMatrixProxy('live','long','level2')" tabindex="-1" aria-hidden="true"></button>
                             </div>
                             <div class="pi-matrix-cell">
-                                <button type="button" role="switch" class="glass-switch pi-matrix-switch pi-matrix-switch-disabled"
-                                        id="pi-matrix-live-short-level2" data-stage="switch" disabled
-                                        data-switch-proxy="pi-matrix-source-live-short-level2" aria-checked="false" aria-label="SHORT LEVEL 2 (UNAVAILABLE)">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch"
+                                        id="pi-matrix-live-short-level2" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-live-short-level2" aria-checked="false" aria-label="SHORT LEVEL 2">
                                     <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                                 </button>
                                 <button type="button" class="pi-matrix-source" id="pi-matrix-source-live-short-level2"
@@ -1319,9 +1319,9 @@
                                         onclick="onPiMatrixProxy('live','long','level1')" tabindex="-1" aria-hidden="true"></button>
                             </div>
                             <div class="pi-matrix-cell">
-                                <button type="button" role="switch" class="glass-switch pi-matrix-switch pi-matrix-switch-disabled"
-                                        id="pi-matrix-live-short-level1" data-stage="switch" disabled
-                                        data-switch-proxy="pi-matrix-source-live-short-level1" aria-checked="false" aria-label="SHORT LEVEL 1 (RECORD ONLY)">
+                                <button type="button" role="switch" class="glass-switch pi-matrix-switch"
+                                        id="pi-matrix-live-short-level1" data-stage="switch"
+                                        data-switch-proxy="pi-matrix-source-live-short-level1" aria-checked="false" aria-label="SHORT LEVEL 1">
                                     <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
                                 </button>
                                 <button type="button" class="pi-matrix-source" id="pi-matrix-source-live-short-level1"
@@ -1749,7 +1749,7 @@
                 <!-- 1.0.9: INTRAMOM 用白色箭頭,與三個因子的顏色明確區隔 -->
                 <div data-legend-layer="intramom"><span style="color:#fff;">⇧</span><span style="color:#fff;">⇩</span> INTRAMOM LONG/SHORT</div>
                 <div data-legend-layer="trades"><span style="color:#00e5a0;">↑</span><span style="color:#ff4060;">↓</span> BACKTEST ENTRY WIN/LOSS · <span style="color:#ffa726;">↑</span> LIVE</div>
-                <div data-legend-layer="footprint"><span style="color:#fff;">●</span><span style="color:#ff4562;">●</span> FOOTPRINT BUY/SELL · SIZE 50–99 / 100–149 / 150+ · HEAT=RESTING DEPTH · PASSIVE=FILL OPACITY · I=IMBALANCE</div>
+                <div data-legend-layer="footprint"><span style="color:#fff;">●</span><span style="color:#ff4562;">●</span> FOOTPRINT BUY/SELL · OVERVIEW ≥50 / SIZE 50–99 / 100–149 / 150+ · HEAT=RESTING DEPTH · PASSIVE=FILL OPACITY · I=IMBALANCE</div>
                 <div data-legend-layer="cvd"><span style="color:#38d9ff;">━</span> CVD · RTH CUMULATIVE AGGRESSIVE DELTA</div>
             </div>
 
@@ -1856,36 +1856,6 @@
                     </button>
                     <button type="button" id="lp-intramom" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('intramom')"></button>
-                </div>
-                <div class="layer-row">
-                    <span class="layer-name">VAH/VAL/POC LINES</span>
-                    <button type="button" role="switch" class="glass-switch" data-stage="switch"
-                             data-glass-material="local"
-                            data-switch-proxy="lp-zonelines" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
-                    </button>
-                    <button type="button" id="lp-zonelines" class="glass-proxy-hidden" tabindex="-1"
-                            onclick="onLayerProxy('zonelines')"></button>
-                </div>
-                <div class="layer-row">
-                    <span class="layer-name">SESSION VA</span>
-                    <button type="button" role="switch" class="glass-switch" data-stage="switch"
-                             data-glass-material="local"
-                            data-switch-proxy="lp-sessva" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
-                    </button>
-                    <button type="button" id="lp-sessva" class="glass-proxy-hidden" tabindex="-1"
-                            onclick="onLayerProxy('sessva')"></button>
-                </div>
-                <div class="layer-row">
-                    <span class="layer-name">BETAFIB LEVELS</span>
-                    <button type="button" role="switch" class="glass-switch" data-stage="switch"
-                             data-glass-material="local"
-                            data-switch-proxy="lp-fib" aria-checked="false">
-                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
-                    </button>
-                    <button type="button" id="lp-fib" class="glass-proxy-hidden" tabindex="-1"
-                            onclick="onLayerProxy('fib')"></button>
                 </div>
                 <div class="layer-row">
                     <span class="layer-name">DAY ZONE LEVELS</span>

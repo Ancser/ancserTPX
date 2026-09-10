@@ -264,8 +264,9 @@
             }
         }
         .sidebar {
-            /* 1.0.9: 隨 html 字級等比 —— 25rem @16px = 原本的 400px */
-            width: 25rem;
+            /* 1.0.10: 25% narrower than the previous 25rem panel.  Keep the
+               width in rem so it follows the app's deliberate font scale. */
+            width: 18.75rem;
             background: var(--bg2);
             border-right: 1px solid var(--border);
             overflow-y: auto;
@@ -418,7 +419,6 @@
             min-height: 1.35rem;
         }
         .pi-matrix-switch { margin: 0 auto; }
-        .pi-matrix-switch-disabled { opacity: 0.32; filter: saturate(0.45); cursor: not-allowed; }
         .pi-matrix-source { display: none !important; }
         .pi-legacy-controls { display: none !important; }
         /* ── Buttons ── */
@@ -1135,7 +1135,7 @@
         .conn-panel .btn { width: 100%; margin-top: 4px; }
 
         /* ── Misc ── */
-        @media (max-width: 1200px) { .sidebar { width: 21.875rem; } }
+        @media (max-width: 1200px) { .sidebar { width: 16.40625rem; } }
         .hidden { display: none !important; }
         /* four small squares in a 2×2 block, glowing in turn (clockwise) */
         .spinner {

@@ -326,8 +326,8 @@ class LiveTradingEngine:
         self._session_direction_locks: set[tuple[str, str]] = set()
         self._capital: float = 0.0
         self._candles_processed: int = 0
-        # Rolling 1m candle history (warm-up + live) so the chart's multi-timeframe
-        # zone filter can recompute all-TF zones from the freshest data.
+        # Rolling 1m candle history (warm-up + live) for the live engine's
+        # session/fade calculations and other runtime state.
         self._all_candles: List[Candle] = []
         # Per-timeframe breakout state for the PHASE display:
         #   { tf: {"dir": "up"|"down"|None, "count": int} }

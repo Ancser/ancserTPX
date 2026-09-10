@@ -2,8 +2,9 @@
 
 All stored and calculated instants use UTC. Exchange/session rules convert the
 same instant to their named IANA timezone only while evaluating wall-clock
-boundaries. Frontend charts receive UTC instants and apply the user's operating
-system timezone for display.
+boundaries. Frontend charts receive UTC instants and display them in the
+configured market timezone (America/New_York), independent of the user's OS
+timezone.
 """
 from __future__ import annotations
 

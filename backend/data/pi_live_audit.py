@@ -78,6 +78,7 @@ def _row_for_signal(signal: Any, *, event: str, received_at: Any = None,
         "direction": getattr(signal, "direction", None),
         "kind": getattr(signal, "kind", None),
         "size": getattr(signal, "size", None),
+        "level": getattr(signal, "level", None),
         "pos": getattr(signal, "pos", None),
         "raw": getattr(signal, "raw", ""),
     }
@@ -235,7 +236,7 @@ def filter_multi_signal_events(events: Iterable[dict]) -> list[dict]:
 
     Live rows are written once per parsed mark, with a later callback row for
     that same mark.  Therefore the filter counts each distinct
-    ``(kind, symbol, source timestamp, size, position)`` mark and collapses
+    ``(kind, symbol, source timestamp, source level, size, position)`` mark and collapses
     ``received``/``recorded``/callback variants with ``max`` before deciding.
     Two identical marks still count as two because their event rows are
     counted twice.  Raw audit storage is intentionally left untouched; this
@@ -247,7 +248,7 @@ def filter_multi_signal_events(events: Iterable[dict]) -> list[dict]:
     # replay callers must not be able to reintroduce retired-channel rows.
     rows = [row for row in events if _is_active_source_row(row)]
     signal_events = {"received", "recorded", "callback", "callback_error"}
-    by_message: dict[str, dict[tuple[str, str, str, str, str, str], dict[str, int]]] = {}
+    by_message: dict[str, dict[tuple[str, str, str, str, str, str, str], dict[str, int]]] = {}
     for row in rows:
         if not isinstance(row, dict) or row.get("event") not in signal_events:
             continue
@@ -260,6 +261,7 @@ def filter_multi_signal_events(events: Iterable[dict]) -> list[dict]:
             str(row.get("equity") or "").upper(),
             str(row.get("future") or "").upper(),
             str(row.get("ts") or ""),
+            str(row.get("level") if row.get("level") is not None else ""),
             str(row.get("size") or ""),
             str(row.get("pos") or ""),
         )
@@ -323,7 +325,7 @@ def load_replay_rows(
     # chart and the strategy both snap PI timestamps to a 1m candle, so this
     # is the cross-source identity that prevents an old audit row and the
     # canonical history row from becoming two entries.
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
     # Filter in the reader, not here: heartbeat rows would otherwise consume
     # the whole window and the replay would silently see almost no signals.
     audit_events = filter_multi_signal_events(
@@ -358,7 +360,10 @@ def load_replay_rows(
 
         message_id = str(event.get("message_id") or "")
         bar_ts = ts.replace(second=0, microsecond=0).isoformat()
-        key = (bar_ts, kind, symbol, event_future)
+        source_level = event.get("level")
+        if source_level is None:
+            source_level = event.get("size") or ""
+        key = (bar_ts, kind, symbol, event_future, str(source_level))
         if key in seen:
             continue
         seen.add(key)
@@ -369,6 +374,7 @@ def load_replay_rows(
             "marks": [{
                 "kind": kind,
                 "size": event.get("size") or "?",
+                "level": event.get("level"),
                 "count": 1,
                 "pos": event.get("pos"),
             }],

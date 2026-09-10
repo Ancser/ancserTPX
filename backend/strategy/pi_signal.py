@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -59,9 +60,40 @@ PI_SIGNAL_SETS: dict[str, dict[str, tuple]] = {
 # 1.0.10: 回測用歷史訊號。K 棒時間與訊號時間相差在此範圍內才視為「同一刻」。
 # 太小會因為 1m K 棒對不上秒級時間戳而漏單,太大會在 live 誤觸舊訊號。
 _HIST_TOL_MIN = 2
+_SHORT_CIRCLE_LEVELS = frozenset((1, 2))
+_LEVEL_RE = re.compile(r"^\s*(?:level|lv)\s*(\d+)\b", re.IGNORECASE)
 # 路徑定義在 backend/data/pi_history.py —— 這裡只是轉出去給舊呼叫端用
 from backend.data.pi_history import HIST_PATH as _HIST_PATH  # noqa: E402
 _HIST_CACHE: Optional[list] = None
+
+
+def _normalize_short_levels(value) -> Optional[tuple[int, ...]]:
+    """Normalize explicit short-circle levels; None keeps legacy behavior."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return ()
+    out = set()
+    for item in value:
+        try:
+            level = int(item)
+        except (TypeError, ValueError):
+            continue
+        if level in _SHORT_CIRCLE_LEVELS:
+            out.add(level)
+    return tuple(sorted(out))
+
+
+def _signal_level(signal: Any) -> Optional[int]:
+    """Read the source Level N without using the visual size classification."""
+    raw_level = getattr(signal, "level", None)
+    if raw_level is not None:
+        try:
+            return int(raw_level)
+        except (TypeError, ValueError):
+            pass
+    match = _LEVEL_RE.match(str(getattr(signal, "size", "") or ""))
+    return int(match.group(1)) if match else None
 
 
 def _rows_to_signals(rows: list[dict]) -> list:
@@ -85,10 +117,15 @@ def _rows_to_signals(rows: list[dict]) -> list:
             d = DIRECTION.get(kind, 0)
             if not d:
                 continue
+            size = mk.get("size", "")
+            level = mk.get("level")
+            if level is None:
+                match = _LEVEL_RE.match(str(size or ""))
+                level = int(match.group(1)) if match else None
             out.append((ts, PiSignal(
                 message_id=str(r.get("id", "")), ts=ts, equity=sym,
                 future=future, direction=d, kind=kind,
-                size=mk.get("size", ""), pos=mk.get("pos"),
+                size=size, pos=mk.get("pos"), level=level,
                 raw=r.get("content", ""))))
     out.sort(key=lambda x: x[0])
     return out
@@ -106,6 +143,23 @@ def _signal_identity(ts: datetime, signal: Any) -> tuple:
         bar_ts,
         str(getattr(signal, "equity", "") or "").upper(),
         str(getattr(signal, "kind", "") or ""),
+        # A short circle can have the same visual kind in two source levels;
+        # use the structured source level when known.  ``None`` is a wildcard
+        # for old rows that predate the level field and must still dedupe a
+        # repost of the same source mark.
+        _signal_level(signal),
+    )
+
+
+def _identity_matches(candidate: tuple, existing: set[tuple]) -> bool:
+    """Match source identities while tolerating legacy rows without level."""
+    base = candidate[:3]
+    level = candidate[3]
+    return any(
+        prior[:3] == base and (
+            level is None or prior[3] is None or prior[3] == level
+        )
+        for prior in existing
     )
 
 
@@ -136,7 +190,7 @@ def _load_history(replay_rows: Optional[list[dict]] = None) -> list:
     seen = {_signal_identity(ts, sig) for ts, sig in out}
     for ts, sig in _rows_to_signals(replay_rows):
         key = _signal_identity(ts, sig)
-        if key in seen:
+        if _identity_matches(key, seen):
             continue
         seen.add(key)
         out.append((ts, sig))
@@ -180,13 +234,11 @@ class PiSignalStrategy(_ResearchBase):
                               else _preset["long"] if _preset else self.DEFAULT_LONG_KINDS)
         self.pi_short_kinds = (tuple(_sk) if _sk is not None
                                else _preset["short"] if _preset else self.DEFAULT_SHORT_KINDS)
-        # User-approved policy (record-only): the parser/audit retains every
-        # short bubble, but visual size/level classification is too unreliable
-        # to trade.  Filter by kind, never by ``size`` (PI-004).
-        from backend.live.pi_listener import SHORT_BUBBLE_KINDS
-        self.pi_short_kinds = tuple(
-            kind for kind in self.pi_short_kinds
-            if kind not in SHORT_BUBBLE_KINDS
+        # Short circles share one visual kind (紫圈), so an explicit matrix
+        # selection filters their structured source Level 1/2.  None remains
+        # the legacy kind-only behavior.
+        self.pi_short_levels = _normalize_short_levels(
+            getattr(params, "pi_short_levels", None)
         )
         # long_only 是硬開關:壓過 signal_set 與明確指定的 short kinds。
         # 沒有這一條的話,選了 pi_only 之類含空方的 set 就會繞過它。
@@ -226,7 +278,11 @@ class PiSignalStrategy(_ResearchBase):
     # ── listener 介面 ────────────────────────────────────
     def push(self, sig: Any) -> bool:
         """收到推播。回傳是否入列(重複/不符方向/商品不符 → False)。"""
-        key = f"{getattr(sig, 'message_id', '')}:{getattr(sig, 'kind', '')}"
+        # One Discord post can contain more than one source level with the
+        # same visual kind.  Include the structured level so selecting short
+        # Level 1/2 cannot discard the second mark as a duplicate.
+        key = (f"{getattr(sig, 'message_id', '')}:"
+               f"{getattr(sig, 'kind', '')}:{_signal_level(sig)}")
         if key in self._seen:
             return False
         if self.pi_future and getattr(sig, "future", None) != self.pi_future:
@@ -236,14 +292,15 @@ class PiSignalStrategy(_ResearchBase):
         if self.pi_long_only and d <= 0:
             logger.info("[PI] 略過空單訊號 %s(只做多)", kind)
             return False
-        # Short circles (Level 1/2 bubbles) remain in listener/audit records,
-        # but are never allowed to enter the strategy queue.  This guard is
-        # independent of saved presets so a legacy configuration cannot
-        # re-enable them.
-        from backend.live.pi_listener import SHORT_BUBBLE_KINDS
-        if d < 0 and kind in SHORT_BUBBLE_KINDS:
-            logger.info("[PI] skip short bubble %s (record-only)", kind)
-            return False
+        # Purple short circles use the same visual kind for Level 1 and Level
+        # 2.  Apply the explicit source-level selector only when supplied;
+        # legacy kind-only presets keep both levels available.
+        if d < 0 and kind == "紫圈" and self.pi_short_levels is not None:
+            level = _signal_level(sig)
+            if level not in self.pi_short_levels:
+                logger.info("[PI] skip short bubble %s level=%s (not selected)",
+                            kind, level)
+                return False
         allow = self.pi_long_kinds if d > 0 else self.pi_short_kinds
         # An empty explicit/legacy kind set means that side is disabled.  Do
         # not treat it as "no filter": the matrix uses [] to represent an

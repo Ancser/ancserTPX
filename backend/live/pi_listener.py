@@ -50,12 +50,8 @@ SYMBOL_MAP = {"QQQ": "MNQ", "SPY": "MES"}
 # +1 做多 / −1 做空
 DIRECTION = {"淡蓝圈": +1, "深蓝圈": +1, "青π": +1, "紫圈": -1, "粉π": -1}
 # Circle strength/size is a presentation classification, not a reliable
-# trading feature. Keep parsed short circles auditable while the strategy
-# enforces the current record-only policy for every short bubble kind.
-SHORT_BUBBLE_KINDS = frozenset(
-    kind for kind, direction in DIRECTION.items()
-    if direction < 0 and kind.endswith("圈")
-)
+# trading feature. The parser preserves source Level N as structured data so
+# the strategy can select short Level 1/2 without guessing from pixels.
 
 # ── 開盤前訊號過濾(1.0.10) ──────────────────────────────────────────
 # bot 在美西開盤(06:30)後的頭半小時會重播**前一交易日**累積的標記,
@@ -162,8 +158,9 @@ class PiSignal:
     future: str                 # MNQ / MES
     direction: int              # +1 / −1
     kind: str                   # 紫圈 / 青π / …
-    size: str                   # 大 / 中 / 小
+    size: str                   # presentation size, or legacy ``Level N``
     pos: Optional[str]          # 上部 / 中部 / 下部 / None
+    level: Optional[int] = None # source Level 1/2/3, separate from visual size
     raw: str = ""
     # Local dispatch time is diagnostic only.  ``ts`` is the PI event timestamp
     # (NY line when present, Discord delivery time for legacy posts).
@@ -214,6 +211,7 @@ def parse_message(msg: dict) -> list[PiSignal]:
             kind=kind,
             size=size,
             pos=(mk.group("pos") or "").strip() or None,
+            level=int(level) if level else None,
             raw=content,
         ))
     return out

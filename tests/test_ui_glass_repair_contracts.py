@@ -230,6 +230,18 @@ def test_red_performance_threshold_mark_has_an_exclamation():
     assert "tpx-danger-exclamation" not in CSS
 
 
+def test_weekly_metric_card_shows_only_weekly_cv():
+    start = JS.index("const weeklyVarItem = {")
+    end = JS.index("    };", start) + len("    };")
+    weekly = JS[start:end]
+    assert "label: 'WEEKLY CV'" in weekly
+    assert "wkCv.toFixed(2)" in weekly
+    assert "wkStd" not in weekly
+    assert "metric-real" not in weekly
+    assert "% green" not in weekly
+    assert "w)</span>" not in weekly
+
+
 def test_live_pi_audit_overlay_is_read_only_and_backtest_replay_is_explicit():
     refresh = _function_source("refreshPiSignalMarkers")
     assert "API + '/pi/signals?'" in refresh
@@ -285,7 +297,6 @@ def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
         "LONG TIME EXIT",
         "SHORT TIME EXIT",
         "PI π / CIRCLES",
-        "BETAFIB LEVELS",
     ):
         assert english in HTML
 
@@ -299,8 +310,10 @@ def test_pi_matrix_is_two_column_glass_switch_ui_and_keeps_legacy_wire_fields():
         assert f'id="pi-matrix-{mode}-short-pi"' in matrix
         assert f'id="pi-matrix-{mode}-long-level2"' in matrix
         assert f'id="pi-matrix-{mode}-long-level1"' in matrix
+        assert f'id="pi-matrix-{mode}-short-level2"' in matrix
         assert f'id="pi-matrix-{mode}-short-level1"' in matrix
-        assert f'id="pi-matrix-{mode}-short-level1" data-stage="switch" disabled' in matrix
+        assert "pi-matrix-switch-disabled" not in matrix
+        assert " disabled" not in matrix
         assert "class=\"glass-switch pi-matrix-switch" in matrix
         assert "LONG" in matrix and "SHORT" in matrix
         assert "LEVEL 2" in matrix and "LEVEL 1" in matrix
@@ -312,6 +325,7 @@ def test_pi_matrix_is_two_column_glass_switch_ui_and_keeps_legacy_wire_fields():
     assert "show('factor-params-' + mode, isFactor || isIntramom || isSessfib);" in JS
     assert "pi_long_kinds: piMatrix.pi_long_kinds" in JS
     assert "pi_short_kinds: piMatrix.pi_short_kinds" in JS
+    assert "pi_short_levels: piMatrix.pi_short_levels" in JS
 
 
 def test_requested_control_geometry_is_explicit_and_consistent():
@@ -325,6 +339,12 @@ def test_requested_control_geometry_is_explicit_and_consistent():
     assert "font-size: 1.5rem" in multiplier
     assert "width: 2.625rem" in tuner
     assert "height: 2.625rem" in tuner
+
+
+def test_sidebar_is_25_percent_narrower_without_changing_mobile_stack():
+    assert "width: 18.75rem;" in CSS
+    assert "@media (max-width: 1200px) { .sidebar { width: 16.40625rem; } }" in CSS
+    assert re.search(r"@media \(max-width: 900px\).*?\.sidebar\s*\{.*?width: 100%;", CSS, re.DOTALL)
 
 
 def test_pi_directional_exits_use_matching_atr_options_and_two_half_column_rows():
@@ -422,14 +442,14 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     assert 'data-glass-scene="chart"' in popup
     assert 'data-glass-tier="1"' in popup
     assert 'data-glass-material="popup"' in popup
-    assert popup.count('data-glass-material="local"') == 14
+    assert popup.count('data-glass-material="local"') == 11
     # Repeated rows use the PI matrix's real optical thumb path, with the
     # ordinary switch geometry AND the ordinary switch optics.  1.0.10p: a
     # per-surface data-glass-shrink="0.20" override made these the only
     # switches on the page with their own sampling; the brief was parity with
     # the parameter switches, so shrink comes from settings.switch alone.
     assert 'data-glass-sampling="material-only"' not in popup
-    assert popup.count('data-optical="switch"') == 14
+    assert popup.count('data-optical="switch"') == 11
     assert "data-glass-shrink" not in popup
     assert "dataset.glassShrink" not in _code(GLASS_JS)
     assert "const config = settings[surface.component];" in GLASS_JS
@@ -534,6 +554,29 @@ def test_prior_day_70_value_area_is_a_separate_three_line_chart_layer():
     assert "val_70" in draw
     assert "Number(area.poc)" in draw
     assert "Exactly three lines per displayed trade day" in draw
+
+
+def test_retired_chart_value_area_layers_are_removed_but_strategy_values_remain():
+    for retired in (
+        "VAH/VAL/POC LINES",
+        "SESSION VA",
+        "BETAFIB LEVELS",
+        "lp-zonelines",
+        "lp-sessva",
+        "lp-fib",
+        "renderTfZones",
+        "detect-zones",
+        "betafib_levels",
+    ):
+        assert retired not in HTML
+        assert retired not in JS
+    assert "PRIOR DAY 70% VAH/VAL/POC" in HTML
+    assert "PRIOR DAY 70% VAH/VAL/POC" in JS
+    # BETAFIB and SESSION remain valid execution parameters/models; only the
+    # retired chart overlays and their chart-only transport were removed.
+    assert 'value="betafib"' in HTML
+    assert 'value="session"' in HTML
+    assert "factor_session_va_filter" in JS
 
 
 def test_left_history_paging_does_not_recompute_signals_or_duplicate_canvas_work():

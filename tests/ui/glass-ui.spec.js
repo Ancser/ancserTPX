@@ -795,6 +795,7 @@ test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset p
   expect(payload.pi_long_only).toBe(true);
   expect(payload.pi_long_kinds).toEqual(["青π", "深蓝圈"]);
   expect(payload.pi_short_kinds).toEqual([]);
+  expect(payload.pi_short_levels).toEqual([]);
 
   await page.locator("#pi-params-bt #pi-matrix-bt-long-level1").click();
   payload = await page.evaluate(() => collectStrategyParams("bt"));
@@ -805,6 +806,7 @@ test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset p
   payload = await page.evaluate(() => collectStrategyParams("bt"));
   expect(payload.pi_long_only).toBe(false);
   expect(payload.pi_short_kinds).toEqual(["粉π"]);
+  expect(payload.pi_short_levels).toEqual([]);
 
   await page.evaluate(() => applyStrategyParams("bt", {
     strategy: "pi",
@@ -812,11 +814,14 @@ test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset p
     pi_long_only: false,
   }));
   await expect(page.locator("#pi-params-bt #pi-matrix-bt-long-level1")).toHaveClass(/on/);
-  await expect(page.locator("#pi-params-bt #pi-matrix-bt-short-level1")).not.toHaveClass(/on/);
-  await expect(page.locator("#pi-params-bt #pi-matrix-bt-short-level1")).toBeDisabled();
+  await expect(page.locator("#pi-params-bt #pi-matrix-bt-short-level2")).toHaveClass(/on/);
+  await expect(page.locator("#pi-params-bt #pi-matrix-bt-short-level1")).toHaveClass(/on/);
+  await expect(page.locator("#pi-params-bt #pi-matrix-bt-short-level2")).toBeEnabled();
+  await expect(page.locator("#pi-params-bt #pi-matrix-bt-short-level1")).toBeEnabled();
   payload = await page.evaluate(() => collectStrategyParams("bt"));
   expect(payload.pi_signal_set).toBe("all");
-  expect(payload.pi_short_kinds).toEqual(["粉π"]);
+  expect(payload.pi_short_kinds).toEqual(["粉π", "紫圈"]);
+  expect(payload.pi_short_levels).toEqual([1, 2]);
 });
 
 test("parameter help tooltip uses the canonical English copy", async ({ page }) => {
@@ -948,9 +953,6 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
     "MREV BUBBLES",
     "KDJMA DOTS",
     "INTRAMOM ARROWS",
-    "VAH/VAL/POC LINES",
-    "SESSION VA",
-    "BETAFIB LEVELS",
     "DAY ZONE LEVELS",
     "PRIOR DAY 70% VAH/VAL/POC",
   ]);
@@ -959,7 +961,7 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
   await expect(popupSwitches.first()).toHaveAttribute("data-glass-material", "local");
   await expect(popup.locator(
     '.layer-row > .glass-switch > .switch-thumb.optical-surface[data-optical="switch"]',
-  )).toHaveCount(14);
+  )).toHaveCount(11);
   // 1.0.10p: no per-popup optics override — these sample exactly like the
   // parameter switches do.
   await expect(popup.locator(
@@ -1125,7 +1127,15 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
     const track = document.querySelector("#chart-layer-pop > .layer-row > .glass-switch");
     if (!track?.classList.contains("interacting")) return false;
     const thumb = track.querySelector(".switch-thumb");
-    return getComputedStyle(thumb, "::before").backgroundColor === "rgb(8, 9, 13)"
+    const bg = getComputedStyle(document.documentElement)
+      .getPropertyValue("--bg").trim();
+    const match = bg.match(/^#([0-9a-f]{6})$/i);
+    const expected = match
+      ? `rgb(${[1, 3, 5].map((offset) => Number.parseInt(
+        match[1].slice(offset - 1, offset + 1), 16,
+      )).join(", ")})`
+      : bg;
+    return getComputedStyle(thumb, "::before").backgroundColor === expected
       && Number.parseFloat(getComputedStyle(thumb, "::before").opacity) > 0.5;
   })).toBe(true);
   const localMaterial = await page.evaluate(() => {

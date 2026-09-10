@@ -105,7 +105,7 @@ def test_production_defaults_roll_instead_of_naming_a_fixed_expiry():
     assert not re.search(r"CON\.F\.US\.(?:MNQ|ENQ)\.[HMUZ]\d{2}", product_text)
 
 
-def test_browser_has_one_boot_manifest_and_only_shifts_utc_for_display():
+def test_browser_has_one_boot_manifest_and_shifts_utc_to_market_display():
     system_js = SYSTEM_JS.read_text(encoding="utf-8")
     app_js = FRONTEND_JS.read_text(encoding="utf-8")
     topstep_js = TOPSTEP_JS.read_text(encoding="utf-8")
@@ -117,7 +117,8 @@ def test_browser_has_one_boot_manifest_and_only_shifts_utc_for_display():
         assert name not in topstep_js
     assert "Object.assign(SYSTEM_TIME_ZONES, cfg.time_zones || {})" in app_js
     assert "Object.assign(FRONT_MONTH_CONTRACTS, cfg.front_month_contracts || {})" in app_js
-    assert "getTimezoneOffset()" in app_js
+    assert "_timeZoneOffsetMs(\n        SYSTEM_TIME_ZONES.market" in app_js
+    assert "getTimezoneOffset()" not in app_js
     assert (
         html.index('src="/static/tpx-system.js')
         < html.index('src="/static/topstep-eval.js')

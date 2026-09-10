@@ -17,7 +17,6 @@ import json
 import logging
 import math
 import asyncio
-import threading
 import uuid
 from collections import deque
 from bisect import bisect_left, bisect_right
@@ -106,6 +105,7 @@ ML_TRAIL_PCT_CHOICES = (
 # intentional no-signal selection.
 _PI_LONG_KINDS = frozenset(("青π", "深蓝圈", "淡蓝圈"))
 _PI_SHORT_KINDS = frozenset(("粉π", "紫圈"))
+_PI_SHORT_LEVELS = frozenset((1, 2))
 
 
 def _normalize_pi_kinds(value, allowed) -> Optional[List[str]]:
@@ -119,6 +119,23 @@ def _normalize_pi_kinds(value, allowed) -> Optional[List[str]]:
         if kind in allowed and kind not in out:
             out.append(kind)
     return out
+
+
+def _normalize_pi_levels(value) -> Optional[List[int]]:
+    """Normalize source Level 1/2 selections from the PI matrix."""
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple, set)):
+        return None
+    out = []
+    for item in value:
+        try:
+            level = int(item)
+        except (TypeError, ValueError):
+            continue
+        if level in _PI_SHORT_LEVELS and level not in out:
+            out.append(level)
+    return sorted(out)
 
 
 def _normalize_contract_size(contract_id: str, requested) -> int:
@@ -612,6 +629,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
                           or _PARAM_DEFAULTS.pi_signal_set).lower(),
         pi_long_kinds=_normalize_pi_kinds(getattr(req, "pi_long_kinds", None), _PI_LONG_KINDS),
         pi_short_kinds=_normalize_pi_kinds(getattr(req, "pi_short_kinds", None), _PI_SHORT_KINDS),
+        pi_short_levels=_normalize_pi_levels(getattr(req, "pi_short_levels", None)),
         pi_max_signal_age_min=max(1, min(60, int(
             getattr(req, "pi_max_signal_age_min", None)
             or _PARAM_DEFAULTS.pi_max_signal_age_min))),
@@ -665,6 +683,13 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
 _BACKTEST_SUMMARY_LIMIT = 20
 _backtest_results = deque(maxlen=_BACKTEST_SUMMARY_LIMIT)
 _historical_candles: List[Candle] = []
+# The indicator overlay is a read-only projection of the current candle
+# working set.  Keep its generation separate from the persistent store: a new
+# live tail invalidates the projection, while repeated chart requests can reuse
+# the last completed calculation.
+_historical_candles_generation = 0
+_mnq_signal_marker_cache: Dict[Tuple[int, int], Dict[str, Any]] = {}
+_MNQ_SIGNAL_MARKER_CACHE_LIMIT = 4
 
 
 @dataclass(frozen=True)
@@ -709,6 +734,28 @@ def _candle_time(c: Candle) -> datetime:
 
 def _candle_key(c: Candle) -> str:
     return _candle_time(c).isoformat()
+
+
+def _candle_content_key(c: Candle) -> tuple:
+    """Return the fields that can change a derived indicator overlay."""
+    return (
+        _candle_key(c),
+        c.open,
+        c.high,
+        c.low,
+        c.close,
+        c.volume,
+        getattr(c, "symbol", ""),
+        getattr(c, "interval", ""),
+        getattr(c, "source", ""),
+    )
+
+
+def _invalidate_mnq_signal_marker_cache() -> None:
+    """Invalidate derived MNQ markers after the in-memory candle set changes."""
+    global _historical_candles_generation
+    _historical_candles_generation += 1
+    _mnq_signal_marker_cache.clear()
 
 
 def _historical_source_key(contract_id: str, unit: int, unit_number: int,
@@ -779,6 +826,7 @@ def _publish_historical_candles(
         prepared = _prepare_historical_publication(candles)
     published, immutable, observed_start, observed_end = prepared
     _historical_candles = published
+    _invalidate_mnq_signal_marker_cache()
     _historical_working_snapshot = _HistoricalWorkingSnapshot(
         token=uuid.uuid4().hex,
         source_key=source_key,
@@ -1100,6 +1148,7 @@ def _upsert_historical_candles(candles: List[Candle]) -> None:
 
     if not _historical_candles:
         _historical_candles = incoming
+        _invalidate_mnq_signal_marker_cache()
         return
 
     first_incoming = _candle_time(incoming[0])
@@ -1108,15 +1157,26 @@ def _upsert_historical_candles(candles: List[Candle]) -> None:
     if tail_size <= _HISTORICAL_TAIL_UPSERT_LIMIT:
         # Slice assignment touches only the bounded tail. This is the live path:
         # replace a forming bar and/or append newly closed bars.
+        old_tail = _historical_candles[lo:]
         tail_by_ts = {
-            _candle_key(c): c for c in _historical_candles[lo:]
+            _candle_key(c): c for c in old_tail
         }
         tail_by_ts.update(incoming_by_ts)
-        _historical_candles[lo:] = sorted(
+        new_tail = sorted(
             tail_by_ts.values(), key=_candle_time
         )
+        _historical_candles[lo:] = new_tail
+        if (
+            len(old_tail) != len(new_tail)
+            or any(
+                _candle_content_key(old) != _candle_content_key(new)
+                for old, new in zip(old_tail, new_tail)
+            )
+        ):
+            _invalidate_mnq_signal_marker_cache()
     else:
         _historical_candles = _rebuild_historical_candles(incoming)
+        _invalidate_mnq_signal_marker_cache()
 
 
 def _ema_series(values: List[Optional[float]], span: int) -> List[Optional[float]]:
@@ -1247,73 +1307,6 @@ def _collect_pmo_markers(bars: List[Candle], cutoff: Optional[datetime]) -> List
         ))
     return markers
 
-
-
-def _collect_betafib_levels(bars: List[Candle], cutoff: Optional[datetime],
-                            entry_fib: float = 0.618,
-                            anchor: str = "hl",
-                            min_move_pct: float = 0.0) -> List[Dict[str, Any]]:
-    """SESSFIB 疊圖 —— 每個 session day 的 fib 掛單位,畫成夜盤區間的水平線。
-
-    與 research_lab.BetaFibRetrace 相同的推動腿定義:
-      session day 以 09:30 America/New_York RTH 開盤為界,
-      用日曆日切會把掛單價在半夜清掉(那是 1.0.9 修掉的 bug)。
-      上漲日推動腿 = 「最高點之前」的最低點 → 最高點;下跌日鏡像。
-
-    回傳每晚一筆,含 anchor0 / anchor1 / 掛單價與夜盤時間範圍,
-    讓前端在 16:00 ET → 隔日 09:30 ET 這段畫水平線。
-    """
-    RTH_OPEN, RTH_CLOSE = (9, 30), (16, 0)
-
-    def _sday(ts: datetime):
-        return rth_session_date(ts)
-
-    days: Dict[Any, Dict[str, Any]] = {}
-    for bar in bars:
-        ts = _candle_time(bar)
-        local = as_new_york(ts)
-        hm = (local.hour, local.minute)
-        d = _sday(ts)
-        slot = days.setdefault(d, {"rth": [], "night": []})
-        slot["rth" if RTH_OPEN <= hm < RTH_CLOSE else "night"].append(bar)
-
-    out: List[Dict[str, Any]] = []
-    for d in sorted(days):
-        rth, night = days[d]["rth"], days[d]["night"]
-        if len(rth) < 40 or not night:      # 5m bar:RTH 完整約 78 根
-            continue
-        up = float(rth[-1].close) > float(rth[0].open)
-        if anchor == "hl":
-            if up:
-                hi_i = max(range(len(rth)), key=lambda i: float(rth[i].high))
-                a1 = float(rth[hi_i].high)
-                a0 = min(float(k.low) for k in rth[:hi_i + 1])
-            else:
-                lo_i = min(range(len(rth)), key=lambda i: float(rth[i].low))
-                a1 = float(rth[lo_i].low)
-                a0 = max(float(k.high) for k in rth[:lo_i + 1])
-        else:
-            a0, a1 = float(rth[0].open), float(rth[-1].close)
-        move = a1 - a0
-        if move == 0 or a0 <= 0:
-            continue
-        if min_move_pct > 0 and abs(move) / a0 * 100.0 < min_move_pct:
-            continue
-        t_to = _candle_time(night[-1])
-        if cutoff and t_to < cutoff:
-            continue
-        out.append({
-            "day": str(d),
-            "t_from": _candle_time(night[0]).isoformat(),
-            "t_to": t_to.isoformat(),
-            "anchor0": round(a0, 2),
-            "anchor1": round(a1, 2),
-            "entry_fib": round(float(entry_fib), 3),
-            "level": round(a0 + float(entry_fib) * move, 2),
-            "direction": "long" if move > 0 else "short",
-            "move_pct": round(abs(move) / a0 * 100.0, 2),
-        })
-    return out
 
 
 def _collect_momentum_markers(bars: List[Candle], cutoff: Optional[datetime],
@@ -1574,6 +1567,7 @@ class BacktestRequest(BaseModel):
     pi_signal_set: str = "pi_only"
     pi_long_kinds: Optional[List[str]] = None
     pi_short_kinds: Optional[List[str]] = None
+    pi_short_levels: Optional[List[int]] = None
     pi_max_signal_age_min: int = 5
     pi_short_sl_value: float = 2.5
     pi_long_hold_min: int = 0
@@ -2081,18 +2075,21 @@ async def get_orderflow_footprint(
         raise HTTPException(status_code=503, detail="order-flow cache unavailable") from exc
 
 
-@router.get("/data/mnq-signals")
-async def get_mnq_signal_markers(limit: int = 60000):
-    """Return read-only MNQ factor markers for the 1m chart.
+def _build_mnq_signal_markers(
+    candles: Tuple[Candle, ...], limit: int,
+) -> Dict[str, Any]:
+    """Build the unchanged marker payload from an immutable request snapshot.
 
-    The factors are evaluated on completed 5m bars. Marker timestamps are the
-    next 5m open so chart markers line up with actionable, non-repainting bars.
+    This is deliberately synchronous so the caller can move the whole CPU
+    projection to a worker thread.  The old async route performed the same
+    work inline, which blocked the FastAPI event loop while a new live candle
+    triggered a full-history 1m → 5m aggregation.
     """
-    if not _historical_candles:
+    if not candles:
         return {"signals": [], "count": 0, "shown": 0, "symbol": "MNQ"}
 
-    candles = sorted(_historical_candles, key=_candle_time)
-    allowed, symbol = _mnq_signal_scope_allowed(candles)
+    ordered = sorted(candles, key=_candle_time)
+    allowed, symbol = _mnq_signal_scope_allowed(ordered)
     if not allowed:
         return {
             "signals": [],
@@ -2103,11 +2100,11 @@ async def get_mnq_signal_markers(limit: int = 60000):
         }
 
     cutoff: Optional[datetime] = None
-    if limit and limit > 0 and len(candles) > limit:
-        cutoff = _candle_time(candles[-limit])
+    if limit and limit > 0 and len(ordered) > limit:
+        cutoff = _candle_time(ordered[-limit])
 
     try:
-        bars_5m = BacktestEngine.aggregate_1m_to_5m(candles)
+        bars_5m = BacktestEngine.aggregate_1m_to_5m(ordered)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Could not aggregate MNQ markers: {exc}")
 
@@ -2117,14 +2114,6 @@ async def get_mnq_signal_markers(limit: int = 60000):
     signals.extend(_collect_icefishball_markers(bars_5m, cutoff))
     signals.extend(_collect_momentum_markers(bars_5m, cutoff))
     signals.sort(key=lambda row: row["time"])
-    # 1.0.9: SESSFIB 是水平掛單線,不是點狀 marker —— 走獨立欄位,
-    # 不混進 signals(那條路徑只認得箭頭/三角/圓點)。
-    try:
-        betafib_levels = _collect_betafib_levels(bars_5m, cutoff)
-    except Exception:
-        logger.exception("SESSFIB 疊圖計算失敗")
-        betafib_levels = []
-
     max_markers = 5000
     shown = signals[-max_markers:] if len(signals) > max_markers else signals
     counts: Dict[str, int] = {}
@@ -2140,8 +2129,40 @@ async def get_mnq_signal_markers(limit: int = 60000):
         "source_interval": "5m",
         "display_interval": "1m",
         "counts": counts,
-        "betafib_levels": betafib_levels,
     }
+
+
+@router.get("/data/mnq-signals")
+async def get_mnq_signal_markers(limit: int = 60000):
+    """Return read-only MNQ factor markers for the 1m chart.
+
+    The factors are evaluated on completed 5m bars. Marker timestamps are the
+    next 5m open so chart markers line up with actionable, non-repainting bars.
+    The CPU-heavy projection runs off the API event loop and is reused until
+    the in-memory candle generation changes.
+    """
+    if not _historical_candles:
+        return {"signals": [], "count": 0, "shown": 0, "symbol": "MNQ"}
+
+    generation = _historical_candles_generation
+    limit_key = int(limit or 0)
+    cache_key = (generation, limit_key)
+    cached = _mnq_signal_marker_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # Copy references quickly on the event loop; all sorting/aggregation and
+    # marker calculation happen in the worker.  A live tail can change while
+    # the worker is running, so only cache a result that matches its generation.
+    snapshot = tuple(_historical_candles)
+    payload = await asyncio.to_thread(
+        _build_mnq_signal_markers, snapshot, limit_key,
+    )
+    if generation == _historical_candles_generation:
+        if len(_mnq_signal_marker_cache) >= _MNQ_SIGNAL_MARKER_CACHE_LIMIT:
+            _mnq_signal_marker_cache.pop(next(iter(_mnq_signal_marker_cache)))
+        _mnq_signal_marker_cache[cache_key] = payload
+    return payload
 
 
 @router.get("/research/institution/latest")
@@ -2278,173 +2299,6 @@ async def get_latest_candles(since: str = ""):
                 "count": len(recent),
             }
         return {"candles": [], "count": 0}
-
-
-class DetectZonesRequest(BaseModel):
-    min_candles_for_zone: int = 6
-    poc_drift_threshold: float = 3.0
-    value_area_pct: float = 0.80
-    area_timeframe: str = "15m"
-    all_timeframes: bool = False   # ML: draw every timeframe's VAH/VAL/POC at once
-
-
-def _zone_to_dict(z, fallback_tf: str) -> dict:
-    """Serialise one consolidation zone (with VP histogram) for the chart."""
-    zd = {
-        "zone_id": z.zone_id,
-        "poc": z.poc,
-        "vah_80": z.vah_80,
-        "val_80": z.val_80,
-        "high_100": z.high_100,
-        "low_100": z.low_100,
-        "status": z.status.value,
-        "formed_at": z.formed_at.isoformat() if z.formed_at else None,
-        "left_at": z.left_at.isoformat() if z.left_at else None,
-        "exit_direction": z.exit_direction,
-        "num_candles": z.num_candles,
-        "timeframe": getattr(z, 'timeframe', fallback_tf),
-        "parent_zone_id": getattr(z, 'parent_zone_id', None),
-        "va_curve": getattr(z, 'va_curve', None) or None,
-        "mature": getattr(z, 'mature', False),
-    }
-    profile = getattr(z, "profile", None) or {}
-    if profile:
-        max_vol = max(profile.values()) or 1
-        zd["profile"] = [
-            {"price": p, "volume": v, "pct": round(v / max_vol, 3)}
-            for p, v in sorted(profile.items())
-        ]
-    else:
-        zd["profile"] = []
-    return zd
-
-
-_chart_zone_cache: dict = {}
-_chart_zone_cache_lock = threading.Lock()
-
-
-def _chart_candle_signature(candle: Candle) -> tuple:
-    return (
-        candle.timestamp,
-        candle.open,
-        candle.high,
-        candle.low,
-        candle.close,
-        candle.volume,
-    )
-
-
-def _detect_zones_sync(candles, timeframes, value_area_pct: float) -> List[dict]:
-    """Build or incrementally advance chart-zone detectors off the event loop."""
-    from backend.strategy.consolidation import build_zone_detector
-
-    zone_list = []
-    with _chart_zone_cache_lock:
-        for tf in timeframes:
-            key = (tf, float(value_area_pct))
-            entry = _chart_zone_cache.get(key)
-            count = int(entry["count"]) if entry else 0
-            can_extend = bool(
-                entry
-                and len(candles) >= count
-                and (count == 0 or (
-                    candles[0].timestamp == entry["first_timestamp"]
-                    and _chart_candle_signature(candles[count - 1]) == entry["last_signature"]
-                ))
-            )
-
-            if can_extend:
-                detector = entry["detector"]
-                start = count
-            else:
-                detector = build_zone_detector(
-                    area_timeframe=tf,
-                    value_area_pct=value_area_pct,
-                    # Chart-zone detection consumes completed buckets only.
-                    # Rebuilding the active volume profile after every bar is
-                    # quadratic within each clock bucket and can pin a worker
-                    # for minutes on a full candle history.
-                    recalc_active_each_bar=False,
-                )
-                start = 0
-
-            for candle in candles[start:]:
-                detector.update(candle)
-
-            # recalc_active_each_bar=False deliberately skips intermediate
-            # forming-bucket profiles. Refresh it once here so the chart still
-            # receives the same current-bucket values as the live detector.
-            refresh_forming = getattr(detector, "refresh_forming_zone", None)
-            if refresh_forming is not None:
-                refresh_forming()
-
-            serialized = [_zone_to_dict(z, tf) for z in detector.get_all_zones()]
-            _chart_zone_cache[key] = {
-                "detector": detector,
-                "count": len(candles),
-                "first_timestamp": candles[0].timestamp if candles else None,
-                "last_signature": _chart_candle_signature(candles[-1]) if candles else None,
-                "zones": serialized,
-            }
-            zone_list.extend(serialized)
-    return zone_list
-
-
-@router.post("/data/detect-zones")
-async def detect_zones(req: DetectZonesRequest = DetectZonesRequest()):
-    """Run zone detection on stored candles — returns zones with VP profiles.
-
-    When ``all_timeframes`` is set, detection runs for every ML timeframe
-    (5m/15m/30m/1h/4h) and the zones are returned together, each tagged with
-    its own ``timeframe`` so the chart can overlay all VAH/VAL/POC at once.
-    """
-    value_area_pct = _normalize_value_area_pct(req.value_area_pct)
-    # During a live session, prefer the engine's rolling candle history (warm-up +
-    # live) so the chart's multi-timeframe zone filter reflects the freshest bars.
-    base_candles = _historical_candles
-    if _live_engine is not None and getattr(_live_engine, "is_running", False):
-        live_hist = _live_engine.get_candle_history()
-        if live_hist:
-            base_candles = live_hist
-    if not base_candles:
-        # No candles yet (e.g. live just connecting / warm-up not produced bars).
-        # This is a normal transient state — return empty zones instead of 400 so
-        # the chart's multi-timeframe filter doesn't spam Bad Request.
-        if getattr(req, "all_timeframes", False):
-            return {
-                "zones": [],
-                "count": 0,
-                "area_timeframe": "all",
-                "timeframes": list(ML_TIMEFRAMES),
-            }
-        area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "15m"))
-        return {"zones": [], "count": 0, "area_timeframe": area_timeframe}
-    sorted_candles = sorted(base_candles, key=lambda c: c.timestamp)
-
-    if getattr(req, "all_timeframes", False):
-        # 1.0.8: +session 生長區間,圖表 TF filter 勾 SESSION 時才有 zone 可畫
-        _all_tfs = ML_TIMEFRAMES + ("session",)
-        zone_list = await asyncio.to_thread(
-            _detect_zones_sync,
-            sorted_candles,
-            _all_tfs,
-            value_area_pct,
-        )
-        return {
-            "zones": zone_list,
-            "count": len(zone_list),
-            "area_timeframe": "all",
-            "timeframes": list(_all_tfs),
-        }
-
-    area_timeframe = _normalize_area_timeframe(getattr(req, "area_timeframe", "15m"))
-    zone_list = await asyncio.to_thread(
-        _detect_zones_sync,
-        sorted_candles,
-        (area_timeframe,),
-        value_area_pct,
-    )
-    return {"zones": zone_list, "count": len(zone_list), "area_timeframe": area_timeframe}
 
 
 @router.post("/accounts")
@@ -4092,6 +3946,7 @@ class LiveStartRequest(BaseModel):
     pi_signal_set: str = "long_pi_only"
     pi_long_kinds: Optional[List[str]] = None
     pi_short_kinds: Optional[List[str]] = None
+    pi_short_levels: Optional[List[int]] = None
     pi_max_signal_age_min: int = 5
     pi_short_sl_value: float = 2.5
     pi_long_hold_min: int = 0

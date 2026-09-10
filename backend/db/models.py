@@ -480,6 +480,10 @@ class StrategyParams:
     # that side.  PiSignalStrategy already gives these fields precedence.
     pi_long_kinds: Optional[List[str]] = None
     pi_short_kinds: Optional[List[str]] = None
+    # Short circle rows share the visual kind 紫圈, so the source Level N is
+    # carried separately. None preserves legacy kind-only presets; [] turns
+    # both short circle levels off.
+    pi_short_levels: Optional[List[int]] = None
     pi_max_signal_age_min: int = 5        # 超過即丟棄(BLOCK 不是 WARN)
     pi_short_sl_value: float = 2.5        # 空單 SL(×atr_blend)
     pi_long_hold_min: int = 0             # 多單時間出場(分鐘);0 = 不用

@@ -43,11 +43,15 @@
    Dark values mirror production ancserTPX.css :root. Only the glass
    tokens are new. */
 :root {
+    --bg:              #0b1220;
+    --bg2:             #101a2b;
+    --bg3:             #152238;
+    --bg4:             #1d2c45;
     --cream-rgb:       244 236 220;
     --white:           rgb(var(--cream-rgb));
-    --chart-bg:        #08090d;
-    --glass-bg:        rgba(12, 15, 22, 0.42);
-    --glass-bg-strong: rgba(18, 22, 31, 0.62);
+    --chart-bg:        #0b1220;
+    --glass-bg:        rgba(18, 30, 48, 0.46);
+    --glass-bg-strong: rgba(21, 35, 57, 0.70);
     --glass-border:    transparent;
     --glass-edge:      transparent;
     --glass-shadow:    rgba(0, 0, 0, 0.34);
@@ -63,12 +67,12 @@
 
 :root[data-theme="light"] {
     color-scheme: light;
-    --cream-rgb: 247 239 224;
-    --chart-bg: #f7efe0;
-    --bg:     #f7efe0;
-    --bg2:    #eee3d0;
-    --bg3:    #e5d8c1;
-    --bg4:    #d9c9ad;
+    --cream-rgb: 248 250 253;
+    --chart-bg: #f7f9fc;
+    --bg:     #f7f9fc;
+    --bg2:    #eef3f8;
+    --bg3:    #e6edf5;
+    --bg4:    #d9e3ee;
     --border: rgba(20, 50, 70, 0.14);
     --border-h: rgba(20, 50, 70, 0.30);
     --text:   #1a2030;
@@ -98,10 +102,10 @@
 
 :root[data-theme="light"] body {
     background:
-        radial-gradient(circle at 16% 22%, rgba(222, 166, 82, 0.18), transparent 26%),
-        radial-gradient(circle at 72% 18%, rgba(129, 190, 204, 0.14), transparent 28%),
-        radial-gradient(circle at 76% 76%, rgba(89, 177, 143, 0.12), transparent 26%),
-        linear-gradient(135deg, #fbf4e7 0%, #f1e7d6 48%, #f8efdf 100%);
+        radial-gradient(circle at 12% 0%, rgba(137, 174, 214, 0.13), transparent 30%),
+        radial-gradient(circle at 88% 10%, rgba(181, 203, 228, 0.15), transparent 32%),
+        radial-gradient(circle at 76% 76%, rgba(89, 177, 143, 0.08), transparent 26%),
+        linear-gradient(135deg, #fbfdff 0%, #eef4fa 52%, #f8fbff 100%);
 }
 
 /* ── 2. Engine primitives ─────────────────────────────────────────
@@ -554,6 +558,11 @@
     will-change: transform, left, top;
 }
 
+/* The refracted clone is intentionally pixel-based, so its optical edge can
+   inherit tiny gaps from thin text/grid pixels after displacement.  Keep the
+   lens effect, but give the perimeter a compositor-rendered continuous rail.
+   It is scoped to Precision only: ordinary glass surfaces retain the
+   borderless material contract above. */
 /* Precision is visual composition only. `pointer-events:none` on the root is
    not inherited by descendants, so interactive nodes inside its stage clone
    could still become hit targets after the Lens appeared over Tier-1 UI. */
