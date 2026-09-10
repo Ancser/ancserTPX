@@ -34,6 +34,7 @@ import pandas as pd
 from matplotlib.patches import Rectangle
 
 from backend.data import market_data
+from backend.data.pi_live_audit import load_recent_events
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -120,26 +121,21 @@ def _load_mnq_bars(path: Path, session_date: str) -> pd.DataFrame:
 
 def _load_pi_signals(path: Path, session_date: str) -> list[dict]:
     out: list[dict] = []
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if row.get("event") != "received" or row.get("equity") != "QQQ":
-                continue
-            if not str(row.get("ts", "")).startswith(session_date):
-                continue
-            out.append(
-                {
-                    "ts": row["ts"],
-                    "received_at": row.get("received_at"),
-                    "side": row.get("side"),
-                    "kind": row.get("kind"),
-                    "size": row.get("size"),
-                    "position": row.get("pos"),
-                }
-            )
+    for row in load_recent_events(2000, path=path, events=("received",)):
+        if row.get("equity") != "QQQ":
+            continue
+        if not str(row.get("ts", "")).startswith(session_date):
+            continue
+        out.append(
+            {
+                "ts": row["ts"],
+                "received_at": row.get("received_at"),
+                "side": row.get("side"),
+                "kind": row.get("kind"),
+                "size": row.get("size"),
+                "position": row.get("pos"),
+            }
+        )
     return out
 
 
@@ -443,7 +439,9 @@ def build_demo(data_dir: Path, session_date: str) -> tuple[dict, pd.DataFrame, d
             selected_profiles[as_of.isoformat().replace("+00:00", "Z")] = grouped
 
     manifest = json.loads((data_dir / "purchase_manifest.json").read_text(encoding="utf-8"))
-    pi_signals = _load_pi_signals(ROOT / "data" / "logs" / "pi_live_signals.jsonl", session_date)
+    pi_signals = _load_pi_signals(
+        market_data.runtime_path("logs", "pi_live_signals.jsonl"), session_date
+    )
     payload = {
         "available": True,
         "symbol": "MNQ",

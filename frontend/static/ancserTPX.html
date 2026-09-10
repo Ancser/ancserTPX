@@ -22,7 +22,7 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z-cleanup1&intraarrow=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&slpair=1&multx=2&robustness=4">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z-cleanup1&intraarrow=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&slpair=1&multx=2&robustness=4&footprint=2&cvd=1&flowcompact=1">
     <link rel="stylesheet" href="/static/tpx-glass.css?v=1.0.10p-glass84">
 </head>
 <body>
@@ -1739,7 +1739,7 @@
                  syncSignalLegend() 跟著圖層開關一起顯示/隱藏 —— 圖層關掉了
                  圖例還列著,只會誤導。沒有 data-legend-layer 的列(進場箭頭)
                  恆常顯示。 -->
-            <div id="signal-legend" style="position:absolute;left:8px;bottom:34px;z-index:6;pointer-events:none;background:rgba(8,9,13,0.72);border:1px solid var(--border);border-radius:4px;padding:5px 9px;font-family:'IBM Plex Mono',monospace;font-size:9px;line-height:1.8;color:var(--text2);backdrop-filter:blur(4px);letter-spacing:0.3px;">
+            <div id="signal-legend" class="chart-signal-legend" aria-label="Chart legend">
                 <div data-legend-layer="emapmo"><span style="color:rgb(56,189,248);">▲</span><span style="color:rgb(168,85,247);">▼</span> EMAPMO LONG/SHORT</div>
                 <!-- PI:π 級(青多/粉空)是策略真的在吃的訊號,圈級只是參考 -->
                 <div data-legend-layer="pi"><span style="color:rgb(34,211,238);">π</span><span style="color:rgb(244,114,182);">π</span> PI CYAN/PINK LONG/SHORT</div>
@@ -1749,6 +1749,8 @@
                 <!-- 1.0.9: INTRAMOM 用白色箭頭,與三個因子的顏色明確區隔 -->
                 <div data-legend-layer="intramom"><span style="color:#fff;">⇧</span><span style="color:#fff;">⇩</span> INTRAMOM LONG/SHORT</div>
                 <div data-legend-layer="trades"><span style="color:#00e5a0;">↑</span><span style="color:#ff4060;">↓</span> BACKTEST ENTRY WIN/LOSS · <span style="color:#ffa726;">↑</span> LIVE</div>
+                <div data-legend-layer="footprint"><span style="color:#fff;">●</span><span style="color:#ff4562;">●</span> FOOTPRINT BUY/SELL · SIZE 50–99 / 100–149 / 150+ · HEAT=RESTING DEPTH · PASSIVE=FILL OPACITY · I=IMBALANCE</div>
+                <div data-legend-layer="cvd"><span style="color:#38d9ff;">━</span> CVD · RTH CUMULATIVE AGGRESSIVE DELTA</div>
             </div>
 
             <!-- 1.0.9: 圖表快捷鈕 — ≫ 跳到最新;1.0.10:圖層開關。 -->
@@ -1794,6 +1796,26 @@
                     </button>
                     <button type="button" id="lp-optionwall" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('optionwall')"></button>
+                </div>
+                <div class="layer-row">
+                    <span class="layer-name">FOOTPRINT / LEVEL 2</span>
+                    <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                             data-glass-material="local"
+                            data-switch-proxy="lp-footprint" aria-checked="false">
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" id="lp-footprint" class="glass-proxy-hidden" tabindex="-1"
+                            onclick="onLayerProxy('footprint')"></button>
+                </div>
+                <div class="layer-row">
+                    <span class="layer-name">CVD / DELTA</span>
+                    <button type="button" role="switch" class="glass-switch" data-stage="switch"
+                             data-glass-material="local"
+                            data-switch-proxy="lp-cvd" aria-checked="false">
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" id="lp-cvd" class="glass-proxy-hidden" tabindex="-1"
+                            onclick="onLayerProxy('cvd')"></button>
                 </div>
                 <div class="layer-row">
                     <span class="layer-name">TRADE BOXES SL/TP</span>
@@ -2021,7 +2043,7 @@
 
     <script src="/static/tpx-system.js?v=1"></script>
     <script src="/static/topstep-eval.js?v=1.0.9k-topstep2"></script>
-    <script src="/static/ancserTPX.js?v=1.0.10z-cleanup1&intraarrow=1&nyzone=20260624&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&fade109=1&riskgate109=1&acct109=6&modelrename=1&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&contractroot=1&statushealth=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.10z-cleanup1&intraarrow=1&nyzone=20260624&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&fade109=1&riskgate109=1&acct109=6&modelrename=1&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&contractroot=1&footprint=2&cvd=1&flowcompact=1&statushealth=1"></script>
     <!-- Production handlers bind first; the skin then moves those same nodes. -->
     <script src="/static/tpx-glass-skin.js?v=1.1.1-brand3"></script>
     <script src="/static/tpx-glass.js?v=1.0.10p-glass84"></script>

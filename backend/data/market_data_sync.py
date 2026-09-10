@@ -28,6 +28,7 @@ _THREAD_LOCK = threading.Lock()
 _TRANSIENT_NAMES = {
     ".market_data_sync.lock",
     ".market_data_manifest.tmp",
+    "databento_orderflow_download.lock",
 }
 
 
@@ -179,7 +180,7 @@ def _copy_paths_locked(
 
     for source in paths:
         relative = market_data.relative_to_primary(source)
-        if relative is None or _is_transient(source):
+        if relative is None or _is_transient(source) or market_data.backup_excluded(source):
             result["skipped"] = int(result["skipped"]) + 1
             continue
         files_report.append(relative.as_posix())
@@ -273,7 +274,7 @@ def sync_tree(
     with _process_lock(primary) as acquired:
         if not acquired:
             return {"status": "busy", "primary": str(primary), "destinations": {}}
-        files = list(_files(primary))
+        files = [path for path in _files(primary) if not market_data.backup_excluded(path)]
         result = _copy_paths_locked(files, targets)
         manifest = _write_manifest(primary, files)
         # The manifest is generated after the file list is copied, so publish
@@ -347,6 +348,7 @@ def verify_tree(
     source_files = {
         path.relative_to(primary).as_posix(): path
         for path in _files(primary)
+        if not market_data.backup_excluded(path)
     }
     output: dict[str, object] = {
         "primary": str(primary),
@@ -377,6 +379,8 @@ def verify_tree(
                 if _is_transient(candidate):
                     continue
                 relative = candidate.relative_to(destination).as_posix()
+                if market_data.backup_relative_excluded(relative):
+                    continue
                 if relative not in source_files:
                     extra.append(relative)
         output["destinations"][str(destination)] = {

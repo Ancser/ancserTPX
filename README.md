@@ -94,8 +94,10 @@ canonical sibling `ancserMarketData` tree: futures in
 PI history in `source/discord/pi`, derived research in `derived`, and runtime
 state/logs in `runtime`. The tracked `data/presets.json`, model registry, and
 small `data/store/seed` remain bootstrap configuration. On Windows the install
-batch creates `F:\\ancserQuant\\ancserMarketData` and mirrors it every hour
-to `E:\\ancserMarketData`; other machines can set
+batch creates `F:\\ancserQuant\\ancserMarketData`; the hourly scheduled E:
+mirror is disabled and `windows_market_data_sync.bat` is an explicit manual action. The
+large `source/orderflow` raw feed and regenerable `derived/orderflow` cache are
+always primary-only even during a manual mirror. Other machines can set
 `ANCSER_MARKET_DATA_ROOT` and `ANCSER_MARKET_DATA_BACKUP_ROOTS`.
 
 ### ML production model

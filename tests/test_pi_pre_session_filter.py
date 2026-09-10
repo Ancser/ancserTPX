@@ -16,9 +16,11 @@ from datetime import datetime, timezone
 import pytest
 
 from backend.live.pi_listener import (
+    CHANNEL_ID,
     SESSION_START_PT,
     is_pre_session,
     message_is_pre_session,
+    message_source_timestamp,
     parse_message,
 )
 
@@ -112,6 +114,76 @@ class TestLivePath:
     def test_valid_timestamp_still_parses(self):
         """正向斷言:證明上面不是因為 parse_message 對所有輸入都回空而通過。"""
         assert len(parse_message(self.INTRADAY)) == 1
+
+    def test_live_source_is_the_new_pi_channel(self):
+        assert CHANNEL_ID == "1547062725060993066"
+
+    def test_ny_event_time_is_authoritative_and_converted_to_utc(self):
+        msg = {
+            "id": "ny-time",
+            # Discord delivery is 34 seconds after the PI event.
+            "timestamp": "2026-09-09T15:27:34.907000+00:00",
+            "author": {"id": "1514456965622005870"},
+            "content": (
+                "@everyone QQQ π信号出现\nNY 09/09/2026 11:27 消息时间\n\n"
+                "• Level 3 青π ×1"
+            ),
+        }
+        assert message_source_timestamp(msg) == _utc(2026, 9, 9, 15, 27)
+        assert parse_message(msg)[0].ts == _utc(2026, 9, 9, 15, 27)
+
+    def test_pre_session_uses_ny_event_time_not_delivery_time(self):
+        msg = {
+            "id": "ny-pre-session",
+            # Delivery is after 07:00 PT, but the event line is 06:59 NY
+            # (03:59 PT), so this is still a replay/pre-session signal.
+            "timestamp": "2026-09-09T15:30:34.000000+00:00",
+            "author": {"id": "1514456965622005870"},
+            "content": (
+                "QQQ π信号出现\nNY 09/09/2026 06:59\n\n"
+                "• Level 1 淡蓝圈 ×1"
+            ),
+        }
+        assert message_is_pre_session(msg) is True
+
+    @pytest.mark.parametrize("content,equity,kind,size,direction", [
+        (
+            "@everyone QQQ π信号出现\nNY 09/09/2026 11:15\n\n"
+            "• Level 1 淡蓝圈 ×1",
+            "QQQ", "淡蓝圈", "Level 1", 1,
+        ),
+        (
+            "@everyone QQQ π信号出现\nNY 09/09/2026 11:27\n\n"
+            "• Level 3 青π ×1",
+            "QQQ", "青π", "Level 3", 1,
+        ),
+        (
+            "SPY π信号出现\nNY 09/03/2026 11:30\n\n"
+            "• Level 2 紫圈 ×1",
+            "SPY", "紫圈", "Level 2", -1,
+        ),
+        (
+            "QQQ π信号出现\nNY 09/08/2026 11:48\n\n"
+            "• Level 3 粉π ×1",
+            "QQQ", "粉π", "Level 3", -1,
+        ),
+    ])
+    def test_current_discord_level_format_parses_all_marker_kinds(
+        self, content, equity, kind, size, direction
+    ):
+        """新格式的 Level 前綴與 QQQ/SPY 標題都必須保留，不能靜默漏訊號。"""
+        signals = parse_message({
+            "id": f"new-{kind}",
+            "timestamp": "2026-09-09T15:27:33.013000+00:00",
+            "author": {"id": "1514456965622005870"},
+            "content": content,
+        })
+        assert len(signals) == 1
+        signal = signals[0]
+        assert (signal.equity, signal.kind, signal.size, signal.direction) == (
+            equity, kind, size, direction
+        )
+        assert signal.future == {"QQQ": "MNQ", "SPY": "MES"}[equity]
 
     def test_run_loop_guards_parse_message(self):
         """結構性:run() 必須把 parse_message 包在 try 裡。
@@ -214,6 +286,35 @@ class TestBacktestPath:
 
         # A normal run still sees only immutable historical rows.
         assert [sig.message_id for _, sig in ps._load_history()] == ["hist-1"]
+
+    def test_live_replay_repost_same_bar_is_not_a_second_signal(self, tmp_path, monkeypatch):
+        import json
+
+        from backend.data import pi_history
+        from backend.strategy import pi_signal as ps
+
+        base = [{
+            "id": "history-id",
+            "ts": "2026-08-11T17:12:04+00:00",
+            "symbol": "QQQ",
+            "marks": [{"kind": "青π", "size": "中", "count": 1}],
+            "content": "",
+        }]
+        f = tmp_path / "pi_signals.json"
+        f.write_text(json.dumps(base), encoding="utf-8")
+        monkeypatch.setattr(pi_history, "HIST_PATH", f)
+        monkeypatch.setattr(ps, "_HIST_CACHE", None)
+
+        replay = [{
+            "id": "reposted-new-id",
+            "ts": "2026-08-11T17:12:58+00:00",
+            "symbol": "QQQ",
+            "marks": [{"kind": "青π", "size": "Level 3", "count": 1}],
+            "content": "",
+        }]
+
+        merged = ps._load_history(replay)
+        assert [sig.message_id for _, sig in merged] == ["history-id"]
 
 
 class TestSizeIsNotUsedForFiltering:

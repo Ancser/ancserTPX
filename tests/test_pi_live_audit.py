@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from backend.data.pi_live_audit import (
+    PI_SOURCE_CHANNEL_ID,
     append_message_event,
     append_signal_event,
     append_status_event,
@@ -53,6 +54,28 @@ def test_live_audit_keeps_source_and_local_receive_times(tmp_path):
     assert rows[0]["received_at"] == "2026-08-10T16:00:02+00:00"
     assert rows[1]["accepted"] is False
     assert rows[1]["kind"] == "青π"
+    assert rows[0]["channel_id"] == PI_SOURCE_CHANNEL_ID
+
+
+def test_retired_channel_rows_are_not_read_by_new_channel_consumers(tmp_path):
+    path = tmp_path / "pi.jsonl"
+    path.write_text(
+        '{"event":"received","channel_id":"retired","message_id":"old",'
+        '"ts":"2026-08-10T16:00:00+00:00","kind":"青π"}\n',
+        encoding="utf-8",
+    )
+    signal = _signal()
+    assert append_signal_event(signal, event="received", path=path)
+
+    rows = load_recent_events(path=path, events=("received",))
+    assert [row["message_id"] for row in rows] == ["123456789"]
+
+
+def test_new_channel_identity_is_the_listener_default():
+    from backend.live.pi_listener import CHANNEL_ID, PiListener
+
+    assert CHANNEL_ID == PI_SOURCE_CHANNEL_ID
+    assert PiListener("token", lambda _signal: None)._channel == PI_SOURCE_CHANNEL_ID
 
 
 def test_live_audit_keeps_parser_failures_even_without_a_signal(tmp_path):
@@ -128,6 +151,28 @@ def test_replay_rows_are_in_range_deduped_and_pre_session_filtered(tmp_path):
     assert rows[0]["id"] == "replay-1"
     assert rows[0]["symbol"] == "QQQ"
     assert rows[0]["marks"][0]["kind"] == "青π"
+
+
+def test_replay_rows_dedupe_reposted_message_ids_on_same_source_bar(tmp_path):
+    path = tmp_path / "pi.jsonl"
+    first = _signal()
+    first.message_id = "old-channel-id"
+    first.ts = datetime(2026, 8, 11, 17, 12, 4, tzinfo=timezone.utc)
+    second = _signal()
+    second.message_id = "new-channel-id"
+    second.ts = datetime(2026, 8, 11, 17, 12, 58, tzinfo=timezone.utc)
+    assert append_signal_event(first, event="received", path=path)
+    assert append_signal_event(second, event="recorded", path=path)
+
+    rows = load_replay_rows(
+        datetime(2026, 8, 11, 17, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 11, 18, 0, tzinfo=timezone.utc),
+        future="MNQ",
+        path=path,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "old-channel-id"
 
 
 def test_multi_mark_message_is_removed_from_audit_consumers(tmp_path):

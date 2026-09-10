@@ -2041,6 +2041,46 @@ async def get_previous_day_value_areas(
         raise HTTPException(status_code=500, detail=f"Could not calculate prior-day value areas: {exc}")
 
 
+@router.get("/data/orderflow/footprint")
+async def get_orderflow_footprint(
+    start: str,
+    end: str,
+    symbol: str = "MNQ",
+    interval: Literal["1m", "5m"] = "1m",
+    limit: int = 10_000,
+):
+    """Return compact MBO-derived bars for the visible chart window only.
+
+    Raw L3 replay is an offline ingestion step. This endpoint only reads
+    bounded gzip caches, so it never puts a full DBN day into app memory.
+    """
+    start_dt = _parse_iso_utc(start)
+    end_dt = _parse_iso_utc(end)
+    if start_dt is None or end_dt is None:
+        raise HTTPException(status_code=400, detail="start and end must be ISO timestamps")
+    if end_dt < start_dt:
+        raise HTTPException(status_code=400, detail="end must not be earlier than start")
+    if end_dt - start_dt > timedelta(days=14):
+        raise HTTPException(status_code=400, detail="footprint window cannot exceed 14 days")
+
+    try:
+        from backend.data.orderflow import load_cached_footprint
+
+        return await asyncio.to_thread(
+            load_cached_footprint,
+            start_dt,
+            end_dt,
+            symbol=symbol,
+            interval=interval,
+            limit=max(1, min(limit, 10_000)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        logger.warning("Order-flow cache read failed: %s", exc)
+        raise HTTPException(status_code=503, detail="order-flow cache unavailable") from exc
+
+
 @router.get("/data/mnq-signals")
 async def get_mnq_signal_markers(limit: int = 60000):
     """Return read-only MNQ factor markers for the 1m chart.
@@ -3201,7 +3241,8 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
     if _strategy_name == "pi" and workset_candles:
         ordered_workset = sorted(workset_candles, key=lambda c: c.timestamp)
         # The strategy matches source timestamps to 1m candles with a ±2m
-        # tolerance; the audit loader applies the same bounded padding.
+        # tolerance; the new-channel audit loader applies the same bounded
+        # padding and cross-source minute/kind deduplication.
         from backend.data.pi_live_audit import load_replay_rows
         pi_replay_rows = await asyncio.to_thread(
             load_replay_rows,
@@ -3211,7 +3252,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         )
         if pi_replay_rows:
             logger.info(
-                "[BACKTEST] PI replay overlay: %d in-range audit mark(s) | future=%s",
+                "[BACKTEST] PI new-channel replay overlay: %d in-range audit mark(s) | future=%s",
                 len(pi_replay_rows), bt_symbol,
             )
     # 1.0.9: zone timeline 是最慢的 detector 全掃(數十秒~數分鐘),只有「用
@@ -5362,11 +5403,13 @@ async def options_wall_demo(date: str = "", symbol: str = "MNQ"):
 
 @router.get("/pi/signals/audit")
 async def pi_signal_audit(limit: int = 200, events: Optional[str] = None):
-    """Return recent local live-PI reception/callback audit events.
+    """Return recent new-channel live-PI reception/callback audit events.
 
     This is deliberately separate from ``/pi/signals``: that route serves the
     immutable historical file used by backtest/chart parity, while live audit
     rows include both Discord ``ts`` and local ``received_at`` timestamps.
+    Rows from the retired channel have no active source marker and are ignored
+    by the audit reader.
 
     ``events`` is a comma-separated allow-list applied BEFORE ``limit``. The
     chart passes ``received,recorded``: without it the listener's per-poll

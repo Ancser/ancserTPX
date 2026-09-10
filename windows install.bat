@@ -137,25 +137,14 @@ if exist ".env" (
     echo.
 )
 
-:: [5/5] Canonical market-data roots and automatic mirror
+:: [5/5] Canonical market-data root (E: mirroring is manual only)
 echo  [5/5] Preparing MarketData roots...
 set "MARKET_DATA_ROOT=%~dp0..\ancserMarketData"
 if not exist "%MARKET_DATA_ROOT%" mkdir "%MARKET_DATA_ROOT%"
-if exist "E:\" (
-    if not exist "E:\ancserMarketData" mkdir "E:\ancserMarketData"
-    echo         Primary: %MARKET_DATA_ROOT%
-    echo         Mirror : E:\ancserMarketData
-) else (
-    echo         WARNING: E: drive is unavailable; primary remains usable.
-)
-echo         Installing scheduled MarketData mirror ^(every hour^)...
-schtasks /create /tn "ancserTPX MarketData Sync" /sc hourly /mo 1 /tr "cmd /d /c \"\"%~dp0windows_market_data_sync.bat\"\"" /f >nul 2>&1
-if errorlevel 1 (
-    echo         WARNING: could not register the scheduled mirror.
-    echo         Run windows_market_data_sync.bat manually or create the task later.
-) else (
-    echo         Scheduled mirror ready.
-)
+echo         Primary: %MARKET_DATA_ROOT%
+schtasks /change /tn "ancserTPX MarketData Sync" /disable >nul 2>&1
+echo         Hourly scheduled E: mirror is disabled.
+echo         Run windows_market_data_sync.bat only when a manual mirror is wanted.
 
 echo.
 echo  ========================================

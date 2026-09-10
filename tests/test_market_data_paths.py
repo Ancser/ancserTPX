@@ -59,9 +59,36 @@ def test_sync_is_atomic_and_verifiable(monkeypatch, tmp_path):
     assert verified["destinations"][str(backup.resolve())]["ok"]
 
 
-def test_windows_installer_uses_hourly_mirror_schedule():
+def test_orderflow_is_primary_only_and_excluded_from_tree_sync(monkeypatch, tmp_path):
+    primary = tmp_path / "primary"
+    backup = tmp_path / "backup"
+    monkeypatch.setenv(market_data.MARKET_DATA_ROOT_ENV, str(primary))
+    monkeypatch.setenv(market_data.MARKET_DATA_BACKUP_ROOTS_ENV, str(backup))
+    raw = market_data.orderflow_root() / "day" / "sample.dbn.zst"
+    derived = market_data.derived_path("orderflow", "mnq", "sample.json.gz")
+    raw.parent.mkdir(parents=True)
+    derived.parent.mkdir(parents=True)
+    raw.write_bytes(b"raw")
+    derived.write_bytes(b"derived")
+    legacy_backup = backup / raw.relative_to(primary)
+    legacy_backup.parent.mkdir(parents=True)
+    legacy_backup.write_bytes(b"old backup retained but ignored")
+
+    result = market_data_sync.sync_tree()
+
+    assert result["status"] == "ok"
+    assert legacy_backup.read_bytes() == b"old backup retained but ignored"
+    assert not (backup / derived.relative_to(primary)).exists()
+    assert market_data.backup_excluded(raw)
+    assert market_data.backup_excluded(derived)
+    verified = market_data_sync.verify_tree()
+    assert verified["destinations"][str(backup.resolve())]["ok"]
+
+
+def test_windows_installer_does_not_recreate_disabled_mirror_schedule():
     installer = (Path(__file__).resolve().parents[1] / "windows install.bat").read_text(
         encoding="utf-8",
     )
-    assert "/sc hourly /mo 1" in installer
-    assert "every hour" in installer
+    assert 'schtasks /create /tn "ancserTPX MarketData Sync"' not in installer
+    assert 'schtasks /change /tn "ancserTPX MarketData Sync" /disable' in installer
+    assert "Hourly scheduled E: mirror is disabled" in installer

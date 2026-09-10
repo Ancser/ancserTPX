@@ -94,6 +94,21 @@ def _rows_to_signals(rows: list[dict]) -> list:
     return out
 
 
+def _signal_identity(ts: datetime, signal: Any) -> tuple:
+    """Return the chart/engine identity shared by history and live replay.
+
+    A Discord repost has a new message id, but it still belongs to the same
+    source minute, symbol and PI kind.  The engine consumes the signal on a
+    1m candle, so message id is not a safe cross-source identity.
+    """
+    bar_ts = ts.astimezone(UTC).replace(second=0, microsecond=0)
+    return (
+        bar_ts,
+        str(getattr(signal, "equity", "") or "").upper(),
+        str(getattr(signal, "kind", "") or ""),
+    )
+
+
 def _load_history(replay_rows: Optional[list[dict]] = None) -> list:
     """讀 scripts/pi_collect_history.py 收集的歷史訊號,轉成 (ts, PiSignal) 並排序。
 
@@ -114,17 +129,13 @@ def _load_history(replay_rows: Optional[list[dict]] = None) -> list:
     if not replay_rows:
         return _HIST_CACHE
 
-    # A live row can also be present in the historical file after an explicit
-    # archival import.  Keep the current run deterministic and avoid a double
-    # entry when both sources carry the same Discord message/kind.
+    # A live row can also be present in the historical file after a channel
+    # refresh or repost.  Keep the current run deterministic and avoid a
+    # double entry even when the two source records have different message ids.
     out = list(_HIST_CACHE)
-    seen = {
-        (str(getattr(sig, "message_id", "") or ""), getattr(sig, "kind", ""), ts)
-        for ts, sig in out
-    }
+    seen = {_signal_identity(ts, sig) for ts, sig in out}
     for ts, sig in _rows_to_signals(replay_rows):
-        key = (str(getattr(sig, "message_id", "") or ""),
-               getattr(sig, "kind", ""), ts)
+        key = _signal_identity(ts, sig)
         if key in seen:
             continue
         seen.add(key)
@@ -284,7 +295,8 @@ class PiSignalStrategy(_ResearchBase):
             sig = self._queue.popleft()
             ts = getattr(sig, "ts", None)
             if ts is not None:
-                # ``sig.ts`` is Discord's message/source timestamp.  The
+                # ``sig.ts`` is the PI source/event timestamp (NY event line
+                # when present).  The
                 # listener's local ``received_at`` is diagnostic only and is
                 # deliberately not used for the trading-age gate.
                 age = (now - _utc(ts)).total_seconds() / 60.0

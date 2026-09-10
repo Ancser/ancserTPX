@@ -29,17 +29,20 @@ from typing import Awaitable, Callable, Optional
 from zoneinfo import ZoneInfo
 
 from backend.data.pi_live_audit import (
+    PI_SOURCE_CHANNEL_ID,
     append_message_event,
     append_signal_event,
     append_status_event,
     load_message_ids,
     load_message_timestamps,
 )
-from backend.timebase import LOS_ANGELES, PI_SOURCE_TIMEZONE_NAME, UTC, utc_now
+from backend.timebase import LOS_ANGELES, NEW_YORK, PI_SOURCE_TIMEZONE_NAME, UTC, utc_now
 
 logger = logging.getLogger(__name__)
 
-CHANNEL_ID = "1478899539845972078"
+# Keep the channel definition in the audit/source module so every writer and
+# reader has the same new-channel identity.
+CHANNEL_ID = PI_SOURCE_CHANNEL_ID
 BOT_ID = "1514456965622005870"
 API = "https://discord.com/api/v10"
 
@@ -85,16 +88,47 @@ def is_pre_session(ts: datetime) -> bool:
 
 
 def message_is_pre_session(msg: dict) -> bool:
-    """Discord 訊息物件是否落在開盤前重播區。時戳壞掉時回 False(照常處理)。"""
-    try:
-        ts = datetime.fromisoformat(str(msg.get("timestamp", "")).replace("Z", "+00:00"))
-    except Exception:
+    """訊息的訊號時間是否落在開盤前重播區。"""
+    ts = message_source_timestamp(msg)
+    if ts is None:
         return False
     return is_pre_session(ts)
 
 
+_NY_EVENT_TS = re.compile(
+    r"(?im)^\s*NY\s+(?P<date>\d{1,2}/\d{1,2}/\d{4})"
+    r"\s+(?P<time>\d{1,2}:\d{2}(?::\d{2})?)"
+    r"(?:\s+消息时间)?\s*$"
+)
+
+
 def message_source_timestamp(msg: dict) -> Optional[datetime]:
-    """Return a Discord message timestamp as UTC, or ``None`` if malformed."""
+    """Return the signal event time as UTC.
+
+    PI posts now include an explicit ``NY MM/DD/YYYY HH:MM`` line.  That is
+    the source event time and is more accurate than the Discord delivery time
+    for the five-minute age gate and session filtering.  Old posts without the
+    line retain the Discord timestamp as a compatibility fallback.
+    """
+    content = str((msg or {}).get("content") or "")
+    event_match = _NY_EVENT_TS.search(content)
+    if event_match:
+        try:
+            event_format = (
+                "%m/%d/%Y %H:%M:%S"
+                if event_match.group("time").count(":") == 2
+                else "%m/%d/%Y %H:%M"
+            )
+            local = datetime.strptime(
+                f"{event_match.group('date')} {event_match.group('time')}",
+                event_format,
+            ).replace(tzinfo=NEW_YORK)
+            return local.astimezone(UTC)
+        except ValueError:
+            logger.warning(
+                "[PI] NY event timestamp cannot be parsed for message %s: %r",
+                (msg or {}).get("id"), event_match.group(0),
+            )
     try:
         stamp = datetime.fromisoformat(
             str((msg or {}).get("timestamp", "")).replace("Z", "+00:00")
@@ -106,10 +140,19 @@ def message_source_timestamp(msg: dict) -> Optional[datetime]:
     return stamp.astimezone(UTC)
 
 
-_SYM = re.compile(r"[（(]\s*(QQQ|SPY)\s*[）)]")
+# Discord has used both the older ``π信号出现（QQQ）`` heading and the newer
+# ``QQQ π信号出现`` heading.  Keep the symbol match deliberately independent
+# from the heading wording so a harmless copy/layout change does not discard
+# the whole message before its marks are parsed.
+_SYM = re.compile(r"(?:[（(]\s*)?(QQQ|SPY)(?![A-Za-z0-9_])\s*(?:[）)])?", re.IGNORECASE)
 _MARK = re.compile(
-    r"[•·・]\s*(\S+?)\s*[×x]\s*(\d+)\s*[（(]\s*([^·)）]+?)\s*(?:[·・]\s*([^)）]+?)\s*)?[）)]")
-
+    r"[\u2022\xb7\u30fb]\s*"
+    r"(?:(?:Level|Lv)\s*(?P<level>\d+)\s*)?"
+    r"(?P<kind>淡蓝圈|深蓝圈|青π|紫圈|粉π)"
+    r"\s*[×x]\s*(?P<count>\d+)"
+    r"(?:\s*[（(]\s*(?P<size>[^\xb7)）]+?)\s*"
+    r"(?:[\xb7\u30fb]\s*(?P<pos>[^)）]+?)\s*)?[）)])?"
+)
 
 @dataclass
 class PiSignal:
@@ -122,8 +165,8 @@ class PiSignal:
     size: str                   # 大 / 中 / 小
     pos: Optional[str]          # 上部 / 中部 / 下部 / None
     raw: str = ""
-    # Local dispatch time is diagnostic only.  ``ts`` remains Discord's
-    # source/event timestamp and is the timestamp used by max-signal-age.
+    # Local dispatch time is diagnostic only.  ``ts`` is the PI event timestamp
+    # (NY line when present, Discord delivery time for legacy posts).
     received_at: Optional[datetime] = None
 
     @property
@@ -139,7 +182,7 @@ def parse_message(msg: dict) -> list[PiSignal]:
     m = _SYM.search(content)
     if not m:
         return []
-    equity = m.group(1)
+    equity = m.group(1).upper()
     # 1.0.10 P0:這裡原本直接 fromisoformat,時戳壞掉就拋 ValueError。
     # 而呼叫端 run() 的 try 只包住 callback,**不包 parse_message** ——
     # 所以一則畸形訊息會讓整個 listener task 死掉,之後所有訊號都收不到,
@@ -148,28 +191,29 @@ def parse_message(msg: dict) -> list[PiSignal]:
     # `message_is_pre_session()` 對壞時戳是 fail-open(回 False = 不跳過),
     # 那個設計本身沒錯(寧可多一則訊號也不要漏),但它把畸形訊息直接送進
     # 這裡。兩邊合起來就從「放行」變成「崩潰」。
-    try:
-        ts = datetime.fromisoformat(str(msg.get("timestamp", "")).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
+    ts = message_source_timestamp(msg)
+    if ts is None:
         logger.warning("[PI] 訊息 %s 的時戳無法解析 %r —— 略過該則,listener 繼續",
                        msg.get("id"), msg.get("timestamp"))
         return []
     out: list[PiSignal] = []
     for mk in _MARK.finditer(content):
-        kind = mk.group(1)
+        kind = mk.group("kind")
         d = DIRECTION.get(kind, 0)
         if not d:
             logger.warning("[PI] 未知標記 %r,略過(需更新 DIRECTION 表)", kind)
             continue
+        level = mk.group("level")
+        size = f"Level {level}" if level else (mk.group("size") or "").strip()
         out.append(PiSignal(
             message_id=str(msg["id"]),
-            ts=ts.astimezone(UTC),
+            ts=ts,
             equity=equity,
             future=SYMBOL_MAP[equity],
             direction=d,
             kind=kind,
-            size=mk.group(3).strip(),
-            pos=(mk.group(4) or "").strip() or None,
+            size=size,
+            pos=(mk.group("pos") or "").strip() or None,
             raw=content,
         ))
     return out
@@ -257,6 +301,7 @@ class PiListener:
     def _audit_status(self, event: str, **fields) -> None:
         """Write a best-effort listener status row without affecting polling."""
         self._last_status_event = str(event)
+        fields.setdefault("channel_id", self._channel)
         if not append_status_event(event, **fields):
             self._audit_write_errors += 1
 
@@ -579,7 +624,9 @@ class PiListener:
                 self._last_id = seed_id
                 self._last_cursor = seed_id
                 seed_message = seed[0]
-                if not append_message_event(seed_message, event="cursor_seed"):
+                if not append_message_event(
+                    seed_message, event="cursor_seed", channel_id=self._channel
+                ):
                     self._audit_write_errors += 1
                 self._audit_status(
                     "window_entered",
@@ -653,7 +700,9 @@ class PiListener:
             # 開盤後半小時是前一交易日的重播,不是即時訊號。
             if message_is_pre_session(msg):
                 self._messages_pre_session += 1
-                if not append_message_event(msg, event="pre_session_skip"):
+                if not append_message_event(
+                    msg, event="pre_session_skip", channel_id=self._channel
+                ):
                     self._audit_write_errors += 1
                 logger.info("[PI] 略過開盤前重播訊息 %s", msg_id)
                 continue
@@ -665,6 +714,7 @@ class PiListener:
                     msg,
                     event="parse_error",
                     error=f"{type(e).__name__}: {e}",
+                    channel_id=self._channel,
                 ):
                     self._audit_write_errors += 1
                 logger.exception("[PI] 解析訊息 %s 失敗 %s: %s —— 略過該則",
@@ -676,7 +726,9 @@ class PiListener:
                 if ((msg.get("author") or {}).get("id") == BOT_ID
                         and _SYM.search(msg.get("content") or "")):
                     self._messages_unparsed += 1
-                    if not append_message_event(msg, event="unparsed"):
+                    if not append_message_event(
+                        msg, event="unparsed", channel_id=self._channel
+                    ):
                         self._audit_write_errors += 1
             if len(sigs) >= 2:
                 # A single Discord post containing several marks is an
@@ -691,6 +743,7 @@ class PiListener:
                     msg,
                     event="multi_signal_skip",
                     error=f"{len(sigs)} supported marks in one message",
+                    channel_id=self._channel,
                 ):
                     self._audit_write_errors += 1
                 logger.warning(
@@ -705,7 +758,12 @@ class PiListener:
                 # Record before strategy filtering/callback so a signal that
                 # is intentionally not traded is still auditable.
                 audit_event = "recorded" if self._record_only else "received"
-                if append_signal_event(sig, event=audit_event, received_at=received_at):
+                if append_signal_event(
+                    sig,
+                    event=audit_event,
+                    received_at=received_at,
+                    channel_id=self._channel,
+                ):
                     self._signals_audited += 1
                 else:
                     self._audit_write_errors += 1
@@ -726,6 +784,7 @@ class PiListener:
                         event="callback",
                         received_at=received_at,
                         accepted=res if isinstance(res, bool) else None,
+                        channel_id=self._channel,
                     )
                 except asyncio.CancelledError:
                     raise
@@ -737,6 +796,7 @@ class PiListener:
                         event="callback_error",
                         received_at=received_at,
                         error=f"{type(e).__name__}: {e}",
+                        channel_id=self._channel,
                     )
                     logger.exception("[PI] on_signal 例外 %s: %s",
                                      type(e).__name__, e)

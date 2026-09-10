@@ -2,9 +2,10 @@
 
 The historical PI signal file is the shared backtest/chart source and must
 stay immutable during a live run.  Live reception therefore writes a
-separate JSONL stream.  It records the Discord event timestamp *and* the local
-dispatch timestamp so a missing marker can be separated into a stale source
-event, a poll gap, a parser problem, or a strategy filter.
+separate JSONL stream.  It records the PI event timestamp (the NY time printed
+inside the post, with a legacy Discord-time fallback) *and* the local dispatch
+timestamp so a missing marker can be separated into a stale source event, a
+poll gap, a parser problem, or a strategy filter.
 
 The file lives under the external ``ancserMarketData/runtime`` tree (which is
 intentionally outside git) and is best-effort: a full/read-only disk must
@@ -23,7 +24,24 @@ from backend.timebase import UTC, utc_now
 
 logger = logging.getLogger(__name__)
 
+# The active PI source is deliberately a single constant.  Rows written by
+# the old channel did not carry a source marker, so they must never become
+# eligible for the new-channel live/chart/replay readers again.
+PI_SOURCE_CHANNEL_ID = "1547062725060993066"
 AUDIT_PATH = market_data.runtime_path("logs", "pi_live_signals.jsonl")
+
+
+def _is_active_source_row(row: Any) -> bool:
+    """Return whether a persisted row belongs to the current PI channel."""
+    return (
+        isinstance(row, dict)
+        and str(row.get("channel_id") or "") == PI_SOURCE_CHANNEL_ID
+    )
+
+
+def _channel_id(value: Any = None) -> str:
+    """Normalize a writer's source channel without allowing an empty marker."""
+    return str(value or PI_SOURCE_CHANNEL_ID)
 
 
 def _iso(value: Any) -> str | None:
@@ -42,14 +60,16 @@ def _iso(value: Any) -> str | None:
 
 
 def _row_for_signal(signal: Any, *, event: str, received_at: Any = None,
-                    accepted: bool | None = None, error: str | None = None) -> dict:
+                    accepted: bool | None = None, error: str | None = None,
+                    channel_id: str | None = None) -> dict:
     """Build a JSON-safe row without importing ``PiSignal`` (avoids a cycle)."""
     row = {
         "event": str(event),
         "logged_at": utc_now().isoformat(),
+        "channel_id": _channel_id(channel_id),
         "message_id": str(getattr(signal, "message_id", "")),
-        # ``ts`` is Discord's source/event timestamp; ``received_at`` is the
-        # local time at which this process dispatched the parsed signal.
+        # ``ts`` is the PI source/event timestamp; ``received_at`` is the local
+        # time at which this process dispatched the parsed signal.
         "ts": _iso(getattr(signal, "ts", None)),
         "received_at": _iso(received_at or getattr(signal, "received_at", None)),
         "equity": getattr(signal, "equity", None),
@@ -70,6 +90,7 @@ def _row_for_signal(signal: Any, *, event: str, received_at: Any = None,
 
 def append_signal_event(signal: Any, *, event: str, received_at: Any = None,
                         accepted: bool | None = None, error: str | None = None,
+                        channel_id: str | None = None,
                         path: Path | None = None) -> bool:
     """Append one parsed-signal event and contain all filesystem failures.
 
@@ -87,6 +108,7 @@ def append_signal_event(signal: Any, *, event: str, received_at: Any = None,
             received_at=received_at,
             accepted=accepted,
             error=error,
+            channel_id=channel_id,
         )
         with target.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -97,12 +119,14 @@ def append_signal_event(signal: Any, *, event: str, received_at: Any = None,
 
 
 def append_message_event(message: Any, *, event: str, error: str | None = None,
+                         channel_id: str | None = None,
                          path: Path | None = None) -> bool:
     """Append a transport/parser event when no ``PiSignal`` was produced."""
     target = path or AUDIT_PATH
     row = {
         "event": str(event),
         "logged_at": utc_now().isoformat(),
+        "channel_id": _channel_id(channel_id),
         "message_id": str((message or {}).get("id") or ""),
         "ts": _iso((message or {}).get("timestamp")),
         "received_at": utc_now().isoformat(),
@@ -121,7 +145,7 @@ def append_message_event(message: Any, *, event: str, error: str | None = None,
 
 
 def append_status_event(event: str, *, path: Path | None = None,
-                        **fields: Any) -> bool:
+                        channel_id: str | None = None, **fields: Any) -> bool:
     """Append a transport/listener health event to the live audit stream.
 
     Signal rows answer *what* was parsed.  Status rows answer *whether the
@@ -133,6 +157,7 @@ def append_status_event(event: str, *, path: Path | None = None,
     row = {
         "event": str(event),
         "logged_at": utc_now().isoformat(),
+        "channel_id": _channel_id(channel_id),
     }
     for key, value in fields.items():
         if value is None:
@@ -196,6 +221,8 @@ def load_recent_events(limit: int = 200, *, path: Path | None = None,
             continue
         if not isinstance(row, dict):
             continue
+        if not _is_active_source_row(row):
+            continue
         if wanted is not None and str(row.get("event")) not in wanted:
             continue
         rows.append(row)
@@ -215,7 +242,10 @@ def filter_multi_signal_events(events: Iterable[dict]) -> list[dict]:
     policy is for chart/replay consumers and protects old audit rows produced
     before the live listener gained the message-level guard.
     """
-    rows = list(events)
+    # Keep this guard even when callers provide an already-loaded list.  The
+    # API normally gets rows from ``load_recent_events``; direct research or
+    # replay callers must not be able to reintroduce retired-channel rows.
+    rows = [row for row in events if _is_active_source_row(row)]
     signal_events = {"received", "recorded", "callback", "callback_error"}
     by_message: dict[str, dict[tuple[str, str, str, str, str, str], dict[str, int]]] = {}
     for row in rows:
@@ -289,7 +319,11 @@ def load_replay_rows(
         return []
 
     rows: list[dict] = []
-    seen: set[tuple[str, str, str]] = set()
+    # Reposts from the new channel receive a new Discord message id.  The
+    # chart and the strategy both snap PI timestamps to a 1m candle, so this
+    # is the cross-source identity that prevents an old audit row and the
+    # canonical history row from becoming two entries.
+    seen: set[tuple[str, str, str, str]] = set()
     # Filter in the reader, not here: heartbeat rows would otherwise consume
     # the whole window and the replay would silently see almost no signals.
     audit_events = filter_multi_signal_events(
@@ -323,7 +357,8 @@ def load_replay_rows(
             continue
 
         message_id = str(event.get("message_id") or "")
-        key = (message_id or ts.isoformat(), kind, symbol)
+        bar_ts = ts.replace(second=0, microsecond=0).isoformat()
+        key = (bar_ts, kind, symbol, event_future)
         if key in seen:
             continue
         seen.add(key)
@@ -371,6 +406,8 @@ def load_message_ids(*, path: Path | None = None) -> set[str]:
                 continue
             if not isinstance(row, dict):
                 continue
+            if not _is_active_source_row(row):
+                continue
             # A cursor seed proves only that the poller observed the newest
             # row; it is not a durable parse/record boundary.  Exclude it so
             # a later record-only restart can still repair messages behind a
@@ -413,6 +450,8 @@ def load_message_timestamps(*, path: Path | None = None) -> set[str]:
             except (TypeError, ValueError):
                 continue
             if not isinstance(row, dict) or row.get("event") not in allowed:
+                continue
+            if not _is_active_source_row(row):
                 continue
             stamp = row.get("ts")
             if stamp:

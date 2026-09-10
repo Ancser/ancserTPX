@@ -1,17 +1,47 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-07. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-09. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            582 pytest passing + 8 subtests + 38 Chromium interaction tests
+tests            636 pytest passing + 8 subtests + 38 Chromium interaction tests
 invariants       87 documented / 83 active / 4 explicitly retired
 strategies       factor · momentum · betafib · pi · optionwall · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
 
 ## Where truth lives
+
+### 2026-09-09 — Event-entry research uses the production engine
+
+`scripts/orderflow_event_engine_study.py` reads the saved `PI 2MNQ BOTH BEST`
+preset and runs the actual BacktestEngine/PiSignalStrategy, replacing only the
+entry feed for offline candidates. Canonical candles include seven calendar
+days of warmup; comparisons retain common MBO dates. The earlier standalone
+competition is not an exact preset replay: it used one contract, disabled the
+short hard TP, recomputed ATR from RTH-only bars, and omitted production gates.
+Its post-event three-second fields can also cross the next-minute entry time.
+Do not promote old rankings without replaying the production contract.
+
+The new runner tests two fixed strengths each of absorption/residual reversal,
+depth-depletion breakout, failed breakout, and raw-derived split pressure.
+The first three are minute-cache approximations, not tick-by-tick state models.
+All previously researched dates remain retrospective validation. Opposite
+signals mapped to the same decision candle cause abstention, never a sort-order
+direction choice. Tests exercise availability, expired events and PI short
+SL/TP geometry. Reports/trade records are in the external derived/research
+tree under `orderflow_event_engine_study`; Live and presets are unchanged.
+
+The footprint canvas now has two display densities. At overview scale it
+aggregates cells into screen buckets, keeps only the strongest price area per
+column and its dominant side, draws at most four depth walls per side, and
+suppresses small passive outlines, tier beads, and imbalance labels. Bubble
+radius is tied to quantity bands (50–99 / 100–149 / 150+), while passive
+activity changes fill opacity only. At detail scale the exact size bands return
+and up to eight strongest continuous depth levels are shown. The raw response remains intact in `_footprintBars`; this is a paint
+budget, not a data filter. The chart legend is also capped and wraps active
+keys into a compact box.
 
 | Question | Authority |
 |---|---|
@@ -101,26 +131,32 @@ The same incident also proved that two concurrent web/terminal starts could
 run two PI listeners for one account. `LiveEngineLease` and the per-account
 web start lock now make account ownership single-instance across processes.
 
-### R1 — PI restart dedup
+### R1 — PI restart dedup and new-channel cutover
 
 The trading `PiListener._seen` remains memory-only; its Live-window cursor is
 still seeded to the newest message and then advanced with `after`. The
 independent record-only listener now has a bounded today/yesterday catch-up and
-uses durable audit message ids as its stop boundary, so web/terminal restarts
-repair missing audit/chart rows without replaying the strategy.
+continues writing a clean runtime stream from the active channel
+`1547062725060993066`. Every new row carries `channel_id`; readers reject rows
+from the retired channel before they reach Chart or replay.
 
-When the user explicitly runs a PI Backtest, the route now adds any in-range
-`received`/`recorded` audit marks as a temporary, deduplicated replay overlay.
-This makes a signal received today visible to the calculation immediately after
-clicking Backtest, while leaving `ancserMarketData/source/discord/pi/pi_signals.json` and the Live
-listener untouched. A normal historical run still uses the immutable history
-file only. Since 2026-08-31, one Discord message that parses to two or more
+The active audit file was cut over on 2026-09-09. The previous mixed/old audit
+was moved to the primary MarketData archive before the active path was removed;
+it is not loaded by the product. This preserves a recoverable forensic copy
+without allowing old channel records to re-enter the strategy or Chart.
+
+When the user explicitly runs a PI Backtest, the route adds only in-range
+new-channel `received`/`recorded` marks as a temporary replay overlay. History
+and audit/repost rows are deduplicated by 1m source time + symbol + kind because
+a repost receives a different Discord message id. This makes a signal received
+today visible immediately after clicking Backtest while leaving the immutable
+history file untouched. A normal historical run still uses the history file
+only. Since 2026-08-31, one Discord message that parses to two or more
 supported PI marks is rejected as an aggregate/opening-summary message. The
 live listener writes only a diagnostic `multi_signal_skip` row, while the
 normal history loader, same-day replay loader, and audit API filter legacy
-multi-mark rows as well. This is message-level and independent of whether a
-candidate mark would have been accepted or profitable; raw audit backups remain
-for investigation and actual broker/execution records are not rewritten.
+multi-mark rows as well. Actual broker/execution records and strategy push
+snapshots are not rewritten.
 
 ### R0.5 — New York market clock + manual-position ownership (2026-08-30)
 
@@ -287,10 +323,41 @@ tree is the sibling `ancserMarketData` with `source/futures/continuous_1m`,
 `source/options/qqq_option_ml`, `source/orderflow/mnq_mbo`, and
 `source/discord/pi`; `derived` contains research/backtest output and `runtime`
 contains logs/state. The tracked preset, model registry, and small seed remain
-bootstrap files only. Windows installation registers an hourly mirror to
-`E:\\ancserMarketData`; `ANCSER_MARKET_DATA_ROOT` and
-`ANCSER_MARKET_DATA_BACKUP_ROOTS` configure other machines. The migration tool
-copies and SHA-256 verifies before removing old copies.
+bootstrap files only. Windows installation does not register an automatic
+E:\\ mirror; `ANCSER_MARKET_DATA_ROOT` selects the canonical tree and
+`ANCSER_MARKET_DATA_BACKUP_ROOTS` is reserved for explicitly configured
+backups on other machines. The migration tool copies and SHA-256 verifies
+before removing old copies.
+
+### R0.17 - Databento MBO context research (2026-09-09)
+
+The MNQ MBO research now covers 22 RTH dates, including 2026-08-07. The
+2026-08-07 omission was a download-window choice (`--start 2026-08-08`), not
+missing market data; that quote/download was completed and the raw file is
+stored only under `ancserMarketData`. The compact cache is schema v5 with 390
+RTH one-minute bars for that date.
+
+`scripts/orderflow_context_combination_study.py` is offline research only. It
+tests VWAP state, prior-day 70% value location, rolling profile POC migration,
+1:10 diagonal imbalance, passive heatmap touch/rejection, and a 150+ reversal
+sequence using the fixed PI ATR-blend exit. The study keeps discovery through
+2026-08-14 separate from later evaluation dates. It does not change Live,
+Backtest, or order routing. On the current sample the 150+ same-level reversal
+family has zero qualifying events, so it is reported explicitly rather than
+silently treated as a failed strategy. The generated reports live in the
+external `ancserMarketData/derived/research` tree. The chart also has an
+off-by-default CVD / DELTA layer that reuses the visible-window order-flow
+request and draws RTH cumulative aggressive delta without changing trading
+decisions. The offline context study now mixes two causal CVD filters with
+the existing VWAP, previous-day value, profile-wave, 1:10 imbalance, and
+passive-rejection contexts: `cvd_aligned` requires positive/negative five- and
+15-minute CVD deltas to agree with the candidate direction, while
+`cvd_divergence` looks for a rolling price extreme with opposite five-minute
+CVD. On the current 22-day sample, `mbo_turnover + cvd_aligned` improved the
+evaluation PF from 1.2494 to 2.3233 and reduced absolute maxDD from $548.14 to
+$227.40, but left only 27 evaluation trades and was negative in discovery
+(10 trades, PF 0.7286); it is a research lead, not a live filter. The
+divergence filter was negative in evaluation and is not promoted.
 
 ### R0.7 — Research robustness presentation (2026-09-01)
 

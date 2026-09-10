@@ -27,6 +27,10 @@ MARKET_DATA_BACKUP_ROOTS_ENV = "ANCSER_MARKET_DATA_BACKUP_ROOTS"
 CANDLE_STORE_RELATIVE = Path("source") / "futures" / "continuous_1m"
 OPTION_WALL_RELATIVE = Path("source") / "options" / "qqq_option_ml"
 ORDERFLOW_RELATIVE = Path("source") / "orderflow" / "mnq_mbo"
+ORDERFLOW_DERIVED_RELATIVE = Path("derived") / "orderflow"
+# Raw MBO and its regenerable chart cache are intentionally primary-only.
+# One entitled month is tens of GB and the configured E: mirror is too small.
+BACKUP_EXCLUDED_RELATIVES = (ORDERFLOW_RELATIVE, ORDERFLOW_DERIVED_RELATIVE)
 PI_SOURCE_RELATIVE = Path("source") / "discord" / "pi"
 DERIVED_RELATIVE = Path("derived")
 RUNTIME_RELATIVE = Path("runtime")
@@ -172,6 +176,21 @@ def relative_to_primary(path: str | os.PathLike[str] | Path) -> Path | None:
         return candidate.relative_to(configured_market_data_root().absolute())
     except ValueError:
         return None
+
+
+def backup_excluded(path: str | os.PathLike[str] | Path) -> bool:
+    """Return whether a primary file belongs to a deliberately unmirrored tree."""
+    relative = relative_to_primary(path)
+    return relative is not None and backup_relative_excluded(relative)
+
+
+def backup_relative_excluded(relative: str | os.PathLike[str] | Path) -> bool:
+    """Apply the exclusion policy to a path already relative to a data root."""
+    candidate = Path(relative)
+    return any(
+        candidate == excluded or excluded in candidate.parents
+        for excluded in BACKUP_EXCLUDED_RELATIVES
+    )
 
 
 def iter_backup_roots(values: Iterable[str | os.PathLike[str]] | None = None) -> tuple[Path, ...]:

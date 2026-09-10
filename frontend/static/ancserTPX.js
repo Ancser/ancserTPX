@@ -4435,6 +4435,7 @@ async function pollLiveCandle() {
             window._lastChartData.sort((a, b) => a.time - b.time);
             refreshTfZones(!(_tfAllZones && _tfAllZones.length));
             if (layerOn('prevday70')) refreshPreviousDayValueAreas(false);
+            if (layerOn('footprint') || layerOn('cvd')) scheduleFootprintRefresh();
             refreshIndicatorSignalMarkers(false);
             refreshPiSignalMarkers();
             _refreshAllMarkers();
@@ -4557,6 +4558,7 @@ async function loadOlderChartHistory() {
         }
         scheduleChartOverlayRedraw();
         if (layerOn('prevday70')) refreshPreviousDayValueAreas(true);
+        if (layerOn('footprint') || layerOn('cvd')) refreshOrderflowLayers(true);
         log('Loaded ' + added + ' older chart candles (' + (data.source || 'history') + ')', 'info');
         return true;
     } catch (error) {
@@ -4634,6 +4636,7 @@ function initChart() {
     const _redrawOverlays = () => {
         try { maybeLoadOlderChartHistory(chart.timeScale().getVisibleLogicalRange()); } catch (_) {}
         scheduleChartOverlayRedraw();
+        if (layerOn('footprint') || layerOn('cvd')) scheduleFootprintRefresh();
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(_redrawOverlays);
     // Vertical zoom (wheel on price scale or chart body)
@@ -4652,6 +4655,8 @@ function initChart() {
 let vpOverlayCanvas = null;
 let fadeLevelsCanvas = null;
 let previousDayValueAreaCanvas = null;
+let footprintCanvas = null;
+let cvdCanvas = null;
 let positionLines = [];
 let _cachedVPZones = null;  // cached for redraw on scroll/zoom
 
@@ -4685,6 +4690,28 @@ function createPreviousDayValueAreaCanvas() {
     canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
     container.appendChild(canvas);
     previousDayValueAreaCanvas = canvas;
+    return canvas;
+}
+
+function createFootprintCanvas() {
+    if (footprintCanvas) return footprintCanvas;
+    const container = document.getElementById('chart-container');
+    const canvas = document.createElement('canvas');
+    canvas.id = 'footprint-overlay';
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
+    container.appendChild(canvas);
+    footprintCanvas = canvas;
+    return canvas;
+}
+
+function createCvdCanvas() {
+    if (cvdCanvas) return cvdCanvas;
+    const container = document.getElementById('chart-container');
+    const canvas = document.createElement('canvas');
+    canvas.id = 'cvd-overlay';
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:4;';
+    container.appendChild(canvas);
+    cvdCanvas = canvas;
     return canvas;
 }
 
@@ -4877,6 +4904,8 @@ const CHART_LAYERS = [
     { key: 'dayzone',  label: 'DAY ZONE prior levels',   on: false },
     { key: 'prevday70',label: 'PRIOR DAY 70% VAH/VAL/POC', on: false },
     { key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false },
+    { key: 'footprint', label: 'FOOTPRINT / LEVEL 2', on: false },
+    { key: 'cvd',      label: 'CVD / DELTA',             on: false },
 ];
 const CHART_LAYER_STORAGE_KEY = 'ancserTPX.chartLayers';
 
@@ -4942,6 +4971,11 @@ function toggleChartLayer(key, on) {
     if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
     if (key === 'optionwall' && on && !_optionWallSnapshots.length) { refreshOptionWallLayer(); return; }
     if (key === 'prevday70' && on) { refreshPreviousDayValueAreas(true); return; }
+    if (key === 'footprint' || key === 'cvd') {
+        if (on) refreshOrderflowLayers(true);
+        else { drawFootprintLayer(); drawCvdLayer(); }
+        return;
+    }
     try { redrawAllOverlays(); } catch (e) {}
 }
 
@@ -4961,6 +4995,8 @@ function redrawAllOverlays() {
     try { if (_cachedVPZones) drawVolumeProfile(_cachedVPZones); } catch (e) {}
     try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
     try { drawPreviousDayValueAreas(); } catch (e) {}
+    try { drawFootprintLayer(); } catch (e) {}
+    try { drawCvdLayer(); } catch (e) {}
     try { drawPositionTools(backtestData && backtestData.trades ? backtestData.trades : []); } catch (e) {}
 }
 
@@ -4981,6 +5017,8 @@ function scheduleChartOverlayRedraw() {
             }
         } catch (e) {}
         try { drawPreviousDayValueAreas(); } catch (e) {}
+        try { drawFootprintLayer(); } catch (e) {}
+        try { drawCvdLayer(); } catch (e) {}
         window.TpxGlass?.sync?.();
     });
 }
@@ -5822,6 +5860,519 @@ function scrollToLatest() {
     try { chart.timeScale().scrollToRealTime(); } catch (_) {}
 }
 
+let _footprintBars = [];
+let _footprintMeta = null;
+let _footprintRequestKey = '';
+let _footprintRefreshTimer = null;
+let _footprintAbortController = null;
+let _orderflowDataPromise = null;
+let _orderflowPendingKey = '';
+
+// Order-flow data can be much denser than the chart can display.  These are
+// display-only limits: _footprintBars remains the complete response/cache,
+// while the canvas receives a pixel-sized summary when the chart is zoomed
+// out.  Without this guard, one visible minute can create hundreds of
+// overlapping fills, tier beads, and depth strokes.
+const ORDERFLOW_DETAIL_CELL_LIMIT = 12000;
+const ORDERFLOW_COMPACT_CELL_LIMIT = 900;
+const ORDERFLOW_COMPACT_COLUMN_LIMIT = 1;
+const ORDERFLOW_MAX_DEPTH_LEVELS = 8;
+
+// Keep the visual size tied to the same order-size bands used by the cache.
+// A logarithmic scale made 20-lot and 150-lot cells look too similar when a
+// large print was present elsewhere in the visible window.
+function _footprintBubbleRadius(quantity) {
+    const size = Math.max(0, Number(quantity) || 0);
+    if (size >= 150) return 9;
+    if (size >= 100) return 7.5;
+    if (size >= 50) return 6;
+    if (size >= 25) return 4.5;
+    if (size >= 10) return 3.25;
+    return 2.25;
+}
+
+function _compactFootprintBars(prepared, spacing, tickSize, plotBottom) {
+    const bucketPx = Math.max(4, Math.min(10, spacing > 0 ? spacing : 4));
+    const priceBucketPx = 4;
+    const columns = new Map();
+    for (const bar of prepared) {
+        const xBucket = Math.round(bar.x / bucketPx);
+        let column = columns.get(xBucket);
+        if (!column) {
+            column = {x: xBucket * bucketPx, cells: new Map()};
+            columns.set(xBucket, column);
+        }
+        for (const cell of bar.cells) {
+            if (!Array.isArray(cell) || cell.length < 5) continue;
+            const y = candleSeries.priceToCoordinate(Number(cell[0]) * tickSize);
+            if (y == null || y < -12 || y > plotBottom + 12) continue;
+            const yBucket = Math.round(y / priceBucketPx);
+            let aggregate = column.cells.get(yBucket);
+            if (!aggregate) {
+                aggregate = {
+                    cell: [Number(cell[0]) || 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    importance: 0,
+                };
+                column.cells.set(yBucket, aggregate);
+            }
+            const target = aggregate.cell;
+            target[1] += Math.max(0, Number(cell[1] || 0));
+            target[2] += Math.max(0, Number(cell[2] || 0));
+            target[3] += Math.max(0, Number(cell[3] || 0));
+            target[4] += Math.max(0, Number(cell[4] || 0));
+            // Depth is a level property rather than executed volume.  Keep
+            // the strongest observed quote in the pixel bucket so overview
+            // mode can still display the important walls without drawing
+            // every one-minute sample.
+            target[5] = Math.max(target[5], Number(cell[5] || 0));
+            target[6] = Math.max(target[6], Number(cell[6] || 0));
+            aggregate.importance = target[1] + target[2] +
+                0.25 * (target[3] + target[4]) +
+                Math.sqrt(Math.max(target[5], target[6]));
+        }
+    }
+
+    const bars = [];
+    let kept = 0;
+    for (const column of [...columns.values()].sort((a, b) => a.x - b.x)) {
+        const cells = [...column.cells.values()]
+            .sort((a, b) => b.importance - a.importance)
+            .slice(0, ORDERFLOW_COMPACT_COLUMN_LIMIT)
+            .map((item) => item.cell);
+        if (!cells.length) continue;
+        const remaining = ORDERFLOW_COMPACT_CELL_LIMIT - kept;
+        if (remaining <= 0) break;
+        const limited = cells.slice(0, remaining);
+        bars.push({x: column.x, cells: limited});
+        kept += limited.length;
+    }
+    return {bars, spacing: bucketPx};
+}
+
+function _footprintVisibleWindow() {
+    const rows = window._lastChartData || [];
+    if (!rows.length || !chart) return null;
+    let range = null;
+    try { range = chart.timeScale().getVisibleLogicalRange(); } catch (_) {}
+    const first = Math.max(0, Math.floor(range ? range.from : 0));
+    const last = Math.min(rows.length - 1, Math.ceil(range ? range.to : rows.length - 1));
+    if (last < first) return null;
+    const pad = 5 * 60;
+    const fromTime = rows[first].time - pad;
+    const toTime = rows[last].time + pad;
+    const span = Math.max(60, toTime - fromTime);
+    if (span > 14 * 86400) return {tooWide: true};
+    return {
+        start: new Date(chartTimeToUtcMs(fromTime)).toISOString(),
+        end: new Date(chartTimeToUtcMs(toTime)).toISOString(),
+        interval: span > 3 * 86400 ? '5m' : '1m',
+    };
+}
+
+function scheduleFootprintRefresh() {
+    if (!layerOn('footprint') && !layerOn('cvd')) return;
+    clearTimeout(_footprintRefreshTimer);
+    _footprintRefreshTimer = setTimeout(() => refreshOrderflowLayers(false), 180);
+}
+
+async function _loadOrderflowData(force) {
+    const windowRange = _footprintVisibleWindow();
+    if (!windowRange) return false;
+    if (windowRange.tooWide) {
+        _footprintBars = [];
+        _footprintMeta = null;
+        _footprintRequestKey = '';
+        return false;
+    }
+    const contract = String(document.getElementById('contract-id')?.value || 'MNQ');
+    const query = new URLSearchParams({
+        start: windowRange.start,
+        end: windowRange.end,
+        symbol: contract,
+        interval: windowRange.interval,
+        limit: '10000',
+    });
+    const key = query.toString();
+    if (!force && key === _footprintRequestKey) return true;
+    if (_orderflowDataPromise && _orderflowPendingKey === key) {
+        await _orderflowDataPromise;
+        return true;
+    }
+    _footprintAbortController?.abort();
+    _footprintAbortController = new AbortController();
+    _orderflowPendingKey = key;
+    const request = (async () => {
+        try {
+            const response = await fetch(API + '/data/orderflow/footprint?' + key, {
+                signal: _footprintAbortController.signal,
+            });
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            const payload = await response.json();
+            _footprintRequestKey = key;
+            _footprintBars = Array.isArray(payload.bars) ? payload.bars : [];
+            _footprintMeta = payload.meta || null;
+            return true;
+        } catch (error) {
+            if (error.name !== 'AbortError') log('Order-flow cache unavailable: ' + error.message, 'warn');
+            return false;
+        }
+    })();
+    _orderflowDataPromise = request;
+    try { return await request; }
+    finally {
+        if (_orderflowDataPromise === request) {
+            _orderflowDataPromise = null;
+            _orderflowPendingKey = '';
+        }
+    }
+}
+
+async function refreshOrderflowLayers(force) {
+    if (!layerOn('footprint') && !layerOn('cvd')) {
+        drawFootprintLayer();
+        drawCvdLayer();
+        return;
+    }
+    await _loadOrderflowData(force);
+    drawFootprintLayer();
+    drawCvdLayer();
+}
+
+async function refreshFootprintLayer(force) {
+    await refreshOrderflowLayers(force);
+}
+
+async function refreshCvdLayer(force) {
+    await refreshOrderflowLayers(force);
+}
+
+function drawFootprintLayer() {
+    const canvas = footprintCanvas || document.getElementById('footprint-overlay');
+    if (!layerOn('footprint') || !_footprintBars.length) {
+        if (canvas) {
+            const context = canvas.getContext('2d');
+            context.setTransform(1, 0, 0, 1, 0, 0);
+            context.clearRect(0, 0, canvas.width, canvas.height);
+        }
+        return;
+    }
+    const target = createFootprintCanvas();
+    const container = document.getElementById('chart-container');
+    const dpr = window.devicePixelRatio || 1;
+    target.width = Math.round(container.clientWidth * dpr);
+    target.height = Math.round(container.clientHeight * dpr);
+    target.style.width = container.clientWidth + 'px';
+    target.style.height = container.clientHeight + 'px';
+    const ctx = target.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+    const plotBottom = container.clientHeight - _timeAxisHeight();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, container.clientWidth, plotBottom);
+    ctx.clip();
+
+    const tickSize = Number(_footprintMeta?.tick_size || 0.25);
+    const depthReady = Number(_footprintMeta?.schema_version || 0) >= 4;
+    const sizeBandsReady = Number(_footprintMeta?.schema_version || 0) >= 5;
+    let maxVolume = 1;
+    let maxDepth = 1;
+    let rawCellCount = 0;
+    const prepared = [];
+    for (const bar of _footprintBars) {
+        const chartTime = isoToChartTime(String(bar.time));
+        const x = _timeToXViaBars(chartTime);
+        if (x == null || x < -30 || x > container.clientWidth + 30) continue;
+        const cells = Array.isArray(bar.cells) ? bar.cells : [];
+        rawCellCount += cells.length;
+        for (const cell of cells) {
+            maxVolume = Math.max(maxVolume, Number(cell[1] || 0), Number(cell[2] || 0));
+            maxDepth = Math.max(maxDepth, Number(cell[5] || 0), Number(cell[6] || 0));
+        }
+        prepared.push({x, cells});
+    }
+    const spacing = prepared.length > 1
+        ? Math.abs(prepared[prepared.length - 1].x - prepared[0].x) / (prepared.length - 1)
+        : 8;
+    const compactMode = spacing < 12 || rawCellCount > ORDERFLOW_DETAIL_CELL_LIMIT;
+    const compacted = compactMode
+        ? _compactFootprintBars(prepared, spacing, tickSize, plotBottom)
+        : {bars: prepared, spacing};
+    const renderBars = compacted.bars;
+    const renderSpacing = compacted.spacing;
+    const detailedNumbers = !compactMode && spacing >= 42;
+    const footprintTierDefs = [
+        {buy: 9, sell: 12},   // 50-99
+        {buy: 10, sell: 13},  // 100-149
+        {buy: 11, sell: 14},  // 150+
+    ];
+
+    // Resting depth is drawn as a small set of continuous horizontal levels.
+    // The old renderer painted one short stroke for every bar/cell, which
+    // created the vertical comb visible at overview scale.  Scan the complete
+    // visible response for the maximum depth per price level, then extend only
+    // the strongest levels across their observed x-range.  This deliberately
+    // does not use renderBars: compact bubble selection must not hide a wall.
+    const depthLevels = {bid: new Map(), ask: new Map()};
+    for (const bar of (depthReady ? prepared : [])) {
+        for (const cell of bar.cells) {
+            if (!Array.isArray(cell) || cell.length < 7) continue;
+            const tick = Number(cell[0]);
+            if (!Number.isFinite(tick)) continue;
+            for (const side of [
+                {key: 'bid', index: 5},
+                {key: 'ask', index: 6},
+            ]) {
+                const depth = Number(cell[side.index] || 0);
+                if (!Number.isFinite(depth) || depth <= 0) continue;
+                let level = depthLevels[side.key].get(tick);
+                if (!level) {
+                    level = {tick, max: depth, firstX: bar.x, lastX: bar.x};
+                    depthLevels[side.key].set(tick, level);
+                } else {
+                    level.max = Math.max(level.max, depth);
+                    level.firstX = Math.min(level.firstX, bar.x);
+                    level.lastX = Math.max(level.lastX, bar.x);
+                }
+            }
+        }
+    }
+    for (const side of [
+        {key: 'bid', rgb: '255,255,255'},
+        {key: 'ask', rgb: '255,45,70'},
+    ]) {
+        const levels = [...depthLevels[side.key].values()]
+            .sort((a, b) => b.max - a.max)
+            .slice(0, compactMode
+                ? Math.floor(ORDERFLOW_MAX_DEPTH_LEVELS / 2)
+                : ORDERFLOW_MAX_DEPTH_LEVELS);
+        for (const level of levels) {
+            const y = candleSeries.priceToCoordinate(level.tick * tickSize);
+            if (y == null || y < -2 || y > plotBottom + 2) continue;
+            const strength = Math.sqrt(level.max / maxDepth);
+            const halfSpan = Math.max(8, renderSpacing * 0.6);
+            const x0 = Math.max(0, level.firstX - halfSpan);
+            const x1 = Math.min(container.clientWidth, level.lastX + halfSpan);
+            ctx.strokeStyle = 'rgba(' + side.rgb + ',' + (0.28 + 0.62 * strength) + ')';
+            ctx.lineWidth = 1 + 1.2 * strength;
+            ctx.beginPath();
+            ctx.moveTo(x0, y);
+            ctx.lineTo(Math.max(x0 + 1, x1), y);
+            ctx.stroke();
+        }
+    }
+
+    function drawPseudoBubble(x, y, radius, side, alpha = 0.64) {
+        const light = side === 'buy' ? 'rgba(255,255,255,' + Math.min(1, alpha + 0.28) + ')' :
+            'rgba(255,108,125,' + Math.min(1, alpha + 0.28) + ')';
+        const edge = side === 'buy' ? 'rgba(170,181,195,' + alpha + ')' :
+            'rgba(126,12,32,' + alpha + ')';
+        // Tiny compact-view beads do not carry enough pixels for a gradient.
+        // A flat fill is visually equivalent at that scale and avoids one
+        // createRadialGradient call per bubble.
+        if ((compactMode && radius < 6) || radius < 2.5) {
+            ctx.fillStyle = side === 'buy'
+                ? 'rgba(245,248,252,' + Math.min(1, alpha + 0.12) + ')'
+                : 'rgba(255,45,70,' + Math.min(1, alpha + 0.12) + ')';
+            ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+            return;
+        }
+        const gradient = ctx.createRadialGradient(
+            x - radius * 0.35, y - radius * 0.4, Math.max(0.5, radius * 0.12),
+            x, y, radius,
+        );
+        gradient.addColorStop(0, light);
+        gradient.addColorStop(0.52, side === 'buy'
+            ? 'rgba(235,240,246,' + alpha + ')'
+            : 'rgba(232,47,72,' + alpha + ')');
+        gradient.addColorStop(1, edge);
+        ctx.fillStyle = gradient;
+        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+    }
+
+    for (const bar of renderBars) {
+        for (const cell of bar.cells) {
+            if (!Array.isArray(cell) || cell.length < 7) continue;
+            const price = Number(cell[0]) * tickSize;
+            const y = candleSeries.priceToCoordinate(price);
+            if (y == null || y < -12 || y > plotBottom + 12) continue;
+            const buy = Number(cell[1] || 0);
+            const sell = Number(cell[2] || 0);
+            const passiveBid = Number(cell[3] || 0);
+            const passiveAsk = Number(cell[4] || 0);
+
+            // At overview scale a cell is a screen summary, not a footprint
+            // ladder.  Draw only the dominant side; zooming in restores the
+            // full buy/sell pair and the size-band beads.
+            const bubbles = compactMode
+                ? (buy >= sell
+                    ? [{value: buy, passive: passiveAsk, x: bar.x, side: 'buy'}]
+                    : [{value: sell, passive: passiveBid, x: bar.x, side: 'sell'}])
+                : [
+                    {value: sell, passive: passiveBid, x: bar.x - Math.min(7, renderSpacing * 0.24), side: 'sell'},
+                    {value: buy, passive: passiveAsk, x: bar.x + Math.min(7, renderSpacing * 0.24), side: 'buy'},
+                ];
+            for (const bubble of bubbles) {
+                if (!bubble.value) continue;
+                const radius = _footprintBubbleRadius(bubble.value);
+                // Passive interaction is encoded by fill opacity only.  Do
+                // not add an outer outline: at dense scale it turns every
+                // bubble into a distracting double-circle.
+                const passiveRatio = Math.min(1,
+                    Math.log1p(Math.max(0, bubble.passive || 0)) /
+                    Math.log1p(Math.max(1, maxVolume)));
+                drawPseudoBubble(bubble.x, y, radius, bubble.side,
+                    0.42 + 0.28 * passiveRatio);
+            }
+
+            // The cache stores the executed quantity in each size band at
+            // this price.  Offset beads make the three tiers visible without
+            // pretending that a one-minute bucket has tick-level timestamps.
+            if (sizeBandsReady && !compactMode) footprintTierDefs.forEach((tier, tierIndex) => {
+                for (const side of ['sell', 'buy']) {
+                    const quantity = Number(cell[side === 'buy' ? tier.buy : tier.sell] || 0);
+                    if (!quantity) continue;
+                    const radius = _footprintBubbleRadius(quantity);
+                    const sideOffset = side === 'buy' ? 1 : -1;
+                    const x = bar.x + sideOffset * Math.min(8, renderSpacing * 0.24) +
+                        sideOffset * (tierIndex - 1) * 2.1;
+                    const yy = y - (tierIndex - 1) * 1.4;
+                    drawPseudoBubble(x, yy, radius, side, 0.80);
+                    if (detailedNumbers && radius >= 3) {
+                        ctx.font = '600 7px IBM Plex Mono, monospace';
+                        ctx.textAlign = side === 'buy' ? 'left' : 'right';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillStyle = side === 'buy' ? '#ffffff' : '#ff526e';
+                        ctx.fillText(tierIndex === 0 ? '50' : tierIndex === 1 ? '100' : '150',
+                            x + sideOffset * (radius + 2), yy);
+                    }
+                }
+            });
+
+            const total = buy + sell;
+            const ratio = Math.max(buy, sell) / Math.max(1, Math.min(buy, sell));
+            if ((!compactMode && total >= 10 || compactMode && total >= 50) && ratio >= 3) {
+                ctx.fillStyle = buy > sell ? '#ffffff' : '#ff4562';
+                ctx.font = '600 8px IBM Plex Mono, monospace';
+                ctx.textAlign = 'center';
+                ctx.fillText('I', bar.x, y - 7);
+            }
+            if (detailedNumbers && total) {
+                ctx.font = '8px IBM Plex Mono, monospace';
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'right'; ctx.fillStyle = '#ff6a7f';
+                ctx.fillText(String(sell), bar.x - 3, y);
+                ctx.textAlign = 'left'; ctx.fillStyle = '#ffffff';
+                ctx.fillText(String(buy), bar.x + 3, y);
+            }
+        }
+    }
+    if (compactMode && renderBars.length) {
+        ctx.font = '600 8px IBM Plex Mono, monospace';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = 'rgba(184, 198, 220, 0.72)';
+        ctx.fillText('FOOTPRINT COMPACT · ZOOM IN FOR LEVELS',
+            container.clientWidth - 10, 8);
+    }
+    ctx.restore();
+}
+
+function _cvdSessionDate(bar) {
+    const stamp = Date.parse(String(bar?.time || ''));
+    return Number.isFinite(stamp) ? new Date(stamp).toISOString().slice(0, 10) : '';
+}
+
+function drawCvdLayer() {
+    const canvas = cvdCanvas || document.getElementById('cvd-overlay');
+    if (!layerOn('cvd') || !_footprintBars.length) {
+        if (canvas) {
+            const context = canvas.getContext('2d');
+            context.setTransform(1, 0, 0, 1, 0, 0);
+            context.clearRect(0, 0, canvas.width, canvas.height);
+        }
+        return;
+    }
+    const target = createCvdCanvas();
+    const container = document.getElementById('chart-container');
+    const dpr = window.devicePixelRatio || 1;
+    target.width = Math.round(container.clientWidth * dpr);
+    target.height = Math.round(container.clientHeight * dpr);
+    target.style.width = container.clientWidth + 'px';
+    target.style.height = container.clientHeight + 'px';
+    const ctx = target.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
+
+    const plotBottom = container.clientHeight - _timeAxisHeight();
+    const panelHeight = Math.max(72, Math.min(142, plotBottom * 0.24));
+    const panelTop = Math.max(8, plotBottom - panelHeight);
+    const panelBottom = plotBottom - 2;
+    const points = [];
+    let fallbackCvd = 0;
+    let previousDate = '';
+    for (const bar of _footprintBars) {
+        const date = _cvdSessionDate(bar);
+        if (date && date !== previousDate) fallbackCvd = 0;
+        previousDate = date;
+        fallbackCvd += Number(bar.buy || 0) - Number(bar.sell || 0);
+        const value = Number.isFinite(Number(bar.cvd)) ? Number(bar.cvd) : fallbackCvd;
+        if (!Number.isFinite(value)) continue;
+        const chartTime = isoToChartTime(String(bar.time));
+        const x = _timeToXViaBars(chartTime);
+        if (x == null || x < -30 || x > container.clientWidth + 30) continue;
+        points.push({x, value, date, delta: Number(bar.delta || 0)});
+    }
+    if (!points.length) return;
+
+    let min = 0;
+    let max = 0;
+    for (const point of points) {
+        min = Math.min(min, point.value);
+        max = Math.max(max, point.value);
+    }
+    if (max === min) max = min + 1;
+    const yFor = value => panelBottom - ((value - min) / (max - min)) * (panelBottom - panelTop - 8);
+    const zeroY = yFor(0);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(5, 12, 20, 0.72)';
+    ctx.fillRect(0, panelTop, container.clientWidth, plotBottom - panelTop);
+    ctx.beginPath();
+    ctx.rect(0, panelTop, container.clientWidth, plotBottom - panelTop);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(100, 220, 255, 0.20)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, zeroY);
+    ctx.lineTo(container.clientWidth, zeroY);
+    ctx.stroke();
+
+    for (let index = 1; index < points.length; index += 1) {
+        const previous = points[index - 1];
+        const point = points[index];
+        if (point.date !== previous.date) continue;
+        ctx.strokeStyle = point.value >= previous.value ? '#38d9ff' : '#ff526e';
+        ctx.lineWidth = 1.35;
+        ctx.beginPath();
+        ctx.moveTo(previous.x, yFor(previous.value));
+        ctx.lineTo(point.x, yFor(point.value));
+        ctx.stroke();
+    }
+    ctx.restore();
+
+    const latest = points[points.length - 1];
+    ctx.font = '600 9px IBM Plex Mono, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#38d9ff';
+    ctx.fillText('CVD RTH', 8, panelTop + 5);
+    ctx.fillStyle = latest.value >= 0 ? '#38d9ff' : '#ff526e';
+    ctx.fillText(String(Math.round(latest.value)), 66, panelTop + 5);
+    ctx.fillStyle = 'rgba(160, 180, 200, 0.62)';
+    ctx.fillText('Δ ' + String(Math.round(latest.delta)), 110, panelTop + 5);
+}
+
 let posToolCanvas = null;
 
 // 1.0.9: 時間→X 統一走「最近 bar 索引 + logicalToCoordinate」。
@@ -6487,6 +7038,7 @@ function showCandleData(candles) {
     refreshIndicatorSignalMarkers(true);
     refreshPiSignalMarkers();
     if (layerOn('optionwall')) refreshOptionWallLayer();
+    if (layerOn('footprint') || layerOn('cvd')) refreshOrderflowLayers(true);
 }
 
 function applyDefaultChartView(chartData, zones) {
@@ -7304,11 +7856,20 @@ async function refreshPiSignalMarkers() {
         const resp = await fetch(API + '/pi/signals?' + qs.toString());
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const data = await resp.json();
+        const seen = new Set();
         _piSignalRows = (data.signals || []).map(sig => ({
             chartTime: _snapToBarTime(utcMsToChartTime(Date.parse(sig.ts))),
             marks: sig.marks || [],
             sourceTs: sig.ts,
         })).filter(r => Number.isFinite(r.chartTime) && _piChartSourceAllowed(r.sourceTs));
+        // History and the live audit can describe the same PI event.  A
+        // repost has a different Discord message_id, so the visual identity
+        // is the same 1m bar + chart symbol + PI kind used by the engine.
+        for (const row of _piSignalRows) {
+            for (const mark of (row.marks || [])) {
+                if (mark && mark.kind) seen.add([row.chartTime, sym, mark.kind].join('|'));
+            }
+        }
 
         // The active Discord listener writes one durable audit row before any
         // strategy callback.  Reuse that same row on both chart tabs instead
@@ -7326,7 +7887,6 @@ async function refreshPiSignalMarkers() {
                     API + '/pi/signals/audit?limit=2000&events=received,recorded');
                 if (auditResp.ok) {
                     const audit = await auditResp.json();
-                    const seen = new Set();
                     for (const event of (audit.events || [])) {
                         // ``received`` and ``recorded`` are both chart-visible
                         // audit events.  Preset acceptance never controls chart visibility.
@@ -7337,7 +7897,7 @@ async function refreshPiSignalMarkers() {
                         if (!_piChartSourceAllowed(event.ts)) continue;
                         const chartTime = _snapToBarTime(utcMsToChartTime(Date.parse(event.ts)));
                         if (!Number.isFinite(chartTime)) continue;
-                        const key = [event.message_id || '', event.kind, chartTime].join('|');
+                        const key = [chartTime, sym, event.kind].join('|');
                         if (seen.has(key)) continue;
                         seen.add(key);
                         let row = _piSignalRows.find(item => item.chartTime === chartTime);
@@ -7392,7 +7952,16 @@ function _snapToBarTime(chartTime) {
 function pushPiSignalMarker(tsMs, marks) {
     const t = _snapToBarTime(utcMsToChartTime(tsMs));
     if (!Number.isFinite(t)) return;
-    _piSignalRows.push({ chartTime: t, marks: marks || [] });
+    let row = _piSignalRows.find(item => item.chartTime === t);
+    if (!row) {
+        row = { chartTime: t, marks: [] };
+        _piSignalRows.push(row);
+    }
+    for (const mark of (Array.isArray(marks) ? marks : [])) {
+        if (!mark || !mark.kind) continue;
+        const duplicate = row.marks.some(existing => existing && existing.kind === mark.kind);
+        if (!duplicate) row.marks.push(mark);
+    }
     drawPiSignalOverlay();
 }
 

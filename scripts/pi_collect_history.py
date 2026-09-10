@@ -1,7 +1,14 @@
 """1.0.10: 收集 π 訊號機器人的完整歷史,解析成結構化訊號。
 
-來源:Discord 頻道 1478899539845972078,機器人 ancserPiAlert(1514456965622005870)。
-機器人已經把圖表整理成文字,格式:
+來源:Discord 頻道 1547062725060993066,機器人 ancserPiAlert(1514456965622005870)。
+機器人已經把圖表整理成文字,新格式:
+
+    @everyone QQQ π信号出现
+    NY 09/09/2026 11:27
+
+    • Level 3 青π ×1
+
+舊格式 `π信号出现（SPY）` 與括號尺寸也會相容解析:
 
     @everyone 🚨 π信号出现（SPY）
 
@@ -24,11 +31,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 from collections import Counter
-from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,24 +42,19 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from dotenv import load_dotenv  # noqa: E402
 
-from backend.live.pi_listener import is_pre_session  # noqa: E402
+from backend.live.pi_listener import (  # noqa: E402
+    BOT_ID,
+    CHANNEL_ID,
+    _MARK,
+    _SYM,
+    is_pre_session,
+    message_source_timestamp,
+)
 from backend.data import market_data  # noqa: E402
 load_dotenv(ROOT / ".env")
 import httpx  # noqa: E402
 
-CHANNEL_ID = "1478899539845972078"
-BOT_ID = "1514456965622005870"
 OUT = market_data.pi_source_root() / "pi_signals.json"
-
-# QQQ → MNQ(Nasdaq 100)、SPY → MES(S&P 500)。使用者指定的對應。
-SYMBOL_MAP = {"QQQ": "MNQ", "SPY": "MES"}
-
-_SYM = re.compile(r"[（(]\s*(QQQ|SPY)\s*[）)]")
-# 「• 紫圈 ×1（大 · 上部）」或「• 淡蓝圈 ×1（大）」—— 位置欄位**可省略**
-# (實測 259 則裡有 7 則沒有位置,第一版寫死要求位置導致整則解析失敗)
-_MARK = re.compile(
-    r"[•·・]\s*(\S+?)\s*[×x]\s*(\d+)\s*[（(]\s*([^·)）]+?)\s*(?:[·・]\s*([^)）]+?)\s*)?[）)]")
-
 
 def parse(content: str) -> dict | None:
     m = _SYM.search(content)
@@ -62,9 +62,14 @@ def parse(content: str) -> dict | None:
         return None
     marks = []
     for mk in _MARK.finditer(content):
-        kind, cnt, size, pos = mk.group(1), int(mk.group(2)), mk.group(3), mk.group(4)
-        marks.append({"kind": kind, "count": cnt, "size": size.strip(),
-                      "pos": (pos or "").strip() or None})
+        level = mk.group("level")
+        size = f"Level {level}" if level else (mk.group("size") or "").strip()
+        marks.append({
+            "kind": mk.group("kind"),
+            "count": int(mk.group("count")),
+            "size": size,
+            "pos": (mk.group("pos") or "").strip() or None,
+        })
     if not marks:
         return None
     return {"symbol": m.group(1), "marks": marks}
@@ -113,13 +118,17 @@ def main():
             # 判定(bot 排程若改動,重跑標記即可,不必重抓)。所有消費端
             # (回測、實盤、研究腳本)一律預設濾掉 pre_session=True。
             try:
-                _ts = datetime.fromisoformat(str(m["timestamp"]).replace("Z", "+00:00"))
-                _recap = is_pre_session(_ts)
+                _ts = message_source_timestamp(m)
+                _recap = is_pre_session(_ts) if _ts is not None else False
             except Exception:
                 _recap = False
             rows.append({
                 "id": m["id"],
-                "ts": m["timestamp"],
+                "channel_id": CHANNEL_ID,
+                # Canonical PI time is the explicit NY event line.  Keep the
+                # Discord timestamp only inside raw content/metadata; using
+                # delivery time here makes the five-minute gate drift.
+                "ts": _ts.isoformat() if _ts is not None else m["timestamp"],
                 "pre_session": _recap,
                 "mention_everyone": bool(m.get("mention_everyone")),
                 "symbol": p["symbol"] if p else None,

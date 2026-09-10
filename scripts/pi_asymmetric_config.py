@@ -29,6 +29,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 from pi_exit_study import (  # noqa: E402
     build, at_or_after, simulate, SYMBOL_MAP, POINT_VALUE, RT_COST, DIRECTION, _utc,
 )
+from backend.data.pi_history import load_rows  # noqa: E402
 
 
 def main():

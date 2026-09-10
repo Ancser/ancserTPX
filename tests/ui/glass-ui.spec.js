@@ -125,9 +125,11 @@ test("Execute Trades refreshes broker truth when the tab is opened", async ({ pa
   await expect.poll(() => requests.some((url) => (
     new URL(url).searchParams.get("refresh") === "true"
   ))).toBe(true);
-  await expect(page.locator("#execute-tbody tr").first()).toContainText("999438");
-  await expect(page.locator("#execute-tbody tr").first()).toContainText("29216.00");
-  await expect(page.locator("#execute-tbody tr").first()).toContainText("$+185.50");
+  const firstTrade = page.locator("#execute-tbody tr").first();
+  await expect(firstTrade.locator("td")).toHaveCount(11);
+  await expect(firstTrade).not.toContainText("999438");
+  await expect(firstTrade).toContainText("29216.00");
+  await expect(firstTrade).toContainText("$+185.50");
 
   requests.length = 0;
   await page.evaluate(() => {
@@ -346,6 +348,65 @@ test("removed sweep controls and result tab are not rendered", async ({ page }) 
   await expect(page.locator("#btab-presets")).toHaveCount(0);
   await expect(page.locator("#preset-bt")).toBeVisible();
   await expect(page.locator("#preset-live")).toHaveCount(1);
+});
+
+test("Footprint layer fetches only the visible window and clears when disabled", async ({ page }) => {
+  await openApp(page);
+  const requests = [];
+  await page.route("**/api/data/orderflow/footprint?*", async (route) => {
+    requests.push(route.request().url());
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        available: true,
+        meta: {tick_size: 0.25, schema_version: 5, cvd: "rth_cumulative_aggressive_delta"},
+        bars: [{
+          time: "2026-09-01T13:35:00+00:00",
+          buy: 30, sell: 5, delta: 25, cvd: 125,
+          cells: [[80004, 30, 5, 0, 5, 20, 10]],
+        }],
+      }),
+    });
+  });
+  await page.evaluate(() => {
+    const start = Date.parse("2026-09-01T13:30:00Z");
+    showCandleData(Array.from({length: 20}, (_, index) => ({
+      time: new Date(start + index * 60_000).toISOString(),
+      open: 20000, high: 20002, low: 19998, close: 20001, volume: 1,
+    })));
+    toggleChartLayer("footprint", true);
+  });
+  await expect.poll(() => requests.length).toBe(1);
+  const query = new URL(requests[0]).searchParams;
+  expect(query.get("interval")).toBe("1m");
+  expect(Date.parse(query.get("end")) - Date.parse(query.get("start")))
+    .toBeLessThan(14 * 86_400_000);
+  await expect(page.locator("#footprint-overlay")).toHaveCount(1);
+
+  await page.evaluate(() => toggleChartLayer("footprint", false));
+  await expect.poll(() => page.evaluate(() => {
+    const canvas = document.querySelector("#footprint-overlay");
+    if (!canvas) return false;
+    const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let index = 3; index < pixels.length; index += 4) {
+      if (pixels[index] !== 0) return false;
+    }
+    return true;
+  })).toBe(true);
+
+  await page.evaluate(() => toggleChartLayer("cvd", true));
+  await expect.poll(() => requests.length).toBe(2);
+  await expect(page.locator("#cvd-overlay")).toHaveCount(1);
+  await page.evaluate(() => toggleChartLayer("cvd", false));
+  await expect.poll(() => page.evaluate(() => {
+    const canvas = document.querySelector("#cvd-overlay");
+    if (!canvas) return false;
+    const pixels = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+    for (let index = 3; index < pixels.length; index += 4) {
+      if (pixels[index] !== 0) return false;
+    }
+    return true;
+  })).toBe(true);
 });
 async function expectMainLensAt(page, target) {
   const box = await target.boundingBox();
@@ -881,6 +942,8 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
     "EMAPMO ▲▼",
     "PI π / CIRCLES",
     "QQQ OPTION WALL / GEX",
+    "FOOTPRINT / LEVEL 2",
+    "CVD / DELTA",
     "TRADE BOXES SL/TP",
     "MREV BUBBLES",
     "KDJMA DOTS",
@@ -896,7 +959,7 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
   await expect(popupSwitches.first()).toHaveAttribute("data-glass-material", "local");
   await expect(popup.locator(
     '.layer-row > .glass-switch > .switch-thumb.optical-surface[data-optical="switch"]',
-  )).toHaveCount(12);
+  )).toHaveCount(14);
   // 1.0.10p: no per-popup optics override — these sample exactly like the
   // parameter switches do.
   await expect(popup.locator(

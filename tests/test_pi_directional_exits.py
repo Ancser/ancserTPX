@@ -138,6 +138,13 @@ def _prepare_live_tick(engine: LiveTradingEngine, monkeypatch) -> None:
             return cls(2026, 1, 15, 17, 0)
 
     monkeypatch.setattr(live_engine_module, "datetime", FixedDateTime)
+    # Live uses the canonical timebase helper; pin it as well so this test
+    # cannot turn into a session-close flatten after 15:45 ET wall time.
+    monkeypatch.setattr(
+        live_engine_module,
+        "utc_now_naive",
+        lambda: datetime(2026, 1, 15, 17, 0),
+    )
     engine._today = "2026-01-15"
     engine._get_topstep_trade_date = Mock(return_value="2026-01-15")
     engine._sync_position = AsyncMock()

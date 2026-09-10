@@ -2337,7 +2337,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    padding: 0.125rem 0;
+    padding: 0;
 }
 
 /* 字級對齊頂欄的 FUNDED 徽章(Rajdhani 600 / 22.5px / ls 1.5px) */
@@ -2351,6 +2351,62 @@
     white-space: nowrap;
 }
 .chart-layer-pop .layer-row:hover .layer-name { color: var(--text); }
+
+/* Keep the chart key useful without covering the price action.  Active
+   layers are laid out as compact chips; overflow is clipped so the key never
+   becomes a second large panel when several research layers are enabled. */
+.chart-signal-legend {
+    position: absolute;
+    left: 8px;
+    bottom: 34px;
+    z-index: 6;
+    pointer-events: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 1px 8px;
+    width: min(42vw, 360px);
+    max-height: 5.2rem;
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 4px 7px;
+    background: rgba(8, 9, 13, 0.72);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
+    line-height: 1.25;
+    color: var(--text2);
+    backdrop-filter: blur(4px);
+    letter-spacing: 0.2px;
+}
+.chart-signal-legend > div {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* At a laptop width the layer popup should not force the chart to give up a
+   third of its height.  Its switches keep their existing optical geometry. */
+.chart-layer-pop {
+    width: min(20rem, calc(100% - 10rem));
+    max-height: min(58vh, 22rem);
+    padding: 0.35rem 0.55rem 0.45rem;
+}
+.chart-layer-pop .layer-row {
+    min-height: 1.22rem;
+    gap: 0.55rem;
+}
+.chart-layer-pop .layer-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 0.78rem;
+    line-height: 1;
+}
 
 /* The popup thumbs carry their own optical-surface clone (data-stage="switch"
    sits on the button, so the clone is just this switch, not the page) and
