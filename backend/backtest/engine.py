@@ -107,6 +107,7 @@ class BacktestEngine:
         _strat = str(getattr(self.strategy_params, "strategy", "") or "").lower()
         self.strategy_mode = _strat if _strat in (
             "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+            "delta_absorption",
         ) else "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
@@ -129,6 +130,9 @@ class BacktestEngine:
         elif self.strategy_mode == "optionwall":
             from backend.strategy.option_wall import OptionWallStrategy
             self.trend_follow = OptionWallStrategy(params=self.strategy_params)
+        elif self.strategy_mode == "delta_absorption":
+            from backend.strategy.delta_absorption import DeltaAbsorptionStrategy
+            self.trend_follow = DeltaAbsorptionStrategy(params=self.strategy_params)
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
         # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
@@ -430,6 +434,13 @@ class BacktestEngine:
                 self._fade_day_candles = []
             self._fade_day_candles.append(candle)
 
+        # Delta+VA entries use the compact MBO provider, but their PI-style
+        # ATR exit width still needs the same completed 5m warm-up on every
+        # candle, including outside RTH.  This observe path never evaluates an
+        # entry and is therefore safe during all blocked sessions.
+        if self.strategy_mode == "delta_absorption":
+            self.trend_follow.observe(candle, [], True)
+
         # ── Zone state: either live detector or pre-computed timeline ──
         _recent_zones = []
         if self._zone_timeline is not None:
@@ -562,6 +573,10 @@ class BacktestEngine:
                 eval_zones = []
                 eval_mature = True
                 zone_source = "option_wall"
+            elif self.strategy_mode == "delta_absorption":
+                eval_zones = []
+                eval_mature = True
+                zone_source = "delta_absorption"
             elif self.strategy_mode == "fade":
                 eval_zones = []
                 eval_mature = True

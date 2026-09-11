@@ -146,6 +146,7 @@
                         <option value="betafib">BETAFIB</option>
                         <option value="pi">PI</option>
                         <option value="optionwall">OPTION WALL</option>
+                        <option value="delta_absorption">DELTA ABSORPTION</option>
                         <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
                     <div id="strategy-desc-bt" class="strategy-description" aria-live="polite">Previous-day value-area mean reversion.</div>
@@ -399,6 +400,110 @@
                             <span>-0.050 LOOSE</span><span>-0.100 ORIGINAL</span><span>-0.120 TIGHT</span>
                         </div>
                     </div>
+                </div>
+                <div id="delta-params-bt" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>PATTERN</label>
+                            <select id="delta-pattern-bt">
+                                <option value="absorption" selected>ABSORPTION</option>
+                                <option value="exhaustion">EXHAUSTION</option>
+                                <option value="both">BOTH</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>SIDE</label>
+                            <select id="delta-side-bt">
+                                <option value="all" selected>LONG + SHORT</option>
+                                <option value="long_only">LONG ONLY</option>
+                                <option value="short_only">SHORT ONLY</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>DELTA SOURCE</label>
+                            <select id="delta-source-bt">
+                                <option value="whole" selected>WHOLE RTH BAR</option>
+                                <option value="outside">OUTSIDE PRIOR VA</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>VA GATE</label>
+                            <select id="delta-gate-bt">
+                                <option value="location" selected>VA TOUCH</option>
+                                <option value="raw">RAW DELTA</option>
+                                <option value="reclaim">RECLAIM + STALL</option>
+                                <option value="reclaim_vwap">RECLAIM + VWAP</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>DELTA WINDOW</label>
+                            <select id="delta-window-bt">
+                                <option value="1">1m</option><option value="3">3m</option>
+                                <option value="5" selected>5m</option><option value="10">10m</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>BASELINE</label>
+                            <select id="delta-baseline-bt">
+                                <option value="20">20m</option><option value="30" selected>30m</option>
+                                <option value="40">40m</option><option value="60">60m</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>STRENGTH</label>
+                            <select id="delta-strength-bt">
+                                <option value="0.75">0.75× baseline</option>
+                                <option value="1" selected>1× baseline</option>
+                                <option value="1.25">1.25× baseline</option>
+                                <option value="1.5">1.5× baseline</option><option value="2">2× baseline</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>WEAKENING</label>
+                            <select id="delta-weakening-bt">
+                                <option value="0.5">0.50</option><option value="0.7" selected>0.70</option>
+                                <option value="0.85">0.85</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>STALL TOLERANCE</label>
+                            <select id="delta-stall-bt">
+                                <option value="0">0 ticks</option><option value="1" selected>1 tick</option>
+                                <option value="2">2 ticks</option><option value="4">4 ticks</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>VA TOUCH LOOKBACK</label>
+                            <select id="delta-lookback-bt">
+                                <option value="5">5m</option><option value="10" selected>10m</option>
+                                <option value="20">20m</option><option value="30">30m</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>TOUCH TOLERANCE</label>
+                            <select id="delta-touch-bt">
+                                <option value="0" selected>0 ticks</option><option value="1">1 tick</option>
+                                <option value="2">2 ticks</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>PRIOR RTH 70% VA</label>
+                            <select id="delta-require-profile-bt">
+                                <option value="1" selected>REQUIRED</option><option value="0">OPTIONAL</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="note-sm">Completed 1m Databento MBO Delta. VAH/VAL are the previous complete RTH 70% profile; entries are RTH-only.</div>
                 </div>
                 <div id="momentum-params-bt" style="display:none;">
                     <div class="form-row">
@@ -935,6 +1040,7 @@
                             <option value="betafib">BETAFIB</option>
                             <option value="pi">PI</option>
                             <option value="optionwall" disabled>OPTION WALL</option>
+                            <option value="delta_absorption">DELTA ABSORPTION</option>
                             <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
                         <div id="strategy-desc-live" class="strategy-description" aria-live="polite">Previous-day value-area mean reversion.</div>
@@ -1188,7 +1294,111 @@
                             <span>-0.050 LOOSE</span><span>-0.100 ORIGINAL</span><span>-0.120 TIGHT</span>
                         </div>
                     </div>
+                </div>
+                <div id="delta-params-live" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>PATTERN</label>
+                            <select id="delta-pattern-live">
+                                <option value="absorption" selected>ABSORPTION</option>
+                                <option value="exhaustion">EXHAUSTION</option>
+                                <option value="both">BOTH</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>SIDE</label>
+                            <select id="delta-side-live">
+                                <option value="all" selected>LONG + SHORT</option>
+                                <option value="long_only">LONG ONLY</option>
+                                <option value="short_only">SHORT ONLY</option>
+                            </select>
+                        </div>
                     </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>DELTA SOURCE</label>
+                            <select id="delta-source-live">
+                                <option value="whole" selected>WHOLE RTH BAR</option>
+                                <option value="outside">OUTSIDE PRIOR VA</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>VA GATE</label>
+                            <select id="delta-gate-live">
+                                <option value="location" selected>VA TOUCH</option>
+                                <option value="raw">RAW DELTA</option>
+                                <option value="reclaim">RECLAIM + STALL</option>
+                                <option value="reclaim_vwap">RECLAIM + VWAP</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>DELTA WINDOW</label>
+                            <select id="delta-window-live">
+                                <option value="1">1m</option><option value="3">3m</option>
+                                <option value="5" selected>5m</option><option value="10">10m</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>BASELINE</label>
+                            <select id="delta-baseline-live">
+                                <option value="20">20m</option><option value="30" selected>30m</option>
+                                <option value="40">40m</option><option value="60">60m</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>STRENGTH</label>
+                            <select id="delta-strength-live">
+                                <option value="0.75">0.75× baseline</option>
+                                <option value="1" selected>1× baseline</option>
+                                <option value="1.25">1.25× baseline</option>
+                                <option value="1.5">1.5× baseline</option><option value="2">2× baseline</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>WEAKENING</label>
+                            <select id="delta-weakening-live">
+                                <option value="0.5">0.50</option><option value="0.7" selected>0.70</option>
+                                <option value="0.85">0.85</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>STALL TOLERANCE</label>
+                            <select id="delta-stall-live">
+                                <option value="0">0 ticks</option><option value="1" selected>1 tick</option>
+                                <option value="2">2 ticks</option><option value="4">4 ticks</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>VA TOUCH LOOKBACK</label>
+                            <select id="delta-lookback-live">
+                                <option value="5">5m</option><option value="10" selected>10m</option>
+                                <option value="20">20m</option><option value="30">30m</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>TOUCH TOLERANCE</label>
+                            <select id="delta-touch-live">
+                                <option value="0" selected>0 ticks</option><option value="1">1 tick</option>
+                                <option value="2">2 ticks</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>PRIOR RTH 70% VA</label>
+                            <select id="delta-require-profile-live">
+                                <option value="1" selected>REQUIRED</option><option value="0">OPTIONAL</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="note-sm">Completed 1m Databento MBO Delta. VAH/VAL are the previous complete RTH 70% profile; entries are RTH-only and require a Databento MBO connection.</div>
+                </div>
                 <div id="momentum-params-live" style="display:none;">
                     <div class="form-row">
                         <div class="form-group fx1">
@@ -1649,6 +1859,7 @@
                     <div class="slot-line slot-phase-line">PHASE: <span id="live-slot-phase-1" class="c-t3 slot-phase-text">--</span></div>
                     <div class="slot-line">MODE: <span id="live-slot-mode-1" class="c-t3">--</span></div>
                     <div class="slot-line">MARKET: <span id="live-slot-mkt-1" class="c-t3">--</span></div>
+                    <div class="slot-line">MBO DATA: <span id="live-slot-mbo-1" class="c-t3">--</span></div>
                     <div class="slot-line">BOT LOSS LOCK: <span id="live-slot-dl-1" class="c-t3">--</span></div>
                     <div class="slot-line">VOLATILITY GATE: <span id="live-slot-rv-1" class="c-t3">--</span></div>
                     <div class="slot-line">DAILY PNL: <span id="live-slot-pnl-1" class="c-t3">--</span></div>
@@ -1668,6 +1879,7 @@
                     <div class="slot-line slot-phase-line">PHASE: <span id="live-slot-phase-2" class="c-t3 slot-phase-text">--</span></div>
                     <div class="slot-line">MODE: <span id="live-slot-mode-2" class="c-t3">--</span></div>
                     <div class="slot-line">MARKET: <span id="live-slot-mkt-2" class="c-t3">--</span></div>
+                    <div class="slot-line">MBO DATA: <span id="live-slot-mbo-2" class="c-t3">--</span></div>
                     <div class="slot-line">BOT LOSS LOCK: <span id="live-slot-dl-2" class="c-t3">--</span></div>
                     <div class="slot-line">VOLATILITY GATE: <span id="live-slot-rv-2" class="c-t3">--</span></div>
                     <div class="slot-line">DAILY PNL: <span id="live-slot-pnl-2" class="c-t3">--</span></div>
@@ -1749,7 +1961,7 @@
                 <!-- 1.0.9: INTRAMOM 用白色箭頭,與三個因子的顏色明確區隔 -->
                 <div data-legend-layer="intramom"><span style="color:#fff;">⇧</span><span style="color:#fff;">⇩</span> INTRAMOM LONG/SHORT</div>
                 <div data-legend-layer="trades"><span style="color:#00e5a0;">↑</span><span style="color:#ff4060;">↓</span> BACKTEST ENTRY WIN/LOSS · <span style="color:#ffa726;">↑</span> LIVE</div>
-                <div data-legend-layer="footprint"><span style="color:#fff;">●</span><span style="color:#ff4562;">●</span> FOOTPRINT BUY/SELL · OVERVIEW ≥50 / SIZE 50–99 / 100–149 / 150+ · HEAT=RESTING DEPTH · PASSIVE=FILL OPACITY · I=IMBALANCE</div>
+                <div data-legend-layer="footprint"><span style="color:#fff;">▌</span><span style="color:#ff4562;">▐</span> FOOTPRINT DELTA BARS · Δ=BUY−SELL · HEAT=RESTING DEPTH · PASSIVE=FILL OPACITY · I=IMBALANCE</div>
                 <div data-legend-layer="cvd"><span style="color:#38d9ff;">━</span> CVD · RTH CUMULATIVE AGGRESSIVE DELTA</div>
             </div>
 
@@ -2013,7 +2225,7 @@
 
     <script src="/static/tpx-system.js?v=1"></script>
     <script src="/static/topstep-eval.js?v=1.0.9k-topstep2"></script>
-    <script src="/static/ancserTPX.js?v=1.0.10z-cleanup1&intraarrow=1&nyzone=20260624&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&fade109=1&riskgate109=1&acct109=6&modelrename=1&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&contractroot=1&footprint=2&cvd=1&flowcompact=1&statushealth=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.10z-cleanup1&intraarrow=1&nyzone=20260624&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&fade109=1&riskgate109=1&acct109=6&modelrename=1&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&contractroot=1&footprint=2&cvd=1&flowcompact=1&deltaabsorb=1&statushealth=1"></script>
     <!-- Production handlers bind first; the skin then moves those same nodes. -->
     <script src="/static/tpx-glass-skin.js?v=1.1.1-brand3"></script>
     <script src="/static/tpx-glass.js?v=1.0.10p-glass84"></script>

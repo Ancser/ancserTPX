@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from backend.data import market_data
+from backend.data.orderflow import footprint_profile
 from backend.data.pi_history import load_rows
 from backend.live.pi_listener import DIRECTION, SYMBOL_MAP
 
@@ -102,39 +103,11 @@ def _load_pi(path: Path | None = None) -> list[dict[str, Any]]:
 
 
 def _profile(bars: list[dict[str, Any]]) -> dict[str, float]:
-    volume: Counter[int] = Counter()
-    for bar in bars:
-        for cell in bar.get("cells") or []:
-            if len(cell) >= 3:
-                volume[int(cell[0])] += int(cell[1] or 0) + int(cell[2] or 0)
-    if not volume:
-        return {}
-    poc_tick = max(volume, key=lambda tick: (volume[tick], -tick))
-    target = sum(volume.values()) * PROFILE_PCT
-    included = {poc_tick}
-    accumulated = volume[poc_tick]
-    low = high = poc_tick
-    while accumulated < target:
-        lower = low - 1
-        upper = high + 1
-        lower_volume = volume.get(lower, 0)
-        upper_volume = volume.get(upper, 0)
-        if lower_volume == 0 and upper_volume == 0:
-            remaining = [tick for tick in volume if tick not in included]
-            if not remaining:
-                break
-            chosen = max(remaining, key=lambda tick: (volume[tick], -abs(tick - poc_tick)))
-        else:
-            chosen = upper if upper_volume >= lower_volume else lower
-        included.add(chosen)
-        accumulated += volume.get(chosen, 0)
-        low = min(low, chosen)
-        high = max(high, chosen)
-    return {
-        "poc": poc_tick * TICK_SIZE,
-        "vah": high * TICK_SIZE,
-        "val": low * TICK_SIZE,
-    }
+    # Keep the historical research entry point, but use the production
+    # definition so cache, backtest, and live VA levels cannot drift.
+    return footprint_profile(
+        bars, value_area_pct=PROFILE_PCT, tick_size=TICK_SIZE,
+    )
 
 
 def _cell_features(bar: dict[str, Any]) -> dict[str, float]:

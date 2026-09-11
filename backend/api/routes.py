@@ -283,10 +283,15 @@ def _normalize_strategy_name(value: str) -> str:
     # 1.0.8: +fade(前日 VA 回歸);confluence 由呼叫端先行判斷
     v = str(value or "").strip().lower()
     # 1.0.9: 改名相容 —— 舊 preset 存的是 intramom / sessfib
-    v = {"intramom": "momentum", "claudefib": "momentum", "sessfib": "betafib"}.get(v, v)
+    v = {
+        "intramom": "momentum", "claudefib": "momentum", "sessfib": "betafib",
+        "delta": "delta_absorption", "delta_va": "delta_absorption",
+        "delta+va": "delta_absorption", "delta_absorb": "delta_absorption",
+    }.get(v, v)
     # 1.0.9: TREND 已移除 —— 未知值一律落到 factor
     return v if v in (
         "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+        "delta_absorption",
     ) else "factor"
 
 
@@ -431,6 +436,23 @@ def _strategy_leg_params(req, prefix: str) -> dict:
     }
 
 
+def _request_field_supplied(req, name: str) -> bool:
+    """Distinguish an omitted Pydantic default from an explicit value."""
+    fields = getattr(req, "model_fields_set", None)
+    if fields is None:
+        fields = getattr(req, "__fields_set__", None)
+    if fields is None:
+        # Plain namespaces used by callers/tests have no Pydantic field set;
+        # preserve their existing attribute-driven behavior.
+        return hasattr(req, name)
+    return name in fields
+
+
+def _request_value_or(req, name: str, default):
+    """Return an explicit request field, otherwise the supplied default."""
+    return getattr(req, name) if _request_field_supplied(req, name) else default
+
+
 def _conf_ev_floor_opt(val):
     """Blank/None/non-numeric → None (legacy win-prob gate); number → EV floor."""
     if val is None or val == "":
@@ -484,6 +506,42 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
     # 1.0.8: mlc2 (ml_consolidation_v2) 已移除;僅 confluence / trend。
     strategy = _normalize_strategy_name(raw_strat)
     tr = _strategy_leg_params(req, "tr")
+    # The researched Delta candidate has a PI-style exit shape. Keep the
+    # normal FACTOR defaults unchanged, but make a minimal direct API request
+    # (``{"strategy":"delta_absorption"}``) deterministic as well. A full
+    # browser payload, or any explicit field, always wins over these values.
+    is_delta = strategy == "delta_absorption"
+    factor_sl_default = (
+        4.0 if is_delta and not _request_field_supplied(req, "factor_sl_value")
+        else _PARAM_DEFAULTS.factor_sl_value
+    )
+    factor_tp_default = (
+        factor_sl_default * 3.0
+        if is_delta and not _request_field_supplied(req, "factor_tp_value")
+        else _PARAM_DEFAULTS.factor_tp_value
+    )
+    factor_sl_rule_default = (
+        "atr_blend" if is_delta and not _request_field_supplied(req, "factor_sl_rule")
+        else "atr"
+    )
+    factor_tp_rule_default = (
+        "atr_blend" if is_delta and not _request_field_supplied(req, "factor_tp_rule")
+        else "atr"
+    )
+    rr_default = (
+        3 if is_delta and not _request_field_supplied(req, "rr_ratio")
+        else 2
+    )
+    pi_short_sl_default = (
+        1.5 if is_delta and not _request_field_supplied(req, "pi_short_sl_value")
+        else _PARAM_DEFAULTS.pi_short_sl_value
+    )
+    if is_delta and not any(_request_field_supplied(req, field) for field in (
+        "trail_enabled", "trail_trigger_pct", "trail_sl_ticks", "trail_sl_pct",
+        "tr_trail_enabled", "tr_trail_trigger_pct", "tr_trail_sl_ticks", "tr_trail_sl_pct",
+    )):
+        tr = dict(tr)
+        tr.update({"trail_trigger_pct": 0.0, "trail_enabled": False})
     return StrategyParams(
         strategy=strategy,
         conf_band_ticks=float(getattr(req, "conf_band_ticks", 4.0) or 4.0),
@@ -524,7 +582,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         # Option Wall's causal tape contains RTH snapshots only.  Treat that as
         # model semantics rather than inheriting the platform's ASIA default.
         tr_allowed_sessions=(
-            ["RTH"] if strategy == "optionwall" else _conf_allowed_sessions_list(
+            ["RTH"] if strategy in ("optionwall", "delta_absorption") else _conf_allowed_sessions_list(
                 getattr(req, "tr_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
             )
         ),
@@ -539,7 +597,8 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         # 1.0.8: ladder 出場 + 日虧斷路器
         tr_exit_mode=(
             "ladder"
-            if str(getattr(req, "tr_exit_mode", "tp") or "tp").lower() == "ladder"
+            if strategy in ("trend", "factor")
+            and str(getattr(req, "tr_exit_mode", "tp") or "tp").lower() == "ladder"
             else "tp"
         ),
         tr_daily_loss_stop=max(0, min(9, int(getattr(req, "tr_daily_loss_stop", 0) or 0))),
@@ -580,10 +639,10 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         factor_side_mode=_normalize_factor_side(getattr(req, "factor_side_mode", "all")),
         factor_pmo_signal_mode=_normalize_factor_pmo_mode(getattr(req, "factor_pmo_signal_mode", "normal")),
         factor_session_va_filter=_normalize_factor_session_va_filter(getattr(req, "factor_session_va_filter", "off")),
-        factor_sl_rule=_normalize_factor_rule(getattr(req, "factor_sl_rule", "atr")),
-        factor_tp_rule=_normalize_factor_rule(getattr(req, "factor_tp_rule", "atr")),
-        factor_sl_value=max(0.01, float(getattr(req, "factor_sl_value", 1.5) or 1.5)),
-        factor_tp_value=max(0.01, float(getattr(req, "factor_tp_value", 2.0) or 2.0)),
+        factor_sl_rule=_normalize_factor_rule(_request_value_or(req, "factor_sl_rule", factor_sl_rule_default)),
+        factor_tp_rule=_normalize_factor_rule(_request_value_or(req, "factor_tp_rule", factor_tp_rule_default)),
+        factor_sl_value=max(0.01, float(_request_value_or(req, "factor_sl_value", factor_sl_default) or factor_sl_default)),
+        factor_tp_value=max(0.01, float(_request_value_or(req, "factor_tp_value", factor_tp_default) or factor_tp_default)),
         # 1.0.9: HOLD 5m-candle system removed — FACTOR exits are SL/TP only. See pmo note above.
         factor_max_hold_bars=0,
         factor_max_trades_per_day=max(0, int(getattr(req, "factor_max_trades_per_day", 3) or 0)),
@@ -634,8 +693,8 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             getattr(req, "pi_max_signal_age_min", None)
             or _PARAM_DEFAULTS.pi_max_signal_age_min))),
         pi_short_sl_value=max(0.1, float(
-            getattr(req, "pi_short_sl_value", None)
-            or _PARAM_DEFAULTS.pi_short_sl_value)),
+            _request_value_or(req, "pi_short_sl_value", pi_short_sl_default)
+            or pi_short_sl_default)),
         # 0 is an intentional OFF value. Do not use `or default` here or a
         # saved OFF preset silently becomes the non-zero default on execution.
         pi_long_hold_min=max(0, int(
@@ -646,6 +705,40 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             _PARAM_DEFAULTS.pi_short_hold_min
             if getattr(req, "pi_short_hold_min", None) is None
             else getattr(req, "pi_short_hold_min"))),
+        # Delta+VA absorption entry.  Defaults are the selected
+        # absorption/w5/whole/location candidate; all values are bounded so a
+        # malformed preset cannot make the live feed allocate unbounded state.
+        delta_window=max(1, min(30, int(getattr(
+            req, "delta_window", _PARAM_DEFAULTS.delta_window) or _PARAM_DEFAULTS.delta_window))),
+        delta_baseline_window=max(2, min(240, int(getattr(
+            req, "delta_baseline_window", _PARAM_DEFAULTS.delta_baseline_window)
+            or _PARAM_DEFAULTS.delta_baseline_window))),
+        delta_strength_multiplier=max(0.1, min(10.0, float(getattr(
+            req, "delta_strength_multiplier", _PARAM_DEFAULTS.delta_strength_multiplier)
+            or _PARAM_DEFAULTS.delta_strength_multiplier))),
+        delta_weakening_ratio=max(0.1, min(1.0, float(getattr(
+            req, "delta_weakening_ratio", _PARAM_DEFAULTS.delta_weakening_ratio)
+            or _PARAM_DEFAULTS.delta_weakening_ratio))),
+        delta_stall_ticks=max(0, min(20, int(
+            _PARAM_DEFAULTS.delta_stall_ticks
+            if getattr(req, "delta_stall_ticks", None) is None
+            else getattr(req, "delta_stall_ticks")))),
+        delta_value_lookback=max(2, min(120, int(getattr(
+            req, "delta_value_lookback", _PARAM_DEFAULTS.delta_value_lookback)
+            or _PARAM_DEFAULTS.delta_value_lookback))),
+        delta_value_touch_ticks=max(0, min(20, int(getattr(
+            req, "delta_value_touch_ticks", _PARAM_DEFAULTS.delta_value_touch_ticks)
+            or _PARAM_DEFAULTS.delta_value_touch_ticks))),
+        delta_source=(lambda v: v if v in ("whole", "outside") else "whole")(
+            str(getattr(req, "delta_source", _PARAM_DEFAULTS.delta_source) or "whole").lower()),
+        delta_gate=(lambda v: v if v in ("raw", "location", "reclaim", "reclaim_vwap") else "location")(
+            str(getattr(req, "delta_gate", _PARAM_DEFAULTS.delta_gate) or "location").lower()),
+        delta_pattern=(lambda v: v if v in ("absorption", "exhaustion", "both") else "absorption")(
+            str(getattr(req, "delta_pattern", _PARAM_DEFAULTS.delta_pattern) or "absorption").lower()),
+        delta_side_mode=(lambda v: v if v in ("all", "long_only", "short_only") else "all")(
+            str(getattr(req, "delta_side_mode", _PARAM_DEFAULTS.delta_side_mode) or "all").lower()),
+        delta_require_profile=bool(getattr(
+            req, "delta_require_profile", _PARAM_DEFAULTS.delta_require_profile)),
         option_wall_submodel=_normalize_option_wall_submodel(
             getattr(req, "option_wall_submodel", _PARAM_DEFAULTS.option_wall_submodel)
         ),
@@ -671,7 +764,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             getattr(req, "betafib_tp_fib", 0.90) or 0.90))),
         area_timeframe=_normalize_area_timeframe(getattr(req, "area_timeframe", "15m")),
         value_area_pct=_normalize_value_area_pct(getattr(req, "value_area_pct", 0.80)),
-        rr_ratio=_normalize_rr_ratio(getattr(req, "rr_ratio", 2)),
+        rr_ratio=_normalize_rr_ratio(_request_value_or(req, "rr_ratio", rr_default)),
         method=str(getattr(req, "method", "single") or "single").lower(),
         tf_combo=[t for t in (getattr(req, "tf_combo", None) or []) if t in ML_TIMEFRAMES],
         tr_overlap_trade_tf=_normalize_tr_overlap_trade_tf(
@@ -1572,6 +1665,18 @@ class BacktestRequest(BaseModel):
     pi_short_sl_value: float = 2.5
     pi_long_hold_min: int = 0
     pi_short_hold_min: int = 60
+    delta_window: int = 5
+    delta_baseline_window: int = 30
+    delta_strength_multiplier: float = 1.0
+    delta_weakening_ratio: float = 0.70
+    delta_stall_ticks: int = 1
+    delta_value_lookback: int = 10
+    delta_value_touch_ticks: int = 0
+    delta_source: str = "whole"
+    delta_gate: str = "location"
+    delta_pattern: str = "absorption"
+    delta_side_mode: str = "all"
+    delta_require_profile: bool = True
     option_wall_submodel: str = "primary_strict"
     option_wall_side_mode: str = "all"
     option_wall_long_sl_atr: float = 4.0
@@ -3080,6 +3185,8 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
             option_wall_status["signals"], option_wall_status["first"],
             option_wall_status["last"],
         )
+    if strategy_name == "delta_absorption" and bt_symbol != "MNQ":
+        raise HTTPException(400, "DELTA ABSORPTION requires MNQ MBO data")
     config = BacktestConfig(
         strategies=[strategy_name],
         initial_capital=req.initial_capital,
@@ -3942,6 +4049,18 @@ async def shutdown_live_engines() -> None:
 
 class LiveStartRequest(BaseModel):
     account_id: int
+    delta_window: int = 5
+    delta_baseline_window: int = 30
+    delta_strength_multiplier: float = 1.0
+    delta_weakening_ratio: float = 0.70
+    delta_stall_ticks: int = 1
+    delta_value_lookback: int = 10
+    delta_value_touch_ticks: int = 0
+    delta_source: str = "whole"
+    delta_gate: str = "location"
+    delta_pattern: str = "absorption"
+    delta_side_mode: str = "all"
+    delta_require_profile: bool = True
     pi_long_only: bool = True
     pi_signal_set: str = "long_pi_only"
     pi_long_kinds: Optional[List[str]] = None
@@ -4065,6 +4184,8 @@ async def live_start(req: LiveStartRequest):
             400,
             "OPTION WALL is historical replay only until a causal live option feed is connected",
         )
+    if _normalize_strategy_name(req.strategy) == "delta_absorption" and _extract_symbol(req.contract_id) != "MNQ":
+        raise HTTPException(400, "DELTA ABSORPTION live feed currently supports MNQ only")
     live_client = _topstepx_client
     if live_client is None:
         raise HTTPException(400, "TopstepX client not initialized — connect first")
@@ -5025,6 +5146,7 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         # 1.0.9: TREND 已移除,未知/舊值一律落到 factor
         normalized_strategy = strategy if strategy in (
             "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+            "delta_absorption",
         ) else "factor"
         # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         _cid_new = normalize_contract_id_to_front(params.get("contract_id") or "")
@@ -5050,7 +5172,10 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         if normalized_strategy in ("sigma", "factor", "momentum", "betafib", "pi") and "tr_allowed_sessions" not in params:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
             changed = True
-            changed = True
+        if normalized_strategy == "delta_absorption":
+            if params.get("tr_allowed_sessions") != ["RTH"]:
+                params["tr_allowed_sessions"] = ["RTH"]
+                changed = True
         area_tf = _normalize_area_timeframe(params.get("area_timeframe"))
         if params.get("area_timeframe") != area_tf:
             params["area_timeframe"] = area_tf

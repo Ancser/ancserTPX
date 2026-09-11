@@ -11,6 +11,7 @@ from backend.desktop_app import (
     APP_ICON_PATH,
     APP_PORT,
     APP_TITLE,
+    WEBSITE_ICON_PATH,
     SingleInstanceLock,
     application_url,
     port_is_available,
@@ -49,6 +50,14 @@ def test_desktop_launcher_owns_native_window_and_fixed_loopback_server():
 def test_application_url_is_loopback_and_same_origin():
     assert application_url() == f"http://{APP_HOST}:{APP_PORT}/"
     assert application_url("localhost", 8123) == "http://localhost:8123/"
+
+
+def test_native_app_icon_is_the_website_favicon():
+    html = (ROOT / "frontend" / "static" / "ancserTPX.html").read_text(encoding="utf-8")
+    assert WEBSITE_ICON_PATH == ROOT / "frontend" / "static" / "favicon.ico"
+    assert APP_ICON_PATH == WEBSITE_ICON_PATH
+    assert APP_ICON_PATH.is_file()
+    assert 'href="/static/favicon.ico"' in html
 
 
 def test_wait_for_backend_requires_ancsertpx_health_payload():

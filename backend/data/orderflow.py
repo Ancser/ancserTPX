@@ -13,7 +13,7 @@ import heapq
 import json
 import math
 import threading
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -582,6 +582,79 @@ def read_footprint_cache(path: str | Path) -> dict[str, Any]:
     if not isinstance(payload, dict) or not isinstance(payload.get("bars"), list):
         raise ValueError(f"invalid footprint cache: {path}")
     return payload
+
+
+def footprint_profile(
+    bars: Iterable[dict[str, Any]],
+    *,
+    value_area_pct: float = 0.70,
+    tick_size: float = DEFAULT_TICK_SIZE,
+) -> dict[str, float]:
+    """Return a deterministic executed-volume POC and value area.
+
+    The compact MBO cache stores one cell as ``[tick, buy, sell, ...]``.  A
+    profile is therefore built from aggressive executed volume only; resting
+    depth is deliberately not mixed into VAH/VAL/POC.  Expansion follows the
+    same POC/tie-break rule used by the offline research so historical and live
+    Delta+VA decisions cannot drift apart.
+    """
+    pct = float(value_area_pct)
+    size = float(tick_size)
+    if not 0 < pct <= 1:
+        raise ValueError("value_area_pct must be in (0, 1]")
+    if size <= 0:
+        raise ValueError("tick_size must be positive")
+
+    volume: Counter[int] = Counter()
+    for bar in bars:
+        if not isinstance(bar, dict):
+            continue
+        for cell in bar.get("cells") or []:
+            if not isinstance(cell, (list, tuple)) or len(cell) < 3:
+                continue
+            try:
+                tick = int(cell[0])
+                buy = max(0, int(cell[1] or 0))
+                sell = max(0, int(cell[2] or 0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            volume[tick] += buy + sell
+    if not volume:
+        return {}
+
+    poc_tick = max(volume, key=lambda tick: (volume[tick], -tick))
+    total = int(sum(volume.values()))
+    target = total * pct
+    included = {poc_tick}
+    accumulated = volume[poc_tick]
+    low = high = poc_tick
+    while accumulated < target:
+        lower = low - 1
+        upper = high + 1
+        lower_volume = volume.get(lower, 0)
+        upper_volume = volume.get(upper, 0)
+        if lower_volume == 0 and upper_volume == 0:
+            remaining = [tick for tick in volume if tick not in included]
+            if not remaining:
+                break
+            chosen = max(
+                remaining,
+                key=lambda tick: (volume[tick], -abs(tick - poc_tick)),
+            )
+        else:
+            # Equal adjacent volumes expand upward, matching the research
+            # fingerprint and making the result independent of dict order.
+            chosen = upper if upper_volume >= lower_volume else lower
+        included.add(chosen)
+        accumulated += volume.get(chosen, 0)
+        low = min(low, chosen)
+        high = max(high, chosen)
+    return {
+        "poc": float(poc_tick * size),
+        "vah": float(high * size),
+        "val": float(low * size),
+        "total_volume": float(total),
+    }
 
 
 def _merge_cells(target: defaultdict[int, list[int]], cells: Iterable[list[Any]]) -> None:

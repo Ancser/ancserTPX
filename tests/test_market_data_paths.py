@@ -92,3 +92,11 @@ def test_windows_installer_does_not_recreate_disabled_mirror_schedule():
     assert 'schtasks /create /tn "ancserTPX MarketData Sync"' not in installer
     assert 'schtasks /change /tn "ancserTPX MarketData Sync" /disable' in installer
     assert "Hourly scheduled E: mirror is disabled" in installer
+    assert 'schtasks /create /tn "ancserTPX Databento MBO Settlement"' in installer
+    batch = (Path(__file__).resolve().parents[1] / "windows_databento_orderflow_settlement.bat").read_text(
+        encoding="utf-8",
+    )
+    assert "databento_orderflow_settlement.py" in batch
+    assert "--max-cost 0" in batch
+    assert "ancserMarketData" in batch
+    assert "E:\\" not in batch

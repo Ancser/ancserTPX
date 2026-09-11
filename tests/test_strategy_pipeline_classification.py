@@ -55,6 +55,7 @@ EXPECTED = {
     "betafib":       (True,  True),   # 同上
     "pi":            (True,  True),   # 1.0.10 新增
     "optionwall":    (True,  True),   # hourly tape + completed 5m ATR blend
+    "delta_absorption": (True, True), # completed MBO Delta + prior RTH VA
     "fade":          (False, True),   # 用自己的前日 VA 水位,不需要 detector zone
     "sigma":         (False, True),   # 自己算 sigma 帶,不需要 detector zone
 }
@@ -162,6 +163,9 @@ def _build_strategy(mode: str, params):
     if mode == "optionwall":
         from backend.strategy.option_wall import OptionWallStrategy
         return OptionWallStrategy(params=params, signals=[])
+    if mode == "delta_absorption":
+        from backend.strategy.delta_absorption import DeltaAbsorptionStrategy
+        return DeltaAbsorptionStrategy(params=params)
     if mode == "momentum":
         from backend.strategy.research_lab import MomentumContinuation
         return MomentumContinuation(params=params)

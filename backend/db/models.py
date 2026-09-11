@@ -330,14 +330,16 @@ class BreakoutAnalysis:
 #
 # backtest 與 live 兩個引擎共用這兩個常數,確保 live == backtest。
 FACTOR_PIPELINE_STRATEGIES = (
-    "factor", "momentum", "betafib", "pi", "optionwall",
+    "factor", "momentum", "betafib", "pi", "optionwall", "delta_absorption",
 )
 ZONELESS_STRATEGIES = (
     "sigma", "fade", "factor", "momentum", "betafib", "pi", "optionwall",
+    "delta_absorption",
 )
 # 不渲染 detector zone 的策略(fade 另有自己的前日 VA 水位,單獨處理)
 ZONELESS_ZONE_RENDER = (
     "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+    "delta_absorption",
 )
 
 
@@ -488,6 +490,21 @@ class StrategyParams:
     pi_short_sl_value: float = 2.5        # 空單 SL(×atr_blend)
     pi_long_hold_min: int = 0             # 多單時間出場(分鐘);0 = 不用
     pi_short_hold_min: int = 60           # 空單時間出場(分鐘);0 = 不用
+    # 1.0.10: Delta+VA absorption entry.  Defaults reproduce the selected
+    # absorption/w5/whole/location research candidate; exits reuse the PI
+    # directional fields above plus factor_sl_value/rr_ratio.
+    delta_window: int = 5
+    delta_baseline_window: int = 30
+    delta_strength_multiplier: float = 1.0
+    delta_weakening_ratio: float = 0.70
+    delta_stall_ticks: int = 1
+    delta_value_lookback: int = 10
+    delta_value_touch_ticks: int = 0
+    delta_source: str = "whole"          # "whole" | "outside"
+    delta_gate: str = "location"         # raw | location | reclaim | reclaim_vwap
+    delta_pattern: str = "absorption"    # absorption | exhaustion | both
+    delta_side_mode: str = "all"         # all | long_only | short_only
+    delta_require_profile: bool = True
     # QQQ Option Wall → MNQ historical-replay model.  Entry gates are fixed by
     # the selected causal sub-model; exits are deliberately separate from PI.
     option_wall_submodel: str = "primary_strict"

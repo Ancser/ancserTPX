@@ -199,16 +199,18 @@ def test_frontend_footprint_is_lazy_visible_window_layer():
     assert "drawFootprintLayer" in js
     assert "drawCvdLayer" in js
     assert "rth_cumulative_aggressive_delta" in js or "CVD RTH" in js
-    assert "footprintTierDefs" in js
+    assert "passiveStrength" in js
     assert "ORDERFLOW_DETAIL_CELL_LIMIT" in js
     assert "ORDERFLOW_COMPACT_CELL_LIMIT" in js
     assert "_compactFootprintBars" in js
     assert "FOOTPRINT COMPACT · ZOOM IN FOR LEVELS" in js
     assert "ORDERFLOW_COMPACT_COLUMN_LIMIT = 1" in js
-    assert "ORDERFLOW_COMPACT_MIN_VOLUME = 50" in js
+    assert "ORDERFLOW_COMPACT_MIN_DELTA = 50" in js
     assert "eligible.length ? eligible : allItems" in js
     assert "let _orderflowRequestSerial = 0" in js
     assert "requestId !== _orderflowRequestSerial" in js
+    assert "function _orderflowChartSpacing" in js
+    assert "_orderflowChartSpacing() || 8" in js
     assert "function _sizeOrderflowCanvas" in js
     draw_start = js.index("function drawIndicatorSignalOverlay")
     draw_end = js.index("function drawPiSignalOverlay", draw_start)
@@ -217,16 +219,25 @@ def test_frontend_footprint_is_lazy_visible_window_layer():
     assert "canvas.width = W * dpr" not in indicator
     assert "markOrderflowInteraction();" in js
     assert "performance.now() < _orderflowInteractionUntil" in js
-    assert "const bubbles = compactMode" in js
-    assert "function _footprintBubbleRadius" in js
+    assert "function drawFootprintDeltaBar" in js
+    assert "negative delta extends left in red" in js
+    assert "const delta = buy - sell" in js
+    assert "drawFootprintDeltaBar(" in js
+    assert "const magnitude = Math.abs(signedDelta)" in js
+    assert "function _syncFootprintCandleVisibility" in js
+    assert "candleSeries.applyOptions({visible: !hideCandles})" in js
+    assert "drawFootprintVolumeBar" not in js
+    assert "drawPseudoBubble" not in js
+    assert "_footprintBubbleRadius" not in js
     assert "bubble.passive &&" not in js
     assert "ORDERFLOW_MAX_DEPTH_LEVELS" in js
     assert "Math.floor(ORDERFLOW_MAX_DEPTH_LEVELS / 2)" in js
     assert "const depthLevels = {bid: new Map(), ask: new Map()};" in js
     assert "class=\"chart-signal-legend\"" in html
-    assert "rgba(255,255,255" in js
+    assert "rgba(245,248,252" in js
     assert "rgba(255,45,70" in js
     assert "PASSIVE=FILL OPACITY" in html
     assert 'data-switch-proxy="lp-footprint"' in html
     assert 'data-switch-proxy="lp-cvd"' in html
-    assert "50–99 / 100–149 / 150+" in html
+    assert "FOOTPRINT DELTA BARS" in html
+    assert "Δ=BUY−SELL" in html

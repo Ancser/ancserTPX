@@ -165,6 +165,39 @@ def _request_ranges(schema: str, start: date, end: date) -> Iterable[tuple[date,
     yield from _days(start, end)
 
 
+def request_payload(
+    schema: str,
+    raw_symbol: str,
+    start: date | str,
+    end: date | str,
+) -> dict[str, Any]:
+    """Build one canonical Databento request used by download and settlement."""
+    range_start = start if isinstance(start, date) else date.fromisoformat(str(start))
+    range_end = end if isinstance(end, date) else date.fromisoformat(str(end))
+    if range_end <= range_start:
+        raise ValueError("request end must be later than start")
+    return {
+        "dataset": DATASET,
+        "symbols": [str(raw_symbol).upper()],
+        "schema": str(schema),
+        "stype_in": "raw_symbol",
+        "start": range_start.isoformat(),
+        "end": range_end.isoformat(),
+    }
+
+
+def quote_request(client: Any, request: dict[str, Any]) -> tuple[int, float]:
+    """Return the current record-count and usage quote without downloading."""
+    count = int(client.metadata.get_record_count(**request))
+    cost = float(client.metadata.get_cost(**request))
+    if not math.isfinite(cost) or cost < 0:
+        raise RuntimeError(
+            f"Databento returned an invalid cost quote for {request.get('schema')} "
+            f"{request.get('start')}: {cost}"
+        )
+    return count, cost
+
+
 def _folder_name(symbol: str, schema: str, start: date, end: date) -> str:
     base = _base_symbol(symbol).lower()
     schema_slug = schema.replace("-", "")
@@ -180,7 +213,122 @@ def _file_name(schema: str, start: date, end: date) -> str:
     return f"glbx-mdp3-{suffix}.{schema.replace('-', '')}.dbn.zst"
 
 
-def _ensure_footprint_cache(source: Path, trade_date: date, symbol: str) -> Path:
+def _archive_request_files(
+    folder: Path,
+    target: Path,
+) -> list[tuple[Path, Path]]:
+    """Move an old request aside on the same drive before a safe replacement."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    archived: list[tuple[Path, Path]] = []
+    try:
+        for candidate in (target, folder / "metadata.json", folder / "manifest.json"):
+            if not candidate.is_file():
+                continue
+            backup = candidate.with_name(candidate.name + ".replaced-" + stamp)
+            suffix = 1
+            while backup.exists():
+                backup = candidate.with_name(
+                    candidate.name + f".replaced-{stamp}-{suffix}"
+                )
+                suffix += 1
+            candidate.replace(backup)
+            archived.append((candidate, backup))
+    except Exception:
+        _restore_archived_files(archived)
+        raise
+    return archived
+
+
+def _restore_archived_files(archived: list[tuple[Path, Path]]) -> None:
+    for original, backup in reversed(archived):
+        if backup.is_file() and not original.exists():
+            backup.replace(original)
+
+
+def download_request(
+    client: Any,
+    request: dict[str, Any],
+    source_root: Path,
+    *,
+    replace_existing: bool = True,
+) -> tuple[Path, str]:
+    """Download one request transactionally and return ``(path, sha256)``.
+
+    A replacement never deletes the previous DBN/metadata/manifest.  It first
+    renames them beside the source file, and restores them if the new transfer
+    or manifest publication fails.  Those files remain under the excluded
+    primary-only order-flow tree so the E: mirror is never involved.
+    """
+    schema = str(request["schema"])
+    symbols = request.get("symbols") or []
+    raw_symbol = str(symbols[0] if isinstance(symbols, list) else symbols).upper()
+    range_start = date.fromisoformat(str(request["start"]))
+    range_end = date.fromisoformat(str(request["end"]))
+    folder = source_root / _folder_name(raw_symbol, schema, range_start, range_end)
+    target = folder / _file_name(schema, range_start, range_end)
+    if target.is_file() and not replace_existing:
+        raise FileExistsError(f"request already exists: {target}")
+
+    folder.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(target.name + ".partial")
+    partial.unlink(missing_ok=True)
+    try:
+        client.timeseries.get_range(
+            dataset=request["dataset"],
+            symbols=[raw_symbol],
+            schema=schema,
+            stype_in=request.get("stype_in", "raw_symbol"),
+            start=range_start.isoformat(),
+            end=range_end.isoformat(),
+            path=partial,
+        )
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    if not partial.is_file() or partial.stat().st_size <= 0:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError(f"Databento returned no file for {schema} {range_start}")
+
+    archived = _archive_request_files(folder, target) if replace_existing else []
+    try:
+        partial.replace(target)
+        digest = _sha256(target)
+        query = {
+            key: value for key, value in request.items()
+            if key not in {"record_count", "quoted_cost_usd"}
+        }
+        _atomic_json(folder / "metadata.json", {
+            "version": 1,
+            "query": query,
+            "record_count": request.get("record_count", 0),
+            "quoted_cost_usd": request.get("quoted_cost_usd", 0.0),
+            "downloaded_at": datetime.now(UTC).isoformat(),
+        })
+        _atomic_json(folder / "manifest.json", {
+            "version": 1,
+            "files": [{
+                "name": target.name,
+                "bytes": target.stat().st_size,
+                "sha256": digest,
+            }],
+        })
+    except Exception:
+        partial.unlink(missing_ok=True)
+        for candidate in (target, folder / "metadata.json", folder / "manifest.json"):
+            candidate.unlink(missing_ok=True)
+        _restore_archived_files(archived)
+        raise
+    return target, digest
+
+
+def _ensure_footprint_cache(
+    source: Path,
+    trade_date: date,
+    symbol: str,
+    *,
+    force: bool = False,
+    root: str | Path | None = None,
+) -> Path:
     """Build a missing derived cache, including for an already-downloaded day."""
     from backend.data.orderflow import (
         CACHE_SCHEMA_VERSION,
@@ -189,18 +337,21 @@ def _ensure_footprint_cache(source: Path, trade_date: date, symbol: str) -> Path
         read_footprint_cache,
     )
 
-    output = footprint_cache_path(trade_date.isoformat(), _base_symbol(symbol))
+    output = footprint_cache_path(
+        trade_date.isoformat(), _base_symbol(symbol), root=root,
+    )
     if output.is_file() and output.stat().st_size > 0:
         try:
             version = int((read_footprint_cache(output).get("meta") or {}).get("schema_version", 0))
         except (OSError, ValueError, TypeError):
             version = 0
-        if version == CACHE_SCHEMA_VERSION:
+        if version == CACHE_SCHEMA_VERSION and not force:
             print(f"CACHE SKIP {output.name} | schema v{version}")
             return output
         print(f"CACHE REBUILD {output.name} | schema v{version} -> v{CACHE_SCHEMA_VERSION}")
     output, payload = build_footprint_file(
         source, trade_date.isoformat(), symbol=_base_symbol(symbol),
+        output_path=output,
     )
     print(
         f"CACHE {output.name} | {len(payload['bars'])} RTH minute bars"
@@ -258,20 +409,8 @@ def main() -> int:
             if existing:
                 print(f"SKIP {schema:10s} {range_start} -> {range_end} | {existing.name}")
                 continue
-            request = {
-                "dataset": DATASET,
-                "symbols": [args.symbol.upper()],
-                "schema": schema,
-                "stype_in": "raw_symbol",
-                "start": range_start.isoformat(),
-                "end": range_end.isoformat(),
-            }
-            count = int(client.metadata.get_record_count(**request))
-            cost = float(client.metadata.get_cost(**request))
-            if not math.isfinite(cost) or cost < 0:
-                raise RuntimeError(
-                    f"Databento returned an invalid cost quote for {schema} {range_start}: {cost}"
-                )
+            request = request_payload(schema, args.symbol, range_start, range_end)
+            count, cost = quote_request(client, request)
             if count <= 0:
                 print(f"EMPTY {schema:9s} {range_start} -> {range_end}")
                 continue
@@ -313,46 +452,10 @@ def main() -> int:
         schema = str(request["schema"])
         range_start = date.fromisoformat(str(request["start"]))
         range_end = date.fromisoformat(str(request["end"]))
-        folder = source_root / _folder_name(args.symbol, schema, range_start, range_end)
-        target = folder / _file_name(schema, range_start, range_end)
-        partial = target.with_name(target.name + ".partial")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        partial.unlink(missing_ok=True)
         print(f"DOWNLOAD {schema} {range_start} -> {range_end} ...", flush=True)
-        client.timeseries.get_range(
-            dataset=DATASET,
-            symbols=[args.symbol.upper()],
-            schema=schema,
-            stype_in="raw_symbol",
-            start=range_start.isoformat(),
-            end=range_end.isoformat(),
-            path=partial,
+        target, digest = download_request(
+            client, request, source_root, replace_existing=True,
         )
-        if not partial.is_file() or partial.stat().st_size <= 0:
-            raise RuntimeError(f"Databento returned no file for {schema} {range_start}")
-        partial.replace(target)
-        digest = _sha256(target)
-        query = {
-            key: value for key, value in request.items()
-            if key not in {"record_count", "quoted_cost_usd"}
-        }
-        metadata_path = folder / "metadata.json"
-        manifest_path = folder / "manifest.json"
-        _atomic_json(metadata_path, {
-            "version": 1,
-            "query": query,
-            "record_count": request["record_count"],
-            "quoted_cost_usd": request["quoted_cost_usd"],
-            "downloaded_at": datetime.now(UTC).isoformat(),
-        })
-        _atomic_json(manifest_path, {
-            "version": 1,
-            "files": [{
-                "name": target.name,
-                "bytes": target.stat().st_size,
-                "sha256": digest,
-            }],
-        })
         print(
             f"SAVED {target.stat().st_size / 1_048_576:.1f} MiB | "
             f"sha256 {digest[:12]}... | primary only"

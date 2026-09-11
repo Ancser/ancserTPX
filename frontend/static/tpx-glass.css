@@ -1317,6 +1317,14 @@
     -webkit-backdrop-filter: none !important;
 }
 
+/* PI signal levels is authored in the production sheet with a dark-only
+   translucent fill.  Re-point that shared matrix at the light surface so it
+   does not become a grey slab when the rest of the sidebar is light. */
+:root[data-theme="light"] .pi-signal-matrix {
+    background: var(--bg) !important;
+    border-color: var(--border) !important;
+}
+
 /* ── #4: match the production TP INPUT block ──────────────────────
    Reference is `.form-group label` (0.6875rem) with a `.toggle-field`
    sized control (0.75rem / 8px 10px). A smaller prototype scale read

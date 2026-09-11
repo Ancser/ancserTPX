@@ -13,6 +13,7 @@ const canonicalModels = [
   ["betafib", "BETAFIB"],
   ["pi", "PI"],
   ["optionwall", "OPTION WALL"],
+  ["delta_absorption", "DELTA ABSORPTION"],
 ];
 
 async function openApp(page) {
@@ -364,6 +365,10 @@ test("Footprint layer fetches only the visible window and clears when disabled",
           time: "2026-09-01T13:35:00+00:00",
           buy: 30, sell: 5, delta: 25, cvd: 125,
           cells: [[80004, 30, 5, 0, 5, 20, 10]],
+        }, {
+          time: "2026-09-01T13:44:00+00:00",
+          buy: 5, sell: 55, delta: -50, cvd: 75,
+          cells: [[80008, 5, 55, 0, 5, 20, 10]],
         }],
       }),
     });
@@ -372,8 +377,16 @@ test("Footprint layer fetches only the visible window and clears when disabled",
     const start = Date.parse("2026-09-01T13:30:00Z");
     showCandleData(Array.from({length: 20}, (_, index) => ({
       time: new Date(start + index * 60_000).toISOString(),
-      open: 20000, high: 20002, low: 19998, close: 20001, volume: 1,
+      open: 20000, high: 20003, low: 19998, close: 20001, volume: 1,
     })));
+    window.__footprintFillStyles = [];
+    const fillRect = CanvasRenderingContext2D.prototype.fillRect;
+    CanvasRenderingContext2D.prototype.fillRect = function (...args) {
+      if (this.canvas?.id === "footprint-overlay") {
+        window.__footprintFillStyles.push(String(this.fillStyle));
+      }
+      return fillRect.apply(this, args);
+    };
     toggleChartLayer("footprint", true);
   });
   await expect.poll(() => requests.length).toBe(1);
@@ -382,8 +395,24 @@ test("Footprint layer fetches only the visible window and clears when disabled",
   expect(Date.parse(query.get("end")) - Date.parse(query.get("start")))
     .toBeLessThan(14 * 86_400_000);
   await expect(page.locator("#footprint-overlay")).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() => ({
+    positive: (window.__footprintFillStyles || []).some((style) =>
+      style.includes("245, 248, 252") || style.includes("245,248,252")),
+    negative: (window.__footprintFillStyles || []).some((style) =>
+      style.includes("255, 45, 70") || style.includes("255,45,70")),
+  }))).toEqual({positive: true, negative: true});
+  await expect.poll(() => page.evaluate(() => (
+    typeof candleSeries !== "undefined" && candleSeries
+      ? candleSeries.options().visible
+      : null
+  ))).toBe(false);
 
   await page.evaluate(() => toggleChartLayer("footprint", false));
+  await expect.poll(() => page.evaluate(() => (
+    typeof candleSeries !== "undefined" && candleSeries
+      ? candleSeries.options().visible
+      : null
+  ))).toBe(true);
   await expect.poll(() => page.evaluate(() => {
     const canvas = document.querySelector("#footprint-overlay");
     if (!canvas) return false;
@@ -731,6 +760,8 @@ test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset p
 
   const matrix = page.locator('#pi-params-bt [data-pi-matrix="bt"]').first();
   await expect(matrix).toBeVisible();
+  await expect.poll(() => matrix.evaluate((node) => getComputedStyle(node).backgroundColor))
+    .toBe("rgb(247, 249, 252)");
   await expect(matrix.locator(".pi-matrix-column")).toHaveText(["LONG", "SHORT"]);
   await expect(matrix.locator(".pi-matrix-row-label")).toHaveText(["PI", "LEVEL 2", "LEVEL 1"]);
   await expect(matrix.locator(".pi-matrix-note")).toHaveCount(0);

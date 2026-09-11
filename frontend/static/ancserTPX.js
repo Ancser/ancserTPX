@@ -202,6 +202,18 @@ const DEFAULT_STRATEGY_PARAMS = {
     pi_short_sl_value: 2.5,
     pi_long_hold_min: 0,
     pi_short_hold_min: 60,
+    delta_window: 5,
+    delta_baseline_window: 30,
+    delta_strength_multiplier: 1.0,
+    delta_weakening_ratio: 0.70,
+    delta_stall_ticks: 1,
+    delta_value_lookback: 10,
+    delta_value_touch_ticks: 0,
+    delta_source: 'whole',
+    delta_gate: 'location',
+    delta_pattern: 'absorption',
+    delta_side_mode: 'all',
+    delta_require_profile: true,
     option_wall_submodel: 'primary_strict',
     option_wall_side_mode: 'all',
     option_wall_long_sl_atr: 4.0,
@@ -575,6 +587,7 @@ function normalizeStrategyName(value) {
     if (v === 'pmo') return 'factor';
     if (v === 'pi') return 'pi';          // 1.0.10: 外部 Discord 訊號
     if (v === 'optionwall' || v === 'option_wall') return 'optionwall';
+    if (v === 'delta' || v === 'delta_va' || v === 'delta+va' || v === 'delta_absorb' || v === 'delta_absorption') return 'delta_absorption';
     if (v === 'sigma') return 'sigma';
     if (v === 'fade') return 'fade';   // 1.0.8: DAY ZONE 前日VA回歸
     if (v === 'factor') return 'factor';
@@ -617,6 +630,10 @@ const STRATEGY_PRESENTATION = Object.freeze({
     optionwall: {
         displayName: 'OPTION WALL',
         description: 'Causal QQQ Option Wall / Gamma signals mapped to MNQ (historical replay).',
+    },
+    delta_absorption: {
+        displayName: 'DELTA ABSORPTION',
+        description: 'Completed MBO Delta change at the previous RTH 70% value area.',
     },
 });
 
@@ -725,6 +742,7 @@ function updateStrategyParamVisibility(mode) {
     const isFade = strategy === 'fade';   // 1.0.8
     const isSigma = strategy === 'sigma';
     const isFactor = strategy === 'factor';
+    const isDelta = strategy === 'delta_absorption';
     const show = (id, on) => {
         const el = document.getElementById(id);
         if (el) el.style.display = on ? '' : 'none';
@@ -736,10 +754,10 @@ function updateStrategyParamVisibility(mode) {
     show('tr-overlap-trade-row-' + mode, !isML && isTrend);
     showControl('area-pct', !isML && (isTrend || isFade));
     showControl('confirm-bars', !isML && isTrend);
-    showControl('tr-exit-mode', !isML && (isTrend || isFactor));
-    showControl('rr-ratio', !isML && (isTrend || isFactor));
-    showControl('trail-trigger-pct', !isML && (isTrend || isFactor));
-    showControl('trail-sl-pct', !isML && (isTrend || isFactor));
+    showControl('tr-exit-mode', !isML && (isTrend || isFactor || isDelta));
+    showControl('rr-ratio', !isML && (isTrend || isFactor || isDelta));
+    showControl('trail-trigger-pct', !isML && (isTrend || isFactor || isDelta));
+    showControl('trail-sl-pct', !isML && (isTrend || isFactor || isDelta));
     // ML Confluence params — shown only in confluence mode
     show('ml-params-' + mode, isML);
     if (isML) onRrModeChange(mode);
@@ -766,35 +784,36 @@ function updateStrategyParamVisibility(mode) {
     // which made PI show two overlapping direction controls.  PI still uses
     // the shared FACTOR exit/risk block below, but not its entry block.
     show('factor-params-' + mode, isFactor || isIntramom || isSessfib);
+    show('delta-params-' + mode, isDelta);
     show('momentum-params-' + mode, isIntramom);
     show('betafib-params-' + mode, isSessfib);
     // 1.0.10: MODEL SETTINGS 已拆成 ENTRY / EXIT 兩段。
     // factor-params-* 只留進場側(族/方向/訊號/VA),SL 錨點搬到 factor-exit-*,
     // BETAFIB 的 fib 層級搬到 betafib-exit-*,兩者的顯示條件與各自的進場區塊相同。
-    show('factor-exit-' + mode, isFactor || isIntramom || isSessfib || isPi);
+    show('factor-exit-' + mode, isFactor || isIntramom || isSessfib || isPi || isDelta);
     show('pi-params-' + mode, isPi);
     show('pi-exit-' + mode, isPi);
     show('option-wall-params-' + mode, isOptionWall);
-    show('pi-short-sl-group-' + mode, isPi);
-    show('pi-long-hold-group-' + mode, isPi);
-    show('pi-short-hold-group-' + mode, isPi);
+    show('pi-short-sl-group-' + mode, isPi || isDelta);
+    show('pi-long-hold-group-' + mode, isPi || isDelta);
+    show('pi-short-hold-group-' + mode, isPi || isDelta);
     const slRow = document.getElementById('factor-sl-row-' + mode);
-    if (slRow) slRow.classList.toggle('pi-dual-sl', isPi);
+    if (slRow) slRow.classList.toggle('pi-dual-sl', isPi || isDelta);
     const longSlLabel = document.getElementById('factor-sl-value-label-' + mode);
     if (longSlLabel) {
         // PI uses factor_sl_value for longs and pi_short_sl_value for shorts.
         // Keep the generic label for every other strategy sharing this control.
-        longSlLabel.textContent = isPi ? 'LONG SL' : 'SL INPUT';
+        longSlLabel.textContent = (isPi || isDelta) ? 'LONG SL' : 'SL INPUT';
     }
     show('betafib-exit-' + mode, isSessfib);
     showControl('tp-cap-usd', !isOptionWall);
     showControl('factor-max-trades', !isOptionWall);
     showControl('tr-session-limit', !isOptionWall);
-    showControl('tr-allowed-sessions', !isOptionWall);
+    showControl('tr-allowed-sessions', !isOptionWall && !isDelta);
     ['factor-family-', 'factor-pmo-mode-', 'factor-va-filter-'].forEach((id) => {
         const el = document.getElementById(id + mode);
         const row = el && el.closest ? el.closest('.form-group') : null;
-        if (row) row.style.display = (isIntramom || isSessfib || isPi) ? 'none' : '';
+        if (row) row.style.display = (isIntramom || isSessfib || isPi || isDelta) ? 'none' : '';
     });
     syncEmapmoThresholdRow(mode);   // 1.0.9: 門檻滑桿只在 EMAPMO 顯示
     let slText;
@@ -809,6 +828,8 @@ function updateStrategyParamVisibility(mode) {
         slText = 'FACTOR: completed 5m signal, market entry; side/signal/SL/TP use FACTOR controls';
     } else if (isOptionWall) {
         slText = 'OPTION WALL: hourly causal signal · completed 5m ATR blend · no hard TP · 60m max';
+    } else if (isDelta) {
+        slText = 'DELTA ABSORPTION: completed 1m MBO Delta + prior RTH 70% VA touch';
     } else {
         slText = 'TREND: lowest-volume node between POC and VAH/VAL for SL';
     }
@@ -825,6 +846,8 @@ function updateStrategyParamVisibility(mode) {
         slText = 'FACTOR: completed 5m factor signal; live/backtest use last completed candle only';
     } else if (isOptionWall) {
         slText = 'OPTION WALL: PRIMARY STRICT hourly signal; market entry on MNQ historical replay';
+    } else if (isDelta) {
+        slText = 'DELTA ABSORPTION: completed 1m MBO bar; market entry after Delta + VA condition';
     } else {
         slText = 'TREND: completed candle + value-area breakout confirmation; market entry';
     }
@@ -869,29 +892,7 @@ function onExitModeChange(mode) {
     const strategy = normalizeStrategyName(
         (document.getElementById('strategy-' + mode) || {}).value
     );
-    if (strategy !== 'trend' && strategy !== 'factor') return;
-    const isLadder = !!(sel && sel.value === 'ladder');
-    const dim = (id, off) => {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.disabled = off;
-        const grp = el.closest('.form-group');
-        if (grp) grp.style.opacity = off ? '0.35' : '';
-        if (grp) grp.title = off ? 'Not used in LADDER mode (no TP; fixed +2R breakeven ladder, then trails by 1R)' : '';
-    };
-    dim('rr-ratio-' + mode, isLadder);
-    dim('trail-trigger-pct-' + mode, isLadder);
-    dim('trail-sl-pct-' + mode, isLadder);
-}
-
-// RR mode toggle: "固定" shows the single-RR select; "變動" shows the RR-grid
-// (range) select and hides the fixed one. Only one is ever visible.
-function onExitModeChange(mode) {
-    const sel = document.getElementById('tr-exit-mode-' + mode);
-    const strategy = normalizeStrategyName(
-        (document.getElementById('strategy-' + mode) || {}).value
-    );
-    if (strategy !== 'trend' && strategy !== 'factor') return;
+    if (strategy !== 'trend' && strategy !== 'factor' && strategy !== 'delta_absorption') return;
     const isLadder = !!(sel && sel.value === 'ladder');
     const setGroupVisible = (id, on) => {
         const el = document.getElementById(id);
@@ -900,6 +901,19 @@ function onExitModeChange(mode) {
         if (grp) grp.style.display = on ? '' : 'none';
         el.disabled = !on;
     };
+    const ladderOption = sel && sel.querySelector
+        ? sel.querySelector('option[value="ladder"]')
+        : null;
+    if (ladderOption) {
+        ladderOption.hidden = strategy === 'delta_absorption';
+        ladderOption.disabled = strategy === 'delta_absorption';
+    }
+    if (strategy === 'delta_absorption' && sel && sel.value === 'ladder') {
+        sel.value = 'tp';
+    }
+    // RR/trailing controls are not used by LADDER.  Keep the behavior the
+    // same for legacy models and include Delta so its PI-style exit block
+    // cannot get stuck with stale ladder controls.
     setGroupVisible('rr-ratio-' + mode, !isLadder);
     setGroupVisible('trail-trigger-pct-' + mode, !isLadder);
     setGroupVisible('trail-sl-pct-' + mode, !isLadder);
@@ -1112,9 +1126,37 @@ function _scopeDatesForStrategy(mode, strategy) {
 function onStrategyChange(mode) {
     const el = document.getElementById('strategy-' + mode);
     const strat = el ? el.value : DEFAULT_STRATEGY_PARAMS.strategy;
-    _setStrategySelect(mode, strat);
+    const normalized = normalizeStrategyName(strat);
+    const applied = _appliedStrategyParamsByMode[mode] || {};
+    const setValue = (id, value) => {
+        const control = document.getElementById(id);
+        if (control) control.value = value;
+    };
+    // First manual selection starts from the researched candidate's PI-style
+    // exit profile.  Do not overwrite a Delta configuration that was loaded
+    // from a saved preset or already customized by the user.
+    if (normalized === 'delta_absorption' && applied._deltaDefaultsApplied !== true) {
+        setValue('factor-sl-value-' + mode, '4');
+        setValue('pi-short-sl-' + mode, '1.5');
+        setValue('rr-ratio-' + mode, '3');
+        setValue('pi-long-hold-' + mode, '0');
+        setValue('pi-short-hold-' + mode, '60');
+        setValue('tr-exit-mode-' + mode, 'tp');
+        setValue('trail-trigger-pct-' + mode, '0');
+        applied._deltaDefaultsApplied = true;
+        applied.factor_sl_value = 4;
+        applied.rr_ratio = 3;
+        applied.pi_short_sl_value = 1.5;
+        applied.pi_long_hold_min = 0;
+        applied.pi_short_hold_min = 60;
+        applied.trail_trigger_pct = 0;
+        applied.trail_enabled = false;
+        onRrChange(mode);
+        updateTrailBounds(mode);
+    }
+    _setStrategySelect(mode, normalized);
     updateStrategyParamVisibility(mode);
-    _scopeDatesForStrategy(mode, normalizeStrategyName(strat));
+    _scopeDatesForStrategy(mode, normalized);
 }
 
 // Read the ML (confluence) parameter block for a panel into a params object,
@@ -1297,6 +1339,18 @@ function collectStrategyParams(mode) {
     const piMatrix = strategy === 'pi'
         ? _piMatrixPayload(mode)
         : { pi_long_kinds: null, pi_short_kinds: null, pi_short_levels: null };
+    const _deltaChoice = (idBase, key, fallback, allowed) => {
+        const raw = String(_paramVal(idBase, key, fallback) || '').toLowerCase();
+        return allowed.includes(raw) ? raw : fallback;
+    };
+    const deltaPattern = _deltaChoice(
+        'delta-pattern', 'delta_pattern', 'absorption', ['absorption', 'exhaustion', 'both']);
+    const deltaSide = _deltaChoice(
+        'delta-side', 'delta_side_mode', 'all', ['all', 'long_only', 'short_only']);
+    const deltaSource = _deltaChoice(
+        'delta-source', 'delta_source', 'whole', ['whole', 'outside']);
+    const deltaGate = _deltaChoice(
+        'delta-gate', 'delta_gate', 'location', ['raw', 'location', 'reclaim', 'reclaim_vwap']);
     const params = {
         market_clock_version: MARKET_CLOCK_VERSION,
         strategy: strategy,
@@ -1371,6 +1425,18 @@ function collectStrategyParams(mode) {
         pi_short_sl_value: _float('pi-short-sl-' + mode, 2.5),
         pi_long_hold_min: _int('pi-long-hold-' + mode, 0),
         pi_short_hold_min: _int('pi-short-hold-' + mode, 60),
+        delta_pattern: deltaPattern,
+        delta_side_mode: deltaSide,
+        delta_source: deltaSource,
+        delta_gate: deltaGate,
+        delta_window: Math.max(1, Math.min(30, _paramInt('delta-window', 'delta_window', 5))),
+        delta_baseline_window: Math.max(2, Math.min(240, _paramInt('delta-baseline', 'delta_baseline_window', 30))),
+        delta_strength_multiplier: Math.max(0.1, Math.min(10, _paramNum('delta-strength', 'delta_strength_multiplier', 1.0))),
+        delta_weakening_ratio: Math.max(0.1, Math.min(1, _paramNum('delta-weakening', 'delta_weakening_ratio', 0.70))),
+        delta_stall_ticks: Math.max(0, Math.min(20, _paramInt('delta-stall', 'delta_stall_ticks', 1))),
+        delta_value_lookback: Math.max(2, Math.min(120, _paramInt('delta-lookback', 'delta_value_lookback', 10))),
+        delta_value_touch_ticks: Math.max(0, Math.min(20, _paramInt('delta-touch', 'delta_value_touch_ticks', 0))),
+        delta_require_profile: _paramVal('delta-require-profile', 'delta_require_profile', '1') === '1',
         option_wall_submodel: _mlSelectValue('option-wall-submodel-' + mode, 'primary_strict'),
         option_wall_side_mode: _mlSelectValue('option-wall-side-' + mode, 'all'),
         option_wall_long_sl_atr: _float('option-wall-long-sl-' + mode, 4.0),
@@ -1422,6 +1488,12 @@ function applyStrategyParams(mode, params) {
     const _ticks = (val, fallback) => Math.max(50, Math.min(200, parseInt(val != null ? val : fallback, 10) || fallback));
     p.strategy = normalizeStrategyName(p.strategy);
     _appliedStrategyParamsByMode[mode] = Object.assign({}, p);
+    // A saved Delta preset already owns its exit values.  Keep the manual
+    // candidate initializer from replacing a customized preset when the user
+    // switches away and back to this model.
+    if (p.strategy === 'delta_absorption') {
+        _appliedStrategyParamsByMode[mode]._deltaDefaultsApplied = true;
+    }
     _setStrategySelect(mode, p.strategy);
     _set('area-pct-' + mode, (p.value_area_pct != null ? Number(p.value_area_pct) : 0.80).toFixed(2));
     _set('tr-overlap-trade-tf-' + mode, normalizeTrendOverlapTradeTf(p.tr_overlap_trade_tf));
@@ -1572,6 +1644,18 @@ function applyStrategyParams(mode, params) {
     _setChoice('pi-short-sl-' + mode, piShortSl, piShortSl + ' x ATR');
     _setChoice('pi-long-hold-' + mode, String(p.pi_long_hold_min != null ? p.pi_long_hold_min : 0));
     _setChoice('pi-short-hold-' + mode, String(p.pi_short_hold_min != null ? p.pi_short_hold_min : 60));
+    _setChoice('delta-pattern-' + mode, String(p.delta_pattern || 'absorption'));
+    _setChoice('delta-side-' + mode, String(p.delta_side_mode || 'all'));
+    _setChoice('delta-source-' + mode, String(p.delta_source || 'whole'));
+    _setChoice('delta-gate-' + mode, String(p.delta_gate || 'location'));
+    _setChoice('delta-window-' + mode, String(p.delta_window != null ? p.delta_window : 5));
+    _setChoice('delta-baseline-' + mode, String(p.delta_baseline_window != null ? p.delta_baseline_window : 30));
+    _setChoice('delta-strength-' + mode, String(p.delta_strength_multiplier != null ? p.delta_strength_multiplier : 1));
+    _setChoice('delta-weakening-' + mode, String(p.delta_weakening_ratio != null ? p.delta_weakening_ratio : 0.70));
+    _setChoice('delta-stall-' + mode, String(p.delta_stall_ticks != null ? p.delta_stall_ticks : 1));
+    _setChoice('delta-lookback-' + mode, String(p.delta_value_lookback != null ? p.delta_value_lookback : 10));
+    _setChoice('delta-touch-' + mode, String(p.delta_value_touch_ticks != null ? p.delta_value_touch_ticks : 0));
+    _setChoice('delta-require-profile-' + mode, p.delta_require_profile === false ? '0' : '1');
     _setChoice('option-wall-submodel-' + mode, String(p.option_wall_submodel || 'primary_strict'));
     _setChoice('option-wall-side-' + mode, String(p.option_wall_side_mode || 'all'));
     _setChoice('option-wall-long-sl-' + mode, String(p.option_wall_long_sl_atr != null ? p.option_wall_long_sl_atr : 4.0));
@@ -1678,7 +1762,7 @@ function isFixedPreset(name) {
 }
 
 const PRESET_MODEL_ORDER = [
-    'FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI', 'OPTION WALL',
+    'FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI', 'OPTION WALL', 'DELTA ABSORPTION',
     // Historical names remain sortable and parseable; new names never emit them.
     'TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO', 'BETA FIB',
 ];
@@ -1687,9 +1771,9 @@ function _presetNameMeta(name) {
     const raw = String(name || '');
     const fixed = /\s+\*$/.test(raw);
     const s = raw.replace(/\s+\*$/, '').trim();
-    const compactDated = s.match(/^(\d{4})\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
-    const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
-    const legacy = s.match(/^(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const compactDated = s.match(/^(\d{4})\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|DELTA ABSORPTION|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|DELTA ABSORPTION|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const legacy = s.match(/^(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|DELTA ABSORPTION|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
     if (compactDated) {
         return {
             fixed,
@@ -1968,7 +2052,7 @@ function _piMatrixPayload(mode) {
 
 function _normalizeNamingModel(model) {
     const value = String(model || '').trim().toUpperCase();
-    if (['FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI'].includes(value)) return value;
+    if (['FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI', 'DELTA ABSORPTION'].includes(value)) return value;
     if (value === 'DAY ZONE') return 'FADE';
     if (value === 'DISTRIBUTION') return 'SIGMA';
     if (value === 'BETA FIB') return 'BETAFIB';
@@ -2061,6 +2145,24 @@ function buildPresetParamToken(params) {
             _contractPresetToken(p),
         ].join(' ');
     }
+    if (normalizeStrategyName(p.strategy) === 'delta_absorption') {
+        const side = String(p.delta_side_mode || 'all').toUpperCase();
+        const pattern = String(p.delta_pattern || 'absorption').toUpperCase();
+        const source = String(p.delta_source || 'whole').toUpperCase();
+        const gate = String(p.delta_gate || 'location').toUpperCase();
+        return [
+            'DELTA', pattern, side, source, gate,
+            'W' + Number(p.delta_window != null ? p.delta_window : 5),
+            'B' + Number(p.delta_baseline_window != null ? p.delta_baseline_window : 30),
+            'S' + Number(p.delta_strength_multiplier != null ? p.delta_strength_multiplier : 1),
+            'VA' + (p.delta_require_profile === false ? 'OPT' : 'REQ'),
+            'SL' + Number(p.factor_sl_value != null ? p.factor_sl_value : 4),
+            'SSL' + Number(p.pi_short_sl_value != null ? p.pi_short_sl_value : 1.5),
+            'RR' + Number(p.rr_ratio != null ? p.rr_ratio : 3),
+            'RTH',
+            _contractPresetToken(p),
+        ].join(' ');
+    }
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = p.conf_max_risk_ticks != null && Number(p.conf_max_risk_ticks) > 0
             ? ('R' + Number(p.conf_max_risk_ticks))
@@ -2107,6 +2209,7 @@ function suggestedPresetPurpose(params) {
     if (normalizeStrategyName(p.strategy) === 'sigma') return 'Distribution';
     if (normalizeStrategyName(p.strategy) === 'factor') return 'Icefishball';
     if (normalizeStrategyName(p.strategy) === 'optionwall') return 'Primary Strict';
+    if (normalizeStrategyName(p.strategy) === 'delta_absorption') return 'Absorption';
     if (normalizeStrategyName(p.strategy) === 'confluence') {
         const risk = Number(p.conf_max_risk_ticks || 0);
         const prob = Number(p.conf_min_prob || 0);
@@ -4512,6 +4615,7 @@ function initChart() {
         wickDownColor: '#555555',
         wickUpColor: '#888888',
     });
+    _syncFootprintCandleVisibility();
 
     new ResizeObserver(() => {
         chart.applyOptions({
@@ -4836,6 +4940,16 @@ function _clearCanvas(id) {
 
 function layerOn(key) { return CHART_OVERLAYS[key] !== false; }
 
+function _syncFootprintCandleVisibility() {
+    if (!candleSeries) return;
+    // Keep the series alive for priceToCoordinate() and all other overlays,
+    // but remove its visual body once the footprint has actual cells to show.
+    // If the cache is unavailable, keep the normal candles visible instead of
+    // leaving the chart blank.
+    const hideCandles = layerOn('footprint') && _footprintBars.length > 0;
+    try { candleSeries.applyOptions({visible: !hideCandles}); } catch (_) {}
+}
+
 // 四種指標訊號共用 indicator-signal-overlay 這張畫布,所以不能整層關掉,
 // 得逐筆依 row.type 過濾。
 const _SIGNAL_TYPE_LAYER = {
@@ -4849,6 +4963,7 @@ function toggleChartLayer(key, on) {
     if (!(key in CHART_OVERLAYS)) return;
     CHART_OVERLAYS[key] = !!on;
     _persistChartLayerPreferences();
+    if (key === 'footprint') _syncFootprintCandleVisibility();
     if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
     if (key === 'optionwall' && on && !_optionWallSnapshots.length) { refreshOptionWallLayer(); return; }
     if (key === 'prevday70' && on) { refreshPreviousDayValueAreas(true); return; }
@@ -5448,6 +5563,21 @@ function markOrderflowInteraction() {
     }, 280);
 }
 
+function _orderflowChartSpacing() {
+    if (!chart) return null;
+    try {
+        const range = chart.timeScale().getVisibleLogicalRange();
+        if (!range) return null;
+        const center = Math.max(0, Math.floor((range.from + range.to) / 2));
+        const x0 = chart.timeScale().logicalToCoordinate(center);
+        const x1 = chart.timeScale().logicalToCoordinate(center + 1);
+        const spacing = Math.abs(Number(x1) - Number(x0));
+        return Number.isFinite(spacing) && spacing > 0 ? spacing : null;
+    } catch (_) {
+        return null;
+    }
+}
+
 function _sizeOrderflowCanvas(canvas, container, dpr) {
     const width = Math.max(1, Math.round(container.clientWidth * dpr));
     const height = Math.max(1, Math.round(container.clientHeight * dpr));
@@ -5471,21 +5601,10 @@ const ORDERFLOW_COMPACT_COLUMN_LIMIT = 1;
 // Overview-only noise gate.  The cache sample is contract quantity, not
 // dollars: MNQ 1m price cells top out around a few hundred contracts, so
 // 1000 would blank the overview rather than isolate useful institutional flow.
-const ORDERFLOW_COMPACT_MIN_VOLUME = 50;
+// Delta mode uses the imbalance magnitude, not the gross traded volume, so
+// balanced buy/sell cells do not dominate the one-cell-per-screen-column view.
+const ORDERFLOW_COMPACT_MIN_DELTA = 50;
 const ORDERFLOW_MAX_DEPTH_LEVELS = 8;
-
-// Keep the visual size tied to the same order-size bands used by the cache.
-// A logarithmic scale made 20-lot and 150-lot cells look too similar when a
-// large print was present elsewhere in the visible window.
-function _footprintBubbleRadius(quantity) {
-    const size = Math.max(0, Number(quantity) || 0);
-    if (size >= 150) return 9;
-    if (size >= 100) return 7.5;
-    if (size >= 50) return 6;
-    if (size >= 25) return 4.5;
-    if (size >= 10) return 3.25;
-    return 2.25;
-}
 
 function _compactFootprintBars(prepared, spacing, tickSize, plotBottom) {
     const bucketPx = Math.max(4, Math.min(10, spacing > 0 ? spacing : 4));
@@ -5522,7 +5641,8 @@ function _compactFootprintBars(prepared, spacing, tickSize, plotBottom) {
             // every one-minute sample.
             target[5] = Math.max(target[5], Number(cell[5] || 0));
             target[6] = Math.max(target[6], Number(cell[6] || 0));
-            aggregate.importance = target[1] + target[2] +
+            const deltaMagnitude = Math.abs(target[1] - target[2]);
+            aggregate.importance = deltaMagnitude +
                 0.25 * (target[3] + target[4]) +
                 Math.sqrt(Math.max(target[5], target[6]));
         }
@@ -5532,9 +5652,9 @@ function _compactFootprintBars(prepared, spacing, tickSize, plotBottom) {
     let kept = 0;
     for (const column of [...columns.values()].sort((a, b) => a.x - b.x)) {
         const allItems = [...column.cells.values()];
-        const eligible = allItems.filter((item) => Math.max(
-            Number(item.cell[1] || 0), Number(item.cell[2] || 0),
-        ) >= ORDERFLOW_COMPACT_MIN_VOLUME);
+        const eligible = allItems.filter((item) => Math.abs(
+            Number(item.cell[1] || 0) - Number(item.cell[2] || 0),
+        ) >= ORDERFLOW_COMPACT_MIN_DELTA);
         // Keep the strongest visible price cell even when a quiet column has
         // no 50-lot aggregate; otherwise the price path would disappear.
         const source = (eligible.length ? eligible : allItems)
@@ -5664,6 +5784,7 @@ async function refreshCvdLayer(force) {
 
 function drawFootprintLayer() {
     const canvas = footprintCanvas || document.getElementById('footprint-overlay');
+    _syncFootprintCandleVisibility();
     if (!layerOn('footprint') || !_footprintBars.length) {
         if (canvas) {
             const context = canvas.getContext('2d');
@@ -5687,8 +5808,8 @@ function drawFootprintLayer() {
 
     const tickSize = Number(_footprintMeta?.tick_size || 0.25);
     const depthReady = Number(_footprintMeta?.schema_version || 0) >= 4;
-    const sizeBandsReady = Number(_footprintMeta?.schema_version || 0) >= 5;
-    let maxVolume = 1;
+    let maxDelta = 1;
+    let maxPassive = 1;
     let maxDepth = 1;
     let rawCellCount = 0;
     const prepared = [];
@@ -5699,14 +5820,18 @@ function drawFootprintLayer() {
         const cells = Array.isArray(bar.cells) ? bar.cells : [];
         rawCellCount += cells.length;
         for (const cell of cells) {
-            maxVolume = Math.max(maxVolume, Number(cell[1] || 0), Number(cell[2] || 0));
+            const buy = Number(cell[1] || 0);
+            const sell = Number(cell[2] || 0);
+            maxDelta = Math.max(maxDelta, Math.abs(buy - sell));
+            maxPassive = Math.max(maxPassive,
+                Number(cell[3] || 0), Number(cell[4] || 0));
             maxDepth = Math.max(maxDepth, Number(cell[5] || 0), Number(cell[6] || 0));
         }
         prepared.push({x, cells});
     }
     const spacing = prepared.length > 1
         ? Math.abs(prepared[prepared.length - 1].x - prepared[0].x) / (prepared.length - 1)
-        : 8;
+        : (_orderflowChartSpacing() || 8);
     const compactMode = performance.now() < _orderflowInteractionUntil ||
         spacing < 12 || rawCellCount > ORDERFLOW_DETAIL_CELL_LIMIT;
     const compacted = compactMode
@@ -5714,19 +5839,14 @@ function drawFootprintLayer() {
         : {bars: prepared, spacing};
     const renderBars = compacted.bars;
     const renderSpacing = compacted.spacing;
-    const detailedNumbers = !compactMode && spacing >= 42;
-    const footprintTierDefs = [
-        {buy: 9, sell: 12},   // 50-99
-        {buy: 10, sell: 13},  // 100-149
-        {buy: 11, sell: 14},  // 150+
-    ];
+    const detailedNumbers = !compactMode && spacing >= 60;
 
     // Resting depth is drawn as a small set of continuous horizontal levels.
     // The old renderer painted one short stroke for every bar/cell, which
     // created the vertical comb visible at overview scale.  Scan the complete
     // visible response for the maximum depth per price level, then extend only
     // the strongest levels across their observed x-range.  This deliberately
-    // does not use renderBars: compact bubble selection must not hide a wall.
+    // does not use renderBars: compact delta selection must not hide a wall.
     const depthLevels = {bid: new Map(), ask: new Map()};
     for (const bar of (depthReady ? prepared : [])) {
         for (const cell of bar.cells) {
@@ -5776,32 +5896,34 @@ function drawFootprintLayer() {
         }
     }
 
-    function drawPseudoBubble(x, y, radius, side, alpha = 0.64) {
-        const light = side === 'buy' ? 'rgba(255,255,255,' + Math.min(1, alpha + 0.28) + ')' :
-            'rgba(255,108,125,' + Math.min(1, alpha + 0.28) + ')';
-        const edge = side === 'buy' ? 'rgba(170,181,195,' + alpha + ')' :
-            'rgba(126,12,32,' + alpha + ')';
-        // Tiny compact-view beads do not carry enough pixels for a gradient.
-        // A flat fill is visually equivalent at that scale and avoids one
-        // createRadialGradient call per bubble.
-        if ((compactMode && radius < 6) || radius < 2.5) {
-            ctx.fillStyle = side === 'buy'
-                ? 'rgba(245,248,252,' + Math.min(1, alpha + 0.12) + ')'
-                : 'rgba(255,45,70,' + Math.min(1, alpha + 0.12) + ')';
-            ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
-            return;
+    for (const bar of renderBars) {
+        for (const cell of bar.cells) {
+            if (!Array.isArray(cell) || cell.length < 7) continue;
+            maxDelta = Math.max(maxDelta, Math.abs(
+                Number(cell[1] || 0) - Number(cell[2] || 0),
+            ));
         }
-        const gradient = ctx.createRadialGradient(
-            x - radius * 0.35, y - radius * 0.4, Math.max(0.5, radius * 0.12),
-            x, y, radius,
-        );
-        gradient.addColorStop(0, light);
-        gradient.addColorStop(0.52, side === 'buy'
-            ? 'rgba(235,240,246,' + alpha + ')'
-            : 'rgba(232,47,72,' + alpha + ')');
-        gradient.addColorStop(1, edge);
-        ctx.fillStyle = gradient;
-        ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+    }
+
+    function drawFootprintDeltaBar(x, y, delta, passive, maxWidth, cellHeight) {
+        const signedDelta = Number(delta) || 0;
+        const magnitude = Math.abs(signedDelta);
+        if (!magnitude) return;
+        const strength = Math.sqrt(magnitude / Math.max(1, maxDelta));
+        const passiveStrength = Math.min(1,
+            Math.log1p(Math.max(0, Number(passive) || 0)) /
+            Math.log1p(Math.max(1, maxPassive)));
+        const width = Math.max(compactMode ? 1 : 1.5, maxWidth * strength);
+        const gap = compactMode ? 0 : 1;
+        const fillWidth = Math.max(1, width - (compactMode ? 0 : 1));
+        const alpha = compactMode
+            ? 0.48 + 0.26 * strength + 0.10 * passiveStrength
+            : 0.30 + 0.54 * strength + 0.16 * passiveStrength;
+        const x0 = signedDelta < 0 ? x - width : x + gap;
+        ctx.fillStyle = signedDelta >= 0
+            ? 'rgba(245,248,252,' + alpha + ')'
+            : 'rgba(255,45,70,' + alpha + ')';
+        ctx.fillRect(x0, y - cellHeight / 2, fillWidth, cellHeight);
     }
 
     for (const bar of renderBars) {
@@ -5814,54 +5936,22 @@ function drawFootprintLayer() {
             const sell = Number(cell[2] || 0);
             const passiveBid = Number(cell[3] || 0);
             const passiveAsk = Number(cell[4] || 0);
-
-            // At overview scale a cell is a screen summary, not a footprint
-            // ladder.  Draw only the dominant side; zooming in restores the
-            // full buy/sell pair and the size-band beads.
-            const bubbles = compactMode
-                ? (buy >= sell
-                    ? [{value: buy, passive: passiveAsk, x: bar.x, side: 'buy'}]
-                    : [{value: sell, passive: passiveBid, x: bar.x, side: 'sell'}])
-                : [
-                    {value: sell, passive: passiveBid, x: bar.x - Math.min(7, renderSpacing * 0.24), side: 'sell'},
-                    {value: buy, passive: passiveAsk, x: bar.x + Math.min(7, renderSpacing * 0.24), side: 'buy'},
-                ];
-            for (const bubble of bubbles) {
-                if (!bubble.value) continue;
-                const radius = _footprintBubbleRadius(bubble.value);
-                // Passive interaction is encoded by fill opacity only.  Do
-                // not add an outer outline: at dense scale it turns every
-                // bubble into a distracting double-circle.
-                const passiveRatio = Math.min(1,
-                    Math.log1p(Math.max(0, bubble.passive || 0)) /
-                    Math.log1p(Math.max(1, maxVolume)));
-                drawPseudoBubble(bubble.x, y, radius, bubble.side,
-                    0.42 + 0.28 * passiveRatio);
-            }
-
-            // The cache stores the executed quantity in each size band at
-            // this price.  Offset beads make the three tiers visible without
-            // pretending that a one-minute bucket has tick-level timestamps.
-            if (sizeBandsReady && !compactMode) footprintTierDefs.forEach((tier, tierIndex) => {
-                for (const side of ['sell', 'buy']) {
-                    const quantity = Number(cell[side === 'buy' ? tier.buy : tier.sell] || 0);
-                    if (!quantity) continue;
-                    const radius = _footprintBubbleRadius(quantity);
-                    const sideOffset = side === 'buy' ? 1 : -1;
-                    const x = bar.x + sideOffset * Math.min(8, renderSpacing * 0.24) +
-                        sideOffset * (tierIndex - 1) * 2.1;
-                    const yy = y - (tierIndex - 1) * 1.4;
-                    drawPseudoBubble(x, yy, radius, side, 0.80);
-                    if (detailedNumbers && radius >= 3) {
-                        ctx.font = '600 7px IBM Plex Mono, monospace';
-                        ctx.textAlign = side === 'buy' ? 'left' : 'right';
-                        ctx.textBaseline = 'middle';
-                        ctx.fillStyle = side === 'buy' ? '#ffffff' : '#ff526e';
-                        ctx.fillText(tierIndex === 0 ? '50' : tierIndex === 1 ? '100' : '150',
-                            x + sideOffset * (radius + 2), yy);
-                    }
-                }
-            });
+            // A 1m candle can contain hundreds of price cells.  Render one
+            // signed delta bar per price: negative delta extends left in red,
+            // positive delta extends right in white.  Compact mode keeps only
+            // the strongest delta cell per screen column; detailed mode keeps
+            // every visible price cell without overlapping bubbles.
+            const delta = buy - sell;
+            const barWidth = compactMode
+                ? Math.max(1.5, Math.min(5, renderSpacing * 0.42))
+                : Math.max(8, Math.min(96, renderSpacing * 0.42));
+            const nextY = candleSeries.priceToCoordinate((Number(cell[0]) + 1) * tickSize);
+            const cellHeight = Math.max(1.5, Math.min(14,
+                nextY == null ? 4 : Math.abs(nextY - y) - 0.5));
+            drawFootprintDeltaBar(
+                bar.x, y, delta, delta < 0 ? passiveBid : passiveAsk,
+                barWidth, cellHeight,
+            );
 
             const total = buy + sell;
             const ratio = Math.max(buy, sell) / Math.max(1, Math.min(buy, sell));
@@ -5871,13 +5961,18 @@ function drawFootprintLayer() {
                 ctx.textAlign = 'center';
                 ctx.fillText('I', bar.x, y - 7);
             }
-            if (detailedNumbers && total) {
+            if (detailedNumbers && delta) {
                 ctx.font = '8px IBM Plex Mono, monospace';
                 ctx.textBaseline = 'middle';
-                ctx.textAlign = 'right'; ctx.fillStyle = '#ff6a7f';
-                ctx.fillText(String(sell), bar.x - 3, y);
-                ctx.textAlign = 'left'; ctx.fillStyle = '#ffffff';
-                ctx.fillText(String(buy), bar.x + 3, y);
+                const labelWidth = Math.min(96, renderSpacing * 0.42);
+                const label = delta > 0 ? '+' + String(delta) : String(delta);
+                if (delta < 0) {
+                    ctx.textAlign = 'right'; ctx.fillStyle = '#ff6a7f';
+                    ctx.fillText(label, bar.x - labelWidth - 3, y);
+                } else {
+                    ctx.textAlign = 'left'; ctx.fillStyle = '#ffffff';
+                    ctx.fillText(label, bar.x + labelWidth + 3, y);
+                }
             }
         }
     }
@@ -6632,6 +6727,7 @@ function showCandleData(candles) {
     _chartHistorySuppressUntil = Date.now() + 500;
 
     candleSeries.setData(chartData);
+    _syncFootprintCandleVisibility();
     window._lastChartData = chartData;
 
     applyDefaultChartView(chartData);
@@ -10698,15 +10794,19 @@ function _liveSlotRenderStatus(slot, statusMap, sess, pollStale) {
     if (!accId) {
         set('live-slot-status', '—', 'var(--text3)');
         if (dot) { dot.style.background = 'var(--text3)'; dot.style.boxShadow = 'none'; }
-        ['live-slot-phase', 'live-slot-mode', 'live-slot-dl', 'live-slot-rv', 'live-slot-pnl'].forEach(b => set(b, '--', 'var(--text3)'));
+        ['live-slot-phase', 'live-slot-mode', 'live-slot-mbo', 'live-slot-dl', 'live-slot-rv', 'live-slot-pnl'].forEach(b => set(b, '--', 'var(--text3)'));
         return;
     }
     if (st && st.running) {
         const starting = st.health === 'starting' || st.starting === true;
+        const deltaMode = st.strategy_mode === 'delta_absorption';
+        const mbo = st.databento_mbo || null;
+        const mboDisconnected = deltaMode && (!mbo || !mbo.connected);
         const degraded = !starting && (st.health === 'degraded'
             || st.disconnected
             || st.task_alive === false
-            || (st.strategy_mode === 'pi' && st.pi_listener_alive === false));
+            || (st.strategy_mode === 'pi' && st.pi_listener_alive === false)
+            || mboDisconnected);
         const uncertain = !!pollStale || starting || degraded;
         set('live-slot-status', pollStale
             ? 'RUNNING · STATUS STALE'
@@ -10724,6 +10824,20 @@ function _liveSlotRenderStatus(slot, statusMap, sess, pollStale) {
         const mode = st.confluence_shadow ? 'SHADOW (NO ORDERS)'
             : ((activeModeName && activeModeName !== strategyModeName) ? activeModeName : 'LIVE');
         set('live-slot-mode', mode, 'var(--green)');
+        if (deltaMode) {
+            const mboState = String((mbo && mbo.state) || '').toLowerCase();
+            const mboText = mbo && mbo.connected
+                ? (mbo.ready ? 'CONNECTED · READY' : 'CONNECTED · WARMING')
+                : (mboState === 'missing_key' ? 'MISSING KEY'
+                    : (mboState === 'error' ? 'ERROR'
+                        : (mboState === 'starting' ? 'STARTING' : 'DISCONNECTED')));
+            const mboColor = mbo && mbo.connected
+                ? (mbo.ready ? 'var(--green)' : 'var(--amber)')
+                : 'var(--red)';
+            set('live-slot-mbo', mboText, mboColor);
+        } else {
+            set('live-slot-mbo', 'N/A', 'var(--text3)');
+        }
         const pnl = st.daily_pnl || 0;
         set('live-slot-pnl', (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0), pnl >= 0 ? 'var(--green)' : 'var(--red)');
         const g = st.risk_gates || {}, dl = g.daily_loss || {}, rv = g.prev_rv || {};
@@ -10735,7 +10849,7 @@ function _liveSlotRenderStatus(slot, statusMap, sess, pollStale) {
     } else {
         set('live-slot-status', st ? 'STOPPED' : 'NOT STARTED', 'var(--text3)');
         if (dot) { dot.style.background = 'var(--text3)'; dot.style.boxShadow = 'none'; }
-        ['live-slot-phase', 'live-slot-mode', 'live-slot-dl', 'live-slot-rv', 'live-slot-pnl'].forEach(b => set(b, '--', 'var(--text3)'));
+        ['live-slot-phase', 'live-slot-mode', 'live-slot-mbo', 'live-slot-dl', 'live-slot-rv', 'live-slot-pnl'].forEach(b => set(b, '--', 'var(--text3)'));
     }
 }
 

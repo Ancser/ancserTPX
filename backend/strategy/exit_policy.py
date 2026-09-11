@@ -117,7 +117,7 @@ def resolve_exit_policy(
 
     model = str(strategy_mode or getattr(params, "strategy", "factor") or "factor").lower()
 
-    if model == "pi":
+    if model in ("pi", "delta_absorption"):
         hold_field = "pi_long_hold_min" if direction == Direction.BUY else "pi_short_hold_min"
         max_hold = max(0, int(getattr(params, hold_field, 0) or 0))
     elif model == "optionwall":

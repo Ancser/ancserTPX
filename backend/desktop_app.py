@@ -24,7 +24,10 @@ from urllib.request import Request, urlopen
 APP_HOST = "127.0.0.1"
 APP_PORT = 8001
 APP_TITLE = "ancserTPX"
-APP_ICON_PATH = Path(__file__).resolve().parents[1] / "frontend" / "static" / "favicon.ico"
+FRONTEND_STATIC_DIR = Path(__file__).resolve().parents[1] / "frontend" / "static"
+# Keep the native window and the website on the exact same branded asset.
+WEBSITE_ICON_PATH = FRONTEND_STATIC_DIR / "favicon.ico"
+APP_ICON_PATH = WEBSITE_ICON_PATH
 APP_WIDTH = 1440
 APP_HEIGHT = 900
 APP_MIN_SIZE = (1024, 700)

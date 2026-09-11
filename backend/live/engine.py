@@ -166,8 +166,10 @@ class LiveTradingEngine:
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "factor") or "factor").lower()
         if self.strategy_mode not in (
             "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+            "delta_absorption",
         ):
             self.strategy_mode = "factor"
+        self._delta_feed = None
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
             if str(getattr(self.strategy_params, "fade_entry_mode", "") or "").lower() == "or15":
@@ -186,6 +188,17 @@ class LiveTradingEngine:
         elif self.strategy_mode == "optionwall":
             from backend.strategy.option_wall import OptionWallStrategy
             self.trend_follow = OptionWallStrategy(params=self.strategy_params)
+        elif self.strategy_mode == "delta_absorption":
+            from backend.live.databento_orderflow import DatabentoMboLiveFeed
+            from backend.strategy.delta_absorption import DeltaAbsorptionStrategy
+            self._delta_feed = DatabentoMboLiveFeed(
+                contract_id=self.contract_id,
+                tick_size=self.tick_size,
+            )
+            self.trend_follow = DeltaAbsorptionStrategy(
+                params=self.strategy_params,
+                context_provider=self._delta_feed,
+            )
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
         # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
@@ -2108,6 +2121,20 @@ class LiveTradingEngine:
                     "last_error": f"health_{type(exc).__name__}",
                 }
 
+        delta_expected = self.strategy_mode == "delta_absorption"
+        delta_status = None
+        if self._delta_feed is not None:
+            try:
+                delta_status = self._delta_feed.status()
+            except Exception as exc:
+                delta_status = {
+                    "enabled": True,
+                    "state": "error",
+                    "connected": False,
+                    "ready": False,
+                    "error": f"status_{type(exc).__name__}",
+                }
+
         starting = bool(self._running and self._starting)
         health_reasons = []
         if self._running and not starting:
@@ -2123,6 +2150,8 @@ class LiveTradingEngine:
                     and bool(pi_listener_health.get("in_window"))
                     and int(pi_listener_health.get("consecutive_errors", 0) or 0) > 0):
                 health_reasons.append("pi_listener_poll_errors")
+            if delta_expected and not (delta_status and delta_status.get("connected")):
+                health_reasons.append("databento_mbo_not_connected")
         health = (
             "stopped" if not self._running
             else ("starting" if starting
@@ -2150,6 +2179,7 @@ class LiveTradingEngine:
             "tick_overdue_threshold_seconds": self.LIVE_TICK_OVERDUE_SECONDS,
             "pi_listener_alive": pi_listener_alive,
             "pi_listener": pi_listener_health,
+            "databento_mbo": delta_status if delta_expected else None,
             "account_id": self.account_id,
             "contract_id": self.contract_id,
             "position": self._open_position,
@@ -2467,7 +2497,7 @@ class LiveTradingEngine:
             return self._get_confluence_phase()
         # 信號型策略(factor/sigma/fade/pi)顯示各自的信號狀態
         # (上次信號、ATR、指標值…),而不是套用只對 trend 有意義的「突破階段」。
-        if self.strategy_mode in ("factor", "sigma", "fade", "pi"):
+        if self.strategy_mode in ("factor", "sigma", "fade", "pi", "delta_absorption"):
             try:
                 label = self.trend_follow.get_phase_label()
                 if label:
@@ -2580,6 +2610,12 @@ class LiveTradingEngine:
                 # original startup exception remains authoritative.
                 pass
 
+        if self._delta_feed is not None:
+            try:
+                await asyncio.to_thread(self._delta_feed.stop)
+            except Exception:
+                pass
+
         self._pi_listener = None
         self._pi_task = None
         self._task = None
@@ -2636,7 +2672,15 @@ class LiveTradingEngine:
             self._update_tf_breakout(c)
             if can_observe_strategy:
                 # 1.0.8: 移除 all-TF breakout gate,只保留 session 過濾(對齊 backtest)
-                if self._trend_session_allowed(c.timestamp):
+                if self.strategy_mode == "delta_absorption":
+                    # Warm the PI-compatible ATR accumulator across all
+                    # sessions. Delta entries themselves remain RTH-gated.
+                    self.trend_follow.observe(
+                        c,
+                        self.detector.get_recent_zones(),
+                        self.detector.is_zone_mature,
+                    )
+                elif self._trend_session_allowed(c.timestamp):
                     self.trend_follow.observe(
                         c,
                         self.detector.get_recent_zones(),
@@ -2794,6 +2838,30 @@ class LiveTradingEngine:
                 self._log_event(
                     f"[PI] 監聽啟動失敗: {exc.__class__.__name__}: {exc}", "error")
 
+        # Delta+VA uses a separate Databento MBO context feed.  A missing key
+        # or connection failure is non-fatal: the engine remains alive while
+        # the strategy stays no-signal until compact context is ready.
+        if self.strategy_mode == "delta_absorption" and self._delta_feed is not None:
+            try:
+                started = await asyncio.to_thread(self._delta_feed.start)
+                feed_status = self._delta_feed.status()
+                if started:
+                    self._log_event(
+                        f"[DATABENTO] MBO feed starting | dataset={feed_status.get('dataset')} "
+                        f"symbol={feed_status.get('symbol')}",
+                    )
+                else:
+                    self._log_event(
+                        f"[DATABENTO] MBO feed unavailable: "
+                        f"{feed_status.get('error') or 'not started'}",
+                        "error",
+                    )
+            except Exception as exc:
+                self._log_event(
+                    f"[DATABENTO] MBO feed start failed: {exc.__class__.__name__}",
+                    "error",
+                )
+
         # Start main loop
         self._task = asyncio.create_task(self._main_loop())
 
@@ -2813,6 +2881,11 @@ class LiveTradingEngine:
                     self._pi_task.cancel()
             self._pi_listener = None
             self._pi_task = None
+        if self._delta_feed is not None:
+            try:
+                await asyncio.to_thread(self._delta_feed.stop)
+            except Exception:
+                pass
         if self._task:
             self._task.cancel()
             try:
@@ -3547,6 +3620,11 @@ class LiveTradingEngine:
                 self.trend_follow.observe(candle, [], True)
             elif not self._open_position and not self._pending_order_id:
                 self._reset_breakout_confirmation()
+        elif self.strategy_mode == "delta_absorption":
+            # Keep the PI-compatible ATR/5m state warm on every completed
+            # candle; the RTH session gate below still blocks entries outside
+            # the strategy's configured session.
+            self.trend_follow.observe(candle, [], True)
         elif (
             self.strategy_mode == "optionwall"
             and not self._open_position
@@ -3701,7 +3779,7 @@ class LiveTradingEngine:
         # 1.0.8: 移除「所有 TF 同方向突破」gate — live 與 backtest 對齊。
         # (回測未含此 gate;A/B 測試證實 gate 對 overlap preset #3 幾乎毀掉績效。
         #  突破判定改由 trend_follow.evaluate 對交易 zone 判斷,live == backtest。)
-        if self.strategy_mode in ("sigma", "factor", "fade", "optionwall"):
+        if self.strategy_mode in ("sigma", "factor", "fade", "optionwall", "delta_absorption"):
             eval_zones = []
             eval_mature = True
         else:
@@ -3719,7 +3797,7 @@ class LiveTradingEngine:
             strat.reset()
 
         signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
-        if signal and self.strategy_mode in ("sigma", "factor", "fade", "optionwall"):
+        if signal and self.strategy_mode in ("sigma", "factor", "fade", "optionwall", "delta_absorption"):
             signal.zone_source = (
                 "option_wall" if self.strategy_mode == "optionwall" else self.strategy_mode
             )
@@ -5042,7 +5120,13 @@ class LiveTradingEngine:
         self._update_tf_breakout(candle)
         if hasattr(self.trend_follow, "observe"):
             # 1.0.8: 移除 all-TF breakout gate,只保留 session 過濾(對齊 backtest)
-            if self._trend_session_allowed(candle.timestamp):
+            if self.strategy_mode == "delta_absorption":
+                self.trend_follow.observe(
+                    candle,
+                    self.detector.get_recent_zones(),
+                    self.detector.is_zone_mature,
+                )
+            elif self._trend_session_allowed(candle.timestamp):
                 self.trend_follow.observe(
                     candle,
                     self.detector.get_recent_zones(),

@@ -38,6 +38,7 @@ CANONICAL = [
     ("betafib", "BETAFIB"),
     ("pi", "PI"),
     ("optionwall", "OPTION WALL"),
+    ("delta_absorption", "DELTA ABSORPTION"),
 ]
 
 
@@ -328,6 +329,15 @@ def test_pi_matrix_is_two_column_glass_switch_ui_and_keeps_legacy_wire_fields():
     assert "pi_short_levels: piMatrix.pi_short_levels" in JS
 
 
+def test_pi_matrix_light_mode_uses_light_surface_instead_of_dark_overlay():
+    light_rule = GLASS_CSS[
+        GLASS_CSS.index(':root[data-theme="light"] .pi-signal-matrix {'):
+        GLASS_CSS.index("}", GLASS_CSS.index(':root[data-theme="light"] .pi-signal-matrix {'))
+    ]
+    assert "background: var(--bg) !important;" in light_rule
+    assert "border-color: var(--border) !important;" in light_rule
+
+
 def test_requested_control_geometry_is_explicit_and_consistent():
     multiplier = CSS[CSS.index(".form-mult {"):CSS.index("}", CSS.index(".form-mult {"))]
     tuner = GLASS_CSS[
@@ -393,8 +403,8 @@ def test_pi_directional_exits_use_matching_atr_options_and_two_half_column_rows(
         assert HTML.count(f'id="pi-long-hold-{mode}"') == 1
         assert HTML.count(f'id="pi-short-hold-{mode}"') == 1
 
-    assert "slRow.classList.toggle('pi-dual-sl', isPi)" in JS
-    assert "longSlLabel.textContent = isPi ? 'LONG SL' : 'SL INPUT'" in JS
+        assert "slRow.classList.toggle('pi-dual-sl', isPi || isDelta)" in JS
+    assert "longSlLabel.textContent = (isPi || isDelta) ? 'LONG SL' : 'SL INPUT'" in JS
     assert "pi_long_hold_min: _int('pi-long-hold-' + mode, 0)" in JS
     assert "pi_short_hold_min: _int('pi-short-hold-' + mode, 60)" in JS
     assert ".factor-sl-row.pi-dual-sl" in CSS

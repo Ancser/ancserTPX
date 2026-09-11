@@ -1,17 +1,91 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-09. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-10. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            649 pytest passing + 8 subtests + 39 Chromium interaction tests
-invariants       87 documented / 83 active / 4 explicitly retired
-strategies       factor · momentum · betafib · pi · optionwall · fade · sigma  (+ confluence, live-only)
+tests            673 pytest passing + 8 subtests + 39 Chromium interaction tests
+invariants       88 documented / 84 active / 4 explicitly retired
+strategies       factor · momentum · betafib · pi · optionwall · delta_absorption · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
 
 ## Where truth lives
+
+### 2026-09-10 — Daily Databento MBO settlement/backfill
+
+`windows_databento_orderflow_settlement.bat` now runs the new
+`scripts/databento_orderflow_settlement.py` job. It selects the previous
+completed Topstep trade date using the shared Chicago 17:00 boundary, skips
+weekends/holidays, and by default checks the latest five completed sessions.
+The date is converted through the DST-aware New York RTH window into an
+exclusive UTC calendar-day MBO request. An explicit `--trade-date` settles one
+date only.
+
+The job is idempotent: an existing raw day must match its metadata, size,
+SHA-256 manifest, and the schema-v5 compact cache must contain exactly 390
+continuous RTH one-minute bars. Only a missing or invalid raw request is
+quoted/downloaded; a missing/stale cache is rebuilt locally. A raw
+replacement first renames the old DBN/metadata/manifest beside itself as
+`.replaced-*`, so a failed transfer or later audit never silently deletes the
+previous copy. The report is written to
+`ancserMarketData/derived/orderflow/reconciliation/settlement_latest.json`.
+
+The report compares overlapping live checkpoint bars with settled historical
+bars for aggregate buy/sell/delta/trade/book-flow fields. Live is diagnostic;
+historical MBO remains the source of truth. The new Windows task is separate
+from the disabled E: mirror task, runs daily at 17:15 local time, and passes
+`--max-cost 0`; any non-zero quote is refused. No MBO download was run during
+this code change.
+
+### 2026-09-10 — Delta change × prior RTH value experiment
+
+`scripts/delta_value_change_study.py` runs 64 fixed offline rules (50 distinct
+event streams), comparing 1/3/5/10-bar positive/negative delta magnitudes,
+whole-bar versus outside-VA price-cell delta, exhaustion/absorption proxies,
+and location/reclaim/VWAP gates. It reuses the production PI replay adapter,
+metrics and `segment_index`; no Live, preset or frontend behavior changes.
+Candidate availability is completed-minute time, followed by the production
+next-stamped-candle close execution, not a next-open fill.
+
+Coverage is 22 dates, 2026-08-07–2026-09-07. The PI baseline exactly matches
+the previous event-engine study's trade records despite the saved contract
+expiry changing U26 to Z26. The research copy excludes one anomalous canonical
+candle at `2026-09-07T16:25:30.423317+00:00`, close 20000, between normal
+~29590 candles. The canonical store is untouched; its provenance/remediation
+is an open data-quality issue. This exclusion changes candidate outcomes but
+not the PI baseline. Future studies must not silently execute this record.
+
+Earlier-net selection through 2026-08-27 chooses
+`absorption/w5/whole/location`: 27 trades, $2598.80 net, PF 2.4306,
+$608.20 closed-trade DD, versus PI 11 trades/$2217.40/PF 7.806/$234.20 DD.
+Later retrospective performance is 9 trades/$1359.60/PF 3.1317; its long
+contribution loses $212.80, while short contributes $1572.40 (only 6 trades).
+No rule beats PI net and PF while keeping DD no worse, including on common
+valid-prior-profile dates. Neighboring windows are substantially weaker.
+These previously examined dates are not untouched holdout. Reports, all
+trades, entry-region diagnostics and excluded-record audit are saved only in
+`ancserMarketData/derived/research/delta_value_change_study/`.
+
+`DELTA ABSORPTION` is now a selectable MNQ model. Its default entry is the
+selected `absorption / w5 / whole / location` rule: completed one-minute MBO
+delta is compared with a rolling median baseline, then confirmed by opposing
+delta weakening, a non-breaking price stall, and a touch of the previous
+complete RTH 70% value area. The window, baseline, strength, weakening,
+stall, VA source/gate, touch tolerance, side, and profile requirement are
+adjustable in the model panel. It uses the PI-style ATR-blend exit fields;
+the candidate defaults are 4 ATR long SL, 1.5 ATR short SL, 3R TP, RTH-only,
+and 60-minute short time exit.
+
+Live Delta uses Databento `GLBX.MDP3` MBO for the active MNQ contract, keeps a
+one-minute causal delay, and feeds the same compact footprint/profile contract
+used by backtest. The API key is read from `DATABENTO_API_KEY` (or the local
+`.env`) without appearing in logs or status. Compact live runtime state is
+written under the canonical F-drive `ancserMarketData/runtime/state` only;
+raw MBO and derived research data are not mirrored to E. The live engine
+reports `databento_mbo` and the Live account card shows its connection and
+profile readiness. Starting the model is still an explicit user action.
 
 ### 2026-09-09 — Event-entry research uses the production engine
 
@@ -34,17 +108,20 @@ SL/TP geometry. Reports/trade records are in the external derived/research
 tree under `orderflow_event_engine_study`; Live and presets are unchanged.
 
 The footprint canvas now has two display densities. At overview scale it
-aggregates cells into screen buckets, keeps only the strongest price area per
-column and its dominant side, applies a 50-contract minimum when possible,
-draws at most four depth walls per side, and suppresses small passive outlines,
-tier beads, and imbalance labels. Quiet columns retain their strongest cell so
-the price path does not disappear. Bubble radius is tied to quantity bands
-(50–99 / 100–149 / 150+), while passive activity changes fill opacity only. At
-detail scale the exact size bands return and up to eight strongest continuous
-depth levels are shown. The raw response remains intact in `_footprintBars`;
-this is a paint budget, not a data filter. A 1000-contract minimum would blank
-the current MNQ 1m cache (sample maximum 257), so it is deliberately not used.
-The chart legend is also capped and wraps active keys into a compact box.
+aggregates cells into screen buckets, keeps only the strongest delta price area
+per column, applies a 50-contract delta minimum when possible, draws at most
+four depth walls per side, and suppresses small passive outlines, tier beads,
+and imbalance labels. Quiet columns retain their strongest cell so the price
+path does not disappear. Each rendered price cell is one signed delta bar:
+positive buy-minus-sell extends right in white, negative extends left in red,
+and its length follows the absolute delta; passive activity changes fill
+opacity only. When the footprint has data, the original candle series is
+hidden so the ladder is readable; disabling the layer restores candles. At
+detail scale signed labels and up to eight strongest continuous depth levels
+are shown. The raw response remains intact in `_footprintBars`; this is a paint
+budget, not a data filter. A 1000-contract minimum would blank the current MNQ
+1m cache (sample maximum 257), so it is deliberately not used. The chart
+legend is also capped and wraps active keys into a compact box.
 
 The chart-only generic VAH/VAL/POC timeframe renderer, Session VA overlay, and
 BETAFIB level overlay are retired. Their frontend layer rows, chart transport,

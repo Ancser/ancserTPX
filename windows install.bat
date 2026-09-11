@@ -146,10 +146,32 @@ schtasks /change /tn "ancserTPX MarketData Sync" /disable >nul 2>&1
 echo         Hourly scheduled E: mirror is disabled.
 echo         Run windows_market_data_sync.bat only when a manual mirror is wanted.
 
+:: Databento MBO settlement is a separate F:-only task. It never mirrors the
+:: order-flow source/cache to E: and accepts only zero-cost subscription data.
+set "SETTLEMENT_CMD=cmd /d /c %~dp0windows_databento_orderflow_settlement.bat"
+schtasks /create /tn "ancserTPX Databento MBO Settlement" /tr "!SETTLEMENT_CMD!" /sc DAILY /st 17:15 /f >nul 2>&1
+if errorlevel 1 (
+    echo         Could not register Databento MBO settlement task.
+    echo         You can run windows_databento_orderflow_settlement.bat manually.
+) else (
+    echo         Databento MBO settlement scheduled daily at 17:15 local time.
+)
+
+:: Create a named desktop shortcut whose icon is the website favicon. The VBS
+:: launcher remains available as a compatibility entry point, but its own
+:: Windows Script Host file icon cannot be changed by application code.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\create_windows_app_shortcut.ps1" -ProjectRoot "%~dp0" >nul 2>&1
+if errorlevel 1 (
+    echo         Could not create the ancserTPX desktop shortcut.
+) else (
+    echo         Desktop shortcut ancserTPX created with the website icon.
+)
+
 echo.
 echo  ========================================
 echo   Setup complete!
-echo   Double-click "windows app.vbs" for the native WebView2 app
+echo   Double-click the "ancserTPX" desktop shortcut for the native WebView2 app
+echo   ("windows app.vbs" remains a compatibility launcher)
 echo   ("windows web.bat" remains a compatibility shortcut)
 echo   Run "windows terminal.bat" for terminal-only LIVE
 echo  ========================================
