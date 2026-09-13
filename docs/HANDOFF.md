@@ -1,17 +1,34 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-10. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-12. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            673 pytest passing + 8 subtests + 39 Chromium interaction tests
+tests            675 pytest passing + 8 subtests; footprint Chromium regression passing (full browser suite not rerun for this change)
 invariants       88 documented / 84 active / 4 explicitly retired
 strategies       factor · momentum · betafib · pi · optionwall · delta_absorption · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
 ```
 
 ## Where truth lives
+
+### 2026-09-12 — Free chart rendering performance investigation
+
+The chart remains the installed Apache-2.0 Lightweight Charts 4.1.3; no paid
+chart SDK, subscription, or strategy change was introduced. Footprint redraws
+now avoid reapplying an unchanged candle visibility option, and reuse price
+coordinates within one paint only. The cache never survives a frame, so scale,
+pan, zoom, and replacement-series coordinates remain fresh.
+
+The footprint browser test verifies actual paint, layer toggling, redundant
+visibility writes, and unique coordinate lookups. Bypassing the coordinate
+memo produces the same canvas pixels but redundant lookups. The visibility
+regression was first run against the original implementation and failed
+(five writes instead of zero). The opt-in real-data benchmark and its limits
+are documented in `docs/chart-performance.md`; simulated completed-bar replay
+must not be described as a live Databento ingestion test. Glass-off is a
+benchmark condition, not a new production UI toggle.
 
 ### 2026-09-10 — Daily Databento MBO settlement/backfill
 

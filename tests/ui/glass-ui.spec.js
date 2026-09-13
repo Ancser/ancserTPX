@@ -407,6 +407,58 @@ test("Footprint layer fetches only the visible window and clears when disabled",
       : null
   ))).toBe(false);
 
+  // Repainting a stable footprint must not invalidate Lightweight Charts on
+  // every frame. Exercise the real draw path, not a source-string contract.
+  expect(await page.evaluate(() => {
+    const original = candleSeries.applyOptions;
+    let visibilityWrites = 0;
+    candleSeries.applyOptions = function (options) {
+      if (Object.hasOwn(options, 'visible')) visibilityWrites += 1;
+      return original.call(this, options);
+    };
+    try {
+      for (let frame = 0; frame < 5; frame++) drawFootprintLayer();
+      return visibilityWrites;
+    } finally { candleSeries.applyOptions = original; }
+  })).toBe(0);
+
+  expect(await page.evaluate(() => {
+    const original = candleSeries.priceToCoordinate;
+    const calls = new Map();
+    candleSeries.priceToCoordinate = function (price) {
+      calls.set(price, (calls.get(price) || 0) + 1);
+      return original.call(this, price);
+    };
+    try {
+      drawFootprintLayer();
+      return {prices: calls.size, maxCalls: Math.max(...calls.values())};
+    } finally { candleSeries.priceToCoordinate = original; }
+  })).toEqual({prices: 4, maxCalls: 1});
+
+  // Bypass the memo on the same actual canvas: the optimization must change
+  // coordinate-call count, never signed bars, labels, or depth-wall pixels.
+  expect(await page.evaluate(() => {
+    const source = drawFootprintLayer.toString();
+    const mutant = source.replace('return priceCoordinates.get(price);',
+      'return candleSeries.priceToCoordinate(price);');
+    if (source === mutant) throw new Error('Coordinate-cache mutation was not applied');
+    const canvas = document.getElementById('footprint-overlay');
+    drawFootprintLayer();
+    const cached = canvas.toDataURL();
+    const uncached = eval('(' + mutant + ')');
+    const original = candleSeries.priceToCoordinate;
+    const calls = new Map();
+    candleSeries.priceToCoordinate = function (price) {
+      calls.set(price, (calls.get(price) || 0) + 1);
+      return original.call(this, price);
+    };
+    try {
+      uncached();
+      return {samePixels: cached === canvas.toDataURL(),
+        redundantCalls: Math.max(...calls.values()) > 1};
+    } finally { candleSeries.priceToCoordinate = original; }
+  })).toEqual({samePixels: true, redundantCalls: true});
+
   await page.evaluate(() => toggleChartLayer("footprint", false));
   await expect.poll(() => page.evaluate(() => (
     typeof candleSeries !== "undefined" && candleSeries

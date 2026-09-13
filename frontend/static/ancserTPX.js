@@ -4915,8 +4915,22 @@ function _persistChartLayerPreferences() {
 }
 
 function _seedChartLayerMarkup() {
-    document.querySelectorAll('#chart-layer-pop .glass-switch').forEach(track => {
+    document.querySelectorAll('.glass-switch').forEach(track => {
         if (track.closest('.optical-stage-copy')) return;
+        if (!track.tpxSetState && !track.dataset.nativeSwitchBound) {
+            track.dataset.nativeSwitchBound = '1';
+            track.addEventListener('click', () => {
+                const key = String(track.dataset.switchProxy || '').replace(/^lp-/, '');
+                const next = track.getAttribute('aria-checked') !== 'true';
+                if (key in CHART_OVERLAYS) toggleChartLayer(key, next);
+                else {
+                    track.classList.toggle('on', next);
+                    track.setAttribute('aria-checked', String(next));
+                    const proxy = document.getElementById(track.dataset.switchProxy || '');
+                    proxy?.click();
+                }
+            });
+        }
         const key = String(track.dataset.switchProxy || '').replace(/^lp-/, '');
         if (!(key in CHART_OVERLAYS)) return;
         const on = CHART_OVERLAYS[key] !== false;
@@ -4947,7 +4961,13 @@ function _syncFootprintCandleVisibility() {
     // If the cache is unavailable, keep the normal candles visible instead of
     // leaving the chart blank.
     const hideCandles = layerOn('footprint') && _footprintBars.length > 0;
-    try { candleSeries.applyOptions({visible: !hideCandles}); } catch (_) {}
+    // applyOptions invalidates the chart even for an unchanged value. Read
+    // the current series rather than memoizing a previous series instance.
+    try {
+        if (candleSeries.options().visible !== !hideCandles) {
+            candleSeries.applyOptions({visible: !hideCandles});
+        }
+    } catch (_) {}
 }
 
 // 四種指標訊號共用 indicator-signal-overlay 這張畫布,所以不能整層關掉,
@@ -5606,7 +5626,8 @@ const ORDERFLOW_COMPACT_COLUMN_LIMIT = 1;
 const ORDERFLOW_COMPACT_MIN_DELTA = 50;
 const ORDERFLOW_MAX_DEPTH_LEVELS = 8;
 
-function _compactFootprintBars(prepared, spacing, tickSize, plotBottom) {
+function _compactFootprintBars(prepared, spacing, tickSize, plotBottom,
+    priceToY = (price) => candleSeries.priceToCoordinate(price)) {
     const bucketPx = Math.max(4, Math.min(10, spacing > 0 ? spacing : 4));
     const priceBucketPx = 4;
     const columns = new Map();
@@ -5619,7 +5640,7 @@ function _compactFootprintBars(prepared, spacing, tickSize, plotBottom) {
         }
         for (const cell of bar.cells) {
             if (!Array.isArray(cell) || cell.length < 5) continue;
-            const y = candleSeries.priceToCoordinate(Number(cell[0]) * tickSize);
+            const y = priceToY(Number(cell[0]) * tickSize);
             if (y == null || y < -12 || y > plotBottom + 12) continue;
             const yBucket = Math.round(y / priceBucketPx);
             let aggregate = column.cells.get(yBucket);
@@ -5807,6 +5828,16 @@ function drawFootprintLayer() {
     ctx.clip();
 
     const tickSize = Number(_footprintMeta?.tick_size || 0.25);
+    // A full session repeats the same prices across thousands of cells.
+    // Cache only within this paint: pan/zoom/autoscale/series replacement
+    // must always resolve fresh coordinates on the next frame.
+    const priceCoordinates = new Map();
+    const priceToY = (price) => {
+        if (!priceCoordinates.has(price)) {
+            priceCoordinates.set(price, candleSeries.priceToCoordinate(price));
+        }
+        return priceCoordinates.get(price);
+    };
     const depthReady = Number(_footprintMeta?.schema_version || 0) >= 4;
     let maxDelta = 1;
     let maxPassive = 1;
@@ -5835,7 +5866,7 @@ function drawFootprintLayer() {
     const compactMode = performance.now() < _orderflowInteractionUntil ||
         spacing < 12 || rawCellCount > ORDERFLOW_DETAIL_CELL_LIMIT;
     const compacted = compactMode
-        ? _compactFootprintBars(prepared, spacing, tickSize, plotBottom)
+        ? _compactFootprintBars(prepared, spacing, tickSize, plotBottom, priceToY)
         : {bars: prepared, spacing};
     const renderBars = compacted.bars;
     const renderSpacing = compacted.spacing;
@@ -5881,7 +5912,7 @@ function drawFootprintLayer() {
                 ? Math.floor(ORDERFLOW_MAX_DEPTH_LEVELS / 2)
                 : ORDERFLOW_MAX_DEPTH_LEVELS);
         for (const level of levels) {
-            const y = candleSeries.priceToCoordinate(level.tick * tickSize);
+            const y = priceToY(level.tick * tickSize);
             if (y == null || y < -2 || y > plotBottom + 2) continue;
             const strength = Math.sqrt(level.max / maxDepth);
             const halfSpan = Math.max(8, renderSpacing * 0.6);
@@ -5930,7 +5961,7 @@ function drawFootprintLayer() {
         for (const cell of bar.cells) {
             if (!Array.isArray(cell) || cell.length < 7) continue;
             const price = Number(cell[0]) * tickSize;
-            const y = candleSeries.priceToCoordinate(price);
+            const y = priceToY(price);
             if (y == null || y < -12 || y > plotBottom + 12) continue;
             const buy = Number(cell[1] || 0);
             const sell = Number(cell[2] || 0);
@@ -5945,7 +5976,7 @@ function drawFootprintLayer() {
             const barWidth = compactMode
                 ? Math.max(1.5, Math.min(5, renderSpacing * 0.42))
                 : Math.max(8, Math.min(96, renderSpacing * 0.42));
-            const nextY = candleSeries.priceToCoordinate((Number(cell[0]) + 1) * tickSize);
+            const nextY = priceToY((Number(cell[0]) + 1) * tickSize);
             const cellHeight = Math.max(1.5, Math.min(14,
                 nextY == null ? 4 : Math.abs(nextY - y) - 0.5));
             drawFootprintDeltaBar(
@@ -9887,6 +9918,8 @@ function _robObservedCurveSeries(curve, valueKey, label, transform) {
 
 function _robSegmentCurveSeries(curve, valueKey, transform) {
     const rows = Array.isArray(curve) ? curve : [];
+    const finalStep = rows.reduce((max, point) => Math.max(
+        max, Number(point && point.step) || 0), 0);
     const grouped = new Map();
     rows.forEach(point => {
         const segment = Number(point && point.segment);
@@ -9901,7 +9934,16 @@ function _robSegmentCurveSeries(curve, valueKey, transform) {
     return Array.from(grouped.keys()).sort((a, b) => a - b).map(segment => {
         const points = grouped.get(segment).sort((a, b) => a.step - b.step);
         if (points.length) {
-            points.unshift({ step: Math.max(0, points[0].step - 1), value: 0 });
+            // Every WF path owns the same global x-domain.  Without these
+            // anchors, sparse segment points make SVG scale each path as if
+            // it were a separate chart and the three paths appear detached.
+            const first = points[0];
+            const last = points[points.length - 1];
+            points.unshift({ step: 0, value: 0 });
+            if (first.step === 0) points[1] = { step: 0, value: first.value };
+            if (finalStep > last.step) {
+                points.push({ step: finalStep, value: last.value });
+            }
         }
         return { key: 'segment-' + segment, label: segment + '/3', points: points };
     });

@@ -971,23 +971,6 @@
         .bottom-content::-webkit-scrollbar-thumb { background: var(--border-h); }
         .bottom-content::-webkit-scrollbar-track { background: transparent; }
 
-        /* ── Scanline Effect ── */
-        body::before {
-            content: '';
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: repeating-linear-gradient(
-                0deg,
-                transparent,
-                transparent 2px,
-                rgba(100, 220, 255, 0.008) 2px,
-                rgba(100, 220, 255, 0.008) 4px
-            );
-            pointer-events: none;
-            z-index: 9999;
-        }
-
         /* ── Live Strategy Metrics Panel ── */
         .live-metrics-panel {
             background: var(--bg);
@@ -2255,10 +2238,38 @@
 }
 
 /* Chart-layer switches share the ordinary parameter-switch geometry. */
+.glass-switch {
+    position: relative;
+    display: inline-block;
+    width: 2.8333rem;
+    height: 1.1667rem;
+    padding: 0;
+    border: 1px solid var(--border, #334155);
+    border-radius: 999px;
+    background: var(--panel2, #273244);
+    cursor: pointer;
+    vertical-align: middle;
+}
+.glass-switch.on { background: var(--green, #10b981); }
+.glass-switch .switch-thumb {
+    display: block;
+    position: absolute;
+    z-index: 1;
+    width: 1.3333rem;
+    height: .9167rem;
+    left: .0833rem;
+    top: .0833rem;
+    border-radius: 999px;
+    background: var(--text, #f5f8fc);
+    transition: transform 120ms ease;
+}
+.glass-switch.on .switch-thumb { transform: translateX(1.4166rem); }
 .chart-layer-pop .glass-switch {
     width: 2.8333rem;
     height: 1.1667rem;
     box-sizing: border-box;
+    flex: 0 0 2.8333rem;
+    margin-left: auto;
 }
 .chart-layer-pop .switch-thumb {
     position: absolute;
@@ -2305,11 +2316,11 @@
     padding: 0.5rem 0.6667rem 0.6667rem;
     border: 0;
     border-radius: max(var(--glass-radius, 0.5rem), 0.75rem);
-    background: var(--glass-bg-strong, rgba(8, 9, 13, 0.88));
+    /* Native solid panel: no backdrop gaps, refraction, or chart bleed. */
+    background: var(--bg, #0b1220);
     box-shadow: none;
-    /* Strong backdrop frost without a decorative edge treatment. */
-    backdrop-filter: blur(20px) saturate(1.3);
-    -webkit-backdrop-filter: blur(20px) saturate(1.3);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
     isolation: isolate;
 }
 .chart-layer-pop.hidden { display: none; }
