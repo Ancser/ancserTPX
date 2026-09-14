@@ -27,8 +27,11 @@ memo produces the same canvas pixels but redundant lookups. The visibility
 regression was first run against the original implementation and failed
 (five writes instead of zero). The opt-in real-data benchmark and its limits
 are documented in `docs/chart-performance.md`; simulated completed-bar replay
-must not be described as a live Databento ingestion test. Glass-off is a
-benchmark condition, not a new production UI toggle.
+must not be described as a live Databento ingestion test. The measured glass
+cost led to removing Liquid Glass from the production page; its old assets are
+retained only as recoverable audit material. The native UI design layer and
+the final deep-blue / Apple Light palette decision are documented in
+`docs/ui-design-system.md`; the standalone comparison demo is retired.
 
 ### 2026-09-10 — Daily Databento MBO settlement/backfill
 
@@ -138,7 +141,8 @@ detail scale signed labels and up to eight strongest continuous depth levels
 are shown. The raw response remains intact in `_footprintBars`; this is a paint
 budget, not a data filter. A 1000-contract minimum would blank the current MNQ
 1m cache (sample maximum 257), so it is deliberately not used. The chart
-legend is also capped and wraps active keys into a compact box.
+legend is retired from the production chart; layer names remain available in
+the chart-layer popover when needed.
 
 The chart-only generic VAH/VAL/POC timeframe renderer, Session VA overlay, and
 BETAFIB level overlay are retired. Their frontend layer rows, chart transport,
@@ -486,12 +490,16 @@ preset behavior changed.
 ### R0.8 — Native lower navigation restored (2026-09-03)
 
 Liquid Glass remains on the upper Research/Backtest/Live workspace dock only.
-The lower BACKTEST TRADES/EXECUTE TRADES/PNL CURVE/SYSTEM LOG bar now
+The lower BACKTEST TRADES/EXECUTE TRADES/SYSTEM LOG bar now
 uses the original `.bottom-tabs` / `.bottom-tab` flat underline styling. The
 skin no longer wraps those labels or inserts a segment lens/container, and a
 browser contract protects both halves of that decision: upper stays Glass,
 lower stays native. The skin asset cache key was advanced so a normal reload
 does not reuse the older lower-nav transformation.
+
+The full realized PNL Curve was moved out of that lower bar into Research,
+replacing the month-only Backtest-vs-Live curve. It shares the same trade-by-
+trade equity and Topstep trailing-drawdown rendering used by the former tab.
 
 ### R2 — Zone-age gate
 

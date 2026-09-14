@@ -52,7 +52,7 @@ test("robustness panel renders from the endpoint", async ({ page }) => {
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
 
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.waitForSelector('html[data-tpx-glass-skin="on"]');
+  await page.waitForSelector('link[href*="ancserTPX-design.css"]');
   await page.waitForTimeout(1200);
 
   // Feed the panel a synthetic backtest and render it.
@@ -157,16 +157,16 @@ test("robustness panel renders from the endpoint", async ({ page }) => {
       widths: summary.map((el) => el.getBoundingClientRect().width),
       innerColor: inner ? getComputedStyle(inner).fill : null,
       outerColor: outer ? getComputedStyle(outer).fill : null,
-      incomeLegendRows: document.querySelectorAll(
-        "#cal-income-curve .cal-curve-legend-row",
-      ).length,
-      incomeSvgTexts: document.querySelectorAll("#cal-income-curve svg text").length,
+      pnlCanvasCount: document.querySelectorAll("#pnl-curve-body canvas").length,
+      pnlStatus: document.querySelector("#pnl-curve-status")?.textContent || "",
+      legacyIncomeCurve: document.querySelectorAll("#cal-income-curve").length,
     };
   });
   expect(Math.max(...layout.widths) - Math.min(...layout.widths)).toBeLessThan(1);
   expect(layout.innerColor).not.toBe(layout.outerColor);
-  expect(layout.incomeLegendRows).toBe(2);
-  expect(layout.incomeSvgTexts).toBe(0);
+  expect(layout.pnlCanvasCount).toBe(1);
+  expect(layout.pnlStatus).toContain("equity");
+  expect(layout.legacyIncomeCurve).toBe(0);
   await page.locator("#robustness-content .rob-topstep-card .rob-help-dot").first().click();
   await expect(page.locator("#global-help-tooltip")).toContainText("Topstep 50K simulation");
 

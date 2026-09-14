@@ -1,0 +1,1375 @@
+/* ancserTPX design system — native workstation layer
+   Visual-only rules. Strategy, data, chart series, and execution code stay
+   in their existing files. The vocabulary follows a small, repeatable set of
+   surfaces, spacing, type roles, and semantic states. */
+
+:root {
+    color-scheme: dark;
+    --nav-rail-width: 72px;
+    --chart-plot-right: 72px;
+    /* Final dark palette: the legacy deep-blue workstation theme. */
+    --surface-page: #08090d;
+    --surface-rail: #0d1017;
+    --surface-panel: #131620;
+    --surface-raised: #1a1e2a;
+    --surface-control: #0d1017;
+    --surface-button: #1b2535;
+    --surface-button-hover: #26364b;
+    --surface-input: #080c14;
+    --surface-chart: #08090d;
+    --line-subtle: rgba(100, 220, 255, 0.08);
+    --line-strong: rgba(100, 220, 255, 0.20);
+    --ink-primary: #c8d0e0;
+    --ink-secondary: #556178;
+    --ink-muted: #3a4560;
+    --accent: #64dcff;
+    --positive: #00e5a0;
+    --negative: #ff4060;
+    --warning: #ffa726;
+    --chart-grid: rgba(100, 220, 255, 0.03);
+    --chart-crosshair: rgba(100, 220, 255, 0.20);
+    --candle-up: #888888;
+    --candle-down: #555555;
+    --switch-off: #26364b;
+    --cyan2: rgba(100, 220, 255, 0.15);
+    --cyan3: rgba(100, 220, 255, 0.05);
+    --green2: rgba(0, 229, 160, 0.12);
+    --red2: rgba(255, 64, 96, 0.12);
+    --amber2: rgba(255, 167, 38, 0.12);
+    --ui-radius: 0;
+    --ui-radius-small: 0;
+    --ui-space-1: 4px;
+    --ui-space-2: 8px;
+    --ui-space-3: 12px;
+    --ui-space-4: 16px;
+    --ui-space-5: 20px;
+    --ui-control-height: 34px;
+
+    /* Keep the legacy variable names as one source for existing markup. */
+    --bg: var(--surface-page);
+    --bg2: var(--surface-rail);
+    --bg3: var(--surface-panel);
+    --bg4: var(--surface-raised);
+    --border: var(--line-subtle);
+    --border-h: var(--line-strong);
+    --text: var(--ink-primary);
+    --text2: var(--ink-secondary);
+    --text3: var(--ink-muted);
+    --cyan: var(--accent);
+    --green: var(--positive);
+    --red: var(--negative);
+    --amber: var(--warning);
+    --white: var(--ink-primary);
+}
+
+/* Final light palette: Apple Light. The attribute is set before the first
+   stylesheet paints and is persisted by ancserTPX.js. */
+:root[data-tpx-theme="apple-light"] {
+    color-scheme: light;
+    --surface-page: #f5f7fb;
+    --surface-rail: #e9eef6;
+    --surface-panel: #ffffff;
+    --surface-raised: #e3eaf4;
+    --surface-control: #f8fafc;
+    --surface-button: #e2e9f3;
+    --surface-button-hover: #d6e1ef;
+    --surface-input: #edf2f8;
+    --surface-chart: #fbfcff;
+    --line-subtle: #dfe5ee;
+    --line-strong: #c8d2e1;
+    --ink-primary: #172235;
+    --ink-secondary: #53647b;
+    --ink-muted: #718096;
+    --accent: #147ef5;
+    --positive: #0b9f72;
+    --negative: #d93652;
+    --warning: #b57600;
+    --chart-grid: rgba(71, 91, 117, 0.12);
+    --chart-crosshair: rgba(20, 126, 245, 0.42);
+    --candle-up: #159a70;
+    --candle-down: #d14d65;
+    --switch-off: #d4dde9;
+    --cyan2: rgba(20, 126, 245, 0.12);
+    --cyan3: rgba(20, 126, 245, 0.05);
+    --green2: rgba(11, 159, 114, 0.12);
+    --red2: rgba(217, 54, 82, 0.12);
+    --amber2: rgba(181, 118, 0, 0.12);
+    --bg: var(--surface-page);
+    --bg2: var(--surface-rail);
+    --bg3: var(--surface-panel);
+    --bg4: var(--surface-raised);
+    --border: var(--line-subtle);
+    --border-h: var(--line-strong);
+    --text: var(--ink-primary);
+    --text2: var(--ink-secondary);
+    --text3: var(--ink-muted);
+    --cyan: var(--accent);
+    --green: var(--positive);
+    --red: var(--negative);
+    --amber: var(--warning);
+    --white: var(--ink-primary);
+}
+
+html,
+body {
+    background: var(--surface-page);
+    color: var(--ink-primary);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+    overflow-x: hidden;
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.sidebar-toggle,
+.theme-toggle {
+    width: 44px;
+    height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-radius: var(--ui-radius-small);
+    border: 0;
+    background: var(--surface-button);
+    color: var(--ink-secondary);
+    cursor: pointer;
+}
+.sidebar-toggle { color: var(--ink-secondary); }
+.sidebar-toggle:hover { color: var(--ink-primary); background: var(--surface-button-hover); }
+.sidebar-toggle-icon {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    transition: transform 140ms ease;
+}
+.sidebar-toggle[data-collapsed="true"] .sidebar-toggle-icon { transform: rotate(180deg); }
+.theme-toggle svg {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.theme-toggle:hover { color: var(--ink-primary); background: var(--surface-button-hover); }
+.theme-toggle[data-theme="apple-light"] { color: var(--accent); }
+/* 1–2. Hierarchy and layout: a quiet rail, one dominant chart, one utility
+   surface. min-width:0 is important for a desktop WebView at laptop width. */
+/* The empty title strip was removed from the markup. Product identity lives
+   in the compact rail brand, so the chart starts at the top of the viewport. */
+.app-rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 1000;
+    width: var(--nav-rail-width);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-rail);
+    border-right: 1px solid var(--line-strong);
+    isolation: isolate;
+    overflow: visible;
+}
+.app-rail-brand {
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid var(--line-strong);
+    color: var(--accent);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1rem;
+    letter-spacing: 1px;
+}
+.app-rail-brand span { color: var(--ink-muted); font-size: 0.48em; margin-left: 2px; }
+.app-rail .header-tabs {
+    position: static;
+    transform: none;
+    width: 100%;
+    height: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 14px 0;
+}
+.app-rail .tab {
+    position: relative;
+    width: 100%;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: 0;
+    border-left: 3px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--ink-muted);
+    cursor: pointer;
+    box-sizing: border-box;
+    overflow: visible;
+    z-index: 1;
+}
+.app-rail .tab:hover { color: var(--ink-primary); background: rgba(214, 226, 237, 0.07); }
+.app-rail .tab.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+    background: rgba(214, 226, 237, 0.10);
+}
+.app-rail .tab::after { display: none; }
+.app-rail .tab:hover::after {
+    content: attr(aria-label);
+    display: flex;
+    position: absolute;
+    left: calc(100% + 10px);
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 120;
+    padding: 5px 8px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--ui-radius-small);
+    background: var(--surface-panel);
+    color: var(--ink-primary);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.5rem;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+    box-sizing: border-box;
+    min-height: 26px;
+    width: max-content;
+    max-width: calc(100vw - var(--nav-rail-width) - 18px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.15;
+    align-items: center;
+    pointer-events: none;
+}
+.app-rail .tab-icon {
+    width: 22px;
+    height: 22px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.55;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.app-rail .tab-icon-dot {
+    fill: currentColor;
+    stroke: none;
+}
+.rail-footer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    margin-top: auto;
+    padding: 10px 8px 14px;
+}
+.sidebar-toggle,
+.theme-toggle,
+.rail-connection .conn-trigger { flex: 0 0 auto; }
+.rail-connection { position: relative; }
+.rail-connection .conn-trigger {
+    position: relative;
+    width: 44px;
+    height: 38px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border-radius: var(--ui-radius-small);
+    border: 0;
+    background: var(--surface-button);
+    color: var(--ink-secondary);
+}
+.rail-connection .conn-trigger:hover,
+.rail-connection .conn-trigger.connected { color: var(--positive); background: var(--surface-button-hover); }
+.connection-icon {
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.connection-initial {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0;
+    text-transform: lowercase;
+}
+.rail-connection .status-dot {
+    position: absolute;
+    right: 6px;
+    bottom: 5px;
+    width: 6px;
+    height: 6px;
+}
+.rail-connection .conn-arrow { display: none; }
+.rail-connection .conn-panel {
+    top: auto;
+    right: auto;
+    bottom: 0;
+    left: calc(100% + 10px);
+}
+.main {
+    display: flex;
+    width: calc(100% - var(--nav-rail-width));
+    height: 100vh;
+    margin-left: var(--nav-rail-width);
+    min-width: 0;
+    max-width: calc(100% - var(--nav-rail-width));
+    overflow-x: hidden;
+}
+#calendar-view { top: 0; }
+.chart-status-cluster {
+    position: absolute;
+    top: 12px;
+    /* Keep the account/time cluster inside the plot area, clear of the
+       lightweight-charts price scale on the right edge. */
+    right: var(--chart-plot-right);
+    width: max-content;
+    z-index: 26;
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 10px;
+    pointer-events: none;
+    font-family: 'IBM Plex Mono', monospace;
+}
+.chart-status-cluster .account-switcher,
+.chart-status-cluster #clock,
+.chart-status-account {
+    width: max-content;
+}
+.chart-status-account {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+.chart-status-cluster .account-switcher { justify-content: flex-end; }
+.chart-status-cluster .account-badge {
+    padding: 3px 7px;
+    background: var(--surface-panel);
+    border: 1px solid var(--line-strong);
+    color: var(--ink-secondary);
+}
+.chart-status-cluster .account-badge.practice {
+    background: var(--green2);
+    color: var(--positive);
+    border-color: var(--positive);
+}
+.chart-status-cluster .account-badge.funded {
+    background: var(--amber2);
+    color: var(--warning);
+    border-color: var(--warning);
+}
+.chart-status-cluster #clock {
+    color: var(--ink-secondary);
+    font-size: 0.55rem;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+}
+.chart-provider-status {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+    min-width: 118px;
+    padding-top: 1px;
+    color: var(--ink-muted);
+    font-size: 0.52rem;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+    pointer-events: auto;
+}
+.chart-latency-row {
+    display: grid;
+    grid-template-columns: 6px auto 30px 14px;
+    align-items: center;
+    column-gap: 4px;
+    min-height: 11px;
+    width: 100%;
+    text-align: right;
+}
+.chart-latency-dot {
+    width: 6px;
+    height: 6px;
+    display: inline-block;
+    border-radius: 50%;
+    background: var(--ink-muted);
+    box-shadow: none;
+    transition: background-color var(--ui-motion-duration) var(--ui-motion-ease),
+                box-shadow var(--ui-motion-duration) var(--ui-motion-ease);
+}
+.chart-latency-dot.is-empty { background: var(--ink-muted); }
+.chart-latency-dot.is-error {
+    background: var(--negative);
+    box-shadow: 0 0 0 3px var(--red2);
+}
+.chart-latency-dot.is-starting {
+    background: var(--warning);
+    box-shadow: 0 0 0 3px var(--amber2);
+    animation: chart-status-pulse 1.2s ease-in-out infinite;
+}
+.chart-latency-dot.is-connected {
+    background: var(--positive);
+    box-shadow: 0 0 0 3px var(--green2);
+}
+.chart-latency-label { color: var(--ink-secondary); }
+.chart-latency-value {
+    color: var(--ink-primary);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+.chart-latency-unit { color: var(--ink-muted); text-align: left; }
+@keyframes chart-status-pulse {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1; }
+}
+#chart-quick-btns { right: var(--chart-plot-right); }
+
+/* The legacy matrix surface was useful on the dark workstation palette, but
+   its black alpha layer becomes an unintended gray slab in Apple Light. */
+:root[data-tpx-theme="apple-light"] .pi-signal-matrix {
+    background: transparent;
+}
+
+.main { min-width: 0; }
+.sidebar {
+    width: clamp(330px, 26.4vw, 418px);
+    flex: 0 0 clamp(330px, 26.4vw, 418px);
+    min-width: 0;
+    max-width: 100%;
+    background: var(--surface-rail);
+    border-right: 1px solid var(--line-strong);
+    overflow-x: hidden;
+    /* Keep the panel scrollable without reserving a visible scrollbar gutter. */
+    scrollbar-width: none;
+    scrollbar-gutter: auto;
+    -ms-overflow-style: none;
+}
+.sidebar::-webkit-scrollbar { width: 0; height: 0; display: none; }
+body.sidebar-collapsed .sidebar { display: none; }
+body.sidebar-collapsed .content {
+    flex: 1 1 100%;
+    width: 100%;
+}
+.content {
+    min-width: 0;
+    max-width: 100%;
+    background: var(--surface-page);
+    overflow-x: hidden;
+}
+.panel {
+    padding: var(--ui-space-4);
+    border-bottom: 1px solid var(--line-subtle);
+    background: transparent;
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: hidden;
+}
+.panel::before,
+.panel::after { display: none; }
+.panel-title {
+    width: calc(100% + (2 * var(--ui-space-4)));
+    margin-left: calc(-1 * var(--ui-space-4));
+    padding: 7px var(--ui-space-4);
+    min-height: 31px;
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
+    background: var(--surface-raised);
+    color: var(--ink-primary);
+    letter-spacing: 2px;
+    margin-bottom: var(--ui-space-3);
+    border: 0;
+    border-left: 3px solid var(--accent);
+}
+.panel-title::before { content: none !important; display: none !important; }
+.sidebar .form-row,
+.sidebar .form-group,
+.sidebar .action-row,
+.sidebar .slot-btnrow,
+.sidebar .slot-status {
+    min-width: 0;
+    max-width: 100%;
+}
+.sidebar .form-row > *,
+.sidebar .form-group > *,
+.sidebar .action-row > *,
+.sidebar .slot-btnrow > * {
+    min-width: 0;
+    max-width: 100%;
+}
+.sidebar .form-group label {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+.sidebar .form-row.form-row-limits {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+}
+.sidebar .form-row-limits .form-group {
+    flex: 0 0 auto;
+    width: 100%;
+}
+.sidebar .form-row-limits label {
+    white-space: nowrap;
+}
+
+/* 3–4. Shared controls: one geometry and one focus treatment. */
+.form-group label {
+    color: var(--ink-secondary);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}
+.form-group input,
+.form-group select,
+input[type="number"],
+input[type="text"],
+select,
+.slot-input {
+    min-height: var(--ui-control-height);
+    background: var(--surface-input);
+    border: 0;
+    border-radius: var(--ui-radius-small);
+    color: var(--ink-primary);
+}
+.form-group input:hover,
+.form-group select:hover,
+input[type="number"]:hover,
+input[type="text"]:hover,
+select:hover { border-color: var(--line-strong); }
+.form-group input:focus,
+.form-group select:focus,
+input[type="number"]:focus,
+input[type="text"]:focus,
+select:focus,
+button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+    outline-offset: 1px;
+    border-color: transparent;
+    box-shadow: none;
+}
+.btn {
+    min-height: var(--ui-control-height);
+    border: 0;
+    background: var(--surface-button);
+    color: var(--ink-primary);
+    border-radius: var(--ui-radius);
+    transition: background-color 120ms ease, border-color 120ms ease,
+        color 120ms ease, transform 120ms ease;
+}
+.btn:hover:not(:disabled) { background: var(--surface-button-hover); }
+.btn:hover:not(:disabled) { transform: translateY(-1px); }
+.btn:active:not(:disabled) { transform: translateY(0); }
+.btn-primary,
+.btn-green { background: var(--positive); color: #07151a; }
+.btn-primary:hover:not(:disabled),
+.btn-green:hover:not(:disabled) { background: color-mix(in srgb, var(--positive) 84%, white); }
+#btn-backtest,
+#btn-backtest.btn-green {
+    background: transparent;
+    border: 1px solid var(--positive);
+    color: var(--positive);
+}
+#btn-backtest:hover:not(:disabled) { background: var(--green2); }
+#btn-backtest:disabled { background: transparent; color: var(--positive); }
+.btn-outline { color: var(--ink-secondary); }
+.toggle-field {
+    background: var(--surface-button);
+    border: 0;
+}
+.toggle-field:hover { background: var(--surface-button-hover); }
+
+/* Native switch used by chart layers and PI level settings. */
+.glass-switch {
+    flex: 0 0 68px;
+    width: 68px;
+    height: 28px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--switch-off);
+}
+.glass-switch.on { background: transparent; border-color: var(--positive); }
+.glass-switch .switch-thumb {
+    width: 22px;
+    height: 22px;
+    left: 2px;
+    top: 2px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--ink-primary);
+    transition: transform 120ms ease;
+}
+.glass-switch.on .switch-thumb { transform: translateX(40px); }
+
+/* 5. Chart density: the chart stays visually dominant; layers are tools,
+   while overview/detail is decided by the existing footprint renderer. */
+#chart-container {
+    position: relative;
+    background: var(--surface-chart);
+    border-bottom: 1px solid var(--line-strong);
+}
+#chart-theme-cover {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    background: var(--chart-theme-cover-color, var(--surface-chart));
+    opacity: 0;
+    visibility: hidden;
+}
+#chart-theme-cover.is-active {
+    opacity: 1;
+    visibility: visible;
+}
+#chart-theme-cover.is-fading {
+    opacity: 0;
+    visibility: visible;
+    transition:
+        opacity var(--ui-theme-duration) var(--ui-theme-ease),
+        visibility 0s linear var(--ui-theme-duration);
+}
+#chart-watermark {
+    position: absolute;
+    z-index: 1;
+    left: 12px;
+    top: auto;
+    bottom: 34px;
+    transform: none;
+    pointer-events: none;
+    user-select: none;
+    white-space: nowrap;
+    font-family: 'Orbitron', sans-serif;
+    font-size: clamp(0.45rem, 1.2vw, 1.2rem);
+    font-weight: 400;
+    letter-spacing: 0.18em;
+    color: var(--ink-primary);
+    opacity: 0.055;
+}
+:root[data-tpx-theme="apple-light"] #chart-watermark {
+    color: #53647b;
+    opacity: 0.065;
+}
+#chart-quick-btns { gap: var(--ui-space-2); }
+.chart-sq-btn {
+    background: var(--surface-button);
+    border: 0;
+    border-radius: var(--ui-radius-small);
+    color: var(--ink-secondary);
+}
+.chart-sq-btn:hover { background: var(--surface-button-hover); color: var(--accent); }
+.chart-button-icon {
+    width: 17px;
+    height: 17px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.chart-layer-pop {
+    background: var(--surface-panel);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--ui-radius);
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+.chart-layer-pop::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.chart-layer-pop .layer-row { min-height: 34px; }
+.chart-layer-pop .layer-name { color: var(--ink-secondary); }
+.chart-layer-pop .layer-row:hover .layer-name { color: var(--ink-primary); }
+
+/* These empty controls are legacy forwarding targets for the optional Glass
+   skin.  Native mode handles the visible switch directly; leaving the targets
+   in layout creates the stray white pixels at the far right of every row. */
+#chart-layer-pop .glass-proxy-hidden {
+    display: none !important;
+    pointer-events: none !important;
+}
+
+/* 6. States are explicit and calm: color communicates state, text explains
+   it. These classes are shared by live, loading and error surfaces. */
+[data-ui-state="loading"],
+.is-loading { color: var(--warning); }
+[data-ui-state="ready"],
+.is-ready { color: var(--positive); }
+[data-ui-state="error"],
+.is-error { color: var(--negative); }
+[data-ui-state="offline"],
+.is-offline { color: var(--ink-muted); }
+.status-dot { border-radius: 50%; transform: none; }
+.status-dot.ok { box-shadow: 0 0 0 3px rgba(53, 211, 155, 0.12); }
+.status-dot.err { box-shadow: 0 0 0 3px rgba(255, 98, 118, 0.12); }
+.status-dot.loading { box-shadow: 0 0 0 3px rgba(244, 186, 88, 0.12); }
+.conn-trigger { border-radius: var(--ui-radius-small); border-color: var(--line-subtle); }
+.conn-panel {
+    background: var(--surface-panel);
+    border-color: var(--line-strong);
+    border-radius: var(--ui-radius);
+}
+.metric-card {
+    background: var(--surface-panel);
+    border: 0 !important;
+    border-radius: var(--ui-radius-small);
+    box-shadow: none;
+}
+.metric-card::after { display: none; }
+
+/* Native workstation surfaces use straight edges. Semantic status dots keep
+   their circular geometry; all interactive/panel surfaces are rectangular. */
+.app-rail,
+.app-rail-brand,
+.app-rail .tab,
+.theme-toggle,
+.cal-navbtn,
+.cal-todaybtn,
+.cal-banner,
+.cal-grid,
+.cal-cell,
+.cal-analysis-panel,
+.institution-panel,
+.institution-status,
+.institution-content,
+.live-metrics-panel,
+.open-trade-card,
+.rob-hist,
+.rob-badge,
+.rg-chip,
+#live-top-bar,
+#lv-levels-panel,
+#bottom-drag-handle .drag-pill,
+.rail-connection .conn-trigger,
+.conn-panel,
+.panel,
+.panel-title,
+.form-group input,
+.form-group select,
+input[type="number"],
+input[type="text"],
+select,
+.slot-input,
+.btn,
+.chart-sq-btn,
+.chart-layer-pop,
+.metric-card,
+.bottom-panel,
+.bottom-tab,
+.account-badge,
+.trade-table-wrap {
+    border-radius: 0 !important;
+}
+button,
+input,
+select,
+textarea {
+    border-radius: 0 !important;
+}
+.glass-switch {
+    border-radius: 999px !important;
+    border: 1px solid var(--line-strong) !important;
+}
+.glass-switch.on {
+    background: transparent !important;
+    border-color: var(--positive) !important;
+}
+.glass-switch .switch-thumb { border-radius: 50% !important; }
+
+/* Utility surface: fixed rail, single scrolling body, no wrapped headers. */
+.bottom-panel { background: var(--surface-rail); border-top-color: var(--line-strong); }
+.bottom-tabs {
+    gap: var(--ui-space-1);
+    padding-inline: var(--ui-space-3);
+    border-bottom-color: var(--line-subtle);
+}
+.bottom-tab { border-radius: var(--ui-radius-small) var(--ui-radius-small) 0 0; }
+.bottom-tab.active { color: var(--ink-primary); border-bottom-color: var(--accent); }
+.bottom-tab.active::after { display: none; }
+.bottom-content {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+}
+.trade-table-wrap {
+    background: var(--surface-chart);
+    min-width: 100%;
+    max-width: none;
+    overflow: visible;
+}
+.trade-table-wrap thead { position: relative; z-index: 9; }
+.trade-table-wrap th,
+th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--surface-panel);
+    color: var(--ink-secondary);
+    border-bottom-color: var(--line-strong);
+    white-space: nowrap;
+}
+.trade-table-wrap td,
+td { border-bottom-color: var(--line-subtle); white-space: nowrap; }
+tr:hover { background: rgba(98, 216, 255, 0.06); }
+.log { background: var(--surface-chart); }
+
+/* The trade journal is data-driven: renderTrades() replaces tbody contents
+   when a backtest or history refresh completes.  Give the table surfaces and
+   cells the same token transition as the rest of the workstation, then use a
+   one-shot row animation for the newly materialised DOM nodes. */
+.trade-table-wrap,
+.trade-table-wrap table,
+.trade-table-wrap thead,
+.trade-table-wrap tbody,
+.trade-table-wrap tr,
+.trade-table-wrap th,
+.trade-table-wrap td {
+    transition-property: background-color, color, border-color, box-shadow;
+    transition-duration: var(--ui-motion-duration);
+    transition-timing-function: var(--ui-motion-ease);
+}
+
+@keyframes tpx-trade-row-enter {
+    from {
+        opacity: 0;
+        transform: translateY(3px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.trade-table-wrap tbody.trade-table-animating > tr {
+    animation: tpx-trade-row-enter var(--ui-motion-duration) var(--ui-motion-ease) both;
+    animation-delay: calc(var(--trade-row-index, 0) * 12ms);
+}
+
+@keyframes tpx-bottom-pane-enter {
+    from {
+        opacity: 0.72;
+        transform: translateY(4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.bottom-pane-enter {
+    animation: tpx-bottom-pane-enter var(--ui-motion-duration) var(--ui-motion-ease) both;
+}
+
+html.theme-transitioning .trade-table-wrap,
+html.theme-transitioning .trade-table-wrap table,
+html.theme-transitioning .trade-table-wrap thead,
+html.theme-transitioning .trade-table-wrap tbody,
+html.theme-transitioning .trade-table-wrap tr,
+html.theme-transitioning .trade-table-wrap th,
+html.theme-transitioning .trade-table-wrap td {
+    transition-duration: var(--ui-theme-duration);
+    transition-timing-function: var(--ui-theme-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .trade-table-wrap tbody.trade-table-animating > tr,
+    .bottom-pane-enter {
+        animation: none;
+    }
+}
+
+/* Trade times are a small table inside the TIME cell.  Keeping the date,
+   clock, meridiem and separator in fixed columns prevents 03:55AM, 11:49AM,
+   12:50PM and 03:00PM from changing the apparent alignment from row to row. */
+.trade-time-cell { min-width: 0; }
+.trade-time-range {
+    display: inline-grid;
+    align-items: baseline;
+    column-gap: 0;
+    white-space: nowrap;
+    font-family: 'IBM Plex Mono', monospace;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+}
+.trade-time-range.same-day {
+    grid-template-columns: 10.85ch 7.75ch 2.25ch 7.75ch;
+}
+.trade-time-range.cross-day {
+    grid-template-columns: 10.85ch 7.75ch 2.25ch 10.85ch 7.75ch;
+}
+.trade-time-range.single-event {
+    grid-template-columns: 10.85ch 7.75ch;
+}
+.trade-time-range.trade-time-empty { display: inline-block; min-width: 10.85ch; }
+.trade-date {
+    display: inline-grid;
+    grid-template-columns: 2ch .8ch 2ch .8ch 4.5ch;
+    width: 10.1ch;
+}
+.trade-date-part,
+.trade-clock,
+.trade-meridiem { text-align: right; }
+.trade-date-sep { text-align: center; }
+.trade-time {
+    display: inline-grid;
+    grid-template-columns: 5ch 2.75ch;
+    width: 7.75ch;
+}
+.trade-arrow { text-align: center; }
+
+/* Research now owns the full trade-by-trade PNL curve that used to live in
+   the bottom tab bar. */
+.research-pnl-curve {
+    width: 100%;
+    height: 280px;
+    min-height: 220px;
+    box-sizing: border-box;
+    position: relative;
+    overflow: hidden;
+    background: var(--surface-chart);
+    border: 1px solid var(--line-subtle);
+}
+.research-pnl-curve canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    position: relative;
+    z-index: 1;
+    transition: opacity var(--ui-motion-duration) var(--ui-motion-ease);
+}
+.research-pnl-curve .pnl-curve-theme-copy {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    opacity: 1;
+    transition: opacity var(--ui-theme-duration) var(--ui-theme-ease);
+}
+.research-pnl-curve .pnl-curve-theme-copy.is-fading {
+    opacity: 0;
+}
+
+/* Research is a first-class workspace surface.  The legacy research rules
+   used fixed dark rgba backgrounds, which left Apple Light with a dark slab
+   and made the theme change look like an instant cut instead of a transition. */
+#calendar-view {
+    background: var(--surface-page);
+    color: var(--ink-primary);
+}
+.cal-navbtn,
+.cal-todaybtn {
+    background: var(--surface-button);
+    border-color: var(--line-subtle);
+    color: var(--ink-secondary);
+}
+.cal-weekhead span { color: var(--ink-secondary); }
+.cal-cell {
+    background: var(--surface-rail);
+    border-color: var(--line-subtle);
+}
+.cal-analysis-panel,
+.institution-panel {
+    background: var(--surface-panel);
+    border-color: var(--line-strong);
+    color: var(--ink-primary);
+}
+.order-compare-card,
+.institution-card,
+.rob-summary-item {
+    background: var(--surface-raised);
+    border-color: var(--line-subtle);
+}
+.rob-chart,
+.rob-chart-track,
+.rob-line-chart,
+.rob-line-canvas,
+.rob-series-chart,
+.rob-series-track,
+.rob-hist,
+.research-pnl-curve {
+    background: var(--surface-chart);
+    border-color: var(--line-subtle);
+}
+.institution-table th,
+.institution-table td { border-bottom-color: var(--line-subtle); }
+.institution-bar { background: var(--surface-control); }
+
+/* Inline legacy surfaces are normalised here so Apple Light does not leave
+   dark translucent islands inside the otherwise light workspace. */
+#live-top-bar,
+#lv-levels-panel {
+    background: var(--surface-panel) !important;
+    border-color: var(--line-strong) !important;
+    color: var(--ink-secondary);
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+input::placeholder,
+select option { color: var(--ink-muted); }
+
+:root[data-tpx-theme="apple-light"] .conn-panel {
+    box-shadow: 0 8px 32px rgba(42, 63, 92, 0.18);
+}
+
+/* The compact density is available for narrow laptop layouts without a
+   second markup tree. The default remains standard density. */
+body[data-ui-density="compact"] .panel { padding: var(--ui-space-3); }
+body[data-ui-density="compact"] .form-group { margin-bottom: var(--ui-space-2); }
+body[data-ui-density="compact"] .form-group input,
+body[data-ui-density="compact"] .form-group select,
+body[data-ui-density="compact"] input[type="number"],
+body[data-ui-density="compact"] input[type="text"],
+body[data-ui-density="compact"] select { min-height: 30px; padding-block: 5px; }
+body[data-ui-density="compact"] .panel-title { margin-bottom: var(--ui-space-2); }
+
+@media (max-width: 900px) {
+    :root { --nav-rail-width: 0px; }
+    .app-rail {
+        position: static;
+        width: 100%;
+        height: 58px;
+        flex: 0 0 58px;
+        flex-direction: row;
+        border-right: 0;
+        border-bottom: 1px solid var(--line-strong);
+    }
+    .app-rail-brand {
+        width: 72px;
+        height: 58px;
+        flex: 0 0 72px;
+        border-bottom: 0;
+        border-right: 1px solid var(--line-strong);
+    }
+    .app-rail .header-tabs {
+        width: auto;
+        height: 58px;
+        flex: 1;
+        flex-direction: row;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 10px;
+    }
+    .app-rail .tab { width: 46px; height: 42px; flex: 0 0 46px; }
+    .rail-footer {
+        flex-direction: row;
+        margin-top: 0;
+        padding: 10px 10px;
+    }
+    .rail-connection .conn-panel {
+        top: calc(100% + 10px);
+        right: 0;
+        bottom: auto;
+        left: auto;
+    }
+    .main {
+        margin-left: 0;
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+    }
+    #calendar-view { top: 58px; }
+    .sidebar { width: 100%; }
+    .sidebar { flex-basis: auto; }
+    .panel { padding: var(--ui-space-3); }
+    .panel-title {
+        width: calc(100% + (2 * var(--ui-space-3)));
+        margin-left: calc(-1 * var(--ui-space-3));
+    }
+    .chart-status-cluster { top: 8px; right: var(--chart-plot-right); }
+}
+
+/* Unified motion layer. Layout changes use one compact interaction duration;
+   palette changes use the requested half-second crossfade. */
+:root {
+    --ui-motion-duration: 180ms;
+    --ui-motion-ease: cubic-bezier(0.32, 0.72, 0, 1);
+    --ui-theme-duration: 500ms;
+    --ui-theme-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --ui-chart-refresh-duration: 180ms;
+}
+
+html,
+body,
+.app-rail,
+.app-rail-brand,
+.app-rail .tab,
+.panel,
+.panel-title,
+.content,
+.form-group input,
+.form-group select,
+input[type="number"],
+input[type="text"],
+select,
+.slot-input,
+#calendar-view,
+.cal-navbtn,
+.cal-todaybtn,
+.cal-banner,
+.cal-nav,
+.cal-grid,
+.cal-weekhead,
+.cal-cell,
+.cal-analysis-panel,
+.cal-analysis-head,
+.research-pnl-curve,
+.institution-panel,
+.institution-head,
+.institution-content,
+.institution-card,
+.order-compare-card,
+.rob-summary-item,
+.rob-chart,
+.rob-chart-track,
+.rob-line-chart,
+.rob-line-canvas,
+.rob-series-chart,
+.rob-series-track,
+.rob-hist,
+.institution-table th,
+.institution-table td,
+.btn,
+.toggle-field,
+.theme-toggle,
+.sidebar-toggle,
+.rail-connection .conn-trigger,
+.conn-panel,
+.chart-status-cluster,
+.chart-status-cluster .account-badge,
+#chart-container,
+#chart-theme-cover,
+#chart-watermark,
+.chart-layer-pop,
+.pi-signal-matrix,
+#btab-log,
+.log,
+.log-entry,
+.bottom-panel,
+.bottom-tabs,
+.bottom-content,
+.metric-card,
+.live-metrics-panel,
+.open-trade-card,
+#live-top-bar,
+#lv-levels-panel {
+    transition-property: background-color, color, border-color, box-shadow, fill, stroke;
+    transition-duration: var(--ui-motion-duration);
+    transition-timing-function: var(--ui-motion-ease);
+}
+
+/* The panel stays in the flex layout while it closes. This gives the chart a
+   continuous width change instead of the old display:none jump. */
+.sidebar {
+    display: block;
+    transition:
+        width var(--ui-motion-duration) var(--ui-motion-ease),
+        flex-basis var(--ui-motion-duration) var(--ui-motion-ease),
+        opacity var(--ui-motion-duration) var(--ui-motion-ease),
+        border-right-width var(--ui-motion-duration) var(--ui-motion-ease),
+        border-right-color var(--ui-motion-duration) var(--ui-motion-ease),
+        background-color var(--ui-motion-duration) var(--ui-motion-ease),
+        color var(--ui-motion-duration) var(--ui-motion-ease);
+    will-change: width, flex-basis, opacity;
+}
+body.sidebar-collapsed .sidebar {
+    display: block;
+    width: 0;
+    flex-basis: 0;
+    opacity: 0;
+    overflow: hidden;
+    border-right-width: 0;
+    border-right-color: transparent;
+    pointer-events: none;
+}
+body.sidebar-collapsed .content {
+    flex: 1 1 auto;
+    width: 100%;
+}
+.content {
+    transition:
+        flex-basis var(--ui-motion-duration) var(--ui-motion-ease),
+        width var(--ui-motion-duration) var(--ui-motion-ease),
+        background-color var(--ui-motion-duration) var(--ui-motion-ease),
+        color var(--ui-motion-duration) var(--ui-motion-ease);
+}
+.sidebar-toggle-icon {
+    transition: transform var(--ui-motion-duration) var(--ui-motion-ease);
+}
+.btn,
+.toggle-field,
+.theme-toggle,
+.sidebar-toggle,
+.rail-connection .conn-trigger,
+.chart-sq-btn {
+    transition:
+        background-color var(--ui-motion-duration) var(--ui-motion-ease),
+        color var(--ui-motion-duration) var(--ui-motion-ease),
+        border-color var(--ui-motion-duration) var(--ui-motion-ease),
+        box-shadow var(--ui-motion-duration) var(--ui-motion-ease),
+        transform var(--ui-motion-duration) var(--ui-motion-ease);
+}
+.app-rail .tab {
+    transition:
+        background-color var(--ui-motion-duration) var(--ui-motion-ease),
+        color var(--ui-motion-duration) var(--ui-motion-ease),
+        border-color var(--ui-motion-duration) var(--ui-motion-ease);
+}
+html.theme-transitioning .btn,
+html.theme-transitioning .toggle-field,
+html.theme-transitioning .theme-toggle,
+html.theme-transitioning .sidebar-toggle,
+html.theme-transitioning .rail-connection .conn-trigger,
+html.theme-transitioning .chart-sq-btn,
+html.theme-transitioning .app-rail .tab {
+    transition-duration: var(--ui-theme-duration);
+    transition-timing-function: var(--ui-theme-ease);
+}
+
+/* Theme changes affect the chart host and the information panel too.  They
+   use the same half-second phase as the switch; normal interactions remain
+   on the shorter motion duration above. */
+html.theme-transitioning .app-rail,
+html.theme-transitioning .app-rail-brand,
+html.theme-transitioning .panel,
+html.theme-transitioning .panel-title,
+html.theme-transitioning .sidebar,
+html.theme-transitioning .content,
+html.theme-transitioning #calendar-view,
+html.theme-transitioning .cal-navbtn,
+html.theme-transitioning .cal-todaybtn,
+html.theme-transitioning .cal-banner,
+html.theme-transitioning .cal-nav,
+html.theme-transitioning .cal-grid,
+html.theme-transitioning .cal-weekhead,
+html.theme-transitioning .cal-cell,
+html.theme-transitioning .cal-analysis-panel,
+html.theme-transitioning .cal-analysis-head,
+html.theme-transitioning .research-pnl-curve,
+html.theme-transitioning .institution-panel,
+html.theme-transitioning .institution-head,
+html.theme-transitioning .institution-content,
+html.theme-transitioning .institution-card,
+html.theme-transitioning .order-compare-card,
+html.theme-transitioning .rob-summary-item,
+html.theme-transitioning .rob-chart,
+html.theme-transitioning .rob-chart-track,
+html.theme-transitioning .rob-line-chart,
+html.theme-transitioning .rob-line-canvas,
+html.theme-transitioning .rob-series-chart,
+html.theme-transitioning .rob-series-track,
+html.theme-transitioning .rob-hist,
+html.theme-transitioning .institution-table th,
+html.theme-transitioning .institution-table td,
+html.theme-transitioning .conn-panel,
+html.theme-transitioning .chart-status-cluster,
+html.theme-transitioning .chart-status-cluster .account-badge,
+html.theme-transitioning #chart-container,
+html.theme-transitioning #chart-theme-cover,
+html.theme-transitioning #chart-watermark,
+html.theme-transitioning #pnl-curve-canvas,
+html.theme-transitioning .pnl-curve-theme-copy,
+html.theme-transitioning .chart-layer-pop,
+html.theme-transitioning .pi-signal-matrix,
+html.theme-transitioning #btab-log,
+html.theme-transitioning .log,
+html.theme-transitioning .log-entry,
+html.theme-transitioning .bottom-panel,
+html.theme-transitioning .bottom-tabs,
+html.theme-transitioning .bottom-content,
+html.theme-transitioning .metric-card,
+html.theme-transitioning .live-metrics-panel,
+html.theme-transitioning .open-trade-card,
+html.theme-transitioning #live-top-bar,
+html.theme-transitioning #lv-levels-panel {
+    transition-duration: var(--ui-theme-duration);
+    transition-timing-function: var(--ui-theme-ease);
+}
+.glass-switch {
+    transition:
+        background-color var(--ui-motion-duration) var(--ui-motion-ease),
+        border-color var(--ui-motion-duration) var(--ui-motion-ease),
+        box-shadow var(--ui-motion-duration) var(--ui-motion-ease);
+}
+.glass-switch .switch-thumb {
+    transition:
+        transform var(--ui-motion-duration) var(--ui-motion-ease),
+        background-color var(--ui-motion-duration) var(--ui-motion-ease);
+}
+html.theme-transitioning .glass-switch {
+    transition-duration: var(--ui-theme-duration);
+    transition-timing-function: var(--ui-theme-ease);
+}
+html.theme-transitioning .glass-switch .switch-thumb {
+    transition-property: transform, background-color;
+    transition-duration: var(--ui-motion-duration), var(--ui-theme-duration);
+    transition-timing-function: var(--ui-motion-ease), var(--ui-theme-ease);
+}
+
+/* Lightweight Charts paints its own opaque canvas. Keep the host fade in the
+   same half-second phase as the surrounding chart and info surfaces so its
+   synchronous repaint is not perceived as a separate flash. */
+#chart-container {
+    transition:
+        background-color var(--ui-motion-duration) var(--ui-motion-ease),
+        border-color var(--ui-motion-duration) var(--ui-motion-ease),
+        opacity var(--ui-chart-refresh-duration) var(--ui-motion-ease);
+    transform: translateZ(0);
+    backface-visibility: hidden;
+}
+#chart-container .tv-lightweight-charts {
+    transform: translateZ(0);
+    backface-visibility: hidden;
+}
+html.theme-transitioning #chart-container {
+    opacity: 0.94;
+    transition:
+        background-color var(--ui-theme-duration) var(--ui-theme-ease),
+        border-color var(--ui-theme-duration) var(--ui-theme-ease),
+        opacity var(--ui-theme-duration) var(--ui-theme-ease);
+}
+
+/* Live entry is an action, not a filled status badge. */
+.slot-btnrow button[onclick^="liveSlotGoLive"] {
+    background: transparent !important;
+    border: 1px solid var(--positive) !important;
+    color: var(--positive) !important;
+}
+.slot-btnrow button[onclick^="liveSlotGoLive"]:hover:not(:disabled) {
+    background: var(--green2) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --ui-motion-duration: 1ms;
+        --ui-theme-duration: 1ms;
+        --ui-chart-refresh-duration: 1ms;
+    }
+}

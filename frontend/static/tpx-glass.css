@@ -921,6 +921,28 @@
     -webkit-user-drag: none;
 }
 
+/* The native range is replaced by this proxy in Glass mode.  In the PDPT
+   row the proxy must share the available width with the fixed OFF/value
+   readout; its global width:100% otherwise makes flex shrink the visible
+   track after the sidebar returns from the Glass layout. */
+.pdpt-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+}
+.pdpt-row > .glass-slider,
+.pdpt-row > input[type="range"] {
+    flex: 1 1 0%;
+    width: auto;
+    min-width: 0;
+}
+.pdpt-row > .pdpt-val {
+    flex: 0 0 4.2em;
+    min-width: 4.2em;
+}
+
 .slider-track {
     position: absolute;
     left: 0;
@@ -1406,7 +1428,7 @@
     background: var(--bg2);
 }
 
-:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .cal-income-curve,
+:root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .research-pnl-curve,
 :root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .order-compare-card,
 :root[data-theme="light"][data-tpx-glass-skin="on"] [data-stage="research"] .institution-card {
     border-color: var(--border);
@@ -1427,12 +1449,12 @@
 }
 
 :root[data-theme="light"][data-tpx-glass-skin="on"]
-    [data-stage="research"] .cal-income-curve line[stroke*="255,255,255"] {
+    [data-stage="research"] .research-pnl-curve line[stroke*="255,255,255"] {
     stroke: var(--border-h) !important;
 }
 
 :root[data-theme="light"][data-tpx-glass-skin="on"]
-    [data-stage="research"] .cal-income-curve text[fill*="255,255,255"] {
+    [data-stage="research"] .research-pnl-curve text[fill*="255,255,255"] {
     fill: var(--text3) !important;
 }
 

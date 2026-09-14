@@ -45,6 +45,7 @@ import asyncio
 import calendar
 import logging
 import re
+import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -173,6 +174,11 @@ class TopstepXClient:
         self._signalr_market = None
         self._signalr_user = None
         self._callbacks: Dict[str, List[Callable]] = {}
+        # Non-sensitive transport telemetry for the UI connection rail.  This
+        # records the most recent completed REST attempt; credentials and JWTs
+        # never leave this client.
+        self._last_request_latency_ms: Optional[float] = None
+        self._last_request_path: Optional[str] = None
 
     # ── 認證 ─────────────────────────────────────────
 
@@ -235,9 +241,14 @@ class TopstepXClient:
         """通用 REST 請求 (自動重試認證 + transient error retry)"""
         last_exc = None
         for attempt in range(_retries):
+            request_started = time.perf_counter()
             try:
                 client = await self._ensure_http()
                 resp = await client.request(method, path, **kwargs)
+                self._last_request_latency_ms = round(
+                    max(0.0, time.perf_counter() - request_started) * 1000, 1
+                )
+                self._last_request_path = str(path)
 
                 # Token 過期 -> 重新認證
                 if resp.status_code == 401:
@@ -267,6 +278,10 @@ class TopstepXClient:
 
             except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError,
                     httpx.WriteError, httpx.PoolTimeout) as e:
+                self._last_request_latency_ms = round(
+                    max(0.0, time.perf_counter() - request_started) * 1000, 1
+                )
+                self._last_request_path = str(path)
                 last_exc = e
                 wait = (attempt + 1) * 3
                 if attempt < _retries - 1:

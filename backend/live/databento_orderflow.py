@@ -102,6 +102,7 @@ class DatabentoMboLiveFeed(CachedDeltaContextProvider):
         self._aggregator: Optional[_MboAggregator] = None
         self._live_days: dict[str, dict[int, dict[str, Any]]] = {}
         self._last_record_at: Optional[datetime] = None
+        self._last_record_latency_ms: Optional[float] = None
         self._last_completed_bar: Optional[int] = None
         self._record_count = 0
         self._seeded = False
@@ -256,6 +257,9 @@ class DatabentoMboLiveFeed(CachedDeltaContextProvider):
         if ts_ns <= 0:
             return
         event = datetime.fromtimestamp(ts_ns / NANO, tz=UTC)
+        record_latency_ms = round(
+            max(0.0, (datetime.now(UTC) - event).total_seconds()) * 1000, 1
+        )
         action = str(getattr(record, "action", "") or "").upper()
         try:
             flags = int(getattr(record, "flags", 0) or 0)
@@ -265,6 +269,7 @@ class DatabentoMboLiveFeed(CachedDeltaContextProvider):
         trade_date = rth_session_date(event).isoformat()
         persist_dates: set[str] = set()
         with self._lock:
+            self._last_record_latency_ms = record_latency_ms
             # Snapshot records seed the current book even though their event
             # time is outside RTH. They never create a footprint bar.
             if is_snapshot or action == "R":
@@ -416,6 +421,7 @@ class DatabentoMboLiveFeed(CachedDeltaContextProvider):
             "symbol": self.raw_symbol,
             "current_trade_date": active_date,
             "last_record_at": last_record,
+            "latency_ms": self._last_record_latency_ms,
             "last_completed_bar": last_bar,
             "bar_count": count,
             "prior_profile": profile,

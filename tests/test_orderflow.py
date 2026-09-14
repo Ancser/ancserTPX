@@ -191,8 +191,8 @@ def test_frontend_footprint_is_lazy_visible_window_layer():
     root = Path(__file__).resolve().parents[1]
     js = (root / "frontend" / "static" / "ancserTPX.js").read_text(encoding="utf-8")
     html = (root / "frontend" / "static" / "ancserTPX.html").read_text(encoding="utf-8")
-    assert "{ key: 'footprint', label: 'FOOTPRINT / LEVEL 2', on: false }" in js
-    assert "{ key: 'cvd',      label: 'CVD / DELTA',             on: false }" in js
+    assert "{ key: 'footprint', label: 'FOOTPRINT',              on: false }" in js
+    assert "{ key: 'cvd',      label: 'CVD',                      on: false }" in js
     assert "API + '/data/orderflow/footprint?'" in js
     assert "getVisibleLogicalRange()" in js
     assert "scheduleFootprintRefresh" in js
@@ -233,11 +233,9 @@ def test_frontend_footprint_is_lazy_visible_window_layer():
     assert "ORDERFLOW_MAX_DEPTH_LEVELS" in js
     assert "Math.floor(ORDERFLOW_MAX_DEPTH_LEVELS / 2)" in js
     assert "const depthLevels = {bid: new Map(), ask: new Map()};" in js
-    assert "class=\"chart-signal-legend\"" in html
+    assert "id=\"signal-legend\"" not in html
+    assert "chart-signal-legend" not in html
     assert "rgba(245,248,252" in js
     assert "rgba(255,45,70" in js
-    assert "PASSIVE=FILL OPACITY" in html
     assert 'data-switch-proxy="lp-footprint"' in html
     assert 'data-switch-proxy="lp-cvd"' in html
-    assert "FOOTPRINT DELTA BARS" in html
-    assert "Δ=BUY−SELL" in html

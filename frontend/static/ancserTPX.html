@@ -19,90 +19,92 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ancserTPX</title>
     <link rel="icon" href="/static/favicon.ico" sizes="any">
+    <script>
+        (() => {
+            const stored = (() => {
+                try { return localStorage.getItem('ancserTPXTheme'); } catch (_) { return ''; }
+            })();
+            document.documentElement.dataset.tpxTheme = stored === 'apple-light'
+                ? 'apple-light'
+                : 'graphite';
+        })();
+    </script>
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@300;400;500;700&family=Orbitron:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z-cleanup1&intraarrow=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&slpair=1&multx=2&robustness=4&footprint=2&cvd=1&flowcompact=1">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z-cleanup1&intraarrow=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&slpair=1&multx=2&robustness=4&footprint=2&cvd=1&flowcompact=1&contract=1&pdptflex=1">
+    <link rel="stylesheet" href="/static/ancserTPX-design.css?v=1.0.0-design15&motion=4&connection=2&theme=3&watermark=4&chartcover=1&latency=2&research=1&panning=1&pnltransition=1&tablemotion=1">
 </head>
-<body>
+<body data-ui-density="standard">
 
-<div class="header">
-    <h1><span style="color:var(--amber);">ancser</span>TPX 
-        <span style="font-size:10px;color:rgba(247,239,224,0.5);font-weight:normal;text-shadow:0 0 6px rgba(247,239,224,0.3);letter-spacing:2px;margin-left:2px;">
-        1.2.1
-        </span></h1>
-    <div class="header-tabs">
-        <div class="tab" data-tab="calendar">Research</div>
-        <div class="tab active" data-tab="backtest">Backtest</div>
-        <div class="tab" data-tab="live">Live</div>
-    </div>
-    <div class="header-right">
-        <div class="account-switcher">
-            <span class="account-badge" id="account-badge">--</span>
-        </div>
-        <div class="conn-dropdown-wrap">
-            <div class="conn-trigger" id="conn-trigger" onclick="toggleConnDropdown()">
+<aside class="app-rail" aria-label="Workspace navigation">
+    <div class="app-rail-brand" aria-label="ancserTPX">a<span>TPX</span></div>
+    <nav class="header-tabs" aria-label="Workspace">
+        <button type="button" class="tab" data-tab="calendar" aria-label="Research" title="Research">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="5.5"></circle>
+                <path d="m15 15 5 5"></path>
+            </svg>
+        </button>
+        <button type="button" class="tab active" data-tab="backtest" aria-label="Backtest" title="Backtest">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 18V6m0 12h16"></path>
+                <path d="m7 15 3-4 3 2 5-7"></path>
+            </svg>
+        </button>
+        <button type="button" class="tab" data-tab="live" aria-label="Live" title="Live">
+            <svg class="tab-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle class="tab-icon-dot" cx="12" cy="12" r="3"></circle>
+                <path d="M5.5 8.5a9 9 0 0 0 0 7M18.5 8.5a9 9 0 0 1 0 7M3 5.5a13 13 0 0 0 0 13M21 5.5a13 13 0 0 1 0 13"></path>
+            </svg>
+        </button>
+    </nav>
+    <div class="rail-footer">
+        <button type="button" id="sidebar-toggle" class="sidebar-toggle"
+                aria-controls="parameter-sidebar" aria-expanded="true"
+                aria-label="Collapse parameter panel" title="Collapse parameter panel"
+                onclick="toggleSidebar()">
+            <svg class="sidebar-toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m15 6-6 6 6 6"></path>
+            </svg>
+            <span class="sr-only">Collapse parameter panel</span>
+        </button>
+        <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Use Apple Light theme" title="Switch color theme" onclick="toggleAppTheme()">
+            <svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20.5 14.2A8.7 8.7 0 1 1 9.8 3.5a7 7 0 0 0 10.7 10.7Z"></path>
+            </svg>
+            <span class="sr-only">Switch color theme</span>
+        </button>
+        <div class="conn-dropdown-wrap rail-connection">
+            <div class="conn-trigger" id="conn-trigger" onclick="toggleConnDropdown()" title="Account connection" aria-label="Account connection">
+                <span class="connection-icon connection-initial" id="connection-initial" aria-hidden="true">?</span>
                 <span class="status-dot" id="api-status"></span>
-                <span id="api-status-text">DISCONNECTED</span>
-                <span class="conn-arrow">▼</span>
+                <span id="api-status-text" class="sr-only">DISCONNECTED</span>
+                <span class="conn-arrow" aria-hidden="true">▼</span>
             </div>
             <div class="conn-panel" id="conn-panel">
                 <div class="form-group">
-                    <label>USERNAME</label>
+                    <label>TOPSTEP USERNAME</label>
                     <input type="text" id="username" placeholder="your_username">
                 </div>
                 <div class="form-group">
-                    <label>API KEY</label>
+                    <label>TOPSTEP API</label>
                     <input type="password" id="apikey" placeholder="your_api_key">
                 </div>
-                <div class="form-group">
-                    <label>CONTRACT</label>
-                    <select id="contract-preset" onchange="onContractPresetChange()">
-                        <option value="MNQ" data-contract-root="MNQ" selected>MNQ (Micro NQ — $2/pt)</option>
-                        <option value="ENQ" data-contract-root="ENQ">NQ (Mini NQ — $20/pt)</option>
-                        <option value="">CUSTOM…</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>CONTRACT ID</label>
-                    <input type="text" id="contract-id" placeholder="auto-detect" value="MNQ">
-                </div>
-                <!-- MERGE HISTORY removed: TopstepX API only serves ~60 days of
-                     1m bars, so chaining older quarterly contracts always returns
-                     0 rows. The merge_contracts plumbing stays dormant (defaults to
-                     0 via the null-safe lookups in connectAPI/_ensureBacktestData). -->
-                <!-- Date range removed: data always loads the contract's full available
-                     history (paginated). Hidden inputs keep legacy JS references valid. -->
+                <!-- Internal dispatch values. The connection form no longer exposes
+                     contract, interval, date-range, or bar-count controls. -->
+                <input type="hidden" id="contract-id" value="MNQ">
                 <input type="hidden" id="start-date" value="">
                 <input type="hidden" id="end-date" value="">
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>INTERVAL</label>
-                        <input type="text" value="1 MIN" readonly style="background:var(--bg3);color:var(--cyan);cursor:default;">
-                    </div>
-                    <div class="form-group">
-                        <label>BARS</label>
-                        <input type="text" id="data-count" value="--" readonly style="background:var(--bg3);color:var(--text2);">
-                    </div>
-                </div>
-                <!-- Data range indicator — updated by connectAPI() and _ensureBacktestData() -->
-                <div id="data-range-info" style="display:none;margin:4px 0 0;padding:3px 6px;background:rgba(0,0,0,0.35);border-radius:2px;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:0.8px;color:var(--text3);">—</div>
-                <button type="button" class="btn btn-fetch-full" id="btn-fetch-full" onclick="fetchFullData()">FETCH FULL DATA</button>
                 <button class="btn btn-primary" id="btn-connect" onclick="connectAPI()">CONNECT</button>
-                <!-- 1.0.10: 券商維護時段仍可回測。store 有 2020 起的 233 萬根
-                     (Databento 歷史 + TopstepX 近期),完全不需要連線。 -->
-                <button type="button" class="btn btn-offline" id="btn-offline"
-                        onclick="toggleOfflineMode()"
-                        title="Account remains connected, but candle data is not fetched — backtest uses the local store (Databento + TopstepX)">OFFLINE MODE</button>
             </div>
         </div>
-        <div id="clock"></div>
     </div>
-</div>
+</aside>
 
 <div class="main">
     <!-- Sidebar -->
-    <div class="sidebar">
+    <div class="sidebar" id="parameter-sidebar">
         <!-- Backtest Config (SessionTrendFollow only) -->
         <div class="panel" id="backtest-config-panel">
             <div class="panel-title">ENVIRONMENT</div>
@@ -135,7 +137,7 @@
             <div class="form-row">
                 <div class="form-group fx1">
                     <label>MODEL</label>
-                    <select id="strategy-bt" onchange="onStrategyChange('bt')" aria-describedby="strategy-desc-bt">
+                    <select id="strategy-bt" onchange="onStrategyChange('bt')">
                         <option value="fade" selected>FADE</option>
                         <option value="sigma">SIGMA</option>
                         <option value="factor">FACTOR</option>
@@ -146,7 +148,6 @@
                         <option value="delta_absorption">DELTA ABSORPTION</option>
                         <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
-                    <div id="strategy-desc-bt" class="strategy-description" aria-live="polite">Previous-day value-area mean reversion.</div>
                 </div>
             </div>
             <div id="ml-params-bt" style="display:none;margin-top:12px;">
@@ -253,7 +254,7 @@
                         </select>
                     </div>
                 </div>
-                <div class="form-row">
+                <div class="form-row form-row-limits">
                     <div class="form-group fx1">
                         <label>SESSION MAX TRADE LIMIT</label>
                         <select id="conf-session-limit-bt" onchange="updateMlParamSummary('bt')">
@@ -280,7 +281,7 @@
                 </div>
             </div>
             <div id="tr-params-bt" style="margin-top:12px;">
-                <div class="panel-title mt14">ENTRY SETTINGS</div>
+                <div class="panel-title mt14">ENTRY</div>
                 <div class="form-row" id="entry-trigger-row-bt">
                     <div class="form-group fx1">
                         <label>ENTRY TRIGGER <span class="lbl-hint">(fixed by model)</span></label>
@@ -761,7 +762,7 @@
                          且完全沒有 UI —— 等於這個模式根本沒有 TP 選項。 -->
                 </div>
 
-                <div class="panel-title mt14">EXIT SETTINGS</div>
+                <div class="panel-title mt14">EXIT</div>
                 <div id="factor-exit-bt" style="display:none;">
                     <div class="form-row factor-sl-row" id="factor-sl-row-bt">
                         <div class="form-group fx1 factor-sl-anchor-group">
@@ -943,7 +944,7 @@
                         <option value="5">5</option><option value="6">6</option>
                     </select>
                 </div>
-                                                                    <div class="form-row">
+                <div class="form-row form-row-limits">
                     <div class="form-group fx1">
                         <label>SESSION MAX TRADE LIMIT</label>
                         <select id="tr-session-limit-bt">
@@ -984,10 +985,6 @@
         <div class="panel" id="metrics-panel" style="display:none;">
             <div class="panel-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
                 <span>PERFORMANCE</span>
-                <!-- 1.0.9: 顯示這些數字是「誰」跑出來的。啟動時會從 localStorage
-                     還原上次回測,若不標示來源,使用者會以為看到的是當前 preset 的
-                     結果(實際可能是好幾天前別的 preset 的)。 -->
-                <span id="perf-source" class="perf-source"></span>
                 <select id="perf-window" onchange="onPerfWindowChange()" title="Lookback window — recomputes all metrics over the selected period"
                         style="background:#0d0f15;color:#9aa7bd;border:1px solid rgba(100,220,255,0.18);font-family:inherit;font-size:10px;padding:2px 6px;border-radius:3px;cursor:pointer;">
                     <option value="0">ALL</option>
@@ -1029,7 +1026,7 @@
                 <div class="form-row">
                     <div class="form-group fx1">
                         <label>MODEL</label>
-                        <select id="strategy-live" onchange="onStrategyChange('live')" aria-describedby="strategy-desc-live">
+                        <select id="strategy-live" onchange="onStrategyChange('live')">
                             <option value="fade" selected>FADE</option>
                             <option value="sigma">SIGMA</option>
                             <option value="factor">FACTOR</option>
@@ -1040,7 +1037,6 @@
                             <option value="delta_absorption">DELTA ABSORPTION</option>
                             <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
-                        <div id="strategy-desc-live" class="strategy-description" aria-live="polite">Previous-day value-area mean reversion.</div>
                     </div>
                 </div>
                 <div id="ml-params-live" style="display:none;margin-top:12px;">
@@ -1147,7 +1143,7 @@
                             </select>
                         </div>
                     </div>
-                    <div class="form-row">
+                    <div class="form-row form-row-limits">
                         <div class="form-group fx1">
                             <label>SESSION MAX TRADE LIMIT</label>
                             <select id="conf-session-limit-live" onchange="updateMlParamSummary('live')">
@@ -1174,7 +1170,7 @@
                     </div>
                 </div>
                 <div id="tr-params-live" style="margin-top:12px;">
-                    <div class="panel-title mt14">ENTRY SETTINGS</div>
+                    <div class="panel-title mt14">ENTRY</div>
                     <div class="form-row" id="entry-trigger-row-live">
                         <div class="form-group fx1">
                             <label>ENTRY TRIGGER <span class="lbl-hint">(fixed by model)</span></label>
@@ -1634,7 +1630,7 @@
                          且完全沒有 UI —— 等於這個模式根本沒有 TP 選項。 -->
                     </div>
 
-                    <div class="panel-title mt14">EXIT SETTINGS</div>
+                    <div class="panel-title mt14">EXIT</div>
                     <div id="factor-exit-live" style="display:none;">
                     <div class="form-row factor-sl-row" id="factor-sl-row-live">
                         <div class="form-group fx1 factor-sl-anchor-group">
@@ -1816,7 +1812,7 @@
                         <option value="5">5</option><option value="6">6</option>
                     </select>
                 </div>
-                                                                        <div class="form-row">
+                                                                        <div class="form-row form-row-limits">
                     <div class="form-group fx1">
                         <label>SESSION MAX TRADE LIMIT</label>
                         <select id="tr-session-limit-live">
@@ -1840,8 +1836,9 @@
                 </div>
 
             </div>
-            <!-- 1.0.9: 兩個 live 帳號槽(ACCOUNT MAIN / ACCOUNT MINOR)—— 各自帳號+preset 選擇、
-                 GO/STOP/FLAT、以及合併進標題的即時狀態。狀態走 /live/status-all。 -->
+            <!-- Live account slot: the workspace follows one selected account.
+                 Status is polled from /live/status-all for compatibility with the
+                 server registry, while the UI exposes only the main account. -->
             <div class="panel">
                 <div class="panel-title">ACCOUNT MAIN</div>
                 <select id="live-acct-select-1" onchange="onLiveSlotChange(1)" class="slot-input"><option value="">-- SELECT ACCOUNT --</option></select>
@@ -1862,32 +1859,41 @@
                     <div class="slot-line">DAILY PNL: <span id="live-slot-pnl-1" class="c-t3">--</span></div>
                 </div>
             </div>
-            <div class="panel">
-                <div class="panel-title">ACCOUNT MINOR</div>
-                <select id="live-acct-select-2" onchange="onLiveSlotChange(2)" class="slot-input"><option value="">-- SELECT ACCOUNT --</option></select>
-                <select id="live-acct-preset-2" onchange="onLiveSlotChange(2)" class="slot-input" style="margin-top:6px;"><option value="">-- SELECT PRESET --</option></select>
-                <div class="slot-btnrow">
-                    <button class="btn btn-green fx1" onclick="liveSlotGoLive(2)">GO LIVE</button>
-                    <button class="btn btn-amber fx1" onclick="liveSlotStop(2)">STOP</button>
-                    <button class="btn btn-red fx1" onclick="liveSlotFlatten(2)">FLAT</button>
-                </div>
-                <div class="slot-status">
-                    <div class="slot-head"><span class="slot-dot" id="live-slot-dot-2"></span>STATUS: <span id="live-slot-status-2" style="color:var(--text3);letter-spacing:1px;">—</span></div>
-                    <div class="slot-line slot-phase-line">PHASE: <span id="live-slot-phase-2" class="c-t3 slot-phase-text">--</span></div>
-                    <div class="slot-line">MODE: <span id="live-slot-mode-2" class="c-t3">--</span></div>
-                    <div class="slot-line">MARKET: <span id="live-slot-mkt-2" class="c-t3">--</span></div>
-                    <div class="slot-line">MBO DATA: <span id="live-slot-mbo-2" class="c-t3">--</span></div>
-                    <div class="slot-line">BOT LOSS LOCK: <span id="live-slot-dl-2" class="c-t3">--</span></div>
-                    <div class="slot-line">VOLATILITY GATE: <span id="live-slot-rv-2" class="c-t3">--</span></div>
-                    <div class="slot-line">DAILY PNL: <span id="live-slot-pnl-2" class="c-t3">--</span></div>
-                </div>
-            </div>
         </div>
     </div>
 
     <!-- Main Content -->
     <div class="content">
         <div id="chart-container">
+
+            <div id="chart-theme-cover" aria-hidden="true"></div>
+            <div id="chart-watermark" aria-hidden="true">ancserTPX</div>
+
+            <div id="chart-status-cluster" class="chart-status-cluster" aria-label="Provider latency, account, and market time">
+                <div id="chart-provider-status" class="chart-provider-status" aria-label="Provider connection latency">
+                    <div class="chart-latency-row" data-provider="discord">
+                        <span class="chart-latency-dot is-empty" id="latency-dot-discord" aria-label="Discord not configured"></span>
+                        <span class="chart-latency-label">DISCORD</span>
+                        <span class="chart-latency-value" id="latency-discord">--</span><span class="chart-latency-unit">ms</span>
+                    </div>
+                    <div class="chart-latency-row" data-provider="topstep">
+                        <span class="chart-latency-dot is-empty" id="latency-dot-topstep" aria-label="Topstep not configured"></span>
+                        <span class="chart-latency-label">TOPSTEP</span>
+                        <span class="chart-latency-value" id="latency-topstep">--</span><span class="chart-latency-unit">ms</span>
+                    </div>
+                    <div class="chart-latency-row" data-provider="databento">
+                        <span class="chart-latency-dot is-empty" id="latency-dot-databento" aria-label="Databento not configured"></span>
+                        <span class="chart-latency-label">DATABENTO</span>
+                        <span class="chart-latency-value" id="latency-databento">--</span><span class="chart-latency-unit">ms</span>
+                    </div>
+                </div>
+                <div class="chart-status-account">
+                    <div class="account-switcher">
+                        <span class="account-badge" id="account-badge">--</span>
+                    </div>
+                    <div id="clock"></div>
+                </div>
+            </div>
 
 
             <!-- Live Top Bar -->
@@ -1944,24 +1950,6 @@
                 <div id="lv-levels-body" style="padding:2px 0;"></div>
             </div>
 
-            <!-- 1.0.10: 左下角信號圖例。每一列掛 data-legend-layer,由
-                 syncSignalLegend() 跟著圖層開關一起顯示/隱藏 —— 圖層關掉了
-                 圖例還列著,只會誤導。沒有 data-legend-layer 的列(進場箭頭)
-                 恆常顯示。 -->
-            <div id="signal-legend" class="chart-signal-legend" aria-label="Chart legend">
-                <div data-legend-layer="emapmo"><span style="color:rgb(56,189,248);">▲</span><span style="color:rgb(168,85,247);">▼</span> EMAPMO LONG/SHORT</div>
-                <!-- PI:π 級(青多/粉空)是策略真的在吃的訊號,圈級只是參考 -->
-                <div data-legend-layer="pi"><span style="color:rgb(34,211,238);">π</span><span style="color:rgb(244,114,182);">π</span> PI CYAN/PINK LONG/SHORT</div>
-                <div data-legend-layer="pi"><span style="color:rgba(37,99,235,0.95);font-size:13px;">●</span><span style="color:rgba(125,211,252,0.9);font-size:9px;">●</span> PI DARK BLUE=HIGH POWER / LIGHT BLUE=LOW POWER</div>
-                <div data-legend-layer="mrev"><span style="color:rgba(56,189,248,0.85);">●</span><span style="color:rgba(168,85,247,0.85);">●</span> MREV LONG/SHORT</div>
-                <div data-legend-layer="kdjma"><span style="color:rgba(250,204,21,0.9);">●</span><span style="color:rgba(244,63,94,0.9);">●</span> KDJMA LONG/SHORT</div>
-                <!-- 1.0.9: INTRAMOM 用白色箭頭,與三個因子的顏色明確區隔 -->
-                <div data-legend-layer="intramom"><span style="color:#fff;">⇧</span><span style="color:#fff;">⇩</span> INTRAMOM LONG/SHORT</div>
-                <div data-legend-layer="trades"><span style="color:#00e5a0;">↑</span><span style="color:#ff4060;">↓</span> BACKTEST ENTRY WIN/LOSS · <span style="color:#ffa726;">↑</span> LIVE</div>
-                <div data-legend-layer="footprint"><span style="color:#fff;">▌</span><span style="color:#ff4562;">▐</span> FOOTPRINT DELTA BARS · Δ=BUY−SELL · HEAT=RESTING DEPTH · PASSIVE=FILL OPACITY · I=IMBALANCE</div>
-                <div data-legend-layer="cvd"><span style="color:#38d9ff;">━</span> CVD · RTH CUMULATIVE AGGRESSIVE DELTA</div>
-            </div>
-
             <!-- 1.0.9: 圖表快捷鈕 — ≫ 跳到最新;1.0.10:圖層開關。 -->
             <!-- 1.0.10: 圖層開關沿用玻璃皮膚的 .glass-switch,和 PI 訊號等級、
                  主題開關共用同一套元件、同一組彈簧、同一份 switch 光學設定
@@ -1977,7 +1965,7 @@
                  data-glass-scene="chart" data-glass-tier="1" data-glass-material="popup">
                 <div class="layer-title">CHART LAYERS</div>
                 <div class="layer-row">
-                    <span class="layer-name">EMAPMO ▲▼</span>
+                    <span class="layer-name">EMAPMO</span>
                     <button type="button" role="switch" class="glass-switch on" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-emapmo" aria-checked="true">
@@ -1987,7 +1975,7 @@
                             onclick="onLayerProxy('emapmo')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">PI π / CIRCLES</span>
+                    <span class="layer-name">PI</span>
                     <button type="button" role="switch" class="glass-switch on" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-pi" aria-checked="true">
@@ -1997,7 +1985,7 @@
                             onclick="onLayerProxy('pi')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">QQQ OPTION WALL / GEX</span>
+                    <span class="layer-name">QQQ OPTION WALL</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-optionwall" aria-checked="false">
@@ -2007,7 +1995,7 @@
                             onclick="onLayerProxy('optionwall')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">FOOTPRINT / LEVEL 2</span>
+                    <span class="layer-name">FOOTPRINT</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-footprint" aria-checked="false">
@@ -2017,7 +2005,7 @@
                             onclick="onLayerProxy('footprint')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">CVD / DELTA</span>
+                    <span class="layer-name">CVD</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-cvd" aria-checked="false">
@@ -2037,7 +2025,7 @@
                             onclick="onLayerProxy('trades')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">MREV BUBBLES</span>
+                    <span class="layer-name">MREV</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-mrev" aria-checked="false">
@@ -2047,7 +2035,7 @@
                             onclick="onLayerProxy('mrev')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">KDJMA DOTS</span>
+                    <span class="layer-name">KDJMA</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-kdjma" aria-checked="false">
@@ -2057,7 +2045,7 @@
                             onclick="onLayerProxy('kdjma')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">INTRAMOM ARROWS</span>
+                    <span class="layer-name">INTRAMOM</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-intramom" aria-checked="false">
@@ -2067,7 +2055,7 @@
                             onclick="onLayerProxy('intramom')"></button>
                 </div>
                 <div class="layer-row">
-                    <span class="layer-name">DAY ZONE LEVELS</span>
+                    <span class="layer-name">DAY ZONE</span>
                     <button type="button" role="switch" class="glass-switch" data-stage="switch"
                              data-glass-material="local"
                             data-switch-proxy="lp-dayzone" aria-checked="false">
@@ -2089,10 +2077,20 @@
             </div>
 
             <div id="chart-quick-btns">
-                <button id="btn-scroll-latest" class="chart-sq-btn" title="Jump to the latest candle" onclick="scrollToLatest()">≫</button>
+                <button id="btn-scroll-latest" class="chart-sq-btn" title="Jump to the latest candle" onclick="scrollToLatest()" aria-label="Jump to the latest candle">
+                    <svg class="chart-button-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 12h15"></path>
+                        <path d="m14 6 6 6-6 6M20 4v16"></path>
+                    </svg>
+                </button>
                 <!-- 1.0.10: 圖層開關。放進 #chart-quick-btns 之內,skinChartButtons()
                      就會自動把它一起轉成圓形玻璃 fab-action。 -->
-                <button id="chart-layer-btn" class="chart-sq-btn" title="Layers" aria-label="Layers" onclick="toggleChartLayerMenu()">⧉</button>
+                <button id="chart-layer-btn" class="chart-sq-btn" title="Layers" aria-label="Layers" onclick="toggleChartLayerMenu()">
+                    <svg class="chart-button-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m12 4 8 4-8 4-8-4 8-4Z"></path>
+                        <path d="m4 12 8 4 8-4M4 16l8 4 8-4"></path>
+                    </svg>
+                </button>
             </div>
 
         </div>
@@ -2102,7 +2100,6 @@
             <div class="bottom-tabs">
                 <div class="bottom-tab active" data-btab="trades">BACKTEST TRADES</div>
                 <div class="bottom-tab" data-btab="execute">EXECUTE TRADES</div>
-                <div class="bottom-tab" data-btab="pnl">PNL CURVE</div>
                 <div class="bottom-tab" data-btab="log">SYSTEM LOG</div>
             </div>
             <div class="bottom-content">
@@ -2111,10 +2108,8 @@
                         <table>
                             <thead>
                                 <tr>
-                                    <th style="width:36px;">SIZE</th>
-                                    <th style="width:48px;">SYMBOL</th>
-                                    <th>ENTRY TIME</th>
-                                    <th>EXIT TIME</th>
+                                    <th style="width:82px;">CONTRACT</th>
+                                    <th>TIME</th>
                                     <th>DURATION</th>
                                     <th>ENTRY</th>
                                     <th>EXIT</th>
@@ -2133,10 +2128,8 @@
                         <table>
                             <thead>
                                 <tr>
-                                    <th style="width:36px;">SIZE</th>
-                                    <th style="width:48px;">SYMBOL</th>
-                                    <th>ENTRY TIME</th>
-                                    <th>EXIT TIME</th>
+                                    <th style="width:82px;">CONTRACT</th>
+                                    <th>TIME</th>
                                     <th>DURATION</th>
                                     <th>ENTRY</th>
                                     <th>EXIT</th>
@@ -2151,10 +2144,6 @@
                     </div>
                 </div>
                 <!-- 1.0.8: 移除 LEARN RESULT 面板(btab-learn) -->
-                <div id="btab-pnl" class="hidden">
-                    <!-- 1.0.9: 移除標題列(標題/刷新鈕/統計 hint)— 只留曲線,切分頁時自動重繪 -->
-                    <div id="pnl-curve-body" style="position:relative;width:100%;"></div>
-                </div>
                 <div id="btab-log" class="hidden">
                     <div class="log" id="log-container"></div>
                 </div>
@@ -2163,7 +2152,7 @@
     </div>
 </div>
 
-<!-- ── Calendar comparison view (Backtest vs Live, monthly) ──────────────── -->
+<!-- ── Research view: calendar plus full realized PNL curve ──────────────── -->
 <div id="calendar-view" class="hidden">
     <div class="cal-banner">
         <div class="cal-nav">
@@ -2192,15 +2181,15 @@
         <span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span class="cal-weekhead-sum">Week</span>
     </div>
     <div id="cal-grid" class="cal-grid"></div>
-    <div class="cal-analysis-panel">
+    <div class="cal-analysis-panel research-pnl-panel">
         <div class="cal-analysis-head">
             <div>
-                <div class="institution-kicker">WEEKLY INCOME</div>
-                <div class="institution-title">Backtest vs Live Curve</div>
+                <div class="institution-kicker">RESEARCH</div>
+                <div class="institution-title">PNL CURVE</div>
             </div>
-            <span id="cal-curve-status" class="institution-status">Run a backtest to compare curves.</span>
+            <span id="pnl-curve-status" class="institution-status">Cumulative realized P&amp;L from the selected backtest and live fills.</span>
         </div>
-        <div id="cal-income-curve" class="cal-income-curve"></div>
+        <div id="pnl-curve-body" class="research-pnl-curve"></div>
     </div>
     <!-- 1.0.10: 移除 ORDER COMPARISON(Selected Preset vs Live Execution)面板。
          配對只靠「同方向 + 進場時間 5 分鐘內」,歷史 live 列又常缺 preset 名,
@@ -2222,6 +2211,6 @@
 
     <script src="/static/tpx-system.js?v=1"></script>
     <script src="/static/topstep-eval.js?v=1.0.9k-topstep2"></script>
-    <script src="/static/ancserTPX.js?v=1.0.10z-cleanup1&intraarrow=1&nyzone=20260624&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&fade109=1&riskgate109=1&acct109=6&modelrename=1&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&contractroot=1&footprint=2&cvd=1&flowcompact=1&deltaabsorb=1&statushealth=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.10z-cleanup1&intraarrow=1&nyzone=20260624&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&fade109=1&riskgate109=1&acct109=6&modelrename=1&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&glassui110=1&uirepair=4&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&contractroot=1&footprint=2&cvd=1&flowcompact=1&deltaabsorb=1&ui=straight3&researchcurve=1&layerswitch=2&tradealign=1&uihotfix=3&connectiontrim=1&chartpan=2&motion=4&connectionstatus=1&autoscale=2&timeformat=2&theme=2&chartcover=1&researchtheme=1&panning=1&pnltransition=1&contractdisplay=1&pdptflex=1&tablemotion=1&riskalpha=1&notrade=2&panfree=1&statushealth=1"></script>
 </body>
 </html>

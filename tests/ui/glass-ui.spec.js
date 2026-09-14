@@ -127,7 +127,7 @@ test("Execute Trades refreshes broker truth when the tab is opened", async ({ pa
     new URL(url).searchParams.get("refresh") === "true"
   ))).toBe(true);
   const firstTrade = page.locator("#execute-tbody tr").first();
-  await expect(firstTrade.locator("td")).toHaveCount(11);
+  await expect(firstTrade.locator("td")).toHaveCount(9);
   await expect(firstTrade).not.toContainText("999438");
   await expect(firstTrade).toContainText("29216.00");
   await expect(firstTrade).toContainText("$+185.50");
@@ -1027,16 +1027,16 @@ test("Precision samples Tier-1 popup material without recursive Glass", async ({
   const popup = page.locator("#chart-layer-pop");
   await expect(popup).toHaveAttribute("data-glass-tier", "1");
   expect(await popup.locator(".layer-name").allTextContents()).toEqual([
-    "EMAPMO ▲▼",
-    "PI π / CIRCLES",
-    "QQQ OPTION WALL / GEX",
-    "FOOTPRINT / LEVEL 2",
-    "CVD / DELTA",
+    "EMAPMO",
+    "PI",
+    "QQQ OPTION WALL",
+    "FOOTPRINT",
+    "CVD",
     "TRADE BOXES SL/TP",
-    "MREV BUBBLES",
-    "KDJMA DOTS",
-    "INTRAMOM ARROWS",
-    "DAY ZONE LEVELS",
+    "MREV",
+    "KDJMA",
+    "INTRAMOM",
+    "DAY ZONE",
     "PRIOR DAY 70% VAH/VAL/POC",
   ]);
   const popupSwitches = popup.locator('.layer-row > .glass-switch[role="switch"]');

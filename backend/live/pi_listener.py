@@ -293,6 +293,7 @@ class PiListener:
         self._last_cursor: Optional[str] = None
         self._last_message_id: Optional[str] = None
         self._last_fetch_batch_size = 0
+        self._last_fetch_latency_ms: Optional[float] = None
         self._last_fetch_source_ts: Optional[datetime] = None
         self._last_status_event: Optional[str] = None
 
@@ -357,6 +358,7 @@ class PiListener:
             "last_cursor": self._last_cursor,
             "last_message_id": self._last_message_id,
             "last_fetch_batch_size": self._last_fetch_batch_size,
+            "last_fetch_latency_ms": self._last_fetch_latency_ms,
             "last_fetch_source_ts": (
                 self._last_fetch_source_ts.isoformat()
                 if self._last_fetch_source_ts else None
@@ -370,6 +372,7 @@ class PiListener:
         await self._bucket.take()
         self._fetch_count += 1
         self._last_poll_monotonic = time.monotonic()
+        request_started = time.perf_counter()
         try:
             r = await client.get(f"{API}/channels/{self._channel}/messages",
                                  params=params,
@@ -378,6 +381,9 @@ class PiListener:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            self._last_fetch_latency_ms = round(
+                max(0.0, time.perf_counter() - request_started) * 1000, 1
+            )
             logger.warning("[PI] 取訊息失敗 %s: %s", type(e).__name__, e)
             self._fetch_error_count += 1
             self._audit_status(
@@ -387,6 +393,9 @@ class PiListener:
             )
             self._record_error(f"request_{type(e).__name__}")
             return None
+        self._last_fetch_latency_ms = round(
+            max(0.0, time.perf_counter() - request_started) * 1000, 1
+        )
         if r.status_code == 429:
             try:
                 payload = r.json()

@@ -2159,6 +2159,7 @@ class LiveTradingEngine:
         )
         return {
             "engine_version": ENGINE_VERSION,
+            "strategy_mode": self.strategy_mode,
             "running": self._running,
             # `running` remains the backward-compatible intent flag.  These
             # additive fields expose whether the tasks implementing that intent

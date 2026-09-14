@@ -101,10 +101,12 @@ def test_option_wall_primary_strict_controls_and_signal_date_scope_are_explicit(
     assert "switchingFromAutoScopedDate" in scope
 
 
-def test_strategy_descriptions_are_separate_and_follow_selection():
+def test_model_controls_do_not_render_strategy_description_rows():
     for mode in ("bt", "live"):
-        assert f'aria-describedby="strategy-desc-{mode}"' in HTML
-        assert f'id="strategy-desc-{mode}" class="strategy-description"' in HTML
+        assert f'aria-describedby="strategy-desc-{mode}"' not in HTML
+        assert f'id="strategy-desc-{mode}"' not in HTML
+    assert "strategy-description" not in HTML
+    assert "syncStrategyDescription" not in JS
     for strategy, display in CANONICAL:
         assert re.search(
             rf"\b{strategy}:\s*\{{.*?displayName:\s*'{display}'.*?"
@@ -112,10 +114,6 @@ def test_strategy_descriptions_are_separate_and_follow_selection():
             JS,
             re.DOTALL,
         )
-    assert "syncStrategyDescription(mode);" in _function_source("_setStrategySelect")
-    sync = _function_source("syncStrategyDescription")
-    assert "target.textContent = meta.description;" in sync
-    assert "UI_LANG" not in sync
 
 
 def test_status_and_new_preset_names_use_canonical_identity_but_legacy_names_parse():
@@ -168,13 +166,47 @@ def test_language_switch_is_removed_and_english_is_the_only_ui_locale():
     assert "lang-toggle" not in SKIN_JS
 
 
+def test_connection_rail_uses_identity_initial_and_provider_status_contract():
+    assert 'id="connection-initial"' in HTML
+    assert 'class="connection-icon connection-initial"' in HTML
+    assert "<label>TOPSTEP USERNAME</label>" in HTML
+    assert "<label>TOPSTEP API</label>" in HTML
+    assert 'id="chart-provider-status"' in HTML
+    for provider in ("discord", "topstep", "databento"):
+        assert f'data-provider="{provider}"' in HTML
+        assert f'id="latency-dot-{provider}"' in HTML
+        assert f'id="latency-{provider}"' in HTML
+    assert "@router.get(\"/connection/status\")" in (
+        (ROOT / "backend" / "api" / "routes.py").read_text(encoding="utf-8")
+    )
+    assert "last_request_latency_ms" in (
+        (ROOT / "backend" / "broker" / "topstepx.py").read_text(encoding="utf-8")
+    )
+    assert "last_fetch_latency_ms" in (
+        (ROOT / "backend" / "live" / "pi_listener.py").read_text(encoding="utf-8")
+    )
+    assert "latency_ms" in (
+        (ROOT / "backend" / "live" / "databento_orderflow.py").read_text(encoding="utf-8")
+    )
+
+
+def test_execute_trade_refresh_preserves_sidebar_position():
+    refresh = _function_source("fetchAndDrawTradeHistory")
+    assert "preserveSidebarScroll: executeTradesTabIsActive()" in refresh
+    metrics = _function_source("renderMetrics")
+    assert "function renderMetrics(m, backtestTrades, options)" in metrics
+    assert "renderOptions.preserveSidebarScroll" in metrics
+    assert "panel.scrollIntoView" in metrics
+
+
 def test_trade_tables_keep_time_labels_on_one_line_without_why_column():
     assert "<th>ID</th>" not in HTML
-    assert HTML.count('<th style="width:36px;">SIZE</th>') == 2
-    assert HTML.count('<th style="width:48px;">SYMBOL</th>') == 2
-    assert HTML.index('<th style="width:36px;">SIZE</th>') < HTML.index('<th style="width:48px;">SYMBOL</th>')
-    assert HTML.count("<th>ENTRY TIME</th>") == 2
-    assert HTML.count("<th>EXIT TIME</th>") == 2
+    assert HTML.count('<th style="width:82px;">CONTRACT</th>') == 2
+    assert '<th style="width:36px;">SIZE</th>' not in HTML
+    assert '<th style="width:48px;">SYMBOL</th>' not in HTML
+    assert HTML.count("<th>TIME</th>") == 2
+    assert "<th>ENTRY TIME</th>" not in HTML
+    assert "<th>EXIT TIME</th>" not in HTML
     assert "WHY" not in HTML
     assert HTML.count("<th>ENTRY</th>") == 2
     assert HTML.count("<th>EXIT</th>") == 2
@@ -185,9 +217,76 @@ def test_trade_tables_keep_time_labels_on_one_line_without_why_column():
     assert "min-width: 0;" in CSS
     assert ".trade-table-wrap th { white-space: nowrap; }" in CSS
 
-    assert "colspan=\"12\"" not in JS
-    assert JS.count("colspan=\"11\"") == 2
+    assert "colspan=\"11\"" not in JS
+    assert 'colspan="9" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA' in JS
+    assert 'colspan="9" style="text-align:center;color:var(--text2);padding:20px;">NO EXECUTE TRADE DATA' in JS
+    assert "class=\"trade-contract-cell\"" in JS
+    assert "String(symbol).replace(/^\\/+/, '')" in JS
+    assert "TRADE_DISPLAY_TIME_ZONE = SYSTEM_TIME_ZONES.market" in JS
+    assert "formatTradeTimeRange(t.entry_time, t.exit_time)" in JS
+    assert "formatTradeDuration(t.entry_time, t.exit_time)" in JS
+    assert "formatTradeTimeRangeMarkup" in JS
+    assert "trade-time-range" in (STATIC / "ancserTPX-design.css").read_text(encoding="utf-8")
+    assert 'data-btab="pnl"' not in HTML
+    assert 'id="btab-pnl"' not in HTML
     assert "explainTrade" not in JS
+
+
+def test_max_profit_slider_keeps_full_track_with_or_without_glass_proxy():
+    native = CSS[CSS.index("/* 1.0.9: PDPT 滑桿"):CSS.index("/* 1.0.10: CONTRACT")]
+    assert ".pdpt-row > .glass-slider" in native
+    assert "flex: 1 1 0%;" in native
+    assert "width: auto;" in native
+    assert "flex: 0 0 4.2em;" in native
+
+    assert ".pdpt-row > .glass-slider" in GLASS_CSS
+    glass = GLASS_CSS[GLASS_CSS.index(".pdpt-row > .glass-slider"):]
+    assert "flex: 1 1 0%;" in glass
+    assert "width: auto;" in glass
+    assert ".pdpt-row > .pdpt-val" in glass
+
+
+def test_single_account_chart_shell_removes_minor_and_chart_legend():
+    assert "ACCOUNT MINOR" not in HTML
+    assert "live-acct-select-2" not in HTML
+    assert "LIVE_MINOR_SLOT" not in JS
+    assert "ACCOUNT MINOR" not in JS
+    assert 'id="signal-legend"' not in HTML
+    assert "signal-legend" not in JS
+    assert "chart-signal-legend" not in CSS
+    assert 'id="chart-watermark"' in HTML
+    design = (ROOT / "frontend" / "static" / "ancserTPX-design.css").read_text(encoding="utf-8")
+    assert "font-family: 'Orbitron', sans-serif;" in design
+    assert "left: 12px;" in design
+    assert "bottom: 34px;" in design
+    assert "font-size: clamp(0.45rem, 1.2vw, 1.2rem);" in design
+
+
+def test_motion_tokens_cover_fast_ui_and_one_second_theme_surfaces():
+    design = (ROOT / "frontend" / "static" / "ancserTPX-design.css").read_text(encoding="utf-8")
+    assert "--ui-motion-duration: 180ms;" in design
+    assert "--ui-theme-duration: 500ms;" in design
+    assert "html.theme-transitioning .bottom-panel" in design
+    assert "html.theme-transitioning #chart-container" in design
+    assert "html.theme-transitioning #calendar-view" in design
+    assert "html.theme-transitioning .institution-panel" in design
+    assert 'id="chart-theme-cover"' in HTML
+    assert "function _startChartThemeCover()" in JS
+    assert ".is-fading" in design
+    assert ".chart-provider-status {" in design
+    assert "flex-direction: column;" in design[design.index(".chart-provider-status {"):design.index(".chart-latency-row {")]
+    assert "const APP_THEME_TRANSITION_MS = 500;" in JS
+    assert "typeof renderPnlCurve === 'function'" in JS
+
+
+def test_final_workspace_shell_uses_deep_blue_and_straight_edges():
+    design = (ROOT / "frontend" / "static" / "ancserTPX-design.css").read_text(encoding="utf-8")
+    assert "--surface-page: #08090d;" in design
+    assert "--surface-chart: #08090d;" in design
+    assert "--accent: #64dcff;" in design
+    assert "--ui-radius: 0;" in design
+    assert ".panel-title::before { content: none !important; display: none !important; }" in design
+    assert ".glass-switch .switch-thumb" in design
 
 
 def test_theme_mark_uses_the_existing_thumb_and_hides_while_moving():
@@ -265,7 +364,7 @@ def test_live_pi_audit_overlay_is_read_only_and_backtest_replay_is_explicit():
 
 
 def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
-    sidebar_start = HTML.index('<div class="sidebar">')
+    sidebar_start = HTML.index('<div class="sidebar"')
     sidebar_end = HTML.index('<!-- Main Content -->', sidebar_start)
     sidebar = re.sub(
         r"<!--.*?-->",
@@ -297,7 +396,7 @@ def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
         "ENTRY FIB",
         "LONG TIME EXIT",
         "SHORT TIME EXIT",
-        "PI π / CIRCLES",
+        "PI",
     ):
         assert english in HTML
 
@@ -440,7 +539,30 @@ def test_retired_auto_center_is_absent_but_other_chart_tools_remain():
     assert 'id="chart-layer-btn"' in HTML
     assert "chart.timeScale().scrollToRealTime()" in _function_source("scrollToLatest")
     assert "crosshair:" in JS
-    assert "autoscaleInfoProvider" in _function_source("applyDefaultChartView")
+    default_view = _function_source("applyDefaultChartView")
+    assert "autoscaleInfoProvider: (baseImplementation) => _smoothChartAutoscale(baseImplementation)" in _function_source("initChart")
+    assert "CHART_AUTOSCALE_HOLD_MS" in JS
+    assert "CHART_AUTOSCALE_TRANSITION_MS" in JS
+    assert "CHART_DEFAULT_SMOOTH_BARS" in default_view
+    assert "smoothCenter" in default_view
+    assert "_setChartPriceAutoScale(true)" in default_view
+    assert "kineticScroll:" in _function_source("initChart")
+    assert "mouse: false" in _function_source("initChart")
+    assert "_startChartPanInertia" in JS
+    assert "CHART_PAN_SENSITIVITY = 1.10" in JS
+    assert "_setChartPriceAutoScale(false)" in _function_source("_routeChartPanMove")
+    assert "CHART_PAN_DIRECTION_THRESHOLD_PX" in JS
+    assert "_routeChartPanMove" in _function_source("initChart")
+    assert "requestAnimationFrame" in _function_source("_applyChartPanSensitivity")
+    assert "scrollToPosition(targetPosition, false)" in _function_source("_applyChartPanSensitivityAt")
+    time_scale = _function_source("initChart")
+    assert "fixLeftEdge: false" in time_scale
+    assert "fixRightEdge: false" in time_scale
+    assert "lockVisibleTimeRangeOnResize: false" in time_scale
+    assert "rightBarStaysOnScroll: false" in time_scale
+    assert "applyDefaultChartView" not in _function_source("renderChart")
+    assert "fitContent" not in _function_source("renderChart")
+    assert "fetchAndShowChart('1m', true)" in _function_source("_ensureBacktestData")
     assert "const idx = _nearestBarIndex(sec)" in _function_source("_timeToXViaBars")
 
 
@@ -469,7 +591,10 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     popup_rule = CSS[CSS.index(".chart-layer-pop {"):CSS.index(".chart-layer-pop.hidden")]
     assert "border: 0;" in popup_rule
     assert "box-shadow: none;" in popup_rule
-    assert "backdrop-filter: blur(20px) saturate(1.3)" in popup_rule
+    # Liquid Glass is no longer loaded in production. The popup remains a
+    # native, opaque panel so chart pixels cannot bleed through it.
+    assert "backdrop-filter: none;" in popup_rule
+    assert "-webkit-backdrop-filter: none;" in popup_rule
     assert ".chart-layer-pop::before" not in CSS
     assert ".chart-layer-pop::after" not in CSS
     assert ".chart-layer-pop .glass-switch {" in CSS
@@ -529,7 +654,7 @@ def test_chart_layer_choices_are_restored_and_persisted_through_one_state_path()
 
 
 def test_option_wall_demo_is_an_opt_in_read_only_chart_layer():
-    assert "{ key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false }" in JS
+    assert "{ key: 'optionwall', label: 'QQQ OPTION WALL',       on: false }" in JS
     assert 'data-switch-proxy="lp-optionwall" aria-checked="false"' in HTML
     assert "API + '/options-wall/demo?symbol=MNQ'" in _function_source("refreshOptionWallLayer")
     draw = _function_source("drawOptionWallOverlay")
@@ -553,6 +678,54 @@ def test_option_wall_demo_is_an_opt_in_read_only_chart_layer():
     assert "const visiblePoints = []" in draw
     assert draw.count("_indicatorTimeToX(row.chartTime") == 1
     assert "visiblePoints.push({ x1, x2, session:" in draw
+
+
+def test_chart_layer_names_keep_functional_names_without_visual_shape_suffixes():
+    assert 'class="layer-name">EMAPMO</span>' in HTML
+    assert 'class="layer-name">PI</span>' in HTML
+    assert 'class="layer-name">QQQ OPTION WALL</span>' in HTML
+    assert 'class="layer-name">FOOTPRINT</span>' in HTML
+    assert 'class="layer-name">CVD</span>' in HTML
+    assert 'class="layer-name">MREV</span>' in HTML
+    assert 'class="layer-name">KDJMA</span>' in HTML
+    assert 'class="layer-name">INTRAMOM</span>' in HTML
+    assert 'class="layer-name">DAY ZONE</span>' in HTML
+    for retired in (
+        "EMAPMO ▲▼",
+        "PI π / CIRCLES",
+        "QQQ OPTION WALL / GEX",
+        "FOOTPRINT / LEVEL 2",
+        "CVD / DELTA",
+        "MREV BUBBLES",
+        "KDJMA DOTS",
+        "INTRAMOM ARROWS",
+        "DAY ZONE LEVELS",
+    ):
+        assert retired not in HTML
+
+
+def test_pi_signal_overlay_has_one_shared_canvas_repaint_owner():
+    redraw = _function_source("redrawAllOverlays")
+    schedule = _function_source("scheduleChartOverlayRedraw")
+    refresh = _function_source("refreshPiSignalMarkers")
+    push = _function_source("pushPiSignalMarker")
+    assert "drawIndicatorSignalOverlay()" in redraw
+    assert "drawPiSignalOverlay()" not in redraw
+    assert "drawIndicatorSignalOverlay()" in schedule
+    assert "drawPiSignalOverlay()" not in schedule
+    assert "scheduleChartOverlayRedraw();" in refresh
+    assert "drawPiSignalOverlay();" not in refresh
+    assert "scheduleChartOverlayRedraw();" in push
+    assert "drawPiSignalOverlay();" not in push
+    draw = _function_source("drawPiSignalOverlay")
+    assert "const drawnMarks = new Set();" in draw
+    assert "const markKey = [t, m.kind, sourceLevel].join('|');" in draw
+    assert "if (drawnMarks.has(markKey)) continue;" in draw
+
+
+def test_no_trade_visual_window_runs_from_1245pm_to_3pm_pacific():
+    assert "{ startH: 15, startM: 45, endH: 18, endM: 0, label: 'NO TRADE' }" in JS
+    assert "&notrade=2" in HTML
 
 
 def test_prior_day_70_value_area_is_a_separate_three_line_chart_layer():

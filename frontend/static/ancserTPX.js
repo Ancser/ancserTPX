@@ -10,6 +10,226 @@ const SYSTEM_TIME_ZONES = SYSTEM_RUNTIME.timeZones;
 const FRONT_MONTH_CONTRACTS = SYSTEM_RUNTIME.frontMonthContracts;
 const SYSTEM_CONTRACT_SPECS = SYSTEM_RUNTIME.contractSpecs;
 
+// The production shell has two deliberate palettes.  Keep the preference in
+// the browser so a reload never flashes back to the old skin or changes the
+// user's choice underneath an open chart.
+const APP_THEME_STORAGE_KEY = 'ancserTPXTheme';
+const APP_THEME_GRAPHITE = 'graphite';
+const APP_THEME_APPLE_LIGHT = 'apple-light';
+const APP_THEME_TRANSITION_MS = 500;
+let _themeTransitionTimer = null;
+let _chartThemeCoverTimer = null;
+let _pnlThemeCopyTimer = null;
+
+function _normaliseAppTheme(theme) {
+    return String(theme || '').toLowerCase() === APP_THEME_APPLE_LIGHT
+        ? APP_THEME_APPLE_LIGHT
+        : APP_THEME_GRAPHITE;
+}
+
+function _storedAppTheme() {
+    try { return _normaliseAppTheme(localStorage.getItem(APP_THEME_STORAGE_KEY)); }
+    catch (_) { return APP_THEME_GRAPHITE; }
+}
+
+function _appThemeColor(name, fallback) {
+    const value = getComputedStyle(document.documentElement)
+        .getPropertyValue(name)
+        .trim();
+    return value || fallback;
+}
+
+function _refreshChartTheme() {
+    if (!chart) return;
+
+    const grid = _appThemeColor('--chart-grid', 'rgba(100, 220, 255, 0.03)');
+    const crosshair = _appThemeColor('--chart-crosshair', 'rgba(100, 220, 255, 0.2)');
+    chart.applyOptions({
+        layout: {
+            background: { type: 'solid', color: _appThemeColor('--surface-chart', '#08090d') },
+            textColor: _appThemeColor('--ink-muted', '#556178'),
+        },
+        grid: {
+            vertLines: { color: grid },
+            horzLines: { color: grid },
+        },
+        crosshair: {
+            vertLine: { color: crosshair },
+            horzLine: { color: crosshair },
+        },
+        rightPriceScale: { borderColor: _appThemeColor('--line-subtle', 'rgba(100, 220, 255, 0.08)') },
+        timeScale: { borderColor: _appThemeColor('--line-subtle', 'rgba(100, 220, 255, 0.08)') },
+    });
+
+    if (candleSeries) {
+        const up = _appThemeColor('--candle-up', '#888888');
+        const down = _appThemeColor('--candle-down', '#555555');
+        candleSeries.applyOptions({
+            upColor: up,
+            borderUpColor: up,
+            wickUpColor: up,
+            downColor: down,
+            borderDownColor: down,
+            wickDownColor: down,
+        });
+    }
+    if (typeof scheduleChartOverlayRedraw === 'function') scheduleChartOverlayRedraw();
+
+    // The Research PNL curve is a canvas too. Repaint it after the theme token
+    // swap when its view is visible so its labels and palette follow the same
+    // transition instead of retaining the previous theme's pixels.
+    const researchView = document.getElementById('calendar-view');
+    if (researchView && !researchView.classList.contains('hidden')
+        && typeof renderPnlCurve === 'function') {
+        const schedule = window.requestAnimationFrame || ((callback) => setTimeout(callback, 16));
+        schedule(() => {
+            if (!researchView.classList.contains('hidden')) renderPnlCurve();
+        });
+    }
+}
+
+function _startChartThemeCover() {
+    const cover = document.getElementById('chart-theme-cover');
+    if (!cover) return;
+
+    if (_chartThemeCoverTimer !== null) {
+        clearTimeout(_chartThemeCoverTimer);
+        _chartThemeCoverTimer = null;
+    }
+
+    // Lightweight Charts repaints its opaque canvas synchronously.  Freeze the
+    // old chart color for one frame, repaint underneath it, then reveal the new
+    // chart over the same half-second theme phase as the surrounding UI.
+    cover.style.setProperty('--chart-theme-cover-color', _appThemeColor('--surface-chart', '#08090d'));
+    cover.classList.remove('is-fading');
+    cover.classList.add('is-active');
+
+    const schedule = window.requestAnimationFrame || ((callback) => setTimeout(callback, 16));
+    schedule(() => {
+        if (!cover.isConnected) return;
+        cover.classList.remove('is-active');
+        cover.classList.add('is-fading');
+        _chartThemeCoverTimer = setTimeout(() => {
+            cover.classList.remove('is-fading');
+            _chartThemeCoverTimer = null;
+        }, APP_THEME_TRANSITION_MS + 40);
+    });
+}
+
+function _startResearchPnlThemeCrossfade() {
+    const host = document.getElementById('pnl-curve-body');
+    const canvas = host && host.querySelector('#pnl-curve-canvas');
+    if (!host || !canvas || !canvas.width || !canvas.height) return;
+
+    if (_pnlThemeCopyTimer !== null) {
+        clearTimeout(_pnlThemeCopyTimer);
+        _pnlThemeCopyTimer = null;
+    }
+    host.querySelectorAll('.pnl-curve-theme-copy').forEach(copy => copy.remove());
+
+    // Canvas pixels do not participate in CSS color transitions. Keep the old
+    // curve above the host while the new theme redraws underneath, then fade
+    // that bitmap out over the same half-second phase as the other surfaces.
+    const copy = document.createElement('canvas');
+    copy.className = 'pnl-curve-theme-copy';
+    copy.width = canvas.width;
+    copy.height = canvas.height;
+    copy.setAttribute('aria-hidden', 'true');
+    try { copy.getContext('2d').drawImage(canvas, 0, 0); } catch (_) { return; }
+    host.appendChild(copy);
+
+    const schedule = window.requestAnimationFrame || ((callback) => setTimeout(callback, 16));
+    schedule(() => {
+        if (!copy.isConnected) return;
+        copy.classList.add('is-fading');
+        _pnlThemeCopyTimer = setTimeout(() => {
+            copy.remove();
+            _pnlThemeCopyTimer = null;
+        }, APP_THEME_TRANSITION_MS + 40);
+    });
+}
+
+function applyAppTheme(theme, persist = true) {
+    const next = _normaliseAppTheme(theme);
+    const root = document.documentElement;
+    const previous = _normaliseAppTheme(root.dataset.tpxTheme);
+    const changed = previous !== next;
+    if (changed) {
+        _startChartThemeCover();
+        _startResearchPnlThemeCrossfade();
+        root.classList.add('theme-transitioning');
+        if (_themeTransitionTimer) clearTimeout(_themeTransitionTimer);
+        _themeTransitionTimer = setTimeout(() => {
+            root.classList.remove('theme-transitioning');
+            _themeTransitionTimer = null;
+        }, APP_THEME_TRANSITION_MS);
+    }
+    root.dataset.tpxTheme = next;
+    root.style.colorScheme = next === APP_THEME_APPLE_LIGHT ? 'light' : 'dark';
+    if (persist) {
+        try { localStorage.setItem(APP_THEME_STORAGE_KEY, next); } catch (_) {}
+    }
+    const toggle = document.getElementById('theme-toggle');
+    if (toggle) {
+        toggle.dataset.theme = next;
+        toggle.setAttribute(
+            'aria-label',
+            next === APP_THEME_APPLE_LIGHT
+                ? 'Use deep-blue dark theme'
+                : 'Use Apple Light theme',
+        );
+        toggle.title = next === APP_THEME_APPLE_LIGHT
+            ? 'Switch to deep-blue'
+            : 'Switch to Apple Light';
+    }
+    _refreshChartTheme();
+}
+
+function setAppTheme(theme) {
+    applyAppTheme(theme, true);
+}
+
+function toggleAppTheme() {
+    const current = _normaliseAppTheme(document.documentElement.dataset.tpxTheme);
+    setAppTheme(current === APP_THEME_APPLE_LIGHT ? APP_THEME_GRAPHITE : APP_THEME_APPLE_LIGHT);
+}
+
+window.setAppTheme = setAppTheme;
+window.toggleAppTheme = toggleAppTheme;
+document.addEventListener('DOMContentLoaded', () => applyAppTheme(_storedAppTheme(), false));
+
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'ancserTPX.sidebarCollapsed';
+
+function applySidebarState(collapsed, persist = true) {
+    const next = Boolean(collapsed);
+    const body = document.body;
+    const toggle = document.getElementById('sidebar-toggle');
+    if (body) body.classList.toggle('sidebar-collapsed', next);
+    if (toggle) {
+        toggle.dataset.collapsed = next ? 'true' : 'false';
+        toggle.setAttribute('aria-expanded', String(!next));
+        toggle.setAttribute('aria-label', next ? 'Expand parameter panel' : 'Collapse parameter panel');
+        toggle.title = next ? 'Expand parameter panel' : 'Collapse parameter panel';
+        const sr = toggle.querySelector('.sr-only');
+        if (sr) sr.textContent = next ? 'Expand parameter panel' : 'Collapse parameter panel';
+    }
+    if (persist) {
+        try { localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, next ? '1' : '0'); } catch (_) {}
+    }
+}
+
+function toggleSidebar() {
+    const collapsed = document.body?.classList.contains('sidebar-collapsed');
+    applySidebarState(!collapsed);
+}
+
+function _storedSidebarCollapsed() {
+    try { return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'; } catch (_) { return false; }
+}
+
+window.toggleSidebar = toggleSidebar;
+document.addEventListener('DOMContentLoaded', () => applySidebarState(_storedSidebarCollapsed(), false));
+
 // Same-origin Web control protection. The backend sets a port-scoped,
 // SameSite=Strict CSRF cookie on GET; only this origin can read it and copy it
 // into the custom header required by every mutating /api request.
@@ -64,11 +284,29 @@ const CONNECT_WARMUP_DAYS = 14;
 // hundreds of thousands of bars; rendering them all blocks the main thread and
 // freezes the tab. Backtest / ML use the complete backend dataset regardless.
 const CHART_MAX_CANDLES = 60000;
+// Default framing keeps the latest 200-bar smooth window around the middle of
+// the viewport instead of anchoring the view to the newest candle.
+const CHART_DEFAULT_SMOOTH_BARS = 200;
+const CHART_DEFAULT_VISIBLE_HOURS = 18;
+const CHART_PAN_SENSITIVITY = 1.10;
+const CHART_PAN_DIRECTION_THRESHOLD_PX = 5;
+// Lightweight Charts' native mouse inertia is driven by the uncorrected
+// horizontal drag.  Once the 10% sensitivity correction is applied, that
+// native animation can briefly snap back to its old offset at mouse-up.  Keep
+// vertical dragging native, but run a small horizontal inertia from the
+// corrected position instead.
+const CHART_PAN_INERTIA_DECAY_MS = 220;
+const CHART_PAN_INERTIA_MIN_SPEED = 0.00075;
+// Keep risk/reward fill intensity stable across zoom and repaint cycles.
+const CHART_RISK_REWARD_GREEN_ALPHA = 0.105;
+const CHART_RISK_REWARD_RED_ALPHA = 0.115;
 // The chart starts with a recent slice, then asks the append-only local store
 // for an older page when the user pans to the left edge.  This keeps CONNECT
 // fast without making the visible history stop at the warm-up window.
 const CHART_HISTORY_PAGE_SIZE = 5000;
 const CHART_HISTORY_TRIGGER_BARS = 120;
+const CHART_AUTOSCALE_HOLD_MS = 140;
+const CHART_AUTOSCALE_TRANSITION_MS = 220;
 let chart = null;
 let candleSeries = null;
 let _rawCandleBuffer = []; // [{time(unix), open, high, low, close, volume}]
@@ -77,9 +315,34 @@ let _chartHistoryApplying = false;
 let _chartHistoryExhausted = false;
 let _chartHistorySuppressUntil = 0;
 let _chartOverlayRafId = null;
+let _chartResizeRafId = null;
+let _chartLastSize = '';
+let _chartPanCorrectionRafId = null;
+let _chartPanLastX = null;
+let _chartPanInertiaRafId = null;
+let _chartPanInertiaPosition = null;
+let _chartPanInertiaVelocity = 0;
+let _chartAutoscaleRafId = null;
+let _chartAutoscaleReleaseTimer = null;
+let _chartAutoscaleHoldUntil = 0;
+let _chartAutoscaleHoldRange = null;
+let _chartAutoscaleTarget = null;
+let _chartAutoscaleEase = null;
+// coordinateToPrice() can briefly expose Lightweight Charts' raw/default
+// range while a wheel gesture is being processed.  Keep the last range that
+// this provider actually presented so the next gesture never starts from
+// that transient range.
+let _chartAutoscalePresentedRange = null;
+let _chartAutoscaleInitialised = false;
+let _chartAutoscaleAnimateNext = false;
+let _chartPanGesture = null;
 let backtestData = null;
 let currentAccount = null;
 let allAccounts = [];
+const CONNECTION_STATUS_POLL_INTERVAL_MS = 2500;
+let _connectionStatusPollTimer = null;
+let _connectionStatusProbeInFlight = false;
+let _topstepConnectInProgress = false;
 
 // -- Strategy Params & Presets ----------------------
 
@@ -123,8 +386,6 @@ function refreshContractOptions() {
     }
 }
 document.addEventListener('DOMContentLoaded', refreshContractOptions);
-// 1.0.10: 還原 OFFLINE MODE(重整後保持)
-document.addEventListener('DOMContentLoaded', _restoreOfflineMode);
 
 const DEFAULT_STRATEGY_PARAMS = {
     market_clock_version: MARKET_CLOCK_VERSION,
@@ -641,14 +902,6 @@ function strategyPresentation(value) {
     return STRATEGY_PRESENTATION[normalizeStrategyName(value)] || STRATEGY_PRESENTATION.factor;
 }
 
-function syncStrategyDescription(mode) {
-    const select = document.getElementById('strategy-' + mode);
-    const target = document.getElementById('strategy-desc-' + mode);
-    if (!select || !target) return;
-    const meta = strategyPresentation(select.value);
-    target.textContent = meta.description;
-}
-
 function _setStrategySelect(mode, strategy) {
     const normalized = normalizeStrategyName(strategy);
     const el = document.getElementById('strategy-' + mode);
@@ -660,7 +913,6 @@ function _setStrategySelect(mode, strategy) {
             el.appendChild(opt);
         }
         el.value = normalized;
-        syncStrategyDescription(mode);
     }
     if (!_appliedStrategyParamsByMode[mode]) {
         _appliedStrategyParamsByMode[mode] = Object.assign({}, DEFAULT_STRATEGY_PARAMS);
@@ -1737,15 +1989,6 @@ function applyStrategyParams(mode, params) {
     _setStrategySelect(mode, p.strategy);
     updateStrategyParamVisibility(mode);
     updateMlParamSummary(mode);
-}
-
-// CONTRACT preset dropdown in the connect panel — fills the contract-id text input.
-function onContractPresetChange() {
-    const sel = document.getElementById('contract-preset');
-    const inp = document.getElementById('contract-id');
-    if (!sel || !inp) return;
-    if (sel.value) inp.value = contractUiValue(sel.value);
-    inp.focus();
 }
 
 // Kept for older event hooks; trigger OFF now controls the disabled state.
@@ -2935,11 +3178,6 @@ function decorateParamHelpDots() {
     const standalone = {
         'username': 'Topstep / ProjectX login email.',
         'apikey': 'ProjectX API key.',
-        'contract-preset': 'Shortcut that fills the contract ID.',
-        'contract-id': 'Futures contract ID or bare symbol, for example MNQ (auto front month).',
-        'start-date': 'Start date for historical data.',
-        'end-date': 'End date for historical data.',
-        'data-count': 'Loaded 1-minute candle count.',
     };
     const apply = (id, tip) => {
         const el = document.getElementById(id);
@@ -2975,9 +3213,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const input = document.getElementById(id);
         if (!input) return;
         input.addEventListener('input', () => {
+            if (id === 'username') updateConnectionInitial(input.value);
             _refreshConnectionState({ credentialsChanged: true });
         });
     });
+
+    updateConnectionInitial(document.getElementById('username')?.value || '');
+    startConnectionStatusMonitor();
 
     // Full-range mode: no manual dates. END = today, START = far past so the
     // paginated fetch walks back to the contract's earliest available bar.
@@ -3065,12 +3307,12 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.bottom-tab').forEach(x => x.classList.remove('active'));
             t.classList.add('active');
             const tab = t.dataset.btab;
-            ['trades', 'execute', 'pnl', 'log'].forEach(id => {
+            ['trades', 'execute', 'log'].forEach(id => {
                 const panel = document.getElementById('btab-' + id);
                 if (panel) panel.classList.toggle('hidden', id !== tab);
             });
+            _animateBottomPane(document.getElementById('btab-' + tab));
             if (tab === 'log') scrollSystemLogToBottom();
-            if (tab === 'pnl') renderPnlCurve();
             if (tab === 'execute') {
                 revealNewestExecuteTrade();
                 refreshVisibleExecuteTrades(true);
@@ -3096,6 +3338,7 @@ async function loadEnvConfig() {
     try {
         const resp = await fetch(API + '/config');
         const cfg = await resp.json();
+        updateConnectionInitial(cfg.username || '');
         Object.assign(SYSTEM_TIME_ZONES, cfg.time_zones || {});
         Object.assign(FRONT_MONTH_CONTRACTS, cfg.front_month_contracts || {});
         Object.assign(SYSTEM_CONTRACT_SPECS, cfg.contract_specs || {});
@@ -3120,9 +3363,12 @@ async function loadEnvConfig() {
             document.getElementById('username').value = cfg.username;
             document.getElementById('apikey').placeholder = cfg.api_key_preview + ' (from .env)';
             document.getElementById('apikey').value = '';
-            document.getElementById('contract-id').value = contractUiValue(
-                cfg.contract_id || defaultContractId()
-            ) || 'MNQ';
+            const contractInput = document.getElementById('contract-id');
+            if (contractInput) {
+                contractInput.value = contractUiValue(
+                    cfg.contract_id || defaultContractId()
+                ) || 'MNQ';
+            }
             log('.env loaded: username=' + cfg.username + ', key=' + cfg.api_key_preview, 'success');
             log('Credentials from .env -- click CONNECT to fetch data', 'info');
 
@@ -3184,10 +3430,9 @@ async function loadAccounts() {
 
 let liveAccount = null;
 const LIVE_MAIN_SLOT = 1;
-const LIVE_MINOR_SLOT = 2;
 
 function liveSlotLabel(slot) {
-    return Number(slot) === LIVE_MAIN_SLOT ? 'ACCOUNT MAIN' : 'ACCOUNT MINOR';
+    return 'ACCOUNT MAIN';
 }
 
 function _liveSlotAccountId(slot) {
@@ -4330,7 +4575,9 @@ function _chartNewestBarTime() {
 async function _chartCatchUp(reason) {
     const before = _chartNewestBarTime();
     try {
-        await fetchAndShowChart();
+        // A background catch-up must never send the user's viewport back to
+        // the default recent window while they are inspecting another area.
+        await fetchAndShowChart('1m', true);
     } catch (e) {
         log('Chart catch-up failed: ' + e.message, 'warn');
         return false;
@@ -4530,6 +4777,10 @@ async function loadOlderChartHistory() {
             time: row.time, open: row.open, high: row.high, low: row.low, close: row.close,
         }));
         _rawCandleBuffer = merged;
+        // The page may finish while corrected drag/inertia is still running.
+        // Stop that old writer before restoring the shifted range, otherwise
+        // it can overwrite the restored position on the next animation frame.
+        _cancelChartPanInteraction();
         // setData emits range-change callbacks while Lightweight Charts is
         // rebuilding its time scale. Suppress canvas work until both the data
         // and the restored viewport are stable, then paint exactly once.
@@ -4572,34 +4823,493 @@ function maybeLoadOlderChartHistory(range) {
     loadOlderChartHistory();
 }
 
+function _chartPriceRangeFromCanvas() {
+    if (!candleSeries || !chart) return null;
+    const container = document.getElementById('chart-container');
+    if (!container) return null;
+    const paneHeight = Math.max(1, container.clientHeight - _timeAxisHeight());
+    try {
+        const top = Number(candleSeries.coordinateToPrice(0));
+        const bottom = Number(candleSeries.coordinateToPrice(paneHeight));
+        if (!Number.isFinite(top) || !Number.isFinite(bottom) || top === bottom) return null;
+        return {
+            minValue: Math.min(top, bottom),
+            maxValue: Math.max(top, bottom),
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+function _chartNow() {
+    return (typeof performance !== 'undefined' && performance.now)
+        ? performance.now()
+        : Date.now();
+}
+
+function _cancelChartAutoscaleFrame() {
+    if (_chartAutoscaleRafId !== null) {
+        cancelAnimationFrame(_chartAutoscaleRafId);
+        _chartAutoscaleRafId = null;
+    }
+}
+
+function _copyChartPriceRange(range) {
+    if (!range) return null;
+    const minValue = Number(range.minValue);
+    const maxValue = Number(range.maxValue);
+    if (!Number.isFinite(minValue) || !Number.isFinite(maxValue) || minValue === maxValue) {
+        return null;
+    }
+    return { minValue, maxValue };
+}
+
+function _invalidateChartAutoscale() {
+    if (!chart) return;
+    // Re-validate the provider without toggling autoScale.  Repeatedly
+    // applying {autoScale:true} resets the internal scale first, which is the
+    // one-frame default shrink visible at the start of every new scroll.
+    try {
+        if (candleSeries) candleSeries.applyOptions({});
+        else chart.applyOptions({});
+    } catch (_) {}
+}
+
+function _releaseChartAutoscaleHold() {
+    if (_chartAutoscaleReleaseTimer !== null) {
+        clearTimeout(_chartAutoscaleReleaseTimer);
+        _chartAutoscaleReleaseTimer = null;
+    }
+    if (_chartAutoscaleHoldRange) {
+        _chartAutoscalePresentedRange = _copyChartPriceRange(_chartAutoscaleHoldRange);
+    }
+    _chartAutoscaleHoldUntil = 0;
+    _chartAutoscaleHoldRange = null;
+    if (!chart) return;
+    let autoScale = false;
+    try { autoScale = chart.priceScale('right').options().autoScale === true; } catch (_) {}
+    if (autoScale) _invalidateChartAutoscale();
+    scheduleChartOverlayRedraw();
+}
+
+function _holdChartAutoscaleDuringScroll() {
+    if (!chart) return;
+    _cancelChartPanInertia();
+    const now = _chartNow();
+    if (!_chartAutoscaleHoldRange) {
+        _chartAutoscaleHoldRange = _copyChartPriceRange(_chartAutoscalePresentedRange)
+            || _chartPriceRangeFromCanvas();
+    }
+    _chartAutoscaleHoldUntil = now + CHART_AUTOSCALE_HOLD_MS;
+    _chartAutoscaleEase = null;
+    _chartAutoscaleAnimateNext = false;
+    _cancelChartAutoscaleFrame();
+    if (_chartAutoscaleReleaseTimer !== null) clearTimeout(_chartAutoscaleReleaseTimer);
+    _chartAutoscaleReleaseTimer = setTimeout(() => {
+        _chartAutoscaleReleaseTimer = null;
+        _releaseChartAutoscaleHold();
+    }, CHART_AUTOSCALE_HOLD_MS);
+}
+
+function _chartAutoscaleTargetChanged(next) {
+    const previous = _chartAutoscaleTarget;
+    if (!previous) return true;
+    const span = Math.max(1, Math.abs(next.maxValue - next.minValue));
+    const epsilon = span * 1e-5;
+    return Math.abs(previous.minValue - next.minValue) > epsilon
+        || Math.abs(previous.maxValue - next.maxValue) > epsilon;
+}
+
+function _scheduleChartAutoscaleFrame() {
+    if (_chartAutoscaleRafId !== null || !chart || !_chartAutoscaleEase) return;
+    _chartAutoscaleRafId = requestAnimationFrame(() => {
+        _chartAutoscaleRafId = null;
+        if (!_chartAutoscaleEase || !chart) return;
+        // The provider below supplies the interpolated range. Re-invalidating
+        // only during the short transition keeps the normal auto-scale path
+        // untouched without resetting the scale to Lightweight Charts'
+        // default range on every animation frame.
+        let autoScale = false;
+        try { autoScale = chart.priceScale('right').options().autoScale === true; } catch (_) {}
+        if (autoScale) _invalidateChartAutoscale();
+        scheduleChartOverlayRedraw();
+    });
+}
+
+function _smoothChartAutoscale(baseImplementation) {
+    const info = baseImplementation();
+    if (!info || !info.priceRange) {
+        _chartAutoscaleEase = null;
+        return info;
+    }
+
+    const target = {
+        minValue: Number(info.priceRange.minValue),
+        maxValue: Number(info.priceRange.maxValue),
+    };
+    if (!Number.isFinite(target.minValue) || !Number.isFinite(target.maxValue)) return info;
+
+    const now = _chartNow();
+    if (now < _chartAutoscaleHoldUntil) {
+        if (_chartAutoscaleHoldRange) {
+            const held = _copyChartPriceRange(_chartAutoscaleHoldRange);
+            if (held) _chartAutoscalePresentedRange = held;
+            return { ...info, priceRange: held || _chartAutoscaleHoldRange };
+        }
+        return info;
+    }
+    if (_chartAutoscaleHoldUntil) {
+        _chartAutoscaleHoldUntil = 0;
+        _chartAutoscaleHoldRange = null;
+    }
+    if (!_chartAutoscaleInitialised) {
+        _chartAutoscaleInitialised = true;
+        _chartAutoscaleTarget = target;
+        _chartAutoscaleAnimateNext = false;
+        _chartAutoscalePresentedRange = _copyChartPriceRange(target);
+        return info;
+    }
+    if (!_chartAutoscaleTarget || _chartAutoscaleAnimateNext || _chartAutoscaleTargetChanged(target)) {
+        const current = _copyChartPriceRange(_chartAutoscalePresentedRange)
+            || _chartPriceRangeFromCanvas();
+        _chartAutoscaleEase = {
+            from: current || target,
+            to: target,
+            startedAt: now,
+        };
+        _chartAutoscaleTarget = target;
+        _chartAutoscaleAnimateNext = false;
+    }
+    if (!_chartAutoscaleEase) {
+        _chartAutoscalePresentedRange = _copyChartPriceRange(target);
+        return info;
+    }
+
+    const transition = _chartAutoscaleEase;
+    const rawProgress = Math.max(0, Math.min(1,
+        (now - transition.startedAt) / CHART_AUTOSCALE_TRANSITION_MS));
+    // Ease-out keeps the first part responsive and removes the hard stop at
+    // the end of a resize/zoom while remaining finite and deterministic.
+    const progress = 1 - Math.pow(1 - rawProgress, 3);
+    if (rawProgress >= 1) {
+        _chartAutoscaleEase = null;
+        _chartAutoscalePresentedRange = _copyChartPriceRange(target);
+        return info;
+    }
+
+    const presented = {
+        minValue: transition.from.minValue
+            + (transition.to.minValue - transition.from.minValue) * progress,
+        maxValue: transition.from.maxValue
+            + (transition.to.maxValue - transition.from.maxValue) * progress,
+    };
+    _chartAutoscalePresentedRange = presented;
+    _scheduleChartAutoscaleFrame();
+    return {
+        ...info,
+        priceRange: presented,
+    };
+}
+
+function _scheduleChartResize(container) {
+    if (!container || !chart || _chartResizeRafId !== null) return;
+    _chartResizeRafId = requestAnimationFrame(() => {
+        _chartResizeRafId = null;
+        if (!chart) return;
+        const width = Math.max(0, container.clientWidth);
+        const height = Math.max(0, container.clientHeight);
+        const key = width + 'x' + height;
+        if (key === _chartLastSize) return;
+        _chartLastSize = key;
+        try { chart.applyOptions({ width, height }); } catch (_) {}
+        scheduleChartOverlayRedraw();
+    });
+}
+
+function _setChartPriceAutoScale(enabled) {
+    if (!chart) return;
+    if (!enabled) {
+        const current = _copyChartPriceRange(_chartPriceRangeFromCanvas());
+        if (current) _chartAutoscalePresentedRange = current;
+    }
+    _chartAutoscaleEase = null;
+    _chartAutoscaleHoldUntil = 0;
+    _chartAutoscaleHoldRange = null;
+    _cancelChartAutoscaleFrame();
+    if (_chartAutoscaleReleaseTimer !== null) {
+        clearTimeout(_chartAutoscaleReleaseTimer);
+        _chartAutoscaleReleaseTimer = null;
+    }
+    if (enabled) {
+        _chartAutoscaleTarget = null;
+        _chartAutoscaleAnimateNext = _chartAutoscaleInitialised;
+    }
+    try {
+        chart.priceScale('right').applyOptions({ autoScale: Boolean(enabled) });
+    } catch (_) {}
+}
+
+function _isChartControlTarget(target) {
+    return !!(target && target.closest && target.closest(
+        'button, input, select, textarea, a, #chart-quick-btns, '
+        + '#chart-layer-pop, #chart-status-cluster, #live-top-bar, #lv-levels-panel'
+    ));
+}
+
+function _cancelChartPanInertia() {
+    if (_chartPanInertiaRafId !== null) {
+        cancelAnimationFrame(_chartPanInertiaRafId);
+        _chartPanInertiaRafId = null;
+    }
+    _chartPanInertiaPosition = null;
+    _chartPanInertiaVelocity = 0;
+}
+
+// A data replacement must not leave an old correction frame or inertia loop
+// writing to the time scale after the new viewport has been restored.  This is
+// a motion-cancellation helper only; it never chooses a new horizontal range.
+function _cancelChartPanInteraction() {
+    _cancelChartPanInertia();
+    if (_chartPanCorrectionRafId !== null) {
+        cancelAnimationFrame(_chartPanCorrectionRafId);
+        _chartPanCorrectionRafId = null;
+    }
+    _chartPanLastX = null;
+    _chartPanGesture = null;
+}
+
+function _startChartPanInertia(position, velocity) {
+    _cancelChartPanInertia();
+    if (!chart || !Number.isFinite(position) || !Number.isFinite(velocity)
+        || Math.abs(velocity) < CHART_PAN_INERTIA_MIN_SPEED) return;
+
+    let current = position;
+    let speed = velocity;
+    let previousAt = _chartNow();
+    _chartPanInertiaPosition = current;
+    _chartPanInertiaVelocity = speed;
+
+    const tick = () => {
+        _chartPanInertiaRafId = null;
+        if (!chart) {
+            _cancelChartPanInertia();
+            return;
+        }
+        const now = _chartNow();
+        const elapsed = Math.max(1, Math.min(48, now - previousAt));
+        previousAt = now;
+        current += speed * elapsed;
+        try {
+            chart.timeScale().scrollToPosition(current, false);
+        } catch (_) {
+            _cancelChartPanInertia();
+            return;
+        }
+        _chartPanInertiaPosition = current;
+        speed *= Math.exp(-elapsed / CHART_PAN_INERTIA_DECAY_MS);
+        _chartPanInertiaVelocity = speed;
+        scheduleChartOverlayRedraw();
+        if (Math.abs(speed) < CHART_PAN_INERTIA_MIN_SPEED) {
+            _cancelChartPanInertia();
+            return;
+        }
+        _chartPanInertiaRafId = requestAnimationFrame(tick);
+    };
+
+    _chartPanInertiaRafId = requestAnimationFrame(tick);
+}
+
+function _beginChartPan(event, container) {
+    _cancelChartPanInteraction();
+    if (!chart || !container || event.button !== 0 || _isChartControlTarget(event.target)) return;
+
+    // Keep price-axis gestures dedicated to vertical scale control.  The
+    // plot area is the only place where the horizontal sensitivity correction
+    // should run.
+    const rect = container.getBoundingClientRect();
+    let rightScaleWidth = 0;
+    try { rightScaleWidth = chart.priceScale('right').width(); } catch (_) {}
+    if (rightScaleWidth > 0 && event.clientX >= rect.right - rightScaleWidth) return;
+
+    let barSpacing = 6;
+    try {
+        const value = Number(chart.timeScale().options().barSpacing);
+        if (Number.isFinite(value) && value > 0) barSpacing = value;
+    } catch (_) {}
+
+    _chartPanGesture = {
+        startX: event.clientX,
+        startY: event.clientY,
+        startScroll: chart.timeScale().scrollPosition(),
+        barSpacing,
+        lastAppliedX: event.clientX,
+        lastAppliedPosition: chart.timeScale().scrollPosition(),
+        lastSampleAt: _chartNow(),
+        velocity: 0,
+        direction: 'pending',
+        started: false,
+    };
+}
+
+function _applyChartPanSensitivity(event) {
+    const gesture = _chartPanGesture;
+    if (!gesture || gesture.direction !== 'horizontal'
+        || !(event.buttons & 1) || !chart) return;
+    _chartPanLastX = event.clientX;
+    if (_chartPanCorrectionRafId !== null) return;
+    _chartPanCorrectionRafId = requestAnimationFrame(() => {
+        _chartPanCorrectionRafId = null;
+        const active = _chartPanGesture;
+        const clientX = _chartPanLastX;
+        if (!active || clientX === null || !chart) return;
+        _applyChartPanSensitivityAt(clientX, active);
+    });
+}
+
+function _routeChartPanMove(event) {
+    const gesture = _chartPanGesture;
+    if (!gesture || !(event.buttons & 1) || !chart) return;
+
+    const deltaX = event.clientX - gesture.startX;
+    const deltaY = event.clientY - gesture.startY;
+    const distance = Math.hypot(deltaX, deltaY);
+    if (gesture.direction === 'pending' && distance < CHART_PAN_DIRECTION_THRESHOLD_PX) {
+        // Do not let the native handler start on a tiny diagonal jitter.  Once
+        // a direction is clear, the event is either released to the native
+        // vertical path or kept by the single horizontal controller below.
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+    }
+
+    if (gesture.direction === 'pending') {
+        gesture.direction = Math.abs(deltaX) > Math.abs(deltaY)
+            ? 'horizontal'
+            : 'vertical';
+        // Lightweight Charts cannot price-drag while autoScale is enabled.
+        // Only turn it off after a real drag has been identified, so a simple
+        // click never changes the chart's vertical range.
+        if (!gesture.started) {
+            gesture.started = true;
+            _setChartPriceAutoScale(false);
+        }
+    }
+
+    if (gesture.direction !== 'horizontal') return;
+
+    // The native pressedMouseMove listener is still available for vertical
+    // dragging, but it must not see horizontal events or it will compete with
+    // the corrected 1.10x position below.  Capture at window before the chart
+    // document listener and let this controller be the only horizontal writer.
+    event.preventDefault();
+    event.stopPropagation();
+    _applyChartPanSensitivity(event);
+}
+
+function _applyChartPanSensitivityAt(clientX, gesture) {
+    const deltaX = clientX - gesture.startX;
+    if (!Number.isFinite(deltaX)) return;
+    const now = _chartNow();
+    const targetPosition = gesture.startScroll
+        - (deltaX / gesture.barSpacing) * CHART_PAN_SENSITIVITY;
+    const previousPosition = Number.isFinite(gesture.lastAppliedPosition)
+        ? gesture.lastAppliedPosition
+        : targetPosition;
+    const elapsed = Math.max(1, now - (gesture.lastSampleAt || now));
+    const sampledVelocity = (targetPosition - previousPosition) / elapsed;
+    // A short EMA removes event-rate noise without adding a second animation
+    // source.  Every frame still resolves to the one deterministic target
+    // derived from the original pointer position.
+    gesture.velocity = gesture.velocity * 0.72 + sampledVelocity * 0.28;
+    gesture.lastSampleAt = now;
+    gesture.lastAppliedX = clientX;
+    gesture.lastAppliedPosition = targetPosition;
+    try {
+        const currentPosition = chart.timeScale().scrollPosition();
+        if (!Number.isFinite(currentPosition)
+            || Math.abs(currentPosition - targetPosition) > 0.001) {
+            chart.timeScale().scrollToPosition(targetPosition, false);
+        }
+    } catch (_) {}
+}
+
+function _endChartPan(cancelMotion = false) {
+    const gesture = _chartPanGesture;
+    if (_chartPanCorrectionRafId !== null) {
+        cancelAnimationFrame(_chartPanCorrectionRafId);
+        _chartPanCorrectionRafId = null;
+    }
+    if (gesture && Number.isFinite(_chartPanLastX)
+        && gesture.lastAppliedX !== _chartPanLastX) {
+        _applyChartPanSensitivityAt(_chartPanLastX, gesture);
+    }
+    _chartPanLastX = null;
+    _chartPanGesture = null;
+    if (cancelMotion) {
+        _cancelChartPanInertia();
+        return;
+    }
+    if (gesture && gesture.direction === 'horizontal'
+        && Number.isFinite(gesture.lastAppliedPosition)) {
+        _startChartPanInertia(gesture.lastAppliedPosition, gesture.velocity);
+    }
+}
+
 function initChart() {
     const container = document.getElementById('chart-container');
     chart = LightweightCharts.createChart(container, {
         width: container.clientWidth,
         height: container.clientHeight,
         layout: {
-            background: { type: 'solid', color: '#08090d' },
-            textColor: '#556178',
+            background: { type: 'solid', color: _appThemeColor('--surface-chart', '#08090d') },
+            textColor: _appThemeColor('--ink-muted', '#556178'),
             fontSize: 11,
             fontFamily: 'IBM Plex Mono, monospace',
         },
         grid: {
-            vertLines: { color: 'rgba(100, 220, 255, 0.03)' },
-            horzLines: { color: 'rgba(100, 220, 255, 0.03)' },
+            vertLines: { color: _appThemeColor('--chart-grid', 'rgba(100, 220, 255, 0.03)') },
+            horzLines: { color: _appThemeColor('--chart-grid', 'rgba(100, 220, 255, 0.03)') },
         },
         crosshair: {
             mode: LightweightCharts.CrosshairMode.Normal,
-            vertLine: { color: 'rgba(100, 220, 255, 0.2)', style: 0, width: 1 },
-            horzLine: { color: 'rgba(100, 220, 255, 0.2)', style: 0, width: 1 },
+            vertLine: { color: _appThemeColor('--chart-crosshair', 'rgba(100, 220, 255, 0.2)'), style: 0, width: 1 },
+            horzLine: { color: _appThemeColor('--chart-crosshair', 'rgba(100, 220, 255, 0.2)'), style: 0, width: 1 },
         },
         rightPriceScale: {
-            borderColor: 'rgba(100, 220, 255, 0.08)',
+            autoScale: true,
+            borderColor: _appThemeColor('--line-subtle', 'rgba(100, 220, 255, 0.08)'),
+        },
+        handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+        },
+        handleScale: {
+            axisPressedMouseMove: { time: true, price: true },
+            axisDoubleClickReset: { time: true, price: true },
+            mouseWheel: true,
+            pinch: true,
         },
         timeScale: {
-            borderColor: 'rgba(100, 220, 255, 0.08)',
+            borderColor: _appThemeColor('--line-subtle', 'rgba(100, 220, 255, 0.08)'),
             timeVisible: true,
             secondsVisible: false,
+            // Horizontal framing is free after the one-shot initial view.
+            // Keep every edge/resize follow rule explicitly disabled so a
+            // chart refresh cannot silently re-lock the user's viewport.
+            fixLeftEdge: false,
+            fixRightEdge: false,
+            lockVisibleTimeRangeOnResize: false,
+            rightBarStaysOnScroll: false,
             tickMarkFormatter: _chartTickMark,
+        },
+        kineticScroll: {
+            // Horizontal mouse inertia is applied after the sensitivity
+            // correction, so Lightweight Charts cannot snap back to the
+            // uncorrected offset when the pointer is released.
+            mouse: false,
+            touch: true,
         },
         localization: {
             // Crosshair tooltip shows the full "2026.04.15 15:30" stamp.
@@ -4608,22 +5318,18 @@ function initChart() {
     });
 
     candleSeries = chart.addCandlestickSeries({
-        upColor: '#888888',
-        downColor: '#555555',
-        borderDownColor: '#555555',
-        borderUpColor: '#888888',
-        wickDownColor: '#555555',
-        wickUpColor: '#888888',
+        upColor: _appThemeColor('--candle-up', '#888888'),
+        downColor: _appThemeColor('--candle-down', '#555555'),
+        borderDownColor: _appThemeColor('--candle-down', '#555555'),
+        borderUpColor: _appThemeColor('--candle-up', '#888888'),
+        wickDownColor: _appThemeColor('--candle-down', '#555555'),
+        wickUpColor: _appThemeColor('--candle-up', '#888888'),
+        autoscaleInfoProvider: (baseImplementation) => _smoothChartAutoscale(baseImplementation),
     });
     _syncFootprintCandleVisibility();
 
-    new ResizeObserver(() => {
-        chart.applyOptions({
-            width: container.clientWidth,
-            height: container.clientHeight
-        });
-        scheduleChartOverlayRedraw();
-    }).observe(container);
+    _chartLastSize = container.clientWidth + 'x' + container.clientHeight;
+    new ResizeObserver(() => _scheduleChartResize(container)).observe(container);
 
     // Redraw VP overlay on scroll / zoom — continuous following via rAF
     const _redrawOverlays = () => {
@@ -4635,9 +5341,32 @@ function initChart() {
     chart.timeScale().subscribeVisibleLogicalRangeChange(_redrawOverlays);
     // Vertical zoom (wheel on price scale or chart body)
     container.addEventListener('wheel', _redrawOverlays, { passive: true });
+    // A wheel event can change the visible bar range several times before the
+    // browser paints the next frame. Hold the current price window during that
+    // burst; the final stable target is eased only after the gesture settles.
+    container.addEventListener('wheel', _holdChartAutoscaleDuringScroll, {
+        passive: true,
+        capture: true,
+    });
+    // Free the vertical price range after a real plot drag direction is known.
+    // Lightweight Charts keeps ownership of vertical movement; horizontal
+    // movement is routed to the single sensitivity controller below.
+    container.addEventListener('mousedown', (event) => _beginChartPan(event, container), true);
     // Continuous drag redraw
-    container.addEventListener('mousemove', (e) => { if (e.buttons) _redrawOverlays(); }, { passive: true });
+    container.addEventListener('mousemove', (e) => {
+        if (!e.buttons) return;
+        _redrawOverlays();
+    }, { passive: true });
+    // Route before Lightweight Charts' document listener.  Horizontal drags
+    // are fully owned by the sensitivity controller; vertical drags continue
+    // through to the native price-scroll implementation.
+    window.addEventListener('mousemove', _routeChartPanMove, {
+        passive: false,
+        capture: true,
+    });
     container.addEventListener('mouseup', _redrawOverlays);
+    window.addEventListener('mouseup', _endChartPan);
+    window.addEventListener('blur', () => _endChartPan(true));
 
     log('Chart initialized', 'info');
 }
@@ -4714,7 +5443,9 @@ const SESSION_BOUNDARIES = [
     { h: 16, m: 0,  label: 'AH'   },
 ];
 const NO_TRADE_WINDOWS_ET = [
-    { startH: 15, startM: 30, endH: 18, endM: 0, label: 'NO TRADE' },
+    // Chart-only close warning: 12:45 PM–3:00 PM Pacific, represented here
+    // as 15:45–18:00 in the New York market clock used by this renderer.
+    { startH: 15, startM: 45, endH: 18, endM: 0, label: 'NO TRADE' },
 ];
 const NY_OPEN_ZONE_WINDOWS = [
     {
@@ -4880,17 +5611,17 @@ function getNextSessionBoundaryMs(isoStr) {
 // 而是根本不畫,順便省掉重繪成本(VP 與 zone 線在 233 萬根上很吃 CPU)。
 // ════════════════════════════════════════════════════════════════════
 const CHART_LAYERS = [
-    { key: 'emapmo',   label: 'EMAPMO triangle',       on: true  },
-    { key: 'pi',       label: 'PI signals (circle/pi)', on: true  },
-    { key: 'trades',   label: 'Trade brackets (SL/TP)', on: true  },
-    { key: 'mrev',     label: 'MREV bubbles',           on: false },
-    { key: 'kdjma',    label: 'KDJMA dots',              on: false },
-    { key: 'intramom', label: 'INTRAMOM arrows',         on: false },
-    { key: 'dayzone',  label: 'DAY ZONE prior levels',   on: false },
+    { key: 'emapmo',   label: 'EMAPMO',                  on: true  },
+    { key: 'pi',       label: 'PI',                      on: true  },
+    { key: 'trades',   label: 'Trade brackets (SL/TP)',  on: true  },
+    { key: 'mrev',     label: 'MREV',                    on: false },
+    { key: 'kdjma',    label: 'KDJMA',                   on: false },
+    { key: 'intramom', label: 'INTRAMOM',                on: false },
+    { key: 'dayzone',  label: 'DAY ZONE',                on: false },
     { key: 'prevday70',label: 'PRIOR DAY 70% VAH/VAL/POC', on: false },
-    { key: 'optionwall', label: 'QQQ OPTION WALL / GEX', on: false },
-    { key: 'footprint', label: 'FOOTPRINT / LEVEL 2', on: false },
-    { key: 'cvd',      label: 'CVD / DELTA',             on: false },
+    { key: 'optionwall', label: 'QQQ OPTION WALL',       on: false },
+    { key: 'footprint', label: 'FOOTPRINT',              on: false },
+    { key: 'cvd',      label: 'CVD',                      on: false },
 ];
 const CHART_LAYER_STORAGE_KEY = 'ancserTPX.chartLayers';
 
@@ -4982,6 +5713,19 @@ const _SIGNAL_TYPE_LAYER = {
 function toggleChartLayer(key, on) {
     if (!(key in CHART_OVERLAYS)) return;
     CHART_OVERLAYS[key] = !!on;
+    const next = CHART_OVERLAYS[key];
+    // Native mode has no Glass controller to commit the visual state.  Keep
+    // the real switch in sync here so a close/reopen cycle never leaves the
+    // track and aria state stuck on the previous value.  A Glass controller,
+    // when present, still owns its spring; this only mirrors the committed
+    // semantic state.
+    document.querySelectorAll(
+        '#chart-layer-pop [data-switch-proxy="lp-' + key + '"]'
+    ).forEach(track => {
+        if (track.closest('.optical-stage-copy')) return;
+        track.classList.toggle('on', next);
+        track.setAttribute('aria-checked', String(next));
+    });
     _persistChartLayerPreferences();
     if (key === 'footprint') _syncFootprintCandleVisibility();
     if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
@@ -4995,18 +5739,9 @@ function toggleChartLayer(key, on) {
     try { redrawAllOverlays(); } catch (e) {}
 }
 
-// 圖例跟著圖層走 —— 關掉的層不該還列在圖例上
-function syncSignalLegend() {
-    document.querySelectorAll('#signal-legend [data-legend-layer]').forEach(row => {
-        row.style.display = layerOn(row.dataset.legendLayer) ? '' : 'none';
-    });
-}
-
 function redrawAllOverlays() {
-    syncSignalLegend();
     try { drawSessionDividers(); } catch (e) {}
     try { drawIndicatorSignalOverlay(); } catch (e) {}
-    try { drawPiSignalOverlay(); } catch (e) {}
     try { drawOptionWallOverlay(); } catch (e) {}
     try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
     try { drawPreviousDayValueAreas(); } catch (e) {}
@@ -5023,7 +5758,6 @@ function scheduleChartOverlayRedraw() {
         try { redrawTradeDecisionOverlays(); } catch (e) {}
         try { drawSessionDividers(); } catch (e) {}
         try { drawIndicatorSignalOverlay(); } catch (e) {}
-        try { drawPiSignalOverlay(); } catch (e) {}
         try { drawOptionWallOverlay(); } catch (e) {}
         try {
             if (_overlaySyncData && _overlaySyncData.zones) {
@@ -5093,7 +5827,6 @@ function toggleChartLayerMenu(force) {
 
 document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
     buildChartLayerMenu();   // 面板還隱藏著,只對齊 class
-    syncSignalLegend();
 }, 0));
 // 點圖層選單以外的地方就收起來
 document.addEventListener('click', (e) => {
@@ -5111,13 +5844,9 @@ function drawSessionDividers() {
     const dpr = window.devicePixelRatio || 1;
     const W = container.clientWidth;
     const H = container.clientHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
+    _sizeOrderflowCanvas(canvas, container, dpr);
     const ctx = canvas.getContext('2d');
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
     // Get visible time range
@@ -5229,33 +5958,8 @@ function drawNYOpenZoneBackgrounds(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
     ctx.restore();
 }
 
-// 1.0.10: 目前視野中「禁交易窗」的像素 x 區間。
-// drawRiskRewardBox() 要據此判斷紅綠底會不會被斜線蓋掉 —— 斜線是 0.55 alpha
-// 每 10px 一條,紅綠底只有 0.105/0.115,疊在一起完全看不見。
-function _noTradeXRanges() {
-    if (!chart || !candleSeries) return [];
-    const range = chart.timeScale().getVisibleRange();
-    if (!range || !range.from || !range.to) return [];
-    const fromMs = range.from * 1000, toMs = range.to * 1000;
-    const dayMs = 86400000;
-    const start = new Date(fromMs - dayMs);
-    start.setUTCHours(0, 0, 0, 0);
-    const out = [];
-    for (let d = start.getTime(); d <= toMs + dayMs; d += dayMs) {
-        const day = new Date(d);
-        NO_TRADE_WINDOWS_ET.forEach(w => {
-            const a = nyLocalToUtcMs(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.startH, w.startM);
-            const b = nyLocalToUtcMs(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.endH, w.endM);
-            if (b < fromMs || a > toMs) return;
-            const x1 = chart.timeScale().timeToCoordinate(utcMsToChartTime(a));
-            const x2 = chart.timeScale().timeToCoordinate(utcMsToChartTime(b));
-            if (x1 === null || x2 === null) return;
-            out.push([Math.min(x1, x2), Math.max(x1, x2)]);
-        });
-    }
-    return out;
-}
-
+// No-trade windows use their own hatch layer.  The risk/reward fill stays
+// independent so zooming into or out of a window cannot change its intensity.
 function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
     const dayMs = 86400000;
     const slope = Math.tan(80 * Math.PI / 180);
@@ -5323,14 +6027,10 @@ function drawFadeDailyLevels(zones) {
     const dpr = window.devicePixelRatio || 1;
     const W = container.clientWidth;
     const H = container.clientHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
+    _sizeOrderflowCanvas(canvas, container, dpr);
 
     const ctx = canvas.getContext('2d');
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
     const timeToX = (sec) => {
@@ -5558,7 +6258,11 @@ function drawPreviousDayValueAreas() {
 // Draw only the primary VAH/VAL range used by each trade decision.
 
 function scrollToLatest() {
-    try { chart.timeScale().scrollToRealTime(); } catch (_) {}
+    try {
+        _cancelChartPanInteraction();
+        _setChartPriceAutoScale(true);
+        chart.timeScale().scrollToRealTime();
+    } catch (_) {}
 }
 
 let _footprintBars = [];
@@ -6170,26 +6874,25 @@ function createPosToolCanvas() {
 }
 
 function drawPositionTools(trades) {
-    if (!layerOn('trades')) trades = [];
-    clearPositionOverlay();
-    if (!trades || trades.length === 0) return;
+    if (!layerOn('trades') || !trades || trades.length === 0) {
+        clearPositionOverlay();
+        return;
+    }
 
     const canvas = createPosToolCanvas();
     const container = document.getElementById('chart-container');
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = container.clientWidth * dpr;
-    canvas.height = container.clientHeight * dpr;
-    canvas.style.width = container.clientWidth + 'px';
-    canvas.style.height = container.clientHeight + 'px';
+    _sizeOrderflowCanvas(canvas, container, dpr);
     const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, container.clientWidth, container.clientHeight);
 
     const chartW = container.clientWidth;
     const chartH = container.clientHeight;
-    // 1.0.10: 每筆單都重算會變成 O(交易數 × 可視天數) 次 timeToCoordinate,
-    // 視野一整個月時是上千次 —— 一次算好給所有單共用。
-    const noTradeRanges = _noTradeXRanges();
+    // Collect fills and paint each color as one compound path after all
+    // decision lines are drawn. A compound path is a union, so overlapping
+    // trades do not stack semi-transparent alpha into a brighter rectangle.
+    const riskRewardFills = { green: [], red: [] };
 
     // 1.0.9: 繪製夾在價格窗格內 — 交易框/區間線不再蓋住底部時間軸
     ctx.beginPath();
@@ -6293,7 +6996,10 @@ function drawPositionTools(trades) {
     const tradePrice = (t, keys) => {
         for (const k of keys) {
             const n = Number(t && t[k]);
-            if (Number.isFinite(n)) return n;
+            // Manual Topstep rows use 0 for an absent SL/TP. Zero is not a
+            // tradable futures price, so it must not become a giant fallback
+            // risk box when the off-screen fill is clipped.
+            if (Number.isFinite(n) && n > 0) return n;
         }
         return NaN;
     };
@@ -6330,36 +7036,61 @@ function drawPositionTools(trades) {
         const redTop = Math.min(yEntry, ySL);
         const redH = Math.abs(ySL - yEntry);
 
-        // 1.0.9: SL/TP 價格在可視範圍外時,該側底色會撐滿整個豎列
-        // (zoom out 時看起來像灰白色大柱)→ 邊界不在窗格內就不畫該側。
-        // 高度 < 6px 的一側也不畫:zoom out 價格軸壓縮後,底色會退化成
-        // 超長的細條(使用者回報「高度不足時超長延伸」)。
-        const paneH = chartH - _timeAxisHeight();
-        const inPane = (yy) => yy >= -20 && yy <= paneH + 20;
-        const MIN_FILL_H = 6;
+        // Keep the visible part when SL/TP is outside the price pane.  The
+        // canvas is clipped to the pane above, so an off-screen endpoint can
+        // be safely trimmed instead of making the whole box disappear.
+        const paneH = Math.max(0, chartH - _timeAxisHeight());
+        const MIN_FILL_H = 2;
+        const clippedFill = (top, height) => {
+            if (!Number.isFinite(top) || !Number.isFinite(height) || height <= 0) return null;
+            const visibleTop = Math.max(0, top);
+            const visibleBottom = Math.min(paneH, top + height);
+            if (visibleBottom - visibleTop < MIN_FILL_H) return null;
+            return { top: visibleTop, height: visibleBottom - visibleTop };
+        };
+        const greenFill = clippedFill(greenTop, greenH);
+        const redFill = clippedFill(redTop, redH);
 
-        // 1.0.10: 落在禁交易窗裡的單,紅綠底會被斜線吃掉。斜線是 0.55 alpha
-        // 每 10px 一條的紅色,紅綠底只有 0.105/0.115 —— 疊上去完全看不見,
-        // 而且斜線也是紅的,連紅色 SL 側都糊在一起。
-        // 不能用不透明底色壓掉斜線(那層在 z=2,壓下去會連 K 棒一起遮住),
-        // 也不加回先前已移除的三條橫線 —— 只在重疊時加深底色。
-        const overlapNoTrade = noTradeRanges.some(([a, b]) => xEnd > a && x0 < b);
-        const gAlpha = overlapNoTrade ? 0.34 : 0.105;
-        const rAlpha = overlapNoTrade ? 0.36 : 0.115;
-
-        ctx.save();
-        ctx.setLineDash([]);
-        if (greenH >= MIN_FILL_H && inPane(yEntry) && inPane(yTP)) {
-            ctx.fillStyle = 'rgba(0, 229, 160, ' + gAlpha + ')';
-            ctx.fillRect(x0, greenTop, xEnd - x0, greenH);
+        // Keep fills muted even when the trade crosses a no-trade window.
+        // That window is already communicated by its own hatch layer; it must
+        // not change the color of the entire risk/reward box.
+        if (greenFill) {
+            riskRewardFills.green.push({
+                x: x0,
+                y: greenFill.top,
+                width: xEnd - x0,
+                height: greenFill.height,
+            });
         }
-        if (redH >= MIN_FILL_H && inPane(yEntry) && inPane(ySL)) {
-            ctx.fillStyle = 'rgba(255, 64, 96, ' + rAlpha + ')';
-            ctx.fillRect(x0, redTop, xEnd - x0, redH);
+        if (redFill) {
+            riskRewardFills.red.push({
+                x: x0,
+                y: redFill.top,
+                width: xEnd - x0,
+                height: redFill.height,
+            });
         }
-        // 1.0.8: 依使用者要求移除 entry/TP/SL 三條橫線,只保留紅綠底
-        ctx.restore();
         return true;
+    };
+
+    const paintRiskRewardFills = (rects, fillStyle) => {
+        if (!rects.length) return;
+        ctx.save();
+        // The position canvas is above the chart but also contains decision
+        // lines. Painting behind existing pixels keeps those lines crisp while
+        // the single fill call prevents alpha accumulation.
+        ctx.globalCompositeOperation = 'destination-over';
+        ctx.fillStyle = fillStyle;
+        if (typeof Path2D === 'function') {
+            const path = new Path2D();
+            rects.forEach(r => path.rect(r.x, r.y, r.width, r.height));
+            ctx.fill(path);
+        } else {
+            // Chromium supports Path2D. This fallback keeps older embedded
+            // runtimes functional if they lack compound paths.
+            rects.forEach(r => ctx.fillRect(r.x, r.y, r.width, r.height));
+        }
+        ctx.restore();
     };
 
     trades.forEach((t) => {
@@ -6378,6 +7109,15 @@ function drawPositionTools(trades) {
 
         drawn++;
     });
+
+    paintRiskRewardFills(
+        riskRewardFills.green,
+        'rgba(0, 229, 160, ' + CHART_RISK_REWARD_GREEN_ALPHA + ')',
+    );
+    paintRiskRewardFills(
+        riskRewardFills.red,
+        'rgba(255, 64, 96, ' + CHART_RISK_REWARD_RED_ALPHA + ')',
+    );
 }
 
 // Legacy shim kept for older callers: live trades now use the same primary-zone
@@ -6408,9 +7148,13 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
 
             renderExecuteTrades(trades);
 
-            // Re-render metrics comparison if backtest already ran
+            // Re-render metrics comparison if backtest already ran.  A refresh
+            // initiated by the EXECUTE TRADES tab must not move the parameter
+            // sidebar to PERFORMANCE as a side effect.
             if (backtestData && backtestData.metrics) {
-                renderMetrics(backtestData.metrics, backtestData.trades);
+                renderMetrics(backtestData.metrics, backtestData.trades, {
+                    preserveSidebarScroll: executeTradesTabIsActive(),
+                });
             }
 
             // setMarkers handles all viewports; the canvas overlay is redrawn with
@@ -6432,7 +7176,9 @@ async function fetchAndDrawTradeHistory(refresh, accountId) {
                 drawSessionDividers();
             }
             if (backtestData && backtestData.metrics) {
-                renderMetrics(backtestData.metrics, backtestData.trades);
+                renderMetrics(backtestData.metrics, backtestData.trades, {
+                    preserveSidebarScroll: executeTradesTabIsActive(),
+                });
             }
             log('[HISTORY] No live trades found (' + data.source + ')', 'info');
         }
@@ -6574,17 +7320,136 @@ async function checkHealth() {
     }
 }
 
+function updateConnectionInitial(username) {
+    const initial = document.getElementById('connection-initial');
+    if (!initial) return;
+    const value = String(username || '').trim();
+    const first = value ? Array.from(value)[0].toLowerCase() : '?';
+    initial.textContent = first;
+    initial.setAttribute('aria-label', value ? 'Topstep user ' + first : 'Topstep user not configured');
+}
+
+function _topstepCredentialsPresent() {
+    const username = document.getElementById('username');
+    const apikey = document.getElementById('apikey');
+    const userValue = String(username?.value || '').trim();
+    const keyValue = String(apikey?.value || '').trim();
+    const storedKey = apikey?.dataset?.configured === '1';
+    return Boolean(userValue && (keyValue || storedKey));
+}
+
+function _providerRowStateClass(state) {
+    return {
+        empty: 'is-empty',
+        error: 'is-error',
+        starting: 'is-starting',
+        connected: 'is-connected',
+    }[String(state || '').toLowerCase()] || 'is-error';
+}
+
+function _renderProviderStatus(provider, payload) {
+    const row = document.querySelector(
+        '.chart-latency-row[data-provider="' + provider + '"]'
+    );
+    if (!row) return;
+    const data = payload || {};
+    const state = String(data.state || 'error').toLowerCase();
+    const stateClass = _providerRowStateClass(state);
+    const dot = document.getElementById('latency-dot-' + provider);
+    const value = document.getElementById('latency-' + provider);
+    const label = String(provider || '').toUpperCase();
+    const latency = Number(data.latency_ms);
+    const hasLatency = Number.isFinite(latency);
+    if (dot) {
+        dot.className = 'chart-latency-dot ' + stateClass;
+        dot.setAttribute('aria-label', label + ' ' + state);
+    }
+    if (value) value.textContent = hasLatency ? String(Math.max(0, Math.round(latency))) : '--';
+    row.dataset.connectionState = state;
+    row.title = label + ' · ' + state + (data.detail ? ' · ' + String(data.detail) : '');
+    row.setAttribute('aria-label', label + ' ' +
+        (hasLatency ? Math.max(0, Math.round(latency)) + ' ms' : '-- ms') + ' · ' + state);
+}
+
+function _renderTopstepProviderFromUi() {
+    const configured = _topstepCredentialsPresent();
+    let state = 'empty';
+    let detail = 'Topstep credentials not configured';
+    if (configured && _topstepConnectInProgress) {
+        state = 'starting';
+        detail = 'Topstep connection starting';
+    } else if (configured &&
+            typeof _connectionStatusKind !== 'undefined' &&
+            _connectionStatusKind === 'ok' &&
+            /^CONNECTED$/i.test(_connectionStatusText || '')) {
+        state = 'connected';
+        detail = 'Topstep REST client connected';
+    } else if (configured) {
+        state = 'error';
+        detail = 'Credentials loaded; connect required';
+    }
+    _renderProviderStatus('topstep', { state, configured, detail });
+}
+
+function _renderConnectionStatus(data) {
+    const providers = (data && data.providers) || {};
+    const localTopstep = _topstepCredentialsPresent();
+    const topstep = Object.assign({}, providers.topstep || {});
+    // The form can contain credentials before they are saved to .env. Keep
+    // that local input authoritative until the backend sees the next connect.
+    if (_topstepConnectInProgress) {
+        topstep.state = 'starting';
+        topstep.detail = 'Topstep connection starting';
+    } else if (!localTopstep) {
+        topstep.state = 'empty';
+        topstep.configured = false;
+        topstep.detail = 'Topstep credentials not configured';
+    } else if (topstep.state === 'empty') {
+        topstep.state = 'error';
+        topstep.configured = true;
+        topstep.detail = 'Credentials loaded; connect required';
+    }
+    _renderProviderStatus('topstep', topstep);
+    _renderProviderStatus('discord', providers.discord || { state: 'empty' });
+    _renderProviderStatus('databento', providers.databento || { state: 'empty' });
+}
+
+async function refreshConnectionStatus() {
+    if (_connectionStatusProbeInFlight) return;
+    _connectionStatusProbeInFlight = true;
+    try {
+        const resp = await fetch(API + '/connection/status', {
+            cache: 'no-store',
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        _renderConnectionStatus(await resp.json());
+    } catch (_) {
+        // The existing backend health indicator owns the hard offline message.
+        // Keep the last provider snapshot visible during a transient poll gap.
+        _renderTopstepProviderFromUi();
+    } finally {
+        _connectionStatusProbeInFlight = false;
+    }
+}
+
+function startConnectionStatusMonitor() {
+    refreshConnectionStatus();
+    if (!_connectionStatusPollTimer) {
+        _connectionStatusPollTimer = setInterval(
+            refreshConnectionStatus, CONNECTION_STATUS_POLL_INTERVAL_MS);
+    }
+}
+
 async function connectAPI() {
-    // 1.0.10: OFFLINE 只擋**資料請求**,不擋帳號連線 —— 帳號狀態、部位、
-    // 交易紀錄仍需要連線;卡住的從來不是認證,是 233 萬根的抓取/寫盤。
     const btn = document.getElementById('btn-connect');
     const username = document.getElementById('username').value.trim();
     const apikey = document.getElementById('apikey').value.trim();
-    const contractId = document.getElementById('contract-id').value.trim();
+    const contractId = document.getElementById('contract-id')?.value.trim() || defaultContractId();
     if (btn.dataset.busy === '1') {
         log('Already connecting; ignored duplicate click.', 'warn');
         return;
     }
+    _topstepConnectInProgress = true;
     btn.dataset.busy = '1';
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"><span></span><span></span><span></span><span></span></span> CONNECTING...';
@@ -6600,7 +7465,7 @@ async function connectAPI() {
         btn.disabled = false;
         btn.textContent = 'CONNECT';
         setStatus('err', 'CONNECT TIMED OUT');
-        log('Connection timed out after 60 seconds; UI was released. Use OFFLINE MODE during broker maintenance.', 'error');
+        log('Connection timed out after 60 seconds; UI was released.', 'error');
     }, 60000);
 
     // CONNECT loads only the recent warm-up window (CONNECT_WARMUP_DAYS) so the
@@ -6611,11 +7476,9 @@ async function connectAPI() {
         .toISOString().slice(0, 10);
     const endDate   = _now.toISOString().slice(0, 10);
 
-    // If CONTRACT ID is blank (auto-detect), fall back to the CONTRACT dropdown so
-    // we fetch the right instrument (MNQ vs ENQ) instead of a generic guess.
-    const presetSel = document.getElementById('contract-preset');
-    let resolvedContract = contractId;
-    if (!resolvedContract && presetSel && presetSel.value) resolvedContract = presetSel.value;
+    // The connection form keeps the instrument internal; use the configured
+    // front-month root when the hidden compatibility value is unavailable.
+    const resolvedContract = contractId || defaultContractId();
 
     const body = {
         unit: 2,
@@ -6649,13 +7512,11 @@ async function connectAPI() {
 
         setStatus('ok', 'CONNECTED');
         document.getElementById('conn-trigger').classList.add('connected');
-        document.getElementById('data-count').value = data.candles_count + ' bars';
         document.getElementById('btn-backtest').disabled = false;
         const btnRunAll = document.getElementById('btn-run-all');
         if (btnRunAll) btnRunAll.disabled = false;
         const btnFullFilter = document.getElementById('btn-full-filter');
         if (btnFullFilter) btnFullFilter.disabled = false;
-        _updateDataInfo(data.first, data.last, 'conn', data.candles_count);
         // CONNECT only loaded the recent warm-up window → record it so the first
         // backtest / ML / LEARN sees the range mismatch and pulls the full history.
         _btDataRange = {
@@ -6709,16 +7570,17 @@ async function connectAPI() {
         setStatus('err', 'FAILED');
         log('Connection failed: ' + e.message, 'error');
     } finally {
+        _topstepConnectInProgress = false;
         clearTimeout(_connWatchdog);
         btn.dataset.busy = '';
         btn.disabled = false;
         btn.textContent = 'CONNECT';
-        // 離線模式下不要把燈留在「連上」的綠色
-        if (isOffline()) setStatus('off', 'OFFLINE — using local candles');
+        _renderTopstepProviderFromUi();
+        refreshConnectionStatus();
     }
 }
 
-async function fetchAndShowChart(interval) {
+async function fetchAndShowChart(interval, preserveViewport = false) {
     try {
         // Only fetch the most recent slice for charting — the full range can be
         // hundreds of thousands of 1m bars and rendering them all freezes the tab.
@@ -6726,7 +7588,7 @@ async function fetchAndShowChart(interval) {
         const resp = await fetch(API + '/data/candles?limit=' + CHART_MAX_CANDLES);
         const data = await resp.json();
         if (data.candles && data.candles.length > 0) {
-            showCandleData(data.candles);
+            showCandleData(data.candles, preserveViewport);
             const shown = data.shown != null ? data.shown : data.candles.length;
             log('Chart showing ' + shown + ' / ' + data.count + ' candles (recent slice)', 'info');
             return;
@@ -6736,7 +7598,39 @@ async function fetchAndShowChart(interval) {
     log('No candle data available -- click CONNECT to fetch historical data', 'info');
 }
 
-function showCandleData(candles) {
+function _captureChartViewport() {
+    if (!chart) return null;
+    let visible = null;
+    let logical = null;
+    try { visible = chart.timeScale().getVisibleRange(); } catch (_) {}
+    try { logical = chart.timeScale().getVisibleLogicalRange(); } catch (_) {}
+    if (!visible && !logical) return null;
+    return { visible, logical };
+}
+
+function _restoreChartViewport(viewport) {
+    if (!chart || !viewport) return false;
+    if (viewport.visible) {
+        try {
+            chart.timeScale().setVisibleRange(viewport.visible);
+            return true;
+        } catch (_) {}
+    }
+    if (viewport.logical) {
+        try {
+            chart.timeScale().setVisibleLogicalRange(viewport.logical);
+            return true;
+        } catch (_) {}
+    }
+    return false;
+}
+
+function showCandleData(candles, preserveViewport = false) {
+    // Capture at the moment the new data is actually applied, not when its
+    // request started.  A user can begin panning while a catch-up fetch is in
+    // flight; restoring an older snapshot is the exact jump this guard avoids.
+    const preservedViewport = preserveViewport ? _captureChartViewport() : null;
+    _cancelChartPanInteraction();
     // Convert and deduplicate by time, sort ascending
     const seen = new Set();
     const chartData = [];
@@ -6761,7 +7655,7 @@ function showCandleData(candles) {
     _syncFootprintCandleVisibility();
     window._lastChartData = chartData;
 
-    applyDefaultChartView(chartData);
+    if (!_restoreChartViewport(preservedViewport)) applyDefaultChartView(chartData);
     drawSessionDividers();
     if (layerOn('prevday70')) refreshPreviousDayValueAreas(true);
     refreshIndicatorSignalMarkers(true);
@@ -6772,6 +7666,7 @@ function showCandleData(candles) {
 
 function applyDefaultChartView(chartData, zones) {
     if (!chartData || chartData.length === 0) {
+        _setChartPriceAutoScale(true);
         chart.timeScale().fitContent();
         return;
     }
@@ -6783,41 +7678,28 @@ function applyDefaultChartView(chartData, zones) {
         if (intervalSec <= 0) intervalSec = 60;
     }
 
-    // 18 hours visible width (12h * 1.5), with 40% empty right
-    const totalVisibleBars = Math.round((18 * 3600) / intervalSec);
-    const dataBars = Math.round(totalVisibleBars * 0.6);
-    const emptyRight = totalVisibleBars - dataBars;
+    // Keep the historical 18-hour scale, but place the latest smooth-200
+    // window at the viewport midpoint.  The remaining right-side whitespace
+    // is intentional and gives the live chart room to breathe.
+    const totalVisibleBars = Math.max(
+        1,
+        Math.round((CHART_DEFAULT_VISIBLE_HOURS * 3600) / intervalSec)
+    );
     const totalBars = chartData.length;
+    const smoothBars = Math.min(CHART_DEFAULT_SMOOTH_BARS, totalBars);
+    const smoothCenter = totalBars - ((smoothBars + 1) / 2);
+    const visibleBars = Math.max(1, Math.min(totalVisibleBars, Math.max(1, smoothCenter * 2)));
+    const halfVisibleBars = visibleBars / 2;
 
-    const fromIdx = Math.max(0, totalBars - dataBars);
-    const toIdx = totalBars + emptyRight;
-
-    chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
-
-    // Center on current price (last close)
-    const centerPrice = chartData[chartData.length - 1].close;
-
-    // Height = 4x of VAH-VAL range; fallback to 300 pts if no zone
-    let halfRange = 150; // default fallback
-    if (zones && zones.length > 0) {
-        const activeZone = zones.find(z => z.status === 'active');
-        const refZone = activeZone || zones[zones.length - 1];
-        if (refZone && refZone.vah_80 && refZone.val_80) {
-            const vahValRange = Math.abs(refZone.vah_80 - refZone.val_80);
-            if (vahValRange > 0) {
-                halfRange = (vahValRange * 4) / 2; // 4x range, half on each side
-            }
-        }
+    let fromIdx = smoothCenter - halfVisibleBars;
+    let toIdx = smoothCenter + halfVisibleBars;
+    if (fromIdx < 0) {
+        toIdx -= fromIdx;
+        fromIdx = 0;
     }
 
-    candleSeries.applyOptions({
-        autoscaleInfoProvider: () => ({
-            priceRange: {
-                minValue: centerPrice - halfRange,
-                maxValue: centerPrice + halfRange,
-            },
-        }),
-    });
+    _setChartPriceAutoScale(true);
+    chart.timeScale().setVisibleLogicalRange({ from: fromIdx, to: toIdx });
 }
 
 function buildBacktestBody() {
@@ -6835,23 +7717,6 @@ function buildBacktestBody() {
     };
 }
 
-// ── Data range indicator ───────────────────────────
-// Shows what's actually in _historical_candles: source (CONN=14d, BT=full range), dates, bar count.
-function _updateDataInfo(first, last, source, barCount) {
-    const el = document.getElementById('data-range-info');
-    if (!el || !first || !last) return;
-    const fmt = iso => {
-        const d = new Date(iso);
-        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    };
-    const days  = Math.max(1, Math.round((new Date(last) - new Date(first)) / 86400000));
-    const color = source === 'conn' ? 'var(--cyan)' : 'var(--green)';
-    const label = source === 'conn' ? 'CONN' : 'BT';
-    const bars  = barCount ? ` · ${barCount.toLocaleString()} bars` : '';
-    el.style.display = 'block';
-    el.innerHTML = `<span style="color:${color};font-weight:600">${label}</span>&nbsp;·&nbsp;${fmt(first)}&nbsp;→&nbsp;${fmt(last)}&nbsp;·&nbsp;${days}d${bars}`;
-}
-
 // ── Backtest data lazy-loader ──────────────────────
 // Tracks which date range is currently loaded in the backend.
 // CONNECT only loads 14 days (fast); full range is fetched on first backtest or Machine Learning click.
@@ -6866,20 +7731,14 @@ function _profitLockBoundaryISO(dateStr) {
 }
 
 async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
-    // overrideStart / overrideEnd let callers use a fixed window.
-    // instead of the date pickers. Falls back to date pickers when omitted.
-    // force=true → re-pull the WHOLE range even if already loaded (used by the
-    // FETCH FULL DATA button to recover candles dropped by a wifi disconnect).
+    // overrideStart / overrideEnd let callers use a fixed window instead of
+    // the hidden full-range defaults.
     const startDate = overrideStart || document.getElementById('start-date').value;
     const endDate   = overrideEnd   || document.getElementById('end-date').value;
-    if (force) _btDataRange = null;
     const username   = document.getElementById('username').value.trim();
     const apikey     = document.getElementById('apikey').value.trim();
-    // Fall back to the CONTRACT dropdown when the ID box is blank (auto-detect),
-    // so merge chains the right instrument (MNQ vs ENQ).
-    const _presetSel = document.getElementById('contract-preset');
-    const contractId = document.getElementById('contract-id').value.trim()
-        || (_presetSel && _presetSel.value) || '';
+    const contractId = document.getElementById('contract-id')?.value.trim()
+        || defaultContractId();
     const sameContract = _btDataRange && (_btDataRange.contract || '') === (contractId || '');
 
     let fetchStartTime = startDate + 'T00:00:00Z';
@@ -6899,9 +7758,7 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
         end_time:   endDate   + 'T23:59:59Z',
         append: appendFetch,
         continuous_contract: true,
-        force_full: !!force,
-        // 1.0.10: OFFLINE MODE → 後端完全跳過券商,只用本機 store
-        store_only: isOffline() };
+    };
     if (sameContract && _btDataRange.worksetToken) {
         body.workset_token = _btDataRange.worksetToken;
     }
@@ -6929,7 +7786,6 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
         }
         if (!resp.ok) { const e = await resp.json(); throw new Error(e.detail || resp.statusText); }
         const data = await resp.json();
-        document.getElementById('data-count').value = data.candles_count + ' bars';
         _btDataRange = {
             start: startDate,
             end: endDate,
@@ -6937,7 +7793,6 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
             resolvedContract: data.contract_id || '',
             worksetToken: data.workset_token || '',
         };
-        _updateDataInfo(data.first, data.last, 'bt', data.candles_count);
         if (data.contracts && data.contracts.length > 1) {
             log('Continuous contract: ' + data.contracts.map(contractLabelFromId).join(' + '), 'info');
         }
@@ -6947,8 +7802,10 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
         }
         const storeTag = data.from_store ? ' [local store + incremental]' : '';
         log('Backtest data ready: ' + data.candles_count + ' bars' + (data.fetched_count != null ? ' (' + data.fetched_count + ' fetched)' : '') + storeTag, 'success');
-        // Refresh chart to show the full loaded range
-        await fetchAndShowChart('1m');
+        // Load the expanded dataset without taking ownership of the user's
+        // current horizontal viewport.  The first ever chart load has no
+        // viewport to preserve and still receives the default smooth-200 view.
+        await fetchAndShowChart('1m', true);
         return true;
     } catch(e) {
         log('Data fetch failed: ' + e.message, 'error');
@@ -6956,9 +7813,6 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
     }
 }
 
-// FETCH FULL DATA button — force a complete re-pull of the whole range. Use
-// this when a wifi drop left holes in the data (incremental sync only adds the
-// tail, so it never backfills an interior gap; a full re-pull does).
 async function _postBacktestWithWorksetRetry(url, body, btn) {
     const send = () => fetch(url, {
         method: 'POST',
@@ -6973,21 +7827,6 @@ async function _postBacktestWithWorksetRetry(url, body, btn) {
     if (!ready) return resp;
     Object.assign(body, buildBacktestBody());
     return await send();
-}
-
-async function fetchFullData() {
-    const btn = document.getElementById('btn-fetch-full');
-    if (!btn || btn.disabled) return;
-    const orig = btn.textContent;
-    btn.disabled = true;
-    log('Force-fetching FULL data range (recovering any missing candles)...', 'info');
-    try {
-        await _ensureBacktestData(btn, FULL_RANGE_START,
-            document.getElementById('end-date').value, true);
-    } finally {
-        btn.disabled = false;
-        btn.textContent = orig;
-    }
 }
 
 let _backtestProgressInterval = null;
@@ -7049,12 +7888,12 @@ function _stopBacktestProgress(success) {
 // Programmatic switching for the lower navigation tabs.
 function _showBottomTab(name) {
     document.querySelectorAll('.bottom-tab').forEach(x => x.classList.toggle('active', x.dataset.btab === name));
-    ['trades', 'execute', 'pnl', 'log'].forEach(id => {
+    ['trades', 'execute', 'log'].forEach(id => {
         const p = document.getElementById('btab-' + id);
         if (p) p.classList.toggle('hidden', id !== name);
     });
+    _animateBottomPane(document.getElementById('btab-' + name));
     if (name === 'log') scrollSystemLogToBottom();
-    if (name === 'pnl') renderPnlCurve();
     if (name === 'execute') {
         revealNewestExecuteTrade();
         refreshVisibleExecuteTrades(true);
@@ -7122,7 +7961,6 @@ async function runBacktest() {
                 saved_at: new Date().toISOString(), stale: false,
             });
         } catch (e) {}
-        if (!document.getElementById('btab-pnl').classList.contains('hidden')) renderPnlCurve();
         await refreshTradeHistoryForCurrentAccount(true);
         succeeded = true;
 
@@ -7388,13 +8226,11 @@ function applyIndicatorSignalCandleColors() {
         return bar;
     });
     if (!needsReset) return;
-    let logicalRange = null;
-    try { logicalRange = chart && chart.timeScale().getVisibleLogicalRange(); } catch (_) {}
     window._lastChartData = nextData;
+    // The timestamps are unchanged, so Lightweight Charts keeps the current
+    // logical range.  Re-applying a range captured before this async signal
+    // request completed can overwrite a pan that happened in the meantime.
     try { candleSeries.setData(nextData); } catch (_) {}
-    if (logicalRange) {
-        try { chart.timeScale().setVisibleLogicalRange(logicalRange); } catch (_) {}
-    }
 }
 
 function drawIndicatorSignalOverlay() {
@@ -7646,7 +8482,7 @@ async function refreshPiSignalMarkers() {
     } finally {
         _piSignalsLoading = false;
     }
-    drawPiSignalOverlay();
+    scheduleChartOverlayRedraw();
 }
 
 // 把任意秒數的訊號時間吸附到「它所屬的那根 K 棒」。
@@ -7685,7 +8521,7 @@ function pushPiSignalMarker(tsMs, marks) {
         const duplicate = row.marks.some(existing => existing && existing.kind === mark.kind);
         if (!duplicate) row.marks.push(mark);
     }
-    drawPiSignalOverlay();
+    scheduleChartOverlayRedraw();
 }
 
 // PI 的「π 級」標記 —— 借 _drawIndicatorTriangle 的錨定方式(多錨低點下方、
@@ -7709,21 +8545,18 @@ function _drawPiGlyph(ctx, cx, yRef, dir, rgb, size) {
 }
 
 // PI 的「圈級」標記 —— 就是 MREV 泡泡(_drawIndicatorBubble)放大版:
-// 同樣是半透明實心圓,只是半徑從 6 拉到 14/18/24,並補一圈邊讓它在
-// 深色背景上有輪廓。
+// 同樣是半透明實心圓,只是半徑從 6 拉到 14/18/24;不畫 edge,避免
+// 泡泡在密集訊號上互相切割。
 function _drawPiBubble(ctx, x, y, radius, rgb) {
     ctx.beginPath();
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fillStyle = `rgba(${rgb}, 0.34)`;
     ctx.fill();
-    ctx.lineWidth = 1.4;
-    ctx.strokeStyle = `rgba(${rgb}, 0.85)`;
-    ctx.stroke();
 }
 
 function drawPiSignalOverlay() {
-    // 和 EMAPMO 共用畫布 —— 由 drawIndicatorSignalOverlay 統一清空後再疊上,
-    // 所以這裡只負責疊,不負責 clear。
+    // 和 EMAPMO 共用畫布。drawIndicatorSignalOverlay 是唯一的清空及重繪
+    // owner，資料更新只排程該 owner，避免 PI bubble 在同一畫布重複疊色。
     if (!chart || !candleSeries) return;
     if (!layerOn('pi') || !_piSignalRows.length) return;
     const canvas = document.getElementById('indicator-signal-overlay');
@@ -7744,6 +8577,7 @@ function drawPiSignalOverlay() {
     let visibleRange = null;
     try { visibleRange = chart.timeScale().getVisibleRange(); } catch (_) {}
 
+    const drawnMarks = new Set();
     for (const row of _piSignalRows) {
         const t = Number(row.chartTime);
         if (visibleRange && (t < visibleRange.from - 300 || t > visibleRange.to + 300)) continue;
@@ -7757,6 +8591,13 @@ function drawPiSignalOverlay() {
         for (const m of row.marks) {
             const style = PI_MARK_STYLE[m.kind];
             if (!style) continue;
+            // History/audit rows can describe the same 1m mark more than once.
+            // Keep distinct source levels, but never alpha-stack an identical
+            // mark during one repaint.
+            const sourceLevel = m.level ?? m.source_level ?? m.size ?? '';
+            const markKey = [t, m.kind, sourceLevel].join('|');
+            if (drawnMarks.has(markKey)) continue;
+            drawnMarks.add(markKey);
             const long_ = style.dir === 'long';
             const px = long_ ? candle.low : candle.high;
             let yRef = null;
@@ -8186,13 +9027,11 @@ function renderChart(data) {
     drawPositionTools([...(data.trades || []), ...(window._liveCompletedTrades || [])]);
     drawTradeMarkers(data.trades);
 
-    // Apply default chart view with POC centering from zones
-    // Reconstruct chartData from the stored candle data
-    if (window._lastChartData) {
-        applyDefaultChartView(window._lastChartData, data.zones);
-    } else {
-        chart.timeScale().fitContent();
-    }
+    // Do not reframe the time scale while rendering a result.  The default
+    // smooth-200 framing belongs only to showCandleData() when no viewport
+    // exists; result rendering must never become a horizontal lock or reset a
+    // user pan.  The explicit "latest" chart button remains the only
+    // user-triggered recenter action.
 
     // Start continuous overlay sync (handles both horizontal AND vertical scrolling)
     _overlaySyncData = data;
@@ -8665,7 +9504,8 @@ function syncTpCapUsd(mode) {
 function refreshCapsForContract(mode) { renderCapUi(mode); }
 function refreshTpCapForContract(mode) { renderCapUi(mode); }
 
-function renderMetrics(m, backtestTrades) {
+function renderMetrics(m, backtestTrades, options) {
+    const renderOptions = options || {};
     const panel = document.getElementById('metrics-panel');
     // Only show the metrics panel when the BACKTEST tab is active.
     // If user is on LIVE, keep it hidden — data still gets rendered into the
@@ -8674,10 +9514,14 @@ function renderMetrics(m, backtestTrades) {
     panel.style.display = 'block';
     if (backtestActive) {
         panel.classList.remove('hidden');
-        // Scroll the sidebar so the newly-rendered panel is actually in view
-        setTimeout(() => {
-            try { panel.scrollIntoView({behavior: 'smooth', block: 'nearest'}); } catch(_){}
-        }, 0);
+        // Scroll the sidebar so a newly-completed backtest is actually in view.
+        // Passive trade-history refreshes opt out so EXECUTE TRADES never
+        // hijacks the user's current parameter-panel position.
+        if (!renderOptions.preserveSidebarScroll) {
+            setTimeout(() => {
+                try { panel.scrollIntoView({behavior: 'smooth', block: 'nearest'}); } catch(_){}
+            }, 0);
+        }
     } else {
         panel.classList.add('hidden');
     }
@@ -8750,9 +9594,7 @@ function renderMetrics(m, backtestTrades) {
     const calmarPrimary = num(windowed ? backtestStats.calmar : m.calmar_ratio);
     const activeDaily  = windowed ? (backtestStats.daily_pnl || {}) : (m.daily_pnl || {});
 
-    // Day span of the active window (drives the FINAL PNL card label)
-    const daySpan = backtestStats.days;
-    const totalPnlLabel = daySpan > 0 ? ('FINAL PNL (' + daySpan + 'd)') : 'FINAL PNL';
+    const totalPnlLabel = 'FINAL PNL';
 
     const paren = (v) => liveStats ? ' <span class="metric-real">(' + v + ')</span>' : '';
 
@@ -8969,10 +9811,181 @@ function renderMetrics(m, backtestTrades) {
     `).join('');
 }
 
+const TRADE_DISPLAY_TIME_ZONE = SYSTEM_TIME_ZONES.market;
+
+function _tradeDisplayTime(iso) {
+    if (!iso) return null;
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return null;
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: TRADE_DISPLAY_TIME_ZONE,
+        month: '2-digit', day: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: true,
+    }).formatToParts(date);
+    const value = (type) => {
+        const part = parts.find(p => p.type === type);
+        return part ? part.value : '';
+    };
+    const minute = value('minute');
+    return {
+        date: value('month') + '/' + value('day') + '/' + value('year'),
+        time: value('hour') + ':' + minute + value('dayPeriod'),
+    };
+}
+
+function formatTradeTimeRange(entryIso, exitIso) {
+    const entry = _tradeDisplayTime(entryIso);
+    const exit = _tradeDisplayTime(exitIso);
+    if (!entry && !exit) return '--';
+    if (!entry) return exit.date + ' ' + exit.time;
+    if (!exit) return entry.date + ' ' + entry.time + ' → --';
+    if (entry.date === exit.date) return entry.date + ' ' + entry.time + ' → ' + exit.time;
+    return entry.date + ' ' + entry.time + ' → ' + exit.date + ' ' + exit.time;
+}
+
+// Keep the public/plain formatter above for aria labels and diagnostics, but
+// render the visible range as fixed columns.  The date parts, clock, meridiem
+// and separator then have the same x-coordinate on every row even when one
+// row is 03:55AM and another is 11:49AM.
+function _tradeDateMarkup(dateText) {
+    const parts = String(dateText || '').split('/');
+    if (parts.length !== 3) return '<span class="trade-date trade-date-raw">' + _attr(dateText) + '</span>';
+    return '<span class="trade-date">'
+        + '<span class="trade-date-part trade-month">' + _attr(parts[0]) + '</span>'
+        + '<span class="trade-date-sep" aria-hidden="true">/</span>'
+        + '<span class="trade-date-part trade-day">' + _attr(parts[1]) + '</span>'
+        + '<span class="trade-date-sep" aria-hidden="true">/</span>'
+        + '<span class="trade-date-part trade-year">' + _attr(parts[2]) + '</span>'
+        + '</span>';
+}
+
+function _tradeTimeMarkup(timeText) {
+    const match = /^(\d{1,2})(?::(\d{2}))?(AM|PM)$/i.exec(String(timeText || '').replace(/\s+/g, ''));
+    if (!match) return '<span class="trade-time trade-time-raw">' + _attr(timeText) + '</span>';
+    const clock = match[1] + (match[2] ? ':' + match[2] : '');
+    return '<span class="trade-time">'
+        + '<span class="trade-clock">' + _attr(clock) + '</span>'
+        + '<span class="trade-meridiem">' + _attr(match[3].toUpperCase()) + '</span>'
+        + '</span>';
+}
+
+function formatTradeTimeRangeMarkup(entryIso, exitIso, plainLabel) {
+    const entry = _tradeDisplayTime(entryIso);
+    const exit = _tradeDisplayTime(exitIso);
+    const label = plainLabel == null ? formatTradeTimeRange(entryIso, exitIso) : plainLabel;
+    const attr = ' aria-label="' + _attr(label) + '"';
+    if (!entry && !exit) {
+        return '<span class="trade-time-range trade-time-empty"' + attr + '>--</span>';
+    }
+    if (!entry) {
+        return '<span class="trade-time-range single-event"' + attr + '>'
+            + _tradeDateMarkup(exit.date) + _tradeTimeMarkup(exit.time) + '</span>';
+    }
+    if (!exit) {
+        return '<span class="trade-time-range single-event"' + attr + '>'
+            + _tradeDateMarkup(entry.date) + _tradeTimeMarkup(entry.time) + '</span>';
+    }
+    if (entry.date === exit.date) {
+        return '<span class="trade-time-range same-day"' + attr + '>'
+            + _tradeDateMarkup(entry.date)
+            + _tradeTimeMarkup(entry.time)
+            + '<span class="trade-arrow" aria-hidden="true">→</span>'
+            + _tradeTimeMarkup(exit.time)
+            + '</span>';
+    }
+    return '<span class="trade-time-range cross-day"' + attr + '>'
+        + _tradeDateMarkup(entry.date)
+        + _tradeTimeMarkup(entry.time)
+        + '<span class="trade-arrow" aria-hidden="true">→</span>'
+        + _tradeDateMarkup(exit.date)
+        + _tradeTimeMarkup(exit.time)
+        + '</span>';
+}
+
+function formatTradeDuration(entryIso, exitIso) {
+    if (!entryIso || !exitIso) return '--';
+    const diffMs = new Date(exitIso).getTime() - new Date(entryIso).getTime();
+    if (!Number.isFinite(diffMs) || diffMs < 0) return '--';
+    const totalMinutes = Math.floor(diffMs / 60000);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    if (hours) return hours + 'hr' + (minutes ? ' ' + minutes + 'm' : '');
+    return minutes + 'm';
+}
+
+// Tables are populated by replacing tbody.innerHTML, so a normal CSS
+// transition has no previous DOM state from which to interpolate.  Keep a
+// stable signature per tbody and explicitly arm a short, one-shot row arrival
+// only when the data really changed.  This avoids replaying the animation on
+// every passive history refresh while still making a newly rendered table
+// visible instead of appearing in a hard cut.
+const _tradeTableRenderKeys = new WeakMap();
+
+function _tradeTableRenderKey(rows) {
+    return (rows || []).map((t) => [
+        t.trade_id ?? t.id ?? '',
+        t.entry_time ?? '',
+        t.exit_time ?? '',
+        t.entry_price ?? '',
+        t.exit_price ?? '',
+        t.pnl ?? '',
+        t.gross_pnl ?? '',
+        t.commission ?? '',
+        t.fees ?? '',
+        t.direction ?? '',
+        t.size ?? t.contracts ?? '',
+        t.symbol ?? '',
+    ].map(value => String(value)).join('~')).join('|') || 'empty';
+}
+
+function _animateTradeTableRows(tbody, rows) {
+    if (!tbody) return;
+    const key = _tradeTableRenderKey(rows);
+    if (_tradeTableRenderKeys.get(tbody) === key) return;
+    _tradeTableRenderKeys.set(tbody, key);
+
+    if (tbody._tradeTableAnimationTimer) {
+        clearTimeout(tbody._tradeTableAnimationTimer);
+        tbody._tradeTableAnimationTimer = null;
+    }
+    tbody.classList.remove('trade-table-animating');
+    const renderedRows = Array.from(tbody.querySelectorAll(':scope > tr'));
+    renderedRows.forEach((row, index) => {
+        row.style.setProperty('--trade-row-index', String(Math.min(index, 8)));
+    });
+
+    // Force the class removal to commit before the next frame adds it again.
+    // This is a single tbody reflow, not a per-cell layout loop.
+    void tbody.offsetWidth;
+    const schedule = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
+    schedule(() => {
+        if (!tbody.isConnected) return;
+        tbody.classList.add('trade-table-animating');
+        tbody._tradeTableAnimationTimer = window.setTimeout(() => {
+            tbody.classList.remove('trade-table-animating');
+            renderedRows.forEach(row => row.style.removeProperty('--trade-row-index'));
+            tbody._tradeTableAnimationTimer = null;
+        }, 420);
+    });
+}
+
+function _animateBottomPane(panel) {
+    if (!panel || panel.classList.contains('hidden')) return;
+    panel.classList.remove('bottom-pane-enter');
+    void panel.offsetWidth;
+    const schedule = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
+    schedule(() => {
+        if (!panel.isConnected || panel.classList.contains('hidden')) return;
+        panel.classList.add('bottom-pane-enter');
+        window.setTimeout(() => panel.classList.remove('bottom-pane-enter'), 360);
+    });
+}
+
 function renderTrades(trades) {
     const tbody = document.getElementById('trades-tbody');
     if (!trades || trades.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
+        _animateTradeTableRows(tbody, []);
         return;
     }
 
@@ -8982,27 +9995,6 @@ function renderTrades(trades) {
         const tb = b.entry_time ? new Date(b.entry_time).getTime() : 0;
         return tb - ta;
     });
-    const fmtTime = (iso) => {
-        if (!iso) return '--';
-        const d = new Date(iso);
-        // YYYY-MM-DD HH:MM:SS (drop microseconds)
-        const p = (n) => n < 10 ? '0' + n : '' + n;
-        return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) +
-            ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
-    };
-
-    const fmtDuration = (entryIso, exitIso) => {
-        if (!entryIso || !exitIso) return '--';
-        const diffMs = new Date(exitIso).getTime() - new Date(entryIso).getTime();
-        if (diffMs < 0) return '--';
-        if (diffMs === 0) return '<1m';
-        const totalSec = Math.floor(diffMs / 1000);
-        const hh = Math.floor(totalSec / 3600);
-        const mm = Math.floor((totalSec % 3600) / 60);
-        const ss = totalSec % 60;
-        const p = (n) => n < 10 ? '0' + n : '' + n;
-        return p(hh) + ':' + p(mm) + ':' + p(ss);
-    };
     tbody.innerHTML = sorted.map((t, i) => {
         const netPnl = t.pnl || 0;
         const commission = (t.commission != null) ? t.commission : 1.0;
@@ -9014,13 +10006,13 @@ function renderTrades(trades) {
         const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
         const symbol = displaySymbolFromTrade(t);
         const size = t.size || t.contracts || 1;
+        const contract = String(size) + ' ' + String(symbol).replace(/^\/+/, '');
         const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
+        const timeLabel = formatTradeTimeRange(t.entry_time, t.exit_time);
         return '<tr>' +
-            '<td style="width:36px;text-align:right;">' + size + '</td>' +
-            '<td style="width:48px;">' + symbol + '</td>' +
-            '<td style="font-family:\'IBM Plex Mono\',monospace;">' + fmtTime(t.entry_time) + '</td>' +
-            '<td style="font-family:\'IBM Plex Mono\',monospace;">' + fmtTime(t.exit_time) + '</td>' +
-            '<td>' + fmtDuration(t.entry_time, t.exit_time) + '</td>' +
+            '<td class="trade-contract-cell" style="width:82px;">' + contract + '</td>' +
+            '<td class="trade-time-cell" style="font-family:\'IBM Plex Mono\',monospace;">' + formatTradeTimeRangeMarkup(t.entry_time, t.exit_time, timeLabel) + '</td>' +
+            '<td>' + formatTradeDuration(t.entry_time, t.exit_time) + '</td>' +
             '<td>' + t.entry_price.toFixed(2) + '</td>' +
             '<td>' + (t.exit_price ? t.exit_price.toFixed(2) : '--') + '</td>' +
             '<td class="' + pnlClass + '">' + grossStr + '</td>' +
@@ -9029,6 +10021,7 @@ function renderTrades(trades) {
             '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
         '</tr>';
     }).join('');
+    _animateTradeTableRows(tbody, sorted);
 }
 
 // Render real TopstepX trade history in the EXECUTE TRADES bottom tab
@@ -9037,7 +10030,8 @@ function renderExecuteTrades(trades) {
     if (!tbody) return;
     if (!trades || trades.length === 0) {
         _executeLatestTradeKey = '';
-        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--text2);padding:20px;">NO EXECUTE TRADE DATA</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text2);padding:20px;">NO EXECUTE TRADE DATA</td></tr>';
+        _animateTradeTableRows(tbody, []);
         return;
     }
 
@@ -9051,25 +10045,6 @@ function renderExecuteTrades(trades) {
     const newestChanged = !!_executeLatestTradeKey && latestKey !== _executeLatestTradeKey;
     _executeLatestTradeKey = latestKey;
 
-    const fmtTime = (iso) => {
-        if (!iso) return '--';
-        const d = new Date(iso);
-        const p = (n) => n < 10 ? '0' + n : '' + n;
-        return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate()) +
-            ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
-    };
-    const fmtDuration = (entryIso, exitIso) => {
-        if (!entryIso || !exitIso) return '--';
-        const diffMs = new Date(exitIso).getTime() - new Date(entryIso).getTime();
-        if (diffMs < 0) return '--';
-        if (diffMs === 0) return '<1m';
-        const totalSec = Math.floor(diffMs / 1000);
-        const hh = Math.floor(totalSec / 3600);
-        const mm = Math.floor((totalSec % 3600) / 60);
-        const ss = totalSec % 60;
-        const p = (n) => n < 10 ? '0' + n : '' + n;
-        return p(hh) + ':' + p(mm) + ':' + p(ss);
-    };
     tbody.innerHTML = sorted.map((t) => {
         const grossPnl = (t.gross_pnl != null)
             ? Number(t.gross_pnl)
@@ -9081,13 +10056,13 @@ function renderExecuteTrades(trades) {
         const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
         const symbol = displaySymbolFromTrade(t);
         const size = t.size || 1;
+        const contract = String(size) + ' ' + String(symbol).replace(/^\/+/, '');
         const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
+        const timeLabel = formatTradeTimeRange(t.entry_time, t.exit_time);
         return '<tr>' +
-            '<td style="width:36px;text-align:right;">' + size + '</td>' +
-            '<td style="width:48px;">' + symbol + '</td>' +
-            '<td style="font-family:\'IBM Plex Mono\',monospace;">' + fmtTime(t.entry_time) + '</td>' +
-            '<td style="font-family:\'IBM Plex Mono\',monospace;">' + fmtTime(t.exit_time) + '</td>' +
-            '<td>' + fmtDuration(t.entry_time, t.exit_time) + '</td>' +
+            '<td class="trade-contract-cell" style="width:82px;">' + contract + '</td>' +
+            '<td class="trade-time-cell" style="font-family:\'IBM Plex Mono\',monospace;">' + formatTradeTimeRangeMarkup(t.entry_time, t.exit_time, timeLabel) + '</td>' +
+            '<td>' + formatTradeDuration(t.entry_time, t.exit_time) + '</td>' +
             '<td>' + (t.entry_price != null ? Number(t.entry_price).toFixed(2) : '--') + '</td>' +
             '<td>' + (t.exit_price != null ? Number(t.exit_price).toFixed(2) : '--') + '</td>' +
             '<td class="' + pnlClass + '">' + grossStr + '</td>' +
@@ -9096,6 +10071,7 @@ function renderExecuteTrades(trades) {
             '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
         '</tr>';
     }).join('');
+    _animateTradeTableRows(tbody, sorted);
     if (newestChanged && executeTradesTabIsActive()) revealNewestExecuteTrade();
 }
 
@@ -9168,6 +10144,8 @@ function _refreshConnectionState(options) {
     const storedKey = !!(apikey && apikey.dataset.configured === '1');
     const keyValid = !!typedKey || storedKey;
 
+    updateConnectionInitial(email);
+
     if (username) username.setAttribute('aria-invalid', emailValid ? 'false' : 'true');
     if (apikey) apikey.setAttribute('aria-invalid', keyValid ? 'false' : 'true');
 
@@ -9183,50 +10161,8 @@ function _refreshConnectionState(options) {
     document.documentElement.dataset.connectionState = state;
     const trigger = document.getElementById('conn-trigger');
     if (trigger) trigger.classList.toggle('connected', state === 'connected');
+    _renderTopstepProviderFromUi();
     return state;
-}
-
-// ════════════════════════════════════════════════════════════════════
-// 1.0.10: OFFLINE MODE —— 券商維護時段的離線回測。
-// store 已有 2020 起的 233 萬根(Databento 歷史 + TopstepX 近期),
-// 回測完全不需要券商。啟用後**不連帳號、不抓資料**,狀態燈轉紅。
-//
-// 動機:維護期間券商 API 半死不活 —— 認證會過、但 /api/Trade/search 逾時,
-// 前端卡在 LOADING DATA 不動。與其等它 timeout,不如整段跳過。
-// ════════════════════════════════════════════════════════════════════
-let OFFLINE_MODE = false;
-
-function isOffline() { return OFFLINE_MODE; }
-
-function _applyOfflineUi() {
-    const btn = document.getElementById('btn-offline');
-    if (btn) {
-        btn.classList.toggle('active', OFFLINE_MODE);
-        btn.textContent = OFFLINE_MODE ? 'OFFLINE MODE · ON' : 'OFFLINE MODE';
-    }
-    // CONNECT 保持可用 —— OFFLINE 只影響 K 棒抓取,不影響帳號連線
-    // 灰色 = 刻意離線,不是故障。紅色留給「連線失敗」。
-    if (OFFLINE_MODE) setStatus('off', 'OFFLINE — using local candles');
-}
-
-function toggleOfflineMode() {
-    OFFLINE_MODE = !OFFLINE_MODE;
-    _applyOfflineUi();
-    if (OFFLINE_MODE) {
-        log('OFFLINE MODE enabled — account connections remain available, but candle data uses the local store.', 'warn');
-    } else {
-        log('OFFLINE MODE disabled — incremental candle fetching resumed.', 'info');
-    }
-}
-
-// 1.0.10: OFFLINE MODE **永遠不持久化** —— 每次開啟一律是關閉狀態。
-// 理由:它會讓 K 棒停在本機資料不更新,若被記住,下次開啟時使用者可能
-// 沒注意到燈是灰的,拿著過期資料回測還以為是最新的。
-// 這是「本次工作階段的臨時開關」,不是偏好設定。
-function _restoreOfflineMode() {
-    OFFLINE_MODE = false;
-    try { localStorage.removeItem('tpx_offline'); } catch (e) {}   // 清掉舊版殘留
-    _applyOfflineUi();
 }
 
 function setStatus(type, text) {
@@ -9237,6 +10173,7 @@ function setStatus(type, text) {
     _connectionStatusKind = type;
     _connectionStatusText = text;
     _refreshConnectionState();
+    _renderTopstepProviderFromUi();
 }
 
 function scrollSystemLogToBottom() {
@@ -9290,7 +10227,7 @@ function _fmtTs(s) {
 
 // 1.0.8: 移除 LEARN RESULT 面板 (_renderScorerCard + loadLearnResult)
 
-// ── PNL CURVE tab: cumulative equity + Topstep $2K trailing-DD line ──
+// ── Research PNL CURVE: cumulative equity + Topstep $2K trailing-DD line ──
 // The DD line starts $2000 below break-even and trails UP only as each day's
 // settled PnL sets a new equity high ("increase as income settles every day"),
 // then LOCKS at break-even (0) once it has climbed from -2000 to 0 — i.e. once
@@ -9332,10 +10269,9 @@ function renderPnlCurve() {
     const baseIsLive = done.length === 0 && liveDone.length > 0;
     if (baseIsLive) done.push(...liveDone);
 
-    const content = host.closest('.bottom-content');
-    const headerH = 0; // 1.0.9: 標題列已移除
-    const W = Math.max(320, host.clientWidth || (content ? content.clientWidth : 600));
-    const H = Math.max(220, (content ? content.clientHeight : 300) - headerH - 6);
+    const frame = host.closest('.bottom-content, .cal-analysis-panel') || host.parentElement;
+    const W = Math.max(320, host.clientWidth || (frame ? frame.clientWidth : 600));
+    const H = Math.max(220, host.clientHeight || 280);
     host.style.height = H + 'px';
 
     let canvas = document.getElementById('pnl-curve-canvas');
@@ -9479,6 +10415,11 @@ function renderPnlCurve() {
         ctx.fillStyle = '#a855f7';
         ctx.fillText('— live', padL + 200, padT + 2);
     }
+    const status = document.getElementById('pnl-curve-status');
+    if (status) {
+        const liveText = lpts.length ? ' · live overlay' : '';
+        status.textContent = (baseIsLive ? 'Live realized equity' : 'Backtest realized equity') + liveText;
+    }
     // 1.0.9: 標題列統計 hint 已移除(final/peak/maxDD 文字)
     glassResample();   // 1.0.10 #1:曲線與座標軸畫完才取樣
 }
@@ -9547,71 +10488,6 @@ function _calTradesInVisibleMonth(trades) {
         const d = new Date(key + 'T00:00:00');
         return d.getFullYear() === y && d.getMonth() === m;
     });
-}
-
-function _calCurveSeries(map) {
-    const y = _calMonth.getFullYear();
-    const m = _calMonth.getMonth();
-    const days = new Date(y, m + 1, 0).getDate();
-    let equity = 0;
-    const out = [];
-    for (let day = 1; day <= days; day++) {
-        const key = _calDateKey(new Date(y, m, day));
-        equity += Number((map[key] || {}).pnl || 0);
-        out.push({ day, value: equity });
-    }
-    return out;
-}
-
-function _svgPath(points, xScale, yScale) {
-    if (!points.length) return '';
-    return points.map((p, i) => (i ? 'L' : 'M') + xScale(p.day).toFixed(1) + ' ' + yScale(p.value).toFixed(1)).join(' ');
-}
-
-function renderWeeklyIncomeCurve(btMap, liveMap) {
-    const wrap = document.getElementById('cal-income-curve');
-    const status = document.getElementById('cal-curve-status');
-    if (!wrap) return;
-    const btSeries = _calCurveSeries(btMap || {});
-    const liveSeries = _calCurveSeries(liveMap || {});
-    const vals = btSeries.concat(liveSeries).map(p => p.value);
-    const minV = Math.min(0, ...vals);
-    const maxV = Math.max(0, ...vals);
-    const pad = Math.max(100, (maxV - minV) * 0.12);
-    const lo = minV - pad;
-    const hi = maxV + pad;
-    const w = 900, h = 168, l = 40, r = 16, t = 14, b = 24;
-    const days = btSeries.length || 1;
-    const x = day => l + (day - 1) * ((w - l - r) / Math.max(1, days - 1));
-    const y = val => t + (hi - val) * ((h - t - b) / Math.max(1, hi - lo));
-    const zeroY = y(0);
-    const weekLines = [];
-    for (let d = 1; d <= days; d++) {
-        const dt = new Date(_calMonth.getFullYear(), _calMonth.getMonth(), d);
-        if (dt.getDay() === 0 && d !== 1) {
-            const xx = x(d);
-            weekLines.push(`<line x1="${xx.toFixed(1)}" y1="${t}" x2="${xx.toFixed(1)}" y2="${h - b}" stroke="rgba(247,239,224,0.08)"/>`);
-        }
-    }
-    const btPath = _svgPath(btSeries, x, y);
-    const livePath = _svgPath(liveSeries, x, y);
-    const btLast = btSeries.length ? btSeries[btSeries.length - 1].value : 0;
-    const liveLast = liveSeries.length ? liveSeries[liveSeries.length - 1].value : 0;
-    wrap.innerHTML = `<div class="cal-curve-legend">
-        <div class="cal-curve-legend-row bt"><i class="cal-curve-legend-swatch"></i><span>BT ${_calFmtMoney(btLast)}</span></div>
-        <div class="cal-curve-legend-row live"><i class="cal-curve-legend-swatch"></i><span>LIVE ${_calFmtMoney(liveLast)}</span></div>
-    </div>
-    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-        <rect x="0" y="0" width="${w}" height="${h}" fill="transparent"/>
-        ${weekLines.join('')}
-        <line x1="${l}" y1="${zeroY.toFixed(1)}" x2="${w - r}" y2="${zeroY.toFixed(1)}" stroke="rgba(247,239,224,0.18)"/>
-        <path d="${btPath}" fill="none" stroke="rgba(0,229,160,0.95)" stroke-width="2.4"/>
-        <path d="${livePath}" fill="none" stroke="rgba(255,176,32,0.95)" stroke-width="2.4"/>
-    </svg>
-    <div class="cal-curve-foot">daily cumulative, week separators shown</div>`;
-    if (status) {
-        status.textContent = 'BT ' + _calFmtMoney(btLast) + ' | LIVE ' + _calFmtMoney(liveLast) + ' | visible month';
-    }
 }
 
 function _tradeTs(t, key) {
@@ -10598,7 +11474,10 @@ async function renderCalendar(force) {
             ? (btN + ' backtest trades · ' + lvN + ' live trades loaded')
             : 'run a backtest first to populate the BT side · ' + lvN + ' live trades loaded';
     }
-    renderWeeklyIncomeCurve(bt, live);
+    // The Research view owns the full realized PNL curve.  It replaces the
+    // old month-only BT/LIVE comparison so the graph uses the same trade set
+    // and exit/DD logic as the former bottom-panel curve.
+    renderPnlCurve();
     // 1.0.10p: now async (it fetches /research/robustness). Fire-and-forget is
     // fine for a panel render, but an unhandled rejection would only surface in
     // the devtools console, so route failures into the app log instead.
@@ -10652,7 +11531,7 @@ function _restoreBacktestCache() {
 // Script tag is at end of <body>, so the DOM is already parsed here.
 _restoreBacktestCache();
 // ════════════════════════════════════════════════════════════════════════
-// 1.0.9: Live account slots - ACCOUNT MAIN / ACCOUNT MINOR.
+// Live account slot - one selected account followed by the chart/workspace.
 //   GO LIVE 對真實帳號下單,由使用者手動觸發;app 絕不自動下單。
 // ════════════════════════════════════════════════════════════════════════
 function _acctEsc(s) {
@@ -10669,7 +11548,7 @@ function _loadLiveSlots() {
 }
 function _saveLiveSlots() {
     const o = {};
-    [1, 2].forEach(s => {
+    [LIVE_MAIN_SLOT].forEach(s => {
         o['acct' + s] = (document.getElementById('live-acct-select-' + s) || {}).value || '';
         o['preset' + s] = (document.getElementById('live-acct-preset-' + s) || {}).value || '';
     });
@@ -10677,12 +11556,9 @@ function _saveLiveSlots() {
 }
 function _defaultSlotAccount(slot, accts) {
     const express = accts.find(a => a.account_type === 'express');
-    const practice = accts.find(a => a.account_type === 'practice');
     const main = accts.find(a => a.is_main);
     const s1 = (main || express || accts[0] || {}).id || '';
-    if (slot === 1) return s1;
-    const s2 = practice && practice.id !== s1 ? practice.id : (accts.find(a => a.id !== s1) || {}).id;
-    return s2 || '';
+    return s1;
 }
 
 async function initLiveSlots() {
@@ -10693,7 +11569,7 @@ async function initLiveSlots() {
     const accts = allAccounts || [];
     const presetNames = Object.keys((_presetsCache && _presetsCache.presets) || {}).sort(_comparePresetNames);
     const saved = _loadLiveSlots();
-    [1, 2].forEach(slot => {
+    [LIVE_MAIN_SLOT].forEach(slot => {
         const accSel = document.getElementById('live-acct-select-' + slot);
         const preSel = document.getElementById('live-acct-preset-' + slot);
         if (accSel) {
@@ -10736,7 +11612,7 @@ async function _persistLiveRolesFromSlots() {
         const r = await fetch(API + '/accounts/roles');
         const cur = r.ok ? (((await r.json()) || {}).roles || {}) : {};
         const accounts = Object.assign({}, cur.accounts || {});
-        [LIVE_MAIN_SLOT, LIVE_MINOR_SLOT].forEach(s => {
+        [LIVE_MAIN_SLOT].forEach(s => {
             const aid = (document.getElementById('live-acct-select-' + s) || {}).value || '';
             const pre = (document.getElementById('live-acct-preset-' + s) || {}).value || '';
             if (aid) accounts[String(aid)] = { preset: pre || null, live: true };
@@ -10760,15 +11636,9 @@ async function liveSlotGoLive(slot) {
     const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
     const presetName = (document.getElementById('live-acct-preset-' + slot) || {}).value;
     const slotName = liveSlotLabel(slot);
-    const slotNum = Number(slot);
     if (!accId) { log(slotName + ': select account first', 'warn'); return; }
     if (!presetName || !(_presetsCache.presets || {})[presetName]) { log(slotName + ': select preset first', 'warn'); return; }
-    if (!accId) { log('ACCOUNT ' + slot + ': select an account first', 'warn'); return; }
-    if (!presetName || !(_presetsCache.presets || {})[presetName]) { log('ACCOUNT ' + slot + ': select a preset first', 'warn'); return; }
-    // 兩槽不可選同一帳號
-    const other = parseInt((document.getElementById('live-acct-select-' + (slotNum === LIVE_MAIN_SLOT ? LIVE_MINOR_SLOT : LIVE_MAIN_SLOT)) || {}).value);
-    slot = slotNum === LIVE_MAIN_SLOT ? 'MAIN' : 'MINOR';
-    if (other && other === accId) { log('MAIN and MINOR cannot use the same account', 'warn'); return; }
+    slot = 'MAIN';
     const acc = (allAccounts || []).find(a => a.id === accId);
     const warn = (acc && acc.account_type === 'express') ? '\n⚠ EXPRESS FUNDED ACCOUNT: REAL ORDERS WILL BE PLACED!' : '';
     if (!confirm('GO LIVE (ACCOUNT ' + slot + ')\nAccount: ' + (acc ? acc.name : accId) + '\nPreset: ' + presetName + warn)) return;
@@ -10794,7 +11664,7 @@ async function liveSlotGoLive(slot) {
 
 async function liveSlotStop(slot) {
     const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
-    slot = Number(slot) === LIVE_MAIN_SLOT ? 'MAIN' : 'MINOR';
+    slot = 'MAIN';
     if (!accId) return;
     try { const r = await fetch(API + '/live/stop?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' STOP:' + _acctEsc(d.message || ''), 'info'); }
     catch (e) { log('ACCOUNT ' + slot + ' STOP failed: ' + e.message, 'warn'); }
@@ -10803,7 +11673,7 @@ async function liveSlotStop(slot) {
 
 async function liveSlotFlatten(slot) {
     const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
-    slot = Number(slot) === LIVE_MAIN_SLOT ? 'MAIN' : 'MINOR';
+    slot = 'MAIN';
     if (!accId) return;
     if (!confirm('Emergency flatten ACCOUNT ' + slot + ' (' + accId + ')?')) return;
     try { const r = await fetch(API + '/live/flatten?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' FLATTEN:' + _acctEsc(d.message || ''), 'warn'); }
@@ -10907,13 +11777,13 @@ function pollLiveSlots(options) {
             const statusMap = {};
             (data.engines || []).forEach(e => { statusMap[String(e.account_id)] = e.status || {}; });
             _liveSlotsPollState.lastGood = statusMap;
-            [1, 2].forEach(slot => _liveSlotRenderStatus(slot, statusMap, sess, false));
+            [LIVE_MAIN_SLOT].forEach(slot => _liveSlotRenderStatus(slot, statusMap, sess, false));
         },
         () => {
             // Never turn a temporary request failure into NOT STARTED.  Keep the
             // last truthful engine state and make its uncertainty explicit.
             const statusMap = _liveSlotsPollState.lastGood || {};
-            [1, 2].forEach(slot => _liveSlotRenderStatus(slot, statusMap, sess, true));
+            [LIVE_MAIN_SLOT].forEach(slot => _liveSlotRenderStatus(slot, statusMap, sess, true));
         },
     );
 }
@@ -11001,22 +11871,8 @@ function updateRiskCapHint(mode) {
 }
 
 
-// 1.0.9: 標示 PERFORMANCE 面板顯示的是哪一次回測的結果。
-// 啟動時會從 localStorage 還原上次結果,不標示的話使用者會誤以為那是
-// 當前 preset / 策略跑出來的(實際可能是好幾天前、別的策略的)。
-function setPerfSource(info) {
-    const el = document.getElementById('perf-source');
-    if (!el) return;
-    if (!info) { el.textContent = ''; el.classList.remove('stale'); return; }
-    const who = info.preset || info.strategy || '?';
-    const when = info.saved_at ? info.saved_at.slice(0, 16).replace('T', ' ') : '';
-    if (info.stale) {
-        el.textContent = '⚠ Cached · ' + who + (when ? ' · ' + when : '');
-        el.classList.add('stale');
-        el.title = 'These are results from an earlier backtest, not the current settings. Run EXECUTE BACKTEST again.';
-    } else {
-        el.textContent = who + (when ? ' · ' + when : '');
-        el.classList.remove('stale');
-        el.title = '';
-    }
-}
+// The PERFORMANCE source badge was retired from the UI. Keep this small
+// compatibility hook because older restore/run paths still call it; the
+// backtest cache itself remains available and is not changed by this UI-only
+// removal.
+function setPerfSource(_info) {}

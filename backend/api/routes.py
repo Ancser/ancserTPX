@@ -1874,6 +1874,10 @@ async def get_config():
         "username": username,
         "has_api_key": bool(api_key),
         "api_key_preview": api_key[:6] + "***" if api_key else "",
+        "discord_configured": bool(
+            _env("DISCORD_TOKEN") or _env("EMAPMO_DISCORD_WEBHOOK_URL")
+        ),
+        "databento_configured": bool(_env("DATABENTO_API_KEY")),
         "contract_id": contract_id,
         "front_month_contracts": front_month_contracts,
         "contract_specs": contract_specs_manifest(),
@@ -1881,6 +1885,191 @@ async def get_config():
         "market_clock_version": MARKET_CLOCK_VERSION,
         "use_demo": use_demo,
         "env_loaded": bool(username and api_key),
+    }
+
+
+def _connection_latency_ms(value: Any) -> Optional[float]:
+    """Normalize optional transport telemetry without exposing credentials."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return round(max(0.0, number), 1)
+
+
+def _connection_provider(
+    state: str,
+    *,
+    configured: bool,
+    latency_ms: Any = None,
+    detail: str = "",
+) -> dict[str, Any]:
+    state = state if state in {"empty", "error", "starting", "connected"} else "error"
+    return {
+        "state": state,
+        "configured": bool(configured),
+        "connected": state == "connected",
+        "latency_ms": _connection_latency_ms(latency_ms),
+        "detail": str(detail or ""),
+    }
+
+
+@router.get("/connection/status")
+async def connection_status():
+    """Return non-sensitive startup/transport state for the chart status rail.
+
+    This endpoint is intentionally read-only and does not probe providers on
+    every poll.  Latency comes from the most recent real request/record, while
+    state comes from the owning client/listener/feed.  That keeps the status UI
+    from creating extra TopstepX, Discord, or Databento traffic.
+    """
+    topstep_username = _env("TOPSTEPX_USERNAME").strip()
+    topstep_key = _env("TOPSTEPX_API_KEY").strip()
+    topstep_configured = bool(topstep_username and topstep_key)
+    topstep_client = globals().get("_topstepx_client")
+    if not topstep_configured:
+        topstep = _connection_provider(
+            "empty", configured=False, detail="Topstep credentials not configured"
+        )
+    elif topstep_client is not None and getattr(topstep_client, "token", None):
+        topstep = _connection_provider(
+            "connected",
+            configured=True,
+            latency_ms=getattr(topstep_client, "_last_request_latency_ms", None),
+            detail="Topstep REST client connected",
+        )
+    else:
+        topstep = _connection_provider(
+            "error", configured=True, detail="Credentials loaded; connect required"
+        )
+
+    discord_configured = bool(
+        _env("DISCORD_TOKEN").strip()
+        or _env("EMAPMO_DISCORD_WEBHOOK_URL").strip()
+    )
+    discord_health: dict[str, Any] = {}
+    try:
+        from backend.live.pi_recorder import pi_recorder_health
+
+        discord_health = pi_recorder_health() or {}
+    except Exception as exc:  # pragma: no cover - optional service guard
+        discord_health = {"task_alive": False, "last_error": type(exc).__name__}
+
+    # A PI Live engine temporarily pauses the record-only worker. Prefer the
+    # engine-owned listener in that case, otherwise use the process recorder.
+    pi_listener_snapshots: list[dict[str, Any]] = []
+    for engine in (globals().get("_live_engines", {}) or {}).values():
+        try:
+            snapshot = engine.get_status()
+        except Exception:
+            continue
+        if snapshot.get("strategy_mode") == "pi" and snapshot.get("running"):
+            pi_listener_snapshots.append(snapshot)
+
+    if not discord_configured:
+        discord = _connection_provider(
+            "empty", configured=False, detail="Discord credentials not configured"
+        )
+    else:
+        listener_status = discord_health
+        listener_alive = bool(discord_health.get("task_alive"))
+        listener_latency = discord_health.get("last_fetch_latency_ms")
+        listener_detail = "Record-only Discord listener"
+        if pi_listener_snapshots:
+            # Multiple PI engines share the same transport contract; one live
+            # listener is enough for the provider to be linked.
+            listener_status = next(
+                (
+                    item.get("pi_listener") or {}
+                    for item in pi_listener_snapshots
+                    if item.get("pi_listener")
+                ),
+                {},
+            )
+            listener_alive = any(
+                bool(item.get("pi_listener_alive"))
+                for item in pi_listener_snapshots
+            )
+            listener_latency = listener_status.get("last_fetch_latency_ms")
+            listener_detail = "PI Discord listener"
+            if any(bool(item.get("starting")) for item in pi_listener_snapshots):
+                discord_state = "starting"
+            elif not listener_alive:
+                discord_state = "error"
+            elif int(listener_status.get("consecutive_errors", 0) or 0) > 0:
+                discord_state = "error"
+            elif listener_status.get("last_success_age_seconds") is None:
+                discord_state = "starting"
+            else:
+                discord_state = "connected"
+        elif listener_alive:
+            if int(listener_status.get("consecutive_errors", 0) or 0) > 0:
+                discord_state = "error"
+            elif listener_status.get("last_success_age_seconds") is None:
+                discord_state = "starting"
+            else:
+                discord_state = "connected"
+        else:
+            discord_state = "error"
+        discord = _connection_provider(
+            discord_state,
+            configured=True,
+            latency_ms=listener_latency,
+            detail=listener_detail,
+        )
+        if discord_state == "error":
+            discord["detail"] = str(
+                listener_status.get("last_error") or "Discord listener not connected"
+            )
+
+    databento_configured = bool(_env("DATABENTO_API_KEY").strip())
+    delta_snapshots: list[dict[str, Any]] = []
+    for engine in (globals().get("_live_engines", {}) or {}).values():
+        try:
+            snapshot = engine.get_status()
+        except Exception:
+            continue
+        feed = snapshot.get("databento_mbo")
+        if feed:
+            delta_snapshots.append(feed)
+
+    if not databento_configured:
+        databento = _connection_provider(
+            "empty", configured=False, detail="Databento API key not configured"
+        )
+    elif not delta_snapshots:
+        databento = _connection_provider(
+            "error", configured=True, detail="Key loaded; Delta live feed not started"
+        )
+    else:
+        feed = next(
+            (item for item in delta_snapshots if item.get("state") == "connected"),
+            delta_snapshots[0],
+        )
+        raw_state = str(feed.get("state") or "error").lower()
+        databento_state = (
+            "connected" if raw_state == "connected"
+            else ("starting" if raw_state == "starting" else "error")
+        )
+        databento = _connection_provider(
+            databento_state,
+            configured=True,
+            latency_ms=feed.get("latency_ms"),
+            detail=str(feed.get("error") or "Databento MBO feed " + raw_state),
+        )
+
+    return {
+        "providers": {
+            "discord": discord,
+            "topstep": topstep,
+            "databento": databento,
+        },
+        "startup": {
+            "backend": "connected",
+            "provider_count": 3,
+        },
     }
 
 
