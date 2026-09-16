@@ -49,6 +49,13 @@ def signal_warmup_spec(params) -> Optional[Tuple[int, int, int]]:
         # 不寫在這裡的話擴窗迴圈會在 2 天就停手。
         required = 1400
         timeframe = max(1, int(getattr(params, "research_tf_minutes", 5) or 5))
+    elif strategy == "volume_profile":
+        # The model needs one complete prior RTH profile plus enough completed
+        # 5m bars for ATR14/ATR50.  300 RTH 5m bars span roughly four sessions;
+        # the live warm-up window expands to 7/14 days over a weekend when
+        # needed.
+        required = 300
+        timeframe = 5
     else:
         return None
     source_seconds = max(1, int(getattr(params, "candle_seconds", 60) or 60))

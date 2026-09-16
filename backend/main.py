@@ -83,6 +83,29 @@ async def lifespan(app: FastAPI):
         logger.info(
             "Lightweight candle auto-save disabled by ANCSERTPX_AUTO_ACCUMULATOR"
         )
+    # Keep a record-only Databento MBO stream alive for the chart/research
+    # store, independently of which live strategy is selected.  The native
+    # desktop launcher opts into this explicitly; direct/test server starts do
+    # not open a paid stream unless ANCSERTPX_AUTO_DATABENTO_MBO is set.
+    _mbo_recorder_started = False
+    auto_mbo = os.getenv("ANCSERTPX_AUTO_DATABENTO_MBO", "false").strip().lower()
+    if auto_mbo in {"1", "true", "yes", "on"}:
+        from backend.live.databento_orderflow import start_databento_mbo_recorder
+        try:
+            _mbo_recorder_started = await _asyncio.to_thread(
+                start_databento_mbo_recorder
+            )
+            logger.info(
+                "Databento MBO record-only feed %s",
+                "scheduled" if _mbo_recorder_started else "not started (key unavailable)",
+            )
+        except Exception:
+            logger.exception("Databento MBO record-only feed startup failed")
+    else:
+        logger.info(
+            "Databento MBO record-only feed disabled by "
+            "ANCSERTPX_AUTO_DATABENTO_MBO"
+        )
     # Record-only PI listener: starts with the backend (no Live engine or
     # browser action required), catches up today/yesterday, then follows new
     # eligible messages for the chart/audit stream.  A PI Live engine pauses
@@ -95,6 +118,12 @@ async def lifespan(app: FastAPI):
         await shutdown_live_engines()
     except Exception:
         logger.exception("Live engine shutdown during backend exit failed")
+    if _mbo_recorder_started:
+        try:
+            from backend.live.databento_orderflow import stop_databento_mbo_recorder
+            await _asyncio.to_thread(stop_databento_mbo_recorder)
+        except Exception:
+            logger.exception("Databento MBO recorder shutdown failed")
     await stop_pi_recorder()
     if _accum_task is not None:
         _accum_task.cancel()

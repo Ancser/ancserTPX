@@ -146,6 +146,7 @@
                         <option value="pi">PI</option>
                         <option value="optionwall">OPTION WALL</option>
                         <option value="delta_absorption">DELTA ABSORPTION</option>
+                        <option value="volume_profile">VOLUME PROFILE</option>
                         <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                     </select>
                 </div>
@@ -398,6 +399,115 @@
                             <span>-0.050 LOOSE</span><span>-0.100 ORIGINAL</span><span>-0.120 TIGHT</span>
                         </div>
                     </div>
+                </div>
+
+                <div id="volume-profile-params-bt" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>ENTRY MODE</label>
+                            <select id="vp-entry-mode-bt">
+                                <option value="auto" selected>AUTO: RANGE / BREAK / RECLAIM</option>
+                                <option value="range">RANGE FADE → POC</option>
+                                <option value="breakout">BREAKOUT + RETEST</option>
+                                <option value="failed_break">FAILED BREAK RECLAIM → POC</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>SIDE</label>
+                            <select id="vp-side-bt">
+                                <option value="all" selected>LONG + SHORT</option>
+                                <option value="long_only">LONG ONLY</option>
+                                <option value="short_only">SHORT ONLY</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>TARGET</label>
+                            <select id="vp-target-bt">
+                                <option value="atr" selected>ATR BLEND × TP</option>
+                                <option value="poc">POC</option>
+                                <option value="opposite_edge">OPPOSITE VA EDGE</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>PRIOR RTH VA</label>
+                            <select id="vp-va-bt">
+                                <option value="0.70" selected>70%</option>
+                                <option value="0.80">80%</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>SL <span class="lbl-hint">(ATR14/ATR50 blend)</span></label>
+                            <select id="vp-sl-atr-bt">
+                                <option value="1">1.0 × ATR</option>
+                                <option value="1.25">1.25 × ATR</option>
+                                <option value="1.5" selected>1.5 × ATR</option>
+                                <option value="2">2.0 × ATR</option>
+                                <option value="2.5">2.5 × ATR</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>TP <span class="lbl-hint">(ATR mode)</span></label>
+                            <select id="vp-tp-atr-bt">
+                                <option value="1">1.0 × ATR</option>
+                                <option value="1.5">1.5 × ATR</option>
+                                <option value="2" selected>2.0 × ATR</option>
+                                <option value="2.5">2.5 × ATR</option>
+                                <option value="3">3.0 × ATR</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>BREAK CONFIRM</label>
+                            <select id="vp-confirm-bt">
+                                <option value="1">1 close</option>
+                                <option value="2" selected>2 closes</option>
+                                <option value="3">3 closes</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>MAX TRADES / DAY</label>
+                            <select id="vp-max-trades-bt">
+                                <option value="1">1</option>
+                                <option value="2" selected>2</option>
+                                <option value="3">3</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>BREAK BUFFER</label>
+                            <select id="vp-break-buffer-bt">
+                                <option value="0">0 ticks</option>
+                                <option value="1">1 tick</option>
+                                <option value="2" selected>2 ticks</option>
+                                <option value="4">4 ticks</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>TOUCH TOLERANCE</label>
+                            <select id="vp-touch-bt">
+                                <option value="0">0 ticks</option>
+                                <option value="1">1 tick</option>
+                                <option value="2" selected>2 ticks</option>
+                                <option value="4">4 ticks</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>RECLAIM BUFFER</label>
+                            <select id="vp-reclaim-buffer-bt">
+                                <option value="0">0 ticks</option>
+                                <option value="1" selected>1 tick</option>
+                                <option value="2">2 ticks</option>
+                                <option value="4">4 ticks</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="note-sm">Previous complete New York RTH profile. A single edge can signal once per day; one outside close is not a breakout. SL/TP adapt to the 5m ATR14/ATR50 blend.</div>
                 </div>
                 <div id="delta-params-bt" style="display:none;">
                     <div class="form-row">
@@ -1032,9 +1142,10 @@
                             <option value="factor">FACTOR</option>
                             <option value="momentum">MOMENTUM</option>
                             <option value="betafib">BETAFIB</option>
-                            <option value="pi">PI</option>
-                            <option value="optionwall" disabled>OPTION WALL</option>
-                            <option value="delta_absorption">DELTA ABSORPTION</option>
+                        <option value="pi">PI</option>
+                        <option value="optionwall" disabled>OPTION WALL</option>
+                        <option value="delta_absorption">DELTA ABSORPTION</option>
+                        <option value="volume_profile">VOLUME PROFILE</option>
                             <!-- 1.0.8: 移除 ML Consolidation V2 選項(策略已刪除) -->
                         </select>
                     </div>
@@ -1287,6 +1398,114 @@
                             <span>-0.050 LOOSE</span><span>-0.100 ORIGINAL</span><span>-0.120 TIGHT</span>
                         </div>
                     </div>
+                </div>
+                <div id="volume-profile-params-live" style="display:none;">
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>ENTRY MODE</label>
+                            <select id="vp-entry-mode-live">
+                                <option value="auto" selected>AUTO: RANGE / BREAK / RECLAIM</option>
+                                <option value="range">RANGE FADE → POC</option>
+                                <option value="breakout">BREAKOUT + RETEST</option>
+                                <option value="failed_break">FAILED BREAK RECLAIM → POC</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>SIDE</label>
+                            <select id="vp-side-live">
+                                <option value="all" selected>LONG + SHORT</option>
+                                <option value="long_only">LONG ONLY</option>
+                                <option value="short_only">SHORT ONLY</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>TARGET</label>
+                            <select id="vp-target-live">
+                                <option value="atr" selected>ATR BLEND × TP</option>
+                                <option value="poc">POC</option>
+                                <option value="opposite_edge">OPPOSITE VA EDGE</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>PRIOR RTH VA</label>
+                            <select id="vp-va-live">
+                                <option value="0.70" selected>70%</option>
+                                <option value="0.80">80%</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>SL <span class="lbl-hint">(ATR14/ATR50 blend)</span></label>
+                            <select id="vp-sl-atr-live">
+                                <option value="1">1.0 × ATR</option>
+                                <option value="1.25">1.25 × ATR</option>
+                                <option value="1.5" selected>1.5 × ATR</option>
+                                <option value="2">2.0 × ATR</option>
+                                <option value="2.5">2.5 × ATR</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>TP <span class="lbl-hint">(ATR mode)</span></label>
+                            <select id="vp-tp-atr-live">
+                                <option value="1">1.0 × ATR</option>
+                                <option value="1.5">1.5 × ATR</option>
+                                <option value="2" selected>2.0 × ATR</option>
+                                <option value="2.5">2.5 × ATR</option>
+                                <option value="3">3.0 × ATR</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>BREAK CONFIRM</label>
+                            <select id="vp-confirm-live">
+                                <option value="1">1 close</option>
+                                <option value="2" selected>2 closes</option>
+                                <option value="3">3 closes</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>MAX TRADES / DAY</label>
+                            <select id="vp-max-trades-live">
+                                <option value="1">1</option>
+                                <option value="2" selected>2</option>
+                                <option value="3">3</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group fx1">
+                            <label>BREAK BUFFER</label>
+                            <select id="vp-break-buffer-live">
+                                <option value="0">0 ticks</option>
+                                <option value="1">1 tick</option>
+                                <option value="2" selected>2 ticks</option>
+                                <option value="4">4 ticks</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>TOUCH TOLERANCE</label>
+                            <select id="vp-touch-live">
+                                <option value="0">0 ticks</option>
+                                <option value="1">1 tick</option>
+                                <option value="2" selected>2 ticks</option>
+                                <option value="4">4 ticks</option>
+                            </select>
+                        </div>
+                        <div class="form-group fx1">
+                            <label>RECLAIM BUFFER</label>
+                            <select id="vp-reclaim-buffer-live">
+                                <option value="0">0 ticks</option>
+                                <option value="1" selected>1 tick</option>
+                                <option value="2">2 ticks</option>
+                                <option value="4">4 ticks</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="note-sm">Previous complete New York RTH profile. A single edge can signal once per day; one outside close is not a breakout. SL/TP adapt to the 5m ATR14/ATR50 blend.</div>
                 </div>
                 <div id="delta-params-live" style="display:none;">
                     <div class="form-row">
@@ -2013,6 +2232,46 @@
                     </button>
                     <button type="button" id="lp-cvd" class="glass-proxy-hidden" tabindex="-1"
                             onclick="onLayerProxy('cvd')"></button>
+                </div>
+                <div class="layer-row delta-layer-master">
+                    <span class="layer-name">DELTA ABSORPTION</span>
+                    <button type="button" role="switch" class="glass-switch on" data-stage="switch"
+                             data-glass-material="local"
+                            data-switch-proxy="lp-delta_absorption" aria-checked="true">
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" id="lp-delta_absorption" class="glass-proxy-hidden" tabindex="-1"
+                            onclick="onLayerProxy('delta_absorption')"></button>
+                </div>
+                <div class="layer-row delta-layer-child">
+                    <span class="layer-name">VAH / VAL (DELTA)</span>
+                    <button type="button" role="switch" class="glass-switch on" data-stage="switch"
+                             data-glass-material="local"
+                            data-switch-proxy="lp-delta_value" aria-checked="true">
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" id="lp-delta_value" class="glass-proxy-hidden" tabindex="-1"
+                            onclick="onLayerProxy('delta_value')"></button>
+                </div>
+                <div class="layer-row delta-layer-child">
+                    <span class="layer-name">DELTA DECAY</span>
+                    <button type="button" role="switch" class="glass-switch on" data-stage="switch"
+                             data-glass-material="local"
+                            data-switch-proxy="lp-delta_decay" aria-checked="true">
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" id="lp-delta_decay" class="glass-proxy-hidden" tabindex="-1"
+                            onclick="onLayerProxy('delta_decay')"></button>
+                </div>
+                <div class="layer-row delta-layer-child">
+                    <span class="layer-name">PRICE NO-BREAK</span>
+                    <button type="button" role="switch" class="glass-switch on" data-stage="switch"
+                             data-glass-material="local"
+                            data-switch-proxy="lp-delta_stall" aria-checked="true">
+                        <span class="optical-surface switch-thumb" data-optical="switch" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" id="lp-delta_stall" class="glass-proxy-hidden" tabindex="-1"
+                            onclick="onLayerProxy('delta_stall')"></button>
                 </div>
                 <div class="layer-row">
                     <span class="layer-name">TRADE BOXES SL/TP</span>

@@ -103,6 +103,27 @@ def test_backtest_loader_always_reselects_backend_workset_and_propagates_token()
     assert "_postBacktestWithWorksetRetry" in run
 
 
+def test_backtest_data_load_does_not_replace_an_already_painted_chart():
+    ensure = _function_source("_ensureBacktestData")
+    assert "Array.isArray(window._lastChartData)" in ensure
+    assert "Backtest data ready; keeping the current chart candles and viewport" in ensure
+    assert "if (chartAlreadyLoaded)" in ensure
+    # There is only one chart fetch in this function, and it is the empty-chart
+    # fallback.  A backtest data request must not implicitly call setData on an
+    # already visible recent snapshot.
+    assert ensure.count("fetchAndShowChart('1m', true)") == 1
+
+
+def test_backtest_health_timeout_does_not_repaint_connection_offline():
+    health = JS[JS.index("async function checkHealth"):JS.index("function updateConnectionInitial")]
+    run = _function_source("runBacktest")
+    assert "_backtestInProgress && !_healthBackendOffline" in health
+    assert "keeping connection state" in health
+    assert "_backtestInProgress = true" in run
+    assert "_backtestInProgress = false" in run
+    assert "if (_backtestInProgress) return" in run
+
+
 def test_active_script_url_busts_cache_for_status_health_code():
     assert 'ancserTPX.js?' in HTML
     assert '&statushealth=1"' in HTML

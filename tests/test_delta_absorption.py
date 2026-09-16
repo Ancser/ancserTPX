@@ -5,10 +5,14 @@ from types import SimpleNamespace
 
 from backend.api.routes import BacktestRequest, _build_strategy_params_from_request
 from backend.db.models import Candle, Direction, StrategyParams
-from backend.data.orderflow import write_footprint_cache
+from backend.data.orderflow import footprint_cache_path, write_footprint_cache
 from backend.live.databento_orderflow import DatabentoMboLiveFeed, databento_raw_symbol
 from backend.strategy.exit_policy import resolve_exit_policy
-from backend.strategy.delta_absorption import CachedDeltaContextProvider, DeltaAbsorptionStrategy
+from backend.strategy.delta_absorption import (
+    CachedDeltaContextProvider,
+    DeltaAbsorptionStrategy,
+    build_delta_chart_overlay,
+)
 from backend.timebase import UTC
 
 
@@ -172,9 +176,149 @@ def test_delta_absorption_emits_one_causal_signal_and_uses_pi_exit_shape(tmp_pat
     assert signal.meta["delta_absorption"]["pattern"] == "absorption"
     assert signal.meta["delta_absorption"]["previous_profile_date"] == "2026-08-31"
 
+    overlay = strategy.get_chart_overlay()
+    assert overlay["model"] == "delta_absorption"
+    assert overlay["value_areas"] == [{
+        "session_date": "2026-09-01",
+        "profile_date": "2026-08-31",
+        "poc": 100.0,
+        "vah": 100.0,
+        "val": 100.0,
+        "start_time": "2026-09-01T13:30:00+00:00",
+        "end_time": "2026-09-01T14:00:00+00:00",
+    }]
+    assert overlay["events"]
+    event = next(event for event in overlay["events"] if event["qualified"])
+    assert event["qualified"] is True
+    assert event["touched"] is True
+    assert event["stalled"] is True
+    assert {"delta_decay", "delta_pressure", "direction"}.issubset(event)
+
     # The same decision candle is idempotent; a chart refresh cannot duplicate
     # a signal for the same completed MBO minute.
     assert strategy.evaluate(decision, [], True) is None
+    assert len(strategy.get_chart_overlay()["events"]) == len(overlay["events"])
+
+
+def test_delta_decay_is_kept_as_standalone_chart_evidence(tmp_path):
+    strategy = DeltaAbsorptionStrategy(
+        StrategyParams(
+            strategy="delta_absorption",
+            delta_weakening_ratio=0.70,
+            delta_strength_multiplier=1.0,
+        ),
+        context_provider=CachedDeltaContextProvider(root=tmp_path),
+    )
+    event_epoch = int(datetime(2026, 9, 1, 14, 0, tzinfo=UTC).timestamp())
+    strategy._record_chart_event(
+        snapshot={
+            "date": "2026-09-01",
+            "previous_profile_date": "2026-08-31",
+        },
+        bars=[_bar(event_epoch, buy=1, sell=1)],
+        index=0,
+        direction=Direction.BUY,
+        profile=None,
+        family=None,
+        gate_passed=False,
+        p0=0.0,
+        p1=0.0,
+        n0=100.0,
+        n1=80.0,
+        scale=100.0,
+        absorption=False,
+        exhaustion=False,
+        stalled=False,
+        touched=False,
+        reclaimed=False,
+        confirming=False,
+        aligned=False,
+        vwap=None,
+    )
+
+    overlay = strategy.get_chart_overlay()
+    assert len(overlay["events"]) == 1
+    assert overlay["events"][0]["delta_decay"] is True
+    assert overlay["events"][0]["delta_pressure"] is False
+
+
+def test_delta_chart_overlay_replays_cached_mbo_and_uses_prior_70pct_profile(tmp_path):
+    prior_epoch = int(datetime(2026, 8, 31, 13, 30, tzinfo=UTC).timestamp())
+    prior = _payload(
+        "2026-08-31",
+        [_bar(prior_epoch + i * 60, buy=50, sell=50) for i in range(390)],
+    )
+    current_epoch = int(datetime(2026, 9, 1, 13, 30, tzinfo=UTC).timestamp())
+    current = _payload(
+        "2026-09-01",
+        [
+            _bar(
+                current_epoch + i * 60,
+                buy=(60 if i < 21 else (20 if i < 26 else 30)),
+                sell=(50 if i < 21 else (120 if i < 26 else 110)),
+                close=100.25 if i == 30 else 100.0,
+            )
+            for i in range(31)
+        ],
+    )
+    write_footprint_cache(
+        prior, footprint_cache_path("2026-08-31", "MNQ", root=tmp_path),
+    )
+    write_footprint_cache(
+        current, footprint_cache_path("2026-09-01", "MNQ", root=tmp_path),
+    )
+
+    overlay = build_delta_chart_overlay(
+        datetime(2026, 9, 1, 13, 30, tzinfo=UTC),
+        datetime(2026, 9, 1, 14, 1, tzinfo=UTC),
+        params=StrategyParams(
+            strategy="delta_absorption",
+            delta_side_mode="long_only",
+            delta_require_profile=True,
+        ),
+        root=tmp_path,
+    )
+
+    assert overlay["available"] is True
+    assert overlay["mbo_available"] is True
+    assert overlay["status"] == "ok"
+    assert overlay["mbo_bars"] == 31
+    assert overlay["value_areas"] == [{
+        "session_date": "2026-09-01",
+        "profile_date": "2026-08-31",
+        "poc": 100.0,
+        "vah": 100.0,
+        "val": 100.0,
+        "start_time": "2026-09-01T13:30:00+00:00",
+        "end_time": "2026-09-01T14:01:00+00:00",
+        "profile_pct": 0.70,
+    }]
+    assert any(event["delta_decay"] for event in overlay["events"])
+    assert any(event["stalled"] for event in overlay["events"])
+
+
+def test_delta_chart_overlay_reports_prior_profile_only_without_fabricating_events(tmp_path):
+    prior_epoch = int(datetime(2026, 8, 31, 13, 30, tzinfo=UTC).timestamp())
+    prior = _payload(
+        "2026-08-31",
+        [_bar(prior_epoch + i * 60, buy=50, sell=50) for i in range(390)],
+    )
+    write_footprint_cache(
+        prior, footprint_cache_path("2026-08-31", "MNQ", root=tmp_path),
+    )
+
+    overlay = build_delta_chart_overlay(
+        datetime(2026, 9, 1, 13, 30, tzinfo=UTC),
+        datetime(2026, 9, 1, 14, 0, tzinfo=UTC),
+        root=tmp_path,
+    )
+
+    assert overlay["available"] is False
+    assert overlay["mbo_available"] is False
+    assert overlay["status"] == "prior_profile_only"
+    assert overlay["events"] == []
+    assert overlay["value_areas"][0]["profile_date"] == "2026-08-31"
+    assert overlay["value_areas"][0]["profile_pct"] == 0.70
 
 
 def test_databento_symbol_mapping_and_missing_key_are_safe(monkeypatch):

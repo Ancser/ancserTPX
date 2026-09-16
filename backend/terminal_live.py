@@ -31,6 +31,11 @@ from backend.live.engine import LiveTradingEngine
 from backend.live.engine_lease import LiveEngineLease
 from backend.live.warmup import signal_warmup_progress
 from backend.strategy.session_filter import DEFAULT_ALLOWED_SESSIONS, normalize_allowed_sessions
+from backend.strategy.volume_profile import (
+    normalize_volume_profile_entry_mode,
+    normalize_volume_profile_side_mode,
+    normalize_volume_profile_target_mode,
+)
 from backend.timebase import utc_now_naive
 
 
@@ -115,6 +120,18 @@ DEFAULT_PRESET_PARAMS = {
     "factor_max_hold_bars": 0,   # 1.0.9: HOLD 5m system removed → SL/TP-only
     "factor_max_trades_per_day": 3,
     "factor_warmup_bars": 150,
+    "vp_value_area_pct": 0.70,
+    "vp_entry_mode": "auto",
+    "vp_target_mode": "atr",
+    "vp_side_mode": "all",
+    "vp_sl_atr": 1.5,
+    "vp_tp_atr": 2.0,
+    "vp_confirm_bars": 2,
+    "vp_breakout_buffer_ticks": 2,
+    "vp_touch_tolerance_ticks": 2,
+    "vp_reclaim_buffer_ticks": 1,
+    "vp_max_trades_per_day": 2,
+    "vp_min_source_candles": 60,
     # 1.0.8: 移除 mlc2_* 預設(ml_consolidation_v2 已刪除)
 }
 # 1.0.9: PRESET_RENAMES/REMOVED/BUILTIN 清理邏輯移除 — presets.json 由 web 端維護
@@ -239,14 +256,16 @@ def _load_presets_file() -> dict:
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        params["strategy"] = strategy if strategy in ("fade", "sigma", "pmo", "factor") else "trend"
+        params["strategy"] = strategy if strategy in ("fade", "sigma", "pmo", "factor", "volume_profile") else "trend"
         params["contract_id"] = normalize_contract_id_to_front(params.get("contract_id") or "")
         params["value_area_pct"] = _normalize_value_area_pct(params.get("value_area_pct"))
         # 1.0.9: HOLD 5m 系統已移除 — 一律 SL/TP-only
         for hold_key in ("factor_max_hold_bars", "pmo_max_hold_bars"):
             if params.get(hold_key) not in (0, None):
                 params[hold_key] = 0
-        if params["strategy"] in ("trend", "sigma", "pmo", "factor") and "tr_allowed_sessions" not in params:
+        if params["strategy"] == "volume_profile":
+            params["tr_allowed_sessions"] = ["RTH"]
+        elif params["strategy"] in ("trend", "sigma", "pmo", "factor") and "tr_allowed_sessions" not in params:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
         area_tf = str(params.get("area_timeframe") or "15m").lower()
         if area_tf not in ML_TIMEFRAMES and area_tf != "session":
@@ -501,7 +520,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
     # 1.0.9: +factor(EMAPMO / MREV / KDJMA)— 修復:之前漏了 factor,
     # FACTOR preset 會被靜默降級成 trend 突破策略跑。
     strategy_mode = str(preset.get("strategy") or "trend").lower()
-    if strategy_mode not in ("fade", "sigma", "pmo", "factor"):
+    if strategy_mode not in ("fade", "sigma", "pmo", "factor", "volume_profile"):
         strategy_mode = "trend"
 
     def _conf_float(key, default):
@@ -612,6 +631,24 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         factor_max_hold_bars=0,  # 1.0.9: HOLD 5m system removed → SL/TP-only exits
         factor_max_trades_per_day=max(0, _conf_int("factor_max_trades_per_day", 3)),
         factor_warmup_bars=max(20, _conf_int("factor_warmup_bars", 150)),
+        vp_value_area_pct=max(0.50, min(0.95, _conf_float("vp_value_area_pct", 0.70))),
+        vp_entry_mode=normalize_volume_profile_entry_mode(
+            preset.get("vp_entry_mode", "auto")
+        ),
+        vp_target_mode=normalize_volume_profile_target_mode(
+            preset.get("vp_target_mode", "atr")
+        ),
+        vp_side_mode=normalize_volume_profile_side_mode(
+            preset.get("vp_side_mode", "all")
+        ),
+        vp_sl_atr=max(0.1, _conf_float("vp_sl_atr", 1.5)),
+        vp_tp_atr=max(0.1, _conf_float("vp_tp_atr", 2.0)),
+        vp_confirm_bars=max(1, min(10, _conf_int("vp_confirm_bars", 2))),
+        vp_breakout_buffer_ticks=max(0, min(40, _conf_int("vp_breakout_buffer_ticks", 2))),
+        vp_touch_tolerance_ticks=max(0, min(40, _conf_int("vp_touch_tolerance_ticks", 2))),
+        vp_reclaim_buffer_ticks=max(0, min(40, _conf_int("vp_reclaim_buffer_ticks", 1))),
+        vp_max_trades_per_day=max(0, _conf_int("vp_max_trades_per_day", 2)),
+        vp_min_source_candles=max(1, _conf_int("vp_min_source_candles", 60)),
         full_tp_lock=primary["lock"],
         one_trade_per_session_direction=bool(preset.get("one_trade_per_session_direction", True)),
         tr_one_trade_per_session=bool(preset.get("tr_one_trade_per_session", True)),

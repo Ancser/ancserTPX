@@ -42,6 +42,11 @@ BEHAVIOUR_PARAMS = {
     "trail_enabled", "trail_trigger_pct", "trail_lock_pct",
     "tr_daily_loss_stop", "tr_daily_win_stop", "tr_daily_profit_stop",
     "factor_warmup_bars", "strategy",
+    "vp_value_area_pct", "vp_entry_mode", "vp_target_mode", "vp_side_mode",
+    "vp_sl_atr", "vp_tp_atr", "vp_confirm_bars",
+    "vp_breakout_buffer_ticks", "vp_touch_tolerance_ticks",
+    "vp_reclaim_buffer_ticks", "vp_max_trades_per_day",
+    "vp_min_source_candles",
 }
 
 

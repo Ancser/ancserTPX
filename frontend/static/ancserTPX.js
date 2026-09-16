@@ -475,6 +475,20 @@ const DEFAULT_STRATEGY_PARAMS = {
     delta_pattern: 'absorption',
     delta_side_mode: 'all',
     delta_require_profile: true,
+    // Prior-RTH 70% value-area edge model.  The strategy owns its state
+    // machine and ATR blend, so the generic fixed-tick controls stay hidden.
+    vp_value_area_pct: 0.70,
+    vp_entry_mode: 'auto',
+    vp_target_mode: 'atr',
+    vp_side_mode: 'all',
+    vp_sl_atr: 1.5,
+    vp_tp_atr: 2.0,
+    vp_confirm_bars: 2,
+    vp_breakout_buffer_ticks: 2,
+    vp_touch_tolerance_ticks: 2,
+    vp_reclaim_buffer_ticks: 1,
+    vp_max_trades_per_day: 2,
+    vp_min_source_candles: 60,
     option_wall_submodel: 'primary_strict',
     option_wall_side_mode: 'all',
     option_wall_long_sl_atr: 4.0,
@@ -849,6 +863,7 @@ function normalizeStrategyName(value) {
     if (v === 'pi') return 'pi';          // 1.0.10: 外部 Discord 訊號
     if (v === 'optionwall' || v === 'option_wall') return 'optionwall';
     if (v === 'delta' || v === 'delta_va' || v === 'delta+va' || v === 'delta_absorb' || v === 'delta_absorption') return 'delta_absorption';
+    if (v === 'vp' || v === 'volumeprofile' || v === 'volume_profile') return 'volume_profile';
     if (v === 'sigma') return 'sigma';
     if (v === 'fade') return 'fade';   // 1.0.8: DAY ZONE 前日VA回歸
     if (v === 'factor') return 'factor';
@@ -895,6 +910,10 @@ const STRATEGY_PRESENTATION = Object.freeze({
     delta_absorption: {
         displayName: 'DELTA ABSORPTION',
         description: 'Completed MBO Delta change at the previous RTH 70% value area.',
+    },
+    volume_profile: {
+        displayName: 'VOLUME PROFILE',
+        description: 'Research-labelled prior-RTH 70% value-area edge states with ATR-blend exits; not promoted to BEST.',
     },
 });
 
@@ -995,6 +1014,7 @@ function updateStrategyParamVisibility(mode) {
     const isSigma = strategy === 'sigma';
     const isFactor = strategy === 'factor';
     const isDelta = strategy === 'delta_absorption';
+    const isVp = strategy === 'volume_profile';
     const show = (id, on) => {
         const el = document.getElementById(id);
         if (el) el.style.display = on ? '' : 'none';
@@ -1037,6 +1057,7 @@ function updateStrategyParamVisibility(mode) {
     // the shared FACTOR exit/risk block below, but not its entry block.
     show('factor-params-' + mode, isFactor || isIntramom || isSessfib);
     show('delta-params-' + mode, isDelta);
+    show('volume-profile-params-' + mode, isVp);
     show('momentum-params-' + mode, isIntramom);
     show('betafib-params-' + mode, isSessfib);
     // 1.0.10: MODEL SETTINGS 已拆成 ENTRY / EXIT 兩段。
@@ -1058,10 +1079,10 @@ function updateStrategyParamVisibility(mode) {
         longSlLabel.textContent = (isPi || isDelta) ? 'LONG SL' : 'SL INPUT';
     }
     show('betafib-exit-' + mode, isSessfib);
-    showControl('tp-cap-usd', !isOptionWall);
-    showControl('factor-max-trades', !isOptionWall);
-    showControl('tr-session-limit', !isOptionWall);
-    showControl('tr-allowed-sessions', !isOptionWall && !isDelta);
+    showControl('tp-cap-usd', !isOptionWall && !isVp);
+    showControl('factor-max-trades', !isOptionWall && !isVp);
+    showControl('tr-session-limit', !isOptionWall && !isVp);
+    showControl('tr-allowed-sessions', !isOptionWall && !isDelta && !isVp);
     ['factor-family-', 'factor-pmo-mode-', 'factor-va-filter-'].forEach((id) => {
         const el = document.getElementById(id + mode);
         const row = el && el.closest ? el.closest('.form-group') : null;
@@ -1082,6 +1103,8 @@ function updateStrategyParamVisibility(mode) {
         slText = 'OPTION WALL: hourly causal signal · completed 5m ATR blend · no hard TP · 60m max';
     } else if (isDelta) {
         slText = 'DELTA ABSORPTION: completed 1m MBO Delta + prior RTH 70% VA touch';
+    } else if (isVp) {
+        slText = 'VOLUME PROFILE: prior RTH 70% VA edge state machine; ATR14/ATR50 blend SL/TP';
     } else {
         slText = 'TREND: lowest-volume node between POC and VAH/VAL for SL';
     }
@@ -1100,6 +1123,8 @@ function updateStrategyParamVisibility(mode) {
         slText = 'OPTION WALL: PRIMARY STRICT hourly signal; market entry on MNQ historical replay';
     } else if (isDelta) {
         slText = 'DELTA ABSORPTION: completed 1m MBO bar; market entry after Delta + VA condition';
+    } else if (isVp) {
+        slText = 'VOLUME PROFILE: RTH edge rejection, confirmed breakout/retest, or failed-break reclaim';
     } else {
         slText = 'TREND: completed candle + value-area breakout confirmation; market entry';
     }
@@ -1340,10 +1365,12 @@ function updateMlParamSummary(mode) {
         ' · market ' + marketSession + ' · size follows top selector.';
 }
 
-// 1.0.10: PI 的訊號只有 2026-06-11 之後(Discord 頻道全部歷史就這麼多),
-// 用預設的 FULL_RANGE_START(2008)回測等於白掃 233 萬根、載入 10 秒起跳,
-// 而 2026-06 之前一筆訊號都沒有。切到 PI 時自動把起始日縮到訊號範圍。
-const PI_SIGNAL_FIRST_DATE = '2026-06-01';
+// The active rebuilt PI channel was fully re-collected using the embedded NY
+// event time.  Its first usable source mark is 2026-03-05 (the Discord
+// delivery date is 2026-09-09 because March–June history was bulk reposted).
+// Keep the automatic scope at the actual signal boundary so PI backtests do
+// not silently remain locked to the former June-only dataset.
+const PI_SIGNAL_FIRST_DATE = '2026-03-05';
 const OPTION_WALL_SIGNAL_FIRST_DATE = '2025-12-01';
 
 function _scopeDatesForStrategy(mode, strategy) {
@@ -1409,6 +1436,27 @@ function onStrategyChange(mode) {
     _setStrategySelect(mode, normalized);
     updateStrategyParamVisibility(mode);
     _scopeDatesForStrategy(mode, normalized);
+    if (mode === 'bt') _syncDeltaChartModel(normalized);
+}
+
+// Delta evidence is a chart projection of the currently selected backtest
+// model. Keep the model selector, the layer menu, and the async MBO payload
+// on one path so switching to Delta cannot leave an empty canvas behind.
+function _syncDeltaChartModel(strategy) {
+    const normalized = normalizeStrategyName(strategy);
+    if (normalized === 'delta_absorption') {
+        _activeChartModel = normalized;
+        if (window._lastChartData && window._lastChartData.length && _deltaOverlayHasLayer()) {
+            refreshDeltaAbsorptionOverlay(true);
+        }
+        return;
+    }
+    if (_deltaChartModelActive()) {
+        _activeChartModel = normalized;
+        _deltaOverlayData = null;
+        _deltaOverlayStatus = '';
+        scheduleChartOverlayRedraw();
+    }
 }
 
 // Read the ML (confluence) parameter block for a panel into a params object,
@@ -1603,6 +1651,33 @@ function collectStrategyParams(mode) {
         'delta-source', 'delta_source', 'whole', ['whole', 'outside']);
     const deltaGate = _deltaChoice(
         'delta-gate', 'delta_gate', 'location', ['raw', 'location', 'reclaim', 'reclaim_vwap']);
+    const _vpChoice = (idBase, key, fallback, allowed) => {
+        const raw = String(_paramVal(idBase, key, fallback) || '').toLowerCase();
+        return allowed.includes(raw) ? raw : fallback;
+    };
+    const vpEntryMode = _vpChoice(
+        'vp-entry-mode', 'vp_entry_mode', 'auto',
+        ['auto', 'range', 'breakout', 'failed_break']);
+    const vpTargetMode = _vpChoice(
+        'vp-target', 'vp_target_mode', 'atr',
+        ['atr', 'poc', 'opposite_edge']);
+    const vpSideMode = _vpChoice(
+        'vp-side', 'vp_side_mode', 'all',
+        ['all', 'long_only', 'short_only']);
+    const vpValueAreaPct = Math.max(
+        0.50, Math.min(0.95, _paramNum('vp-va', 'vp_value_area_pct', 0.70)));
+    const vpSlAtr = Math.max(0.1, Math.min(20, _paramNum('vp-sl-atr', 'vp_sl_atr', 1.5)));
+    const vpTpAtr = Math.max(0.1, Math.min(20, _paramNum('vp-tp-atr', 'vp_tp_atr', 2.0)));
+    const vpConfirmBars = Math.max(1, Math.min(10, _paramInt('vp-confirm', 'vp_confirm_bars', 2)));
+    const vpBreakoutBuffer = Math.max(0, Math.min(40,
+        _paramInt('vp-break-buffer', 'vp_breakout_buffer_ticks', 2)));
+    const vpTouchTolerance = Math.max(0, Math.min(40,
+        _paramInt('vp-touch', 'vp_touch_tolerance_ticks', 2)));
+    const vpReclaimBuffer = Math.max(0, Math.min(40,
+        _paramInt('vp-reclaim-buffer', 'vp_reclaim_buffer_ticks', 1)));
+    const vpMaxTrades = Math.max(0, _paramInt('vp-max-trades', 'vp_max_trades_per_day', 2));
+    const vpMinSourceCandles = Math.max(1,
+        _paramInt('vp-min-source', 'vp_min_source_candles', 60));
     const params = {
         market_clock_version: MARKET_CLOCK_VERSION,
         strategy: strategy,
@@ -1631,7 +1706,9 @@ function collectStrategyParams(mode) {
         full_tp_lock: primary.full_tp_lock,
         one_trade_per_session_direction: true,
         tr_one_trade_per_session: _int('tr-session-limit-' + mode, 1) === 1,
-        tr_allowed_sessions: _allowedSessionsFromSelect('tr-allowed-sessions', 'tr_allowed_sessions', ['ASIA']),
+        tr_allowed_sessions: strategy === 'volume_profile'
+            ? ['RTH']
+            : _allowedSessionsFromSelect('tr-allowed-sessions', 'tr_allowed_sessions', ['ASIA']),
         skip_zone_stability: false,
         breakout_confirm_bars: Math.max(1, Math.min(10, _int('confirm-bars-' + mode, 7))),
         // 1.0.8: 出場模式(tp | ladder)+ 日虧斷路器(0=OFF)
@@ -1689,6 +1766,18 @@ function collectStrategyParams(mode) {
         delta_value_lookback: Math.max(2, Math.min(120, _paramInt('delta-lookback', 'delta_value_lookback', 10))),
         delta_value_touch_ticks: Math.max(0, Math.min(20, _paramInt('delta-touch', 'delta_value_touch_ticks', 0))),
         delta_require_profile: _paramVal('delta-require-profile', 'delta_require_profile', '1') === '1',
+        vp_value_area_pct: vpValueAreaPct,
+        vp_entry_mode: vpEntryMode,
+        vp_target_mode: vpTargetMode,
+        vp_side_mode: vpSideMode,
+        vp_sl_atr: vpSlAtr,
+        vp_tp_atr: vpTpAtr,
+        vp_confirm_bars: vpConfirmBars,
+        vp_breakout_buffer_ticks: vpBreakoutBuffer,
+        vp_touch_tolerance_ticks: vpTouchTolerance,
+        vp_reclaim_buffer_ticks: vpReclaimBuffer,
+        vp_max_trades_per_day: vpMaxTrades,
+        vp_min_source_candles: vpMinSourceCandles,
         option_wall_submodel: _mlSelectValue('option-wall-submodel-' + mode, 'primary_strict'),
         option_wall_side_mode: _mlSelectValue('option-wall-side-' + mode, 'all'),
         option_wall_long_sl_atr: _float('option-wall-long-sl-' + mode, 4.0),
@@ -1908,6 +1997,24 @@ function applyStrategyParams(mode, params) {
     _setChoice('delta-lookback-' + mode, String(p.delta_value_lookback != null ? p.delta_value_lookback : 10));
     _setChoice('delta-touch-' + mode, String(p.delta_value_touch_ticks != null ? p.delta_value_touch_ticks : 0));
     _setChoice('delta-require-profile-' + mode, p.delta_require_profile === false ? '0' : '1');
+    const _vpEntryMode = ['auto', 'range', 'breakout', 'failed_break'].includes(String(p.vp_entry_mode || 'auto'))
+        ? String(p.vp_entry_mode || 'auto') : 'auto';
+    const _vpTargetMode = ['atr', 'poc', 'opposite_edge'].includes(String(p.vp_target_mode || 'atr'))
+        ? String(p.vp_target_mode || 'atr') : 'atr';
+    const _vpSideMode = ['all', 'long_only', 'short_only'].includes(String(p.vp_side_mode || 'all'))
+        ? String(p.vp_side_mode || 'all') : 'all';
+    _setChoice('vp-entry-mode-' + mode, _vpEntryMode);
+    _setChoice('vp-side-' + mode, _vpSideMode);
+    _setChoice('vp-target-' + mode, _vpTargetMode);
+    const _vpVa = Number(p.vp_value_area_pct != null ? p.vp_value_area_pct : 0.70);
+    _setChoice('vp-va-' + mode, Number.isFinite(_vpVa) ? _vpVa.toFixed(2) : '0.70');
+    _setChoice('vp-sl-atr-' + mode, String(p.vp_sl_atr != null ? p.vp_sl_atr : 1.5));
+    _setChoice('vp-tp-atr-' + mode, String(p.vp_tp_atr != null ? p.vp_tp_atr : 2.0));
+    _setChoice('vp-confirm-' + mode, String(p.vp_confirm_bars != null ? p.vp_confirm_bars : 2));
+    _setChoice('vp-max-trades-' + mode, String(p.vp_max_trades_per_day != null ? p.vp_max_trades_per_day : 2));
+    _setChoice('vp-break-buffer-' + mode, String(p.vp_breakout_buffer_ticks != null ? p.vp_breakout_buffer_ticks : 2));
+    _setChoice('vp-touch-' + mode, String(p.vp_touch_tolerance_ticks != null ? p.vp_touch_tolerance_ticks : 2));
+    _setChoice('vp-reclaim-buffer-' + mode, String(p.vp_reclaim_buffer_ticks != null ? p.vp_reclaim_buffer_ticks : 1));
     _setChoice('option-wall-submodel-' + mode, String(p.option_wall_submodel || 'primary_strict'));
     _setChoice('option-wall-side-' + mode, String(p.option_wall_side_mode || 'all'));
     _setChoice('option-wall-long-sl-' + mode, String(p.option_wall_long_sl_atr != null ? p.option_wall_long_sl_atr : 4.0));
@@ -1989,6 +2096,7 @@ function applyStrategyParams(mode, params) {
     _setStrategySelect(mode, p.strategy);
     updateStrategyParamVisibility(mode);
     updateMlParamSummary(mode);
+    if (mode === 'bt') _syncDeltaChartModel(p.strategy);
 }
 
 // Kept for older event hooks; trigger OFF now controls the disabled state.
@@ -2005,7 +2113,7 @@ function isFixedPreset(name) {
 }
 
 const PRESET_MODEL_ORDER = [
-    'FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI', 'OPTION WALL', 'DELTA ABSORPTION',
+    'FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI', 'OPTION WALL', 'DELTA ABSORPTION', 'VOLUME PROFILE',
     // Historical names remain sortable and parseable; new names never emit them.
     'TREND', 'DAY ZONE', 'DISTRIBUTION', 'PMO', 'BETA FIB',
 ];
@@ -2014,9 +2122,9 @@ function _presetNameMeta(name) {
     const raw = String(name || '');
     const fixed = /\s+\*$/.test(raw);
     const s = raw.replace(/\s+\*$/, '').trim();
-    const compactDated = s.match(/^(\d{4})\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|DELTA ABSORPTION|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
-    const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|DELTA ABSORPTION|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
-    const legacy = s.match(/^(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|DELTA ABSORPTION|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const compactDated = s.match(/^(\d{4})\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|DELTA ABSORPTION|VOLUME PROFILE|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const dottedDated = s.match(/^(\d{2}\.\d{2})(?:\s+(\d{2}:\d{2}))?\s+(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|DELTA ABSORPTION|VOLUME PROFILE|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
+    const legacy = s.match(/^(FADE|SIGMA|FACTOR|MOMENTUM|BETAFIB|PI|OPTION WALL|DELTA ABSORPTION|VOLUME PROFILE|TREND|DAY ZONE|DISTRIBUTION|PMO|BETA FIB)\s+#(\d+)\s*(.*)$/i);
     if (compactDated) {
         return {
             fixed,
@@ -2295,7 +2403,7 @@ function _piMatrixPayload(mode) {
 
 function _normalizeNamingModel(model) {
     const value = String(model || '').trim().toUpperCase();
-    if (['FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI', 'DELTA ABSORPTION'].includes(value)) return value;
+    if (['FADE', 'SIGMA', 'FACTOR', 'MOMENTUM', 'BETAFIB', 'PI', 'DELTA ABSORPTION', 'VOLUME PROFILE'].includes(value)) return value;
     if (value === 'DAY ZONE') return 'FADE';
     if (value === 'DISTRIBUTION') return 'SIGMA';
     if (value === 'BETA FIB') return 'BETAFIB';
@@ -4067,6 +4175,22 @@ function _renderLiveStatus(st) {
     const elMarket = document.getElementById('lv-market-session');
     if (elMarket) { elMarket.textContent = session.label; elMarket.style.color = session.color; }
 
+    // Live Delta uses the same bounded evidence contract as backtest.  Do not
+    // let a stopped/default live status erase a Delta backtest currently on
+    // screen; only a running live model owns the chart overlay.
+    if (st && st.running) {
+        const liveModel = normalizeStrategyName(st.strategy_mode || 'factor');
+        if (liveModel === 'delta_absorption') {
+            _activeChartModel = liveModel;
+            _deltaOverlayData = st.delta_overlay || null;
+            scheduleChartOverlayRedraw();
+        } else if (_activeChartModel === 'delta_absorption') {
+            _activeChartModel = liveModel;
+            _deltaOverlayData = null;
+            scheduleChartOverlayRedraw();
+        }
+    }
+
     try {
         renderLiveRiskGates(st);   // 1.0.9: 風控閘狀態列(running / stopped 皆更新)
         if (!st.running) {
@@ -5337,6 +5461,7 @@ function initChart() {
         try { maybeLoadOlderChartHistory(chart.timeScale().getVisibleLogicalRange()); } catch (_) {}
         scheduleChartOverlayRedraw();
         if (layerOn('footprint') || layerOn('cvd')) scheduleFootprintRefresh();
+        scheduleDeltaOverlayRefresh();
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(_redrawOverlays);
     // Vertical zoom (wheel on price scale or chart body)
@@ -5622,7 +5747,15 @@ const CHART_LAYERS = [
     { key: 'optionwall', label: 'QQQ OPTION WALL',       on: false },
     { key: 'footprint', label: 'FOOTPRINT',              on: false },
     { key: 'cvd',      label: 'CVD',                      on: false },
+    // Delta Absorption is intentionally split into evidence layers.  The
+    // master switch turns the three model components on/off together; each
+    // child can then be hidden independently to keep the chart readable.
+    { key: 'delta_absorption', label: 'DELTA ABSORPTION', on: true  },
+    { key: 'delta_value', label: 'VAH / VAL (DELTA)',     on: true  },
+    { key: 'delta_decay', label: 'DELTA DECAY',           on: true  },
+    { key: 'delta_stall', label: 'PRICE NO-BREAK',        on: true  },
 ];
+const DELTA_EVIDENCE_LAYER_KEYS = ['delta_value', 'delta_decay', 'delta_stall'];
 const CHART_LAYER_STORAGE_KEY = 'ancserTPX.chartLayers';
 
 function _loadChartLayerPreferences() {
@@ -5633,6 +5766,18 @@ function _loadChartLayerPreferences() {
     CHART_LAYERS.forEach(layer => {
         if (typeof saved[layer.key] === 'boolean') state[layer.key] = saved[layer.key];
     });
+    // The evidence switches are new.  A previously saved master preference
+    // should migrate to all three children once, while explicit child choices
+    // remain authoritative on later loads.
+    const hasSavedDeltaChild = DELTA_EVIDENCE_LAYER_KEYS.some(
+        key => typeof saved[key] === 'boolean',
+    );
+    if (!hasSavedDeltaChild && typeof saved.delta_absorption === 'boolean') {
+        DELTA_EVIDENCE_LAYER_KEYS.forEach(key => {
+            state[key] = saved.delta_absorption;
+        });
+    }
+    state.delta_absorption = DELTA_EVIDENCE_LAYER_KEYS.some(key => state[key] !== false);
     return state;
 }
 
@@ -5685,6 +5830,17 @@ function _clearCanvas(id) {
 
 function layerOn(key) { return CHART_OVERLAYS[key] !== false; }
 
+function _mirrorChartLayerState(key, on) {
+    document.querySelectorAll(
+        '#chart-layer-pop [data-switch-proxy="lp-' + key + '"]'
+    ).forEach(track => {
+        if (track.closest('.optical-stage-copy')) return;
+        if (track.tpxSetState && track.clientWidth > 0) track.tpxSetState(!!on);
+        track.classList.toggle('on', !!on);
+        track.setAttribute('aria-checked', String(!!on));
+    });
+}
+
 function _syncFootprintCandleVisibility() {
     if (!candleSeries) return;
     // Keep the series alive for priceToCoordinate() and all other overlays,
@@ -5713,19 +5869,24 @@ const _SIGNAL_TYPE_LAYER = {
 function toggleChartLayer(key, on) {
     if (!(key in CHART_OVERLAYS)) return;
     CHART_OVERLAYS[key] = !!on;
+    if (key === 'delta_absorption') {
+        DELTA_EVIDENCE_LAYER_KEYS.forEach(child => {
+            CHART_OVERLAYS[child] = CHART_OVERLAYS[key];
+            _mirrorChartLayerState(child, CHART_OVERLAYS[child]);
+        });
+    } else if (DELTA_EVIDENCE_LAYER_KEYS.includes(key)) {
+        CHART_OVERLAYS.delta_absorption = DELTA_EVIDENCE_LAYER_KEYS.some(
+            child => CHART_OVERLAYS[child] !== false,
+        );
+        _mirrorChartLayerState('delta_absorption', CHART_OVERLAYS.delta_absorption);
+    }
     const next = CHART_OVERLAYS[key];
     // Native mode has no Glass controller to commit the visual state.  Keep
     // the real switch in sync here so a close/reopen cycle never leaves the
     // track and aria state stuck on the previous value.  A Glass controller,
     // when present, still owns its spring; this only mirrors the committed
     // semantic state.
-    document.querySelectorAll(
-        '#chart-layer-pop [data-switch-proxy="lp-' + key + '"]'
-    ).forEach(track => {
-        if (track.closest('.optical-stage-copy')) return;
-        track.classList.toggle('on', next);
-        track.setAttribute('aria-checked', String(next));
-    });
+    _mirrorChartLayerState(key, next);
     _persistChartLayerPreferences();
     if (key === 'footprint') _syncFootprintCandleVisibility();
     if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
@@ -5736,12 +5897,25 @@ function toggleChartLayer(key, on) {
         else { drawFootprintLayer(); drawCvdLayer(); }
         return;
     }
+    if (key === 'delta_absorption' || DELTA_EVIDENCE_LAYER_KEYS.includes(key)) {
+        if (layerOn(key) || _deltaOverlayHasLayer()) {
+            _activeChartModel = 'delta_absorption';
+            _deltaOverlayStatus = 'loading';
+            refreshDeltaAbsorptionOverlay(true);
+        } else {
+            _deltaOverlayData = null;
+            _deltaOverlayStatus = '';
+        }
+        try { redrawAllOverlays(); } catch (e) {}
+        return;
+    }
     try { redrawAllOverlays(); } catch (e) {}
 }
 
 function redrawAllOverlays() {
     try { drawSessionDividers(); } catch (e) {}
     try { drawIndicatorSignalOverlay(); } catch (e) {}
+    try { drawDeltaAbsorptionOverlay(); } catch (e) {}
     try { drawOptionWallOverlay(); } catch (e) {}
     try { if (_overlaySyncData && _overlaySyncData.zones) drawFadeDailyLevels(_overlaySyncData.zones); } catch (e) {}
     try { drawPreviousDayValueAreas(); } catch (e) {}
@@ -5758,6 +5932,7 @@ function scheduleChartOverlayRedraw() {
         try { redrawTradeDecisionOverlays(); } catch (e) {}
         try { drawSessionDividers(); } catch (e) {}
         try { drawIndicatorSignalOverlay(); } catch (e) {}
+        try { drawDeltaAbsorptionOverlay(); } catch (e) {}
         try { drawOptionWallOverlay(); } catch (e) {}
         try {
             if (_overlaySyncData && _overlaySyncData.zones) {
@@ -6484,6 +6659,121 @@ async function _loadOrderflowData(force) {
         if (_orderflowDataPromise === request) {
             _orderflowDataPromise = null;
             _orderflowPendingKey = '';
+        }
+    }
+}
+
+function _deltaOverlayHasLayer() {
+    return DELTA_EVIDENCE_LAYER_KEYS.some(key => layerOn(key));
+}
+
+function _deltaOverlayContract() {
+    const bt = document.getElementById('contract-bt');
+    const live = document.getElementById('contract-live');
+    const hidden = document.getElementById('contract-id');
+    return String(
+        (bt && bt.value) || (live && live.value) || (hidden && hidden.value) || 'MNQ'
+    );
+}
+
+function _deltaOverlayParams() {
+    let params = {};
+    try { params = collectStrategyParams('bt') || {}; } catch (_) {}
+    const value = (key, fallback) => params[key] != null ? params[key] : fallback;
+    return {
+        delta_window: value('delta_window', 5),
+        delta_baseline_window: value('delta_baseline_window', 30),
+        delta_strength_multiplier: value('delta_strength_multiplier', 1.0),
+        delta_weakening_ratio: value('delta_weakening_ratio', 0.70),
+        delta_stall_ticks: value('delta_stall_ticks', 1),
+        delta_value_lookback: value('delta_value_lookback', 10),
+        delta_value_touch_ticks: value('delta_value_touch_ticks', 0),
+        delta_source: value('delta_source', 'whole'),
+        delta_gate: value('delta_gate', 'location'),
+        delta_pattern: value('delta_pattern', 'absorption'),
+        delta_side_mode: value('delta_side_mode', 'all'),
+        delta_require_profile: value('delta_require_profile', true) ? '1' : '0',
+    };
+}
+
+function scheduleDeltaOverlayRefresh() {
+    if (!_deltaChartModelActive() || !_deltaOverlayHasLayer()) return;
+    clearTimeout(_deltaOverlayRefreshTimer);
+    _deltaOverlayRefreshTimer = setTimeout(() => {
+        refreshDeltaAbsorptionOverlay(false);
+    }, 180);
+}
+
+async function refreshDeltaAbsorptionOverlay(force = false) {
+    if (!chart || !candleSeries || !window._lastChartData || !window._lastChartData.length) {
+        return false;
+    }
+    if (!_deltaChartModelActive() || !_deltaOverlayHasLayer()) return false;
+
+    const windowRange = _footprintVisibleWindow();
+    if (!windowRange) return false;
+    if (windowRange.tooWide) {
+        _deltaOverlayRequestSerial += 1;
+        _deltaOverlayAbortController?.abort();
+        _deltaOverlayData = null;
+        _deltaOverlayRequestKey = '';
+        _deltaOverlayStatus = 'window_too_wide';
+        _deltaOverlayLoading = false;
+        drawDeltaAbsorptionOverlay();
+        return false;
+    }
+
+    const query = new URLSearchParams({
+        start: windowRange.start,
+        end: windowRange.end,
+        symbol: _deltaOverlayContract(),
+        interval: windowRange.interval,
+        limit: '10000',
+        include_delta: '1',
+        ..._deltaOverlayParams(),
+    });
+    const key = query.toString();
+    if (!force && key === _deltaOverlayRequestKey && _deltaOverlayData) {
+        drawDeltaAbsorptionOverlay();
+        return true;
+    }
+
+    _deltaOverlayAbortController?.abort();
+    const requestId = ++_deltaOverlayRequestSerial;
+    const controller = new AbortController();
+    _deltaOverlayAbortController = controller;
+    _deltaOverlayLoading = true;
+    _deltaOverlayStatus = 'loading';
+    drawDeltaAbsorptionOverlay();
+
+    try {
+        const response = await fetch(API + '/data/orderflow/footprint?' + key, {
+            signal: controller.signal,
+        });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const payload = await response.json();
+        if (requestId !== _deltaOverlayRequestSerial || controller.signal.aborted) {
+            return false;
+        }
+        _deltaOverlayData = payload && payload.delta_overlay ? payload.delta_overlay : null;
+        _deltaOverlayRequestKey = key;
+        _deltaOverlayStatus = String((_deltaOverlayData && _deltaOverlayData.status) || 'mbo_unavailable');
+        drawDeltaAbsorptionOverlay();
+        return true;
+    } catch (error) {
+        if (error.name !== 'AbortError' && requestId === _deltaOverlayRequestSerial) {
+            _deltaOverlayData = null;
+            _deltaOverlayRequestKey = key;
+            _deltaOverlayStatus = 'error';
+            drawDeltaAbsorptionOverlay();
+            log('Delta MBO evidence unavailable: ' + error.message, 'warn');
+        }
+        return false;
+    } finally {
+        if (requestId === _deltaOverlayRequestSerial) {
+            _deltaOverlayLoading = false;
+            if (_deltaOverlayAbortController === controller) _deltaOverlayAbortController = null;
+            drawDeltaAbsorptionOverlay();
         }
     }
 }
@@ -7274,6 +7564,7 @@ function drawBacktestZones(zones) {
 let _healthProbeInFlight = false;
 let _healthBackendOffline = false;
 let _healthStatusBeforeOffline = null;
+let _healthProbeFailures = 0;
 // The health endpoint is cheap, but chart projection/rendering can briefly
 // occupy the browser and the API worker. Keep real failures visible without
 // turning one transient scheduling delay into an OFFLINE flash.
@@ -7295,6 +7586,7 @@ async function checkHealth() {
         if (data.status !== 'ok' || data.service !== 'ancserTPX') {
             throw new Error('Unexpected health response');
         }
+        _healthProbeFailures = 0;
         if (_healthBackendOffline) {
             _healthBackendOffline = false;
             const previous = _healthStatusBeforeOffline || { type: 'ok', text: 'ONLINE' };
@@ -7305,6 +7597,19 @@ async function checkHealth() {
             setStatus('ok', 'ONLINE');
         }
     } catch(e) {
+        _healthProbeFailures += 1;
+        // Historical-data materialisation and the simulation can keep the
+        // local API busy for a while.  A health timeout during that deliberate
+        // long-running operation is not evidence that the connection was
+        // dropped; let the backtest request report its own failure instead.
+        // Once the operation ends, the next probe resumes the normal hard
+        // offline path (and a real failed backend is still visible).
+        if (_backtestInProgress && !_healthBackendOffline) {
+            if (_healthProbeFailures === 1) {
+                log('Backend health probe delayed while backtest is running; keeping connection state.', 'warn');
+            }
+            return;
+        }
         if (!_healthBackendOffline) {
             _healthStatusBeforeOffline = {
                 type: _connectionStatusKind,
@@ -7662,6 +7967,13 @@ function showCandleData(candles, preserveViewport = false) {
     refreshPiSignalMarkers();
     if (layerOn('optionwall')) refreshOptionWallLayer();
     if (layerOn('footprint') || layerOn('cvd')) refreshOrderflowLayers(true);
+    // A restored backtest sets the Delta model/payload before the chart data
+    // arrives.  Repaint here as well as in renderChart(), otherwise the first
+    // candle load silently leaves the chart-only evidence canvas empty.
+    drawDeltaAbsorptionOverlay();
+    if (_deltaChartModelActive() && _deltaOverlayHasLayer()) {
+        refreshDeltaAbsorptionOverlay(false);
+    }
 }
 
 function applyDefaultChartView(chartData, zones) {
@@ -7721,6 +8033,7 @@ function buildBacktestBody() {
 // Tracks which date range is currently loaded in the backend.
 // CONNECT only loads 14 days (fast); full range is fetched on first backtest or Machine Learning click.
 let _btDataRange = null;  // { start, end, contract, resolvedContract, worksetToken }
+let _backtestInProgress = false;
 
 function _profitLockBoundaryISO(dateStr) {
     const parts = String(dateStr || '').split('-').map(Number);
@@ -7802,10 +8115,22 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
         }
         const storeTag = data.from_store ? ' [local store + incremental]' : '';
         log('Backtest data ready: ' + data.candles_count + ' bars' + (data.fetched_count != null ? ' (' + data.fetched_count + ' fetched)' : '') + storeTag, 'success');
-        // Load the expanded dataset without taking ownership of the user's
-        // current horizontal viewport.  The first ever chart load has no
-        // viewport to preserve and still receives the default smooth-200 view.
-        await fetchAndShowChart('1m', true);
+        // Backtest data loading is a backend/workset operation.  If CONNECT
+        // already painted the chart, do not replace that live candle snapshot
+        // with the capped 60k historical slice here.  Apart from making the
+        // tab spend a long time in setData(), that used to make a backtest
+        // look like the chart had disconnected or changed underneath the
+        // user.  The chart's explicit catch-up/left-pan paths can still load
+        // more history; the backtest must not implicitly take ownership of
+        // the displayed candles or viewport.
+        const chartAlreadyLoaded = Array.isArray(window._lastChartData)
+            && window._lastChartData.length > 0;
+        if (chartAlreadyLoaded) {
+            log('Backtest data ready; keeping the current chart candles and viewport', 'info');
+        } else {
+            // A first load with no chart data still needs a visible series.
+            await fetchAndShowChart('1m', true);
+        }
         return true;
     } catch(e) {
         log('Data fetch failed: ' + e.message, 'error');
@@ -7903,6 +8228,8 @@ function _showBottomTab(name) {
 async function runBacktest() {
     const btn = document.getElementById('btn-backtest');
     if (!btn) return;
+    if (_backtestInProgress) return;
+    _backtestInProgress = true;
     btn.disabled = true;
     let succeeded = false;
     let progressStarted = false;
@@ -7940,6 +8267,9 @@ async function runBacktest() {
         }
 
         backtestData = await resp.json();
+        // The API identifies the model that produced the evidence payload;
+        // keep a UI fallback for older servers during a rolling restart.
+        backtestData.strategy = backtestData.strategy || btBody.strategy;
 
         const piReplayCount = Number(backtestData.pi_replay_count || 0);
         if (piReplayCount > 0 && String(btBody.strategy || '').toLowerCase() === 'pi') {
@@ -7968,6 +8298,7 @@ async function runBacktest() {
         log('Backtest failed: ' + e.message, 'error');
     } finally {
         if (progressStarted) _stopBacktestProgress(succeeded);
+        _backtestInProgress = false;
         btn.disabled = false;
         btn.textContent = 'EXECUTE BACKTEST';
     }
@@ -8019,6 +8350,15 @@ let _overlaySyncRAF = null;
 let _overlaySyncData = null;
 let _indicatorSignalRows = [];
 let _indicatorSignalCanvas = null;
+let _deltaAbsorptionCanvas = null;
+let _deltaOverlayData = null;
+let _activeChartModel = '';
+let _deltaOverlayLoading = false;
+let _deltaOverlayStatus = '';
+let _deltaOverlayRequestKey = '';
+let _deltaOverlayRequestSerial = 0;
+let _deltaOverlayAbortController = null;
+let _deltaOverlayRefreshTimer = null;
 let _indicatorSignalsLoading = false;
 let _indicatorSignalsQueued = false;
 let _lastIndicatorSignalLogKey = '';
@@ -8131,6 +8471,231 @@ function _indicatorSignalPrice(row) {
 function _indicatorTimeToX(sec, W, visibleRange) {
     // 1.0.9: 改走 bar 索引映射 — 時間線性外推在資料縫隙處會把信號畫錯位/疊在一起
     return _timeToXViaBars(sec);
+}
+
+function createDeltaAbsorptionCanvas() {
+    if (_deltaAbsorptionCanvas) return _deltaAbsorptionCanvas;
+    const container = document.getElementById('chart-container');
+    if (!container) return null;
+    const canvas = document.createElement('canvas');
+    canvas.id = 'delta-absorption-overlay';
+    canvas.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:3;';
+    container.appendChild(canvas);
+    _deltaAbsorptionCanvas = canvas;
+    return canvas;
+}
+
+function clearDeltaAbsorptionOverlay() {
+    const canvas = _deltaAbsorptionCanvas || document.getElementById('delta-absorption-overlay');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function _deltaChartModelActive() {
+    return normalizeStrategyName(_activeChartModel || '') === 'delta_absorption';
+}
+
+function _deltaOverlayTime(value) {
+    if (Number.isFinite(Number(value))) return Number(value);
+    if (!value) return null;
+    try {
+        const sec = isoToChartTime(String(value));
+        return Number.isFinite(sec) ? sec : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function drawDeltaAbsorptionOverlay() {
+    if (!chart || !candleSeries) return;
+    const data = _deltaOverlayData;
+    const hasLayer = _deltaOverlayHasLayer();
+    if (!_deltaChartModelActive() || !hasLayer) {
+        clearDeltaAbsorptionOverlay();
+        return;
+    }
+    const canvas = createDeltaAbsorptionCanvas();
+    const container = document.getElementById('chart-container');
+    if (!canvas || !container) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const W = container.clientWidth;
+    const H = container.clientHeight;
+    _sizeOrderflowCanvas(canvas, container, dpr);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, W, H);
+
+    const paneBottom = Math.max(1, H - _timeAxisHeight());
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, paneBottom);
+    ctx.clip();
+
+    const status = _deltaOverlayStatusMessage(data);
+    if (status) {
+        ctx.save();
+        ctx.font = '600 9px "IBM Plex Mono", monospace';
+        const textWidth = ctx.measureText(status).width;
+        ctx.fillStyle = 'rgba(9, 12, 20, 0.82)';
+        ctx.fillRect(6, 6, Math.min(W - 12, textWidth + 10), 16);
+        ctx.fillStyle = _deltaOverlayStatusColor(data);
+        ctx.fillText(status, 11, 17);
+        ctx.restore();
+    }
+    if (!data) {
+        ctx.restore();
+        return;
+    }
+
+    let visibleRange = null;
+    try { visibleRange = chart.timeScale().getVisibleRange(); } catch (_) {}
+    const inVisibleRange = (time) => (
+        !visibleRange || (time >= visibleRange.from - 300 && time <= visibleRange.to + 300)
+    );
+    const xFor = (value) => {
+        const time = _deltaOverlayTime(value);
+        if (time === null || !inVisibleRange(time)) return null;
+        return _timeToXViaBars(time);
+    };
+    const yFor = (value) => {
+        const price = Number(value);
+        if (!Number.isFinite(price)) return null;
+        try {
+            const y = candleSeries.priceToCoordinate(price);
+            return y === null || y === undefined ? null : Number(y);
+        } catch (_) {
+            return null;
+        }
+    };
+
+    // VAH/VAL is a single segment per current session, not one line per MBO
+    // minute.  This makes the location gate visible without saturating the
+    // chart when zoomed out.
+    if (layerOn('delta_value')) {
+        const areas = Array.isArray(data.value_areas) ? data.value_areas : [];
+        for (const area of areas) {
+            const yVah = yFor(area && area.vah);
+            const yVal = yFor(area && area.val);
+            if (yVah === null && yVal === null) continue;
+            let x0 = xFor(area && area.start_time);
+            let x1 = xFor(area && area.end_time);
+            if (x0 === null && x1 === null) continue;
+            if (x0 === null) x0 = 0;
+            if (x1 === null) x1 = W;
+            if (x1 < x0) { const swap = x0; x0 = x1; x1 = swap; }
+            x0 = Math.max(0, x0);
+            x1 = Math.min(W, x1);
+            if (x1 <= x0) continue;
+            ctx.save();
+            ctx.lineWidth = 1;
+            ctx.setLineDash([6, 4]);
+            if (yVah !== null && yVah >= -30 && yVah <= paneBottom + 30) {
+                ctx.strokeStyle = 'rgba(255, 167, 38, 0.78)';
+                ctx.beginPath(); ctx.moveTo(x0, yVah); ctx.lineTo(x1, yVah); ctx.stroke();
+                if (x1 - x0 > 24) {
+                    ctx.font = '600 9px "IBM Plex Mono", monospace';
+                    ctx.fillStyle = 'rgba(255, 167, 38, 0.9)';
+                    ctx.fillText('VAH 70%', Math.max(4, x0 + 4), Math.max(10, yVah - 4));
+                }
+            }
+            if (yVal !== null && yVal >= -30 && yVal <= paneBottom + 30) {
+                ctx.strokeStyle = 'rgba(56, 189, 248, 0.78)';
+                ctx.beginPath(); ctx.moveTo(x0, yVal); ctx.lineTo(x1, yVal); ctx.stroke();
+                if (x1 - x0 > 24) {
+                    ctx.font = '600 9px "IBM Plex Mono", monospace';
+                    ctx.fillStyle = 'rgba(56, 189, 248, 0.9)';
+                    ctx.fillText('VAL 70%', Math.max(4, x0 + 4), Math.min(paneBottom - 2, yVal + 11));
+                }
+            }
+            ctx.restore();
+        }
+    }
+
+    const events = Array.isArray(data.events) ? data.events.slice(-600) : [];
+    for (const event of events) {
+        const time = _deltaOverlayTime(event && (event.time != null ? event.time : event.epoch));
+        if (time === null || !inVisibleRange(time)) continue;
+        const x = _timeToXViaBars(time);
+        if (x === null || x < -24 || x > W + 24) continue;
+        const dir = String(event.direction || '').toLowerCase() === 'short' ? 'short' : 'long';
+        const rgb = dir === 'short' ? '244, 63, 94' : '56, 189, 248';
+        const anchorY = yFor(event.anchor_price != null ? event.anchor_price : event.close);
+        if (anchorY === null || anchorY < -70 || anchorY > paneBottom + 70) continue;
+
+        // A VA touch is drawn on the touched boundary, so it remains legible
+        // even when the candle itself is visually compressed by zooming out.
+        if (layerOn('delta_value') && event.touched) {
+            const boundaryY = yFor(dir === 'long' ? event.val : event.vah);
+            if (boundaryY !== null) {
+                ctx.beginPath();
+                ctx.arc(x, boundaryY, 2.5, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(255, 167, 38, 0.9)';
+                ctx.fill();
+            }
+        }
+
+        // Delta decay/pressure is an outlined diamond: it communicates a
+        // diagnostic condition without the saturated filled bubbles reserved
+        // for PI marks.
+        if (layerOn('delta_decay') && event.delta_decay) {
+            const size = 4;
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255, 213, 79, 0.92)';
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            ctx.moveTo(x, anchorY - size);
+            ctx.lineTo(x + size, anchorY);
+            ctx.lineTo(x, anchorY + size);
+            ctx.lineTo(x - size, anchorY);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // No-break/stall is a short directional bracket at the bar extreme.
+        if (layerOn('delta_stall') && event.stalled) {
+            const y = anchorY + (dir === 'long' ? 5 : -5);
+            ctx.save();
+            ctx.strokeStyle = 'rgba(' + rgb + ', 0.88)';
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            ctx.moveTo(x - 6, y);
+            ctx.lineTo(x + 6, y);
+            ctx.moveTo(x - 6, y);
+            ctx.lineTo(x - 6, y + (dir === 'long' ? -3 : 3));
+            ctx.moveTo(x + 6, y);
+            ctx.lineTo(x + 6, y + (dir === 'long' ? -3 : 3));
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+    ctx.restore();
+}
+
+function _deltaOverlayStatusMessage(data) {
+    if (_deltaOverlayLoading || _deltaOverlayStatus === 'loading') {
+        return 'DELTA · LOADING MBO EVIDENCE';
+    }
+    const status = String((data && data.status) || _deltaOverlayStatus || '');
+    if (status === 'prior_profile_only') return 'DELTA · MBO UNAVAILABLE · PRIOR 70% VA ONLY';
+    if (status === 'mbo_unavailable') return 'DELTA · NO MBO IN VISIBLE WINDOW';
+    if (status === 'window_too_wide') return 'DELTA · ZOOM IN FOR MBO EVIDENCE';
+    if (status === 'error') return 'DELTA · MBO REQUEST FAILED';
+    if (data && !((data.events || []).length) && !((data.value_areas || []).length)) {
+        return 'DELTA · NO QUALIFYING EVIDENCE IN WINDOW';
+    }
+    return '';
+}
+
+function _deltaOverlayStatusColor(data) {
+    const status = String((data && data.status) || _deltaOverlayStatus || '');
+    if (status === 'error' || status === 'mbo_unavailable') return 'rgba(255, 92, 112, 0.95)';
+    if (status === 'prior_profile_only' || status === 'loading') return 'rgba(255, 193, 7, 0.95)';
+    return 'rgba(180, 205, 230, 0.95)';
 }
 
 function _drawIndicatorBubble(ctx, x, y, radius, rgb) {
@@ -8252,6 +8817,12 @@ function drawIndicatorSignalOverlay() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, W, H);
+
+    // Delta Absorption owns its own evidence canvas.  Keeping the generic
+    // EMAPMO/PI/MREV stream out of a Delta chart is the default presentation
+    // of this preset; the independent Delta switches below still control
+    // exactly which evidence types are visible.
+    if (_deltaChartModelActive()) return;
 
     if (!_indicatorSignalRows || _indicatorSignalRows.length === 0) { drawPiSignalOverlay(); return; }
 
@@ -9019,6 +9590,17 @@ async function refreshIndicatorSignalMarkers(logSummary) {
 function renderChart(data) {
     if (!data) { log('No backtest data to render', 'warn'); return; }
 
+    _activeChartModel = normalizeStrategyName(
+        data.strategy || data.strategy_mode || _mlSelectValue('strategy-bt', 'factor'),
+    );
+    _deltaOverlayData = _activeChartModel === 'delta_absorption'
+        ? (data.delta_overlay || null)
+        : null;
+    if (_deltaChartModelActive() && !_deltaOverlayData && _deltaOverlayHasLayer()) {
+        _deltaOverlayStatus = 'loading';
+        refreshDeltaAbsorptionOverlay(true);
+    }
+
     // Draw the strategy's day-zone overlay when the backtest provides one.
     drawBacktestZones(data.zones);
     if (layerOn('prevday70')) refreshPreviousDayValueAreas(true);
@@ -9026,6 +9608,7 @@ function renderChart(data) {
     // Draw decision overlays (entry marker + primary VAH/VAL zone)
     drawPositionTools([...(data.trades || []), ...(window._liveCompletedTrades || [])]);
     drawTradeMarkers(data.trades);
+    drawDeltaAbsorptionOverlay();
 
     // Do not reframe the time scale while rendering a result.  The default
     // smooth-200 framing belongs only to showCandleData() when no viewport
@@ -11502,6 +12085,12 @@ function _saveBacktestCache(d) {
             trades: d.trades || [],
             daily_pnl: d.daily_pnl || null,
             preset_name: d.preset_name || null,
+            strategy: d.strategy || null,
+            // The Delta payload is already bounded by the strategy.  Keeping
+            // it with the trimmed cache lets a reopened chart show the same
+            // evidence instead of only restoring its performance cards.
+            delta_overlay: d.strategy === 'delta_absorption'
+                ? (d.delta_overlay || null) : null,
             bt_span: d.bt_span || null,
             saved_at: new Date().toISOString()
         }));
@@ -11519,6 +12108,9 @@ function _restoreBacktestCache() {
         return;
     }
     backtestData = d;                       // feeds the Data calendar (uses .trades)
+    _activeChartModel = normalizeStrategyName(d.strategy || 'factor');
+    _deltaOverlayData = _activeChartModel === 'delta_absorption'
+        ? (d.delta_overlay || null) : null;
     try { renderMetrics(d.metrics, d.trades || []); } catch (e) {}
     try { renderTrades(d.trades || []); } catch (e) {}
     try {

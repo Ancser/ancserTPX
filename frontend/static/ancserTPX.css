@@ -2267,6 +2267,11 @@
     white-space: nowrap;
 }
 .chart-layer-pop .layer-row:hover .layer-name { color: var(--text); }
+.chart-layer-pop .delta-layer-child .layer-name {
+    padding-left: 0.75rem;
+    color: var(--text3);
+    font-size: 0.72rem;
+}
 
 /* At a laptop width the layer popup should not force the chart to give up a
    third of its height.  Its switches keep their existing optical geometry. */

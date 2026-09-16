@@ -21,6 +21,7 @@ from scripts.databento_orderflow_settlement import (
     mbo_request_range,
     previous_completed_topstep_date,
     reconcile_payloads,
+    validate_all_session_cache_payload,
     validate_cache_payload,
     validate_raw_file,
 )
@@ -112,6 +113,28 @@ def test_cache_validation_requires_schema_and_exact_rth_coverage():
     result = validate_cache_payload(broken, day)
     assert result["complete"] is False
     assert "cache_missing_minutes" in result["errors"]
+
+
+def test_all_session_cache_validation_accepts_labeled_utc_day_bars():
+    day = date(2026, 9, 10)
+    epochs = [
+        int(datetime(2026, 9, 10, 0, 1, tzinfo=UTC).timestamp()),
+        int(datetime(2026, 9, 10, 13, 30, tzinfo=UTC).timestamp()),
+    ]
+    payload = {
+        "meta": {
+            "schema_version": orderflow.CACHE_SCHEMA_VERSION,
+            "calendar_date": day.isoformat(),
+            "session": "ALL",
+        },
+        "bars": [
+            dict(_bar(epochs[0]), session="ASIA", session_id="2026-09-09-ASIA"),
+            dict(_bar(epochs[1]), session="RTH", session_id="2026-09-10-RTH"),
+        ],
+    }
+    result = validate_all_session_cache_payload(payload, day)
+    assert result["complete"] is True
+    assert result["bar_count"] == 2
 
 
 def test_raw_manifest_validation_detects_mutation(tmp_path):

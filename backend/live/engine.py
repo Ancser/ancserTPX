@@ -38,7 +38,10 @@ from backend.strategy.session_filter import (
 from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.factor import FactorSignalStrategy
 from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
-from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
+from backend.strategy.volume_profile import (  # 1.0.8: fade 前日 VP
+    VolumeProfileCalculator,
+    VolumeProfileStrategy,
+)
 from backend.data import market_data
 from backend.timebase import CHICAGO, UTC, topstep_trade_date, utc_now, utc_now_naive
 from backend.strategy.exit_policy import (
@@ -166,10 +169,11 @@ class LiveTradingEngine:
         self.strategy_mode = (getattr(self.strategy_params, "strategy", "factor") or "factor").lower()
         if self.strategy_mode not in (
             "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
-            "delta_absorption",
+            "delta_absorption", "volume_profile",
         ):
             self.strategy_mode = "factor"
         self._delta_feed = None
+        self._delta_feed_shared = False
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
             if str(getattr(self.strategy_params, "fade_entry_mode", "") or "").lower() == "or15":
@@ -189,16 +193,33 @@ class LiveTradingEngine:
             from backend.strategy.option_wall import OptionWallStrategy
             self.trend_follow = OptionWallStrategy(params=self.strategy_params)
         elif self.strategy_mode == "delta_absorption":
-            from backend.live.databento_orderflow import DatabentoMboLiveFeed
-            from backend.strategy.delta_absorption import DeltaAbsorptionStrategy
-            self._delta_feed = DatabentoMboLiveFeed(
-                contract_id=self.contract_id,
-                tick_size=self.tick_size,
+            from backend.live.databento_orderflow import (
+                DatabentoMboLiveFeed,
+                acquire_databento_mbo_feed,
             )
+            from backend.strategy.delta_absorption import DeltaAbsorptionStrategy
+            # The native app may already own a record-only feed.  Borrow it so
+            # selecting Delta Absorption does not create a second Databento
+            # subscription for the same MNQ contract.
+            try:
+                self._delta_feed = acquire_databento_mbo_feed(
+                    self.contract_id, tick_size=self.tick_size,
+                )
+            except Exception:
+                self._delta_feed = None
+            if self._delta_feed is not None:
+                self._delta_feed_shared = True
+            else:
+                self._delta_feed = DatabentoMboLiveFeed(
+                    contract_id=self.contract_id,
+                    tick_size=self.tick_size,
+                )
             self.trend_follow = DeltaAbsorptionStrategy(
                 params=self.strategy_params,
                 context_provider=self._delta_feed,
             )
+        elif self.strategy_mode == "volume_profile":
+            self.trend_follow = VolumeProfileStrategy(params=self.strategy_params)
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
         # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
@@ -2278,6 +2299,16 @@ class LiveTradingEngine:
             },
             "strategy_mode": self.strategy_mode,
             "active_mode": getattr(self.trend_follow, 'active_mode', self.strategy_mode),
+            # Delta Absorption chart evidence is bounded and read-only.  It is
+            # kept beside strategy status so live and backtest use the same
+            # evidence schema without turning every detector into a chart
+            # signal stream.
+            "delta_overlay": (
+                self.trend_follow.get_chart_overlay(limit=240)
+                if self.strategy_mode == "delta_absorption"
+                and hasattr(self.trend_follow, "get_chart_overlay")
+                else None
+            ),
             "trend_allowed_sessions": self._trend_session_label(),
             "strategies": self.strategies,
             "disconnected": self._disconnected,
@@ -2498,7 +2529,7 @@ class LiveTradingEngine:
             return self._get_confluence_phase()
         # 信號型策略(factor/sigma/fade/pi)顯示各自的信號狀態
         # (上次信號、ATR、指標值…),而不是套用只對 trend 有意義的「突破階段」。
-        if self.strategy_mode in ("factor", "sigma", "fade", "pi", "delta_absorption"):
+        if self.strategy_mode in ("factor", "sigma", "fade", "pi", "delta_absorption", "volume_profile"):
             try:
                 label = self.trend_follow.get_phase_label()
                 if label:
@@ -2611,7 +2642,7 @@ class LiveTradingEngine:
                 # original startup exception remains authoritative.
                 pass
 
-        if self._delta_feed is not None:
+        if self._delta_feed is not None and not self._delta_feed_shared:
             try:
                 await asyncio.to_thread(self._delta_feed.stop)
             except Exception:
@@ -2673,9 +2704,10 @@ class LiveTradingEngine:
             self._update_tf_breakout(c)
             if can_observe_strategy:
                 # 1.0.8: 移除 all-TF breakout gate,只保留 session 過濾(對齊 backtest)
-                if self.strategy_mode == "delta_absorption":
+                if self.strategy_mode in ("delta_absorption", "volume_profile"):
                     # Warm the PI-compatible ATR accumulator across all
-                    # sessions. Delta entries themselves remain RTH-gated.
+                    # sessions. Delta and Volume Profile entries remain
+                    # RTH-gated.
                     self.trend_follow.observe(
                         c,
                         self.detector.get_recent_zones(),
@@ -2882,7 +2914,7 @@ class LiveTradingEngine:
                     self._pi_task.cancel()
             self._pi_listener = None
             self._pi_task = None
-        if self._delta_feed is not None:
+        if self._delta_feed is not None and not self._delta_feed_shared:
             try:
                 await asyncio.to_thread(self._delta_feed.stop)
             except Exception:
@@ -3616,7 +3648,11 @@ class LiveTradingEngine:
         # 1.0.8: 移除 mlc2_evaluator.update
         self._append_history(candle)
         self._update_tf_breakout(candle)
-        if self.strategy_mode == "sigma":
+        if self.strategy_mode == "volume_profile":
+            # The profile tracker only consumes RTH candles; the strategy's
+            # ATR blend intentionally warms from every completed session.
+            self.trend_follow.observe(candle, [], True)
+        elif self.strategy_mode == "sigma":
             if self._trend_session_allowed(candle.timestamp):
                 self.trend_follow.observe(candle, [], True)
             elif not self._open_position and not self._pending_order_id:
@@ -3780,7 +3816,10 @@ class LiveTradingEngine:
         # 1.0.8: 移除「所有 TF 同方向突破」gate — live 與 backtest 對齊。
         # (回測未含此 gate;A/B 測試證實 gate 對 overlap preset #3 幾乎毀掉績效。
         #  突破判定改由 trend_follow.evaluate 對交易 zone 判斷,live == backtest。)
-        if self.strategy_mode in ("sigma", "factor", "fade", "optionwall", "delta_absorption"):
+        if self.strategy_mode in (
+            "sigma", "factor", "fade", "optionwall", "delta_absorption",
+            "volume_profile",
+        ):
             eval_zones = []
             eval_mature = True
         else:
@@ -3798,7 +3837,10 @@ class LiveTradingEngine:
             strat.reset()
 
         signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
-        if signal and self.strategy_mode in ("sigma", "factor", "fade", "optionwall", "delta_absorption"):
+        if signal and self.strategy_mode in (
+            "sigma", "factor", "fade", "optionwall", "delta_absorption",
+            "volume_profile",
+        ):
             signal.zone_source = (
                 "option_wall" if self.strategy_mode == "optionwall" else self.strategy_mode
             )
@@ -5121,7 +5163,7 @@ class LiveTradingEngine:
         self._update_tf_breakout(candle)
         if hasattr(self.trend_follow, "observe"):
             # 1.0.8: 移除 all-TF breakout gate,只保留 session 過濾(對齊 backtest)
-            if self.strategy_mode == "delta_absorption":
+            if self.strategy_mode in ("delta_absorption", "volume_profile"):
                 self.trend_follow.observe(
                     candle,
                     self.detector.get_recent_zones(),

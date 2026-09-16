@@ -108,7 +108,7 @@ def test_source_still_warns_against_guessing_by_jump_size():
 
     註解沒了,下一個人只會看到一個「看起來可以簡化成比較跳幅」的迴圈。
     """
-    src = (ROOT / "scripts" / "databento_backfill.py").read_text(encoding="utf-8")
+    src = (ROOT / "backend" / "data" / "futures_data.py").read_text(encoding="utf-8")
     head = src[src.index("def find_rolls"):src.index("def find_rolls") + 900]
     assert "instrument_id" in head
     assert "69" in head, "2026-04-10 +69 點那個實例被從註解裡刪掉了"

@@ -1,15 +1,171 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-12. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-15. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            675 pytest passing + 8 subtests; footprint Chromium regression passing (full browser suite not rerun for this change)
-invariants       88 documented / 84 active / 4 explicitly retired
-strategies       factor · momentum · betafib · pi · optionwall · delta_absorption · fade · sigma  (+ confluence, live-only)
-presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST
+tests            743 pytest passing + 8 subtests; footprint Chromium regression passing (full browser suite not rerun for this change)
+invariants       90 documented / 86 active / 4 explicitly retired
+strategies       factor · momentum · betafib · pi · optionwall · delta_absorption · volume_profile · fade · sigma  (+ confluence, live-only)
+presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST · DELTA ABSORPTION BEST · VOLUME PROFILE RESEARCH
 ```
+
+### 2026-09-15 — Delta Absorption chart evidence layers
+
+Delta Absorption backtest responses and live status now expose one bounded,
+chart-only evidence payload.  It contains one VAH/VAL segment per current
+session and deduplicated event rows for value-area touches, opposing-delta
+decay/pressure, and price no-break/stall conditions.  The chart menu exposes
+`DELTA ABSORPTION` plus independent `VAH / VAL (DELTA)`, `DELTA DECAY`, and
+`PRICE NO-BREAK` switches.  An active Delta chart uses its own evidence canvas
+and suppresses the generic EMAPMO/PI/MREV signal canvas, so the current preset
+does not become a collage of unrelated signals.  The payload is bounded to
+600 backtest events and 240 live events; it is explanatory only and does not
+alter entry, exit, or order execution.
+
+### 2026-09-15 — Prior-RTH Volume Profile model and five-year audit
+
+`VOLUME PROFILE` is now a selectable strategy and is independent of the
+legacy chart-only prior-day VA lines.  It builds one 70% value area from the
+last complete New York RTH session, then carries only that completed profile
+into the next RTH session.  The strategy state machine has four modes:
+`AUTO`, `RANGE` rejection back toward POC, `BREAKOUT` with consecutive-close
+confirmation followed by a later retest, and `FAILED_BREAK` reclaim back into
+value.  A single outside close is never enough to call a breakout.  Repeated
+touches/crosses consume one edge lock per displayed RTH day; a cancelled order
+releases the lock, while a closed trade does not re-arm that edge.
+
+The model uses the shared completed-5m ATR14/ATR50 blend for adaptive SL/TP
+(`vp_sl_atr` / `vp_tp_atr`), with optional POC or opposite-edge structural
+targets.  It is RTH-only, causally tracked in both Backtest and Live, and its
+parameters round-trip through the API, terminal preset builder, and frontend.
+`VOLUME PROFILE RESEARCH` is deliberately a research-labelled selectable
+preset, not a BEST claim.
+
+The production-engine audit uses the canonical MNQ/MES 1-minute stores and
+shared robustness functions.  Training is 2021-01-01 through 2025-12-31;
+2026 YTD is holdout.  The training-selected representative candidate is
+`BREAKOUT + 2 closes + ATR SL 1.5 / TP 2.0 + 2-tick break/touch buffers`.
+MNQ training is n=970, PnL -$2,194.80, PF 0.9462; 2026 holdout is n=141,
+PnL -$817.34, PF 0.9144.  The same candidate, without MES tuning, is MES
+training n=1,026, PnL -$3,708.49, PF 0.8470; 2026 holdout is n=128,
+PnL +$906.28, PF 1.2721, but the full walk-forward/Monte Carlo/stress gate
+still fails.  No candidate is promoted to BEST.  The reports are external
+artifacts under `ancserMarketData/derived/research/` as
+`volume_profile_research_mnq_2021_2025.*` and
+`volume_profile_validation_mes_from_mnq.*`.
+
+Option-wall and MBO/orderflow inputs are not silently fused into this model:
+their available causal coverage is much shorter and different from the
+five-year OHLCV tape.  They remain bounded research context only until a
+separate, coverage-matched study shows an out-of-sample improvement.
+
+The separate `scripts/volume_profile_context_study.py` audit now joins the
+fixed selected candidate to completed five-minute MBO windows, local delta
+decay, OFI/imbalance/passive-rejection labels, and the frozen QQQ-to-MNQ GEX
+proxy.  On the 26 MBO RTH days (2026-08-07 through 2026-09-11), 22 VP trades
+were in the coverage window, 18 had a complete causal MBO join, and 9 had a
+pre-entry GEX snapshot.  The MBO-available subset was PF 0.9588 and PF 0.8362
+under the 14-tick stress; the declared breakout-flow gate had zero hits.  The
+OI-GEX split was positive-label n=5 / PF 3.6905 versus negative-label n=4 /
+PF 0.5866, which is too small, proxy-dependent, and opposite the simple
+negative-gamma-continuation hypothesis to justify a live gate.  The context
+report is `ancserMarketData/derived/research/volume_profile_context_mnq_mbo_gex.*`;
+it is explanatory research only and does not change entries or routing.
+
+### 2026-09-15 — 8/30 contract audit and PI exit matrix
+
+The read-only audit for MNQ 2026-08-30 matched all 120 stored bars to the
+deferred `CON.F.US.MNQ.U26` TopstepX/local-default series and none to the
+current `Z26` series.  This is evidence against a real contract switch on
+8/30.  A later current-store inspection did find a separate synthetic seam at
+`2026-08-31T00:00Z`: `MNQ` close `29289.25` → `NQ` open `29585.00`, both labelled
+`topstepx`.  It is a bad merge/anchor boundary, not proof of an 8/30 roll.
+The validated 2026-09-14 reconciliation archive was therefore used for the
+PI study until the current-store seam is repaired.  Audit output is saved at
+`ancserMarketData/derived/research/futures_source_audit_mnq_20260830.{json,md}`.
+
+`data/presets.json` now contains `DELTA ABSORPTION BEST`, based on the earlier
+`absorption/w5/whole/location` candidate.  The earlier candidate was 27
+retrospective trades / PF 2.4306 through 2026-08-27; it is a selectable
+research preset, not a claim of durable live performance.
+
+`scripts/pi_exhaustive_exit_study.py` runs all 63 non-empty PI signal subsets
+(including purple Level 1/2), plus 12 individual signal families across 30
+ATR/fixed/time exit variants, with production-engine reproduction,
+14-tick stress, walk-forward, and 1-minute MFE/MAE diagnostics.  On the
+validated snapshot the current preset reproduced MNQ n=76 / PF 1.42 / 14-tick
+PF 1.30 and MES n=54 / PF 1.10 / 14-tick PF 0.66.  The compact reports are
+under `ancserMarketData/derived/research/pi_exhaustive_exit_study_20260915`.
+
+### 2026-09-14 — MES/MNQ source reconciliation and roll repair
+
+`scripts/reconcile_futures_data.py` now applies the canonical
+`backend/data/futures_data.py` receive standard.  It requests the complete
+2026 Databento continuous `ohlcv-1m` history, uses the authenticated TopstepX
+front contract for the rolling recent 31-day window when available, and falls
+back to Databento for a missing recent minute.  History older than that cutoff
+uses Databento; missing minutes are never fabricated.  All timestamps are
+aware UTC exact-minute values, symbols are product roots, and OHLCV/source
+fields are validated before merging.
+
+The 2026-09-14 apply run repaired both stores through
+`2026-09-14T17:45:00Z`: MES has 2,365,689 bars and MNQ 2,366,550.  Each has
+249,061 2026 bars, with 220,320 Databento bars and 28,741 TopstepX bars.  No
+unexpected 2026 gaps or fractional-minute bars remain; the known bad MNQ
+`2026-09-07T16:25:30.423317Z` record was removed from the canonical merge.
+
+The historical separation was caused by mixing separately anchored continuous
+series at contract rolls, not by treating every large price movement as a
+roll.  Databento roll seams are now identified only by `instrument_id` change
+and flattened additively; all observed 2026 seams have zero adjusted adjacent
+open/previous-close residual.  The recent TopstepX/Databento overlap has no
+fixed anchor offset (MES 78 and MNQ 189 small OHLCV revisions), so the
+reconciler did not invent a price shift.  The old known roll-anchor mismatch
+records were cleared after the repaired stores were written.
+
+The full apply report is at
+`ancserMarketData/derived/research/futures_reconciliation_latest.json`, with
+the pre-apply files backed up under
+`ancserMarketData/archive/futures_reconciliation_20260914T174740Z`.  The
+desktop app keeps its in-memory candle snapshot, so refresh/restart it before
+judging the repaired chart; a running live process was not forcibly restarted
+during reconciliation.
+
+### 2026-09-14 — App-owned live MBO recorder
+
+The native desktop app now starts a record-only Databento MBO feed when a
+`DATABENTO_API_KEY` is configured, even if the selected live strategy is PI or
+no live engine is running. It stores compact completed RTH 1-minute checkpoints
+and separate ALL-session UTC-day checkpoints under
+`ancserMarketData/runtime/state`, and exposes the feed state through
+`/api/connection/status`. Direct/test FastAPI starts remain opt-in through
+`ANCSERTPX_AUTO_DATABENTO_MBO`; the desktop launcher sets that flag locally so
+an unattended server import does not open a usage-billed stream.
+
+`DELTA ABSORPTION` borrows the app-owned feed for the same MNQ contract instead
+of creating a second subscription. A contract mismatch falls back to the
+engine-owned feed, preserving explicit live contract selection. This changes
+capture and telemetry only; strategy signals and order/exits are unchanged.
+
+### 2026-09-14 — ALL-session MBO retention
+
+The record-only feed no longer discards non-RTH records. It keeps one compact
+schema-v5 1-minute archive per UTC calendar day at
+`runtime/state/databento_live_all_sessions_mnq_YYYY-MM-DD.json.gz`; each bar is
+labelled with `ASIA`, `EURO`, `PRE`, `RTH`, or `AH` using the shared
+`America/New_York` clock. The existing RTH runtime checkpoint remains separate
+and remains the only input to the current Delta strategy/profile gate.
+
+Historical raw MBO requests are already complete UTC-day files. The local-only
+`scripts/databento_orderflow_all_sessions.py` builder derives the corresponding
+`derived/orderflow/mnq/all_sessions_footprint_mnq_YYYY-MM-DD.json.gz` files
+without an API call, while the downloader and daily settlement paths build the
+ALL cache for newly available raw days. Missing raw history is reported rather
+than fabricated or silently charged. The retained live/history layer is the
+compact 1-minute MBO archive; it does not claim to be a second full raw live
+DBN recorder.
 
 ## Where truth lives
 
@@ -265,6 +421,20 @@ normal history loader, same-day replay loader, and audit API filter legacy
 multi-mark rows as well. Actual broker/execution records and strategy push
 snapshots are not rewritten.
 
+On 2026-09-14 the active `pi` channel was fully re-collected rather than
+trusting the previous June-limited file. Discord delivery is a 9/9 bulk repost,
+so canonical `ts` now comes from the embedded `NY` event line. The scan found
+531 eligible channel messages and a source-event range of 2026-03-05 through
+2026-09-14; 296 historical messages are from `hoppouseiki` (`seiki`) and 235
+current/live messages are from `ancserPiAlert` (`pialert`). One same-minute
+cross-sender duplicate was removed, leaving 530 canonical rows. The prior file
+is recoverable at
+`source/discord/pi/archive/pi_signals.before_full_channel_20260914T171903Z.json`,
+and the reproducible counts/provenance are in
+`derived/research/pi_channel_backfill_latest.json`. The UI PI scope now starts
+at 2026-03-05. Normal Live dispatch remains pialert-only; seiki is accepted
+only by the record-only historical collector before the 2026-09-09 cutover.
+
 ### R0.5 — New York market clock + manual-position ownership (2026-08-30)
 
 Raw candle/order/trade timestamps remain UTC instants. Market segments and the
@@ -466,6 +636,169 @@ evaluation PF from 1.2494 to 2.3233 and reduced absolute maxDD from $548.14 to
 $227.40, but left only 27 evaluation trades and was negative in discovery
 (10 trades, PF 0.7286); it is a research lead, not a live filter. The
 divergence filter was negative in evaluation and is not promoted.
+
+### R0.18 - PI exit and signal durability replay (2026-09-14)
+
+`scripts/pi_exit_engine_grid_study.py` replays the current `BacktestEngine`
+against the shared PI history and canonical MNQ/MES 1m stores. It first
+reproduces `PI 2MNQ BOTH BEST`, then runs a pre-declared SL/TP/time-exit grid,
+fixed-exit signal-kind sets, and one daily-loss-lock comparison. It uses the
+canonical commission/fees model and a 14-tick round-trip stress. It is
+research-only: no preset, live setting, or production strategy changed.
+
+The shared loader currently provides 487 PI source rows from 2026-03-05 to
+2026-09-14 (about 6 months). The current preset reproduces exactly: MNQ n=76,
+PnL $2,710.76, PF 1.5169, 14-tick PF 1.3935; MES n=55, PnL $201.80,
+PF 1.1163, 14-tick PF 0.6712. MNQ's three equal-time segments are PF 1.0831,
+0.8832, and 4.6549; MES is 0.1437, 0.7242, and 5.5945. The positive total is
+therefore concentrated in the latest regime, and the current exit combination
+does not pass the persistence check. The observed PF ~1.4 is the MNQ 14-tick
+stress PF, not a UI calculation error.
+
+On MNQ, the strongest pre-declared exit cells were L4/RR3/short-SL2 (PF 1.63,
+stress PF 1.50) and SL-only with long120/short60 (PF 1.61, stress PF 1.48),
+but both still fail walk-forward because the middle segment is negative. RR1
+was the only tested exit cell with all three walk-forward segments positive
+(PF 1.36, stress PF 1.24), but it is still only a coverage-limited candidate,
+not a promotion. Every MES exit cell failed the 14-tick stress (best stress PF
+0.74), so changing SL/TP does not currently rescue MES.
+
+With the current exit held fixed, MNQ `青π + 粉π` (strict PI) was the best
+combined candidate (n=74, PF 1.80, stress PF 1.64, all three walk-forward
+segments positive). `青π` alone was positive (n=32, PF 1.75, stress PF 1.62)
+but sample-limited; `粉π` alone was positive (n=42, PF 1.86, stress PF 1.67)
+but regime-dependent. `淡蓝圈` was negative (PF 0.60), `深蓝圈` had only six
+trades and was negative, and `紫圈` was marginal (PF 1.15, stress PF 1.01)
+with a negative latest segment. On MES, even the individually positive-looking
+`粉π` and `紫圈` failed the 14-tick stress (0.91 and 0.82 respectively).
+Thus no mark has yet earned a long-term durable label; strict PI is a future
+holdout candidate, not live evidence.
+
+Turning the daily-loss lock off did not explain the decay: MNQ changed only
+from PnL $2,710.76 / PF 1.5169 / stress PF 1.3935 to $2,680.54 / PF 1.50 /
+stress PF 1.37; MES changed from $201.80 to $230.57 with the same rounded PF
+and still failed stress. The report is stored externally at
+`ancserMarketData/derived/research/pi_exit_engine_grid_latest.{json,csv,md}`.
+
+### R0.19 — Topstep contract-mix incident and post-repair replay (2026-09-14)
+
+The MNQ figures in R0.18 were collected before the current-day contract audit
+and are superseded for any current-day-inclusive comparison.  The narrow
+repair was backed up at
+`ancserMarketData/archive/mnq_topstep_contract_repair_20260914T185159Z`.
+
+Before repair, all 1,119 MNQ bars for 2026-09-14 were labelled `topstepx`, but
+the exact OHLCV values from 14:55–15:54 UTC matched the local-default
+`CON.F.US.MNQ.Z26`, while the rest matched Topstep's active
+`CON.F.US.MNQ.U26`.  That 60-minute block was therefore a Topstep contract
+mix, not Databento and not a volatility-adjusted candle.  It explains the
+roughly 300-point mid-chart jump.  The block was replaced from the active U26
+API response; the post-repair audit now finds 1,138/1,138 stored bars exact on
+U26, zero Z26 bars, zero unclassified bars, and no artificial 300-point jump.
+The live engine remains on U26 and was not restarted or changed by the repair.
+
+The reconciliation policy is recent `topstepx` first with Databento fallback,
+and historical Databento first with Topstep fallback; Databento roll seams are
+price-adjusted by instrument identity.  However, the legacy Candle persistence
+record stores only a source label, not `contract_id`, so source counts alone
+cannot prove contract purity.  The local calendar helper still defaults to
+Z26 while Topstep's active-contract endpoint returns U26.  A future durable
+fix must carry contract identity through the store and resolve the active API
+contract before each recent-bar write; this incident's repair did not silently
+claim that schema change.
+
+The post-repair PI trail/time study reproduces the app exactly: MNQ n=76,
+PnL $4,379.52, PF 1.4152, 14-tick stress PF 1.2974; its equal-time walk-forward
+PFs are 1.083, 0.883, and 3.881, so it remains regime-dependent.  MES n=55,
+PnL $201.80, PF 1.1163, stress PF 0.6712, and remains no-edge.  MNQ losses are
+41 total: 16 initial stops before a trigger and 25 time/session flattens before
+the original TP; MES losses are 29: 14 initial stops and 15 time/session
+flattens.  The main weakness is adverse entry / failure to reach TP, not a
+trailing-lock bug.  `$100 + 5%` worsened MNQ; `$100 + 10%` stayed
+regime-dependent; `$100 + 50%` and `10% + 50%` were same-sample,
+coverage-limited spikes; 70% did nothing; time-only exits did not produce a
+durable improvement.  Every MES trail/time candidate failed the stress check.
+No candidate is promoted to Live.
+
+The source audit is at
+`ancserMarketData/derived/research/futures_source_audit_mnq_latest.{json,md}`
+and the replay at
+`ancserMarketData/derived/research/pi_trail_engine_study_latest.{json,md,_trades.csv}`.
+
+The repeated "click backtest -> disconnected" symptom was a UI false positive,
+not a broker disconnect: during the observed run `/api/health` stayed
+available, `/live/status` stayed `running` with `disconnected=false`, and the
+backtest progress completed 188,815/188,815 bars.  The frontend now owns an
+explicit `_backtestInProgress` window, ignores transient health timeouts while
+that intentional long operation is running, resumes hard-offline detection
+after it ends, and rejects duplicate programmatic starts.  The real-browser
+health suite covers both the grace path and the true-failure path.
+
+### R0.20 — Backtest chart-data handoff (2026-09-14)
+
+The earlier “backtest disconnected” report referred to the candles shown after
+clicking BACKTEST no longer looking like the candles shown immediately after
+CONNECT.  The previous repair only suppressed a transient health-panel false
+offline state; it did not address this chart handoff.
+
+The observed path was: CONNECT painted the recent Topstep warm-up, then the
+first backtest loaded the full immutable workset and immediately called the
+chart endpoint again.  That second request returned the capped 60k historical
+slice and forced a large `setData()`/overlay repaint.  The current repaired
+MNQ overlap is OHLCV-identical (recent Topstep U26 versus the persistent store),
+so the visible change was the implicit dataset replacement and long repaint,
+not a new Databento contract mix.  Direct verification on 2026-09-14 found no
+recent overlap mismatch.
+
+The intended behavior is now explicit: backtest preparation loads and binds
+the backend workset but leaves an already-painted chart candle snapshot and
+viewport alone.  Only an empty chart uses the fallback fetch; explicit chart
+catch-up and left-edge history paging remain available.  This keeps the chart
+and the just-opened view stable while the backtest data is materialized.
+
+Evidence: `frontend/static/ancserTPX.js` now gates the post-fetch chart call on
+`window._lastChartData`; `tests/ui/chart-catchup.spec.js` drives the real
+`_ensureBacktestData` path and proves no chart fetch occurs and every displayed
+OHLC value is unchanged; `tests/test_live_status_frontend_contract.py` protects
+the source contract.  Affected invariants are DATA-008, DATA-009, UI-014, and
+BT-001.  Behavior change: yes, UI-only and explicitly requested; no broker,
+live-engine, or backtest-engine behavior changed.  Allowed files are the
+frontend loader, its two contract tests, and this handoff note.
+
+### R0.21 — PI extended trailing-exit experiment (2026-09-14)
+
+The earlier study covered one-time locks.  `scripts/pi_trail_extended_study.py`
+now adds a pre-declared research grid for a true high-watermark trail and the
+shared production R-ladder kernel.  Continuous variants arm after 1R, 1.5R,
+or 2R and trail the post-fill candle high/low by 0.5R or 1R; selected cells
+retain hard TP, run as runners without hard TP, or use a 120-minute cap.  The
+ladder cells use the same shared `evaluate_exit_operation` contract, but no
+live preset was changed.
+
+The combined post-repair run reproduces the current PI engine exactly: MNQ
+n=76, PnL $4,380, PF 1.42, 14-tick PF 1.30; MES n=55, PnL $202, PF 1.12,
+14-tick PF 0.67.  The only tested MNQ continuous cell with all three equal-
+time walk-forward segments above PF 1 was `CONT · TP on · arm 1R / gap 0.5R`
+(WF PF 1.034, 1.028, 3.044; full PF 1.34; stress PF 1.22).  It lowered
+baseline max drawdown from $3,638 to $2,894, but also lowered PnL from $4,380
+to $3,469.  This is a coverage-limited candidate, not a durable or Live
+promotion: the history is under 12 months and its Monte Carlo gate is false.
+
+The highest MNQ full-sample result was the ladder arm-1R/gap-0.5R cell
+(PnL $5,694, PF 1.55, stress PF 1.42), but its middle walk-forward segment
+was PF 0.916, so it remains regime-dependent.  The runner arm-2R/gap-1R
+cell reached PF 1.53/stress 1.40 largely by allowing recent winners to run;
+its earlier walk-forward segments match the current baseline and therefore do
+not repair the older regime weakness.  MES has no passing cell: the best
+ladder cell is PF 1.22 but only 0.74 under 14-tick stress, with the first two
+walk-forward segments negative.  The continuous trail reduced neither the
+initial-stop path nor the underlying MES weakness.
+
+The loss-path diagnostics confirm that a trail only acts after activation;
+initial adverse entries remain unrepairable.  Results are stored at
+`ancserMarketData/derived/research/pi_trail_extended_study_latest.{json,md,_trades.csv}`.
+The study and its engine-level contract tests are research-only; no production
+strategy, live exit, preset, or market-data file was changed.
 
 ### R0.7 — Research robustness presentation (2026-09-01)
 

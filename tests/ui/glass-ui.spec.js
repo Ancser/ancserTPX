@@ -14,6 +14,7 @@ const canonicalModels = [
   ["pi", "PI"],
   ["optionwall", "OPTION WALL"],
   ["delta_absorption", "DELTA ABSORPTION"],
+  ["volume_profile", "VOLUME PROFILE"],
 ];
 
 async function openApp(page) {

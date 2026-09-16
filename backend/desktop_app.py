@@ -215,6 +215,11 @@ def start_backend() -> tuple[Any, threading.Thread, list[BaseException]]:
     """Start Uvicorn in a daemon worker owned by this launcher process."""
     import uvicorn
 
+    # The native application owns the record-only MBO lifecycle.  Keep this
+    # opt-in local to the desktop launcher so importing/using the FastAPI app in
+    # tests or a deliberate server-only session does not open a paid stream.
+    os.environ.setdefault("ANCSERTPX_AUTO_DATABENTO_MBO", "true")
+
     from backend.main import app
 
     config = uvicorn.Config(

@@ -63,6 +63,29 @@ def test_snapshot_seeds_book_but_does_not_create_old_bar():
     assert payload["bars"][0]["cells"][0][3] == 4
 
 
+def test_all_session_aggregation_keeps_session_labels_and_positive_output():
+    rows = [
+        # 20:00 ET previous day: ASIA in New-York market time.
+        _row("2026-09-14T00:00:01+00:00", "T", "B", 20000, 3, flags=0),
+        # 09:30 ET: RTH.
+        _row("2026-09-14T13:30:01+00:00", "T", "A", 20000.25, 2, flags=0),
+        # 16:00 ET: AH.
+        _row("2026-09-14T20:00:01+00:00", "T", "B", 20000, 4, flags=0),
+    ]
+    payload = orderflow.aggregate_mbo_records(
+        rows,
+        "2026-09-14",
+        session="ALL",
+        time_zone="America/New_York",
+    )
+
+    assert payload["meta"]["session"] == "ALL"
+    assert payload["meta"]["bucket"] == "UTC_DAY"
+    assert [row["session"] for row in payload["bars"]] == ["ASIA", "RTH", "AH"]
+    assert all(row["session_id"] for row in payload["bars"])
+    assert sum(row["trades"] for row in payload["bars"]) == 3
+
+
 def test_new_minute_seeds_unchanged_resting_depth():
     rows = [
         _row("2026-09-01T13:30:01+00:00", "A", "B", 20000, 50, 1),

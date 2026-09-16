@@ -85,3 +85,36 @@ def test_connection_status_maps_real_client_and_feed_states(monkeypatch):
     assert providers["discord"]["latency_ms"] == 24.6
     assert providers["databento"]["state"] == "starting"
     assert providers["databento"]["latency_ms"] == 81.2
+
+
+def test_connection_status_reports_record_only_mbo_without_live_engine(monkeypatch):
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("TOPSTEPX_USERNAME", "ancser")
+    monkeypatch.setenv("TOPSTEPX_API_KEY", "topstep-test-key")
+    monkeypatch.setenv("DATABENTO_API_KEY", "databento-test-key")
+    monkeypatch.setattr(routes, "_topstepx_client", None)
+    monkeypatch.setattr(routes, "_live_engines", {})
+    monkeypatch.setattr(pi_recorder, "pi_recorder_health", lambda: {})
+
+    from backend.live import databento_orderflow
+
+    monkeypatch.setattr(
+        databento_orderflow,
+        "databento_mbo_recorder_status",
+        lambda: {
+            "state": "connected",
+            "connected": True,
+            "latency_ms": 42.7,
+            "error": None,
+            "record_only": True,
+        },
+    )
+
+    providers = _status()["providers"]
+    assert providers["databento"] == {
+        "state": "connected",
+        "configured": True,
+        "connected": True,
+        "latency_ms": 42.7,
+        "detail": "Databento MBO record-only feed connected",
+    }

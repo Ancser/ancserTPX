@@ -331,15 +331,16 @@ class BreakoutAnalysis:
 # backtest 與 live 兩個引擎共用這兩個常數,確保 live == backtest。
 FACTOR_PIPELINE_STRATEGIES = (
     "factor", "momentum", "betafib", "pi", "optionwall", "delta_absorption",
+    "volume_profile",
 )
 ZONELESS_STRATEGIES = (
     "sigma", "fade", "factor", "momentum", "betafib", "pi", "optionwall",
-    "delta_absorption",
+    "delta_absorption", "volume_profile",
 )
 # 不渲染 detector zone 的策略(fade 另有自己的前日 VA 水位,單獨處理)
 ZONELESS_ZONE_RENDER = (
     "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
-    "delta_absorption",
+    "delta_absorption", "volume_profile",
 )
 
 
@@ -505,6 +506,22 @@ class StrategyParams:
     delta_pattern: str = "absorption"    # absorption | exhaustion | both
     delta_side_mode: str = "all"         # all | long_only | short_only
     delta_require_profile: bool = True
+    # Prior-RTH 70% Volume Profile edge model.  The state machine is separate
+    # from legacy FADE: it can fade a confirmed rejection, wait for a confirmed
+    # breakout/retest, or trade a failed-break reclaim.  SL/TP distances use
+    # ATR14/ATR50 blend; these are not fixed tick brackets.
+    vp_value_area_pct: float = 0.70
+    vp_entry_mode: str = "auto"           # auto | range | breakout | failed_break
+    vp_target_mode: str = "atr"           # atr | poc | opposite_edge
+    vp_side_mode: str = "all"             # all | long_only | short_only
+    vp_sl_atr: float = 1.5
+    vp_tp_atr: float = 2.0
+    vp_confirm_bars: int = 2
+    vp_breakout_buffer_ticks: int = 2
+    vp_touch_tolerance_ticks: int = 2
+    vp_reclaim_buffer_ticks: int = 1
+    vp_max_trades_per_day: int = 2
+    vp_min_source_candles: int = 60
     # QQQ Option Wall → MNQ historical-replay model.  Entry gates are fixed by
     # the selected causal sub-model; exits are deliberately separate from PI.
     option_wall_submodel: str = "primary_strict"

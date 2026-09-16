@@ -44,6 +44,14 @@ logger = logging.getLogger(__name__)
 # reader has the same new-channel identity.
 CHANNEL_ID = PI_SOURCE_CHANNEL_ID
 BOT_ID = "1514456965622005870"
+# The rebuilt PI channel contains a historical replay posted by the original
+# ``seiki`` sender, followed by the live ``pialert`` sender.  Sender IDs are
+# authoritative; display names are retained only as provenance.  Historical
+# rows are accepted only before the live cutover so a later seiki post cannot
+# accidentally become a live order.
+HISTORICAL_PI_AUTHOR_ID = "470850237532209153"
+LIVE_PI_SENDER = "pialert"
+HISTORICAL_PI_SENDER = "seiki"
 API = "https://discord.com/api/v10"
 
 SYMBOL_MAP = {"QQQ": "MNQ", "SPY": "MES"}
@@ -68,6 +76,11 @@ DIRECTION = {"淡蓝圈": +1, "深蓝圈": +1, "青π": +1, "紫圈": -1, "粉π
 # 拿重播回測 = 用今天的價格交易昨天的訊號。實盤照它下單更糟。
 PI_TZ = LOS_ANGELES
 SESSION_START_PT = (7, 0)
+# The source event date, not Discord's bulk-repost delivery date, determines
+# whether the historical sender is eligible.  The rebuilt channel's seiki
+# replay ends before this cutover; pialert remains the only live sender after
+# it.
+HISTORICAL_SENDER_CUTOFF = datetime(2026, 9, 9, tzinfo=UTC)
 # The listener intentionally avoids an unbounded Discord history replay.  On
 # window entry it seeds the newest message, then only requests newer messages
 # with Discord's ``after`` cursor; pre-session rows that are fetched are
@@ -136,6 +149,27 @@ def message_source_timestamp(msg: dict) -> Optional[datetime]:
     return stamp.astimezone(UTC)
 
 
+def pi_sender_role(msg: dict, *, allow_historical: bool = True) -> Optional[str]:
+    """Return the normalized PI sender role for an active-channel message.
+
+    ``pialert`` is the only live sender.  ``seiki`` is a trusted historical
+    source in the rebuilt channel and is accepted only when the embedded PI
+    event time is before the 2026-09-09 live cutover.  Keeping this check here
+    makes the historical collector and the live parser share the same source
+    boundary instead of relying on mutable display names.
+    """
+    author = (msg or {}).get("author") or {}
+    author_id = str(author.get("id") or "")
+    if author_id == BOT_ID:
+        return LIVE_PI_SENDER
+    if author_id != HISTORICAL_PI_AUTHOR_ID or not allow_historical:
+        return None
+    source_ts = message_source_timestamp(msg)
+    if source_ts is not None and source_ts < HISTORICAL_SENDER_CUTOFF:
+        return HISTORICAL_PI_SENDER
+    return None
+
+
 # Discord has used both the older ``π信号出现（QQQ）`` heading and the newer
 # ``QQQ π信号出现`` heading.  Keep the symbol match deliberately independent
 # from the heading wording so a harmless copy/layout change does not discard
@@ -165,16 +199,29 @@ class PiSignal:
     # Local dispatch time is diagnostic only.  ``ts`` is the PI event timestamp
     # (NY line when present, Discord delivery time for legacy posts).
     received_at: Optional[datetime] = None
+    # Source provenance is non-decisional and is persisted for the channel
+    # migration audit: pialert is live, seiki is historical replay.
+    sender: str = ""
+    sender_id: str = ""
+    sender_name: str = ""
 
     @property
     def side(self) -> str:
         return "long" if self.direction > 0 else "short"
 
 
-def parse_message(msg: dict) -> list[PiSignal]:
-    """一則訊息可能含多個標記 → 回傳多個訊號。非目標 bot 或無法解析 → 空list。"""
-    if (msg.get("author") or {}).get("id") != BOT_ID:
+def parse_message(
+    msg: dict, *, allow_historical: bool = True
+) -> list[PiSignal]:
+    """一則訊息可能含多個標記 → 回傳多個訊號。
+
+    The active rebuilt channel has two explicit source identities: historical
+    ``seiki`` replay before the cutover and live ``pialert`` afterwards.
+    """
+    sender = pi_sender_role(msg, allow_historical=allow_historical)
+    if sender is None:
         return []
+    author = (msg.get("author") or {})
     content = msg.get("content") or ""
     m = _SYM.search(content)
     if not m:
@@ -213,6 +260,11 @@ def parse_message(msg: dict) -> list[PiSignal]:
             pos=(mk.group("pos") or "").strip() or None,
             level=int(level) if level else None,
             raw=content,
+            sender=sender,
+            sender_id=str(author.get("id") or ""),
+            sender_name=str(
+                author.get("username") or author.get("global_name") or ""
+            ),
         ))
     return out
 
@@ -713,8 +765,14 @@ class PiListener:
                     self._audit_write_errors += 1
                 logger.info("[PI] 略過開盤前重播訊息 %s", msg_id)
                 continue
+            # A normal Live listener is pialert-only.  The record-only
+            # collector may additionally parse the trusted pre-cutover
+            # seiki replay from the rebuilt channel.
             try:
-                sigs = parse_message(msg)
+                if self._record_only:
+                    sigs = parse_message(msg)
+                else:
+                    sigs = parse_message(msg, allow_historical=False)
             except Exception as e:
                 self._record_error(f"parse_{type(e).__name__}")
                 if not append_message_event(
@@ -730,7 +788,7 @@ class PiListener:
             if not sigs:
                 # Keep a durable explanation for a target-symbol message that
                 # had no supported mark (bad timestamp/regex/unknown level).
-                if ((msg.get("author") or {}).get("id") == BOT_ID
+                if (pi_sender_role(msg, allow_historical=self._record_only) is not None
                         and _SYM.search(msg.get("content") or "")):
                     self._messages_unparsed += 1
                     if not append_message_event(

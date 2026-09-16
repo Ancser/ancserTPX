@@ -51,6 +51,9 @@ from backend.data import market_data
 from backend.strategy.volume_profile import (
     PREVIOUS_DAY_VALUE_AREA_PCT,
     VolumeProfileCalculator,
+    normalize_volume_profile_entry_mode,
+    normalize_volume_profile_side_mode,
+    normalize_volume_profile_target_mode,
     calculate_previous_day_value_areas,
 )
 from backend.strategy.session_filter import (
@@ -287,11 +290,12 @@ def _normalize_strategy_name(value: str) -> str:
         "intramom": "momentum", "claudefib": "momentum", "sessfib": "betafib",
         "delta": "delta_absorption", "delta_va": "delta_absorption",
         "delta+va": "delta_absorption", "delta_absorb": "delta_absorption",
+        "vp": "volume_profile", "volumeprofile": "volume_profile",
     }.get(v, v)
     # 1.0.9: TREND 已移除 —— 未知值一律落到 factor
     return v if v in (
         "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
-        "delta_absorption",
+        "delta_absorption", "volume_profile",
     ) else "factor"
 
 
@@ -506,6 +510,9 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
     # 1.0.8: mlc2 (ml_consolidation_v2) 已移除;僅 confluence / trend。
     strategy = _normalize_strategy_name(raw_strat)
     tr = _strategy_leg_params(req, "tr")
+    vp_value = lambda name: _request_value_or(
+        req, name, getattr(_PARAM_DEFAULTS, name)
+    )
     # The researched Delta candidate has a PI-style exit shape. Keep the
     # normal FACTOR defaults unchanged, but make a minimal direct API request
     # (``{"strategy":"delta_absorption"}``) deterministic as well. A full
@@ -582,7 +589,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         # Option Wall's causal tape contains RTH snapshots only.  Treat that as
         # model semantics rather than inheriting the platform's ASIA default.
         tr_allowed_sessions=(
-            ["RTH"] if strategy in ("optionwall", "delta_absorption") else _conf_allowed_sessions_list(
+            ["RTH"] if strategy in ("optionwall", "delta_absorption", "volume_profile") else _conf_allowed_sessions_list(
                 getattr(req, "tr_allowed_sessions", DEFAULT_ALLOWED_SESSIONS)
             )
         ),
@@ -739,6 +746,39 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
             str(getattr(req, "delta_side_mode", _PARAM_DEFAULTS.delta_side_mode) or "all").lower()),
         delta_require_profile=bool(getattr(
             req, "delta_require_profile", _PARAM_DEFAULTS.delta_require_profile)),
+        vp_value_area_pct=max(0.50, min(0.95, float(
+            vp_value("vp_value_area_pct") or _PARAM_DEFAULTS.vp_value_area_pct))),
+        vp_entry_mode=normalize_volume_profile_entry_mode(
+            vp_value("vp_entry_mode")
+        ),
+        vp_target_mode=normalize_volume_profile_target_mode(
+            vp_value("vp_target_mode")
+        ),
+        vp_side_mode=normalize_volume_profile_side_mode(
+            vp_value("vp_side_mode")
+        ),
+        vp_sl_atr=max(0.1, float(
+            vp_value("vp_sl_atr") or _PARAM_DEFAULTS.vp_sl_atr)),
+        vp_tp_atr=max(0.1, float(
+            vp_value("vp_tp_atr") or _PARAM_DEFAULTS.vp_tp_atr)),
+        vp_confirm_bars=max(1, min(10, int(
+            vp_value("vp_confirm_bars") or _PARAM_DEFAULTS.vp_confirm_bars))),
+        vp_breakout_buffer_ticks=max(0, min(40, int(
+            vp_value("vp_breakout_buffer_ticks")
+            if vp_value("vp_breakout_buffer_ticks") is not None
+            else _PARAM_DEFAULTS.vp_breakout_buffer_ticks))),
+        vp_touch_tolerance_ticks=max(0, min(40, int(
+            vp_value("vp_touch_tolerance_ticks")
+            if vp_value("vp_touch_tolerance_ticks") is not None
+            else _PARAM_DEFAULTS.vp_touch_tolerance_ticks))),
+        vp_reclaim_buffer_ticks=max(0, min(40, int(
+            vp_value("vp_reclaim_buffer_ticks")
+            if vp_value("vp_reclaim_buffer_ticks") is not None
+            else _PARAM_DEFAULTS.vp_reclaim_buffer_ticks))),
+        vp_max_trades_per_day=max(0, int(
+            vp_value("vp_max_trades_per_day") or _PARAM_DEFAULTS.vp_max_trades_per_day)),
+        vp_min_source_candles=max(1, int(
+            vp_value("vp_min_source_candles") or _PARAM_DEFAULTS.vp_min_source_candles)),
         option_wall_submodel=_normalize_option_wall_submodel(
             getattr(req, "option_wall_submodel", _PARAM_DEFAULTS.option_wall_submodel)
         ),
@@ -1677,6 +1717,19 @@ class BacktestRequest(BaseModel):
     delta_pattern: str = "absorption"
     delta_side_mode: str = "all"
     delta_require_profile: bool = True
+    # Prior-RTH 70% Volume Profile edge model
+    vp_value_area_pct: float = 0.70
+    vp_entry_mode: str = "auto"
+    vp_target_mode: str = "atr"
+    vp_side_mode: str = "all"
+    vp_sl_atr: float = 1.5
+    vp_tp_atr: float = 2.0
+    vp_confirm_bars: int = 2
+    vp_breakout_buffer_ticks: int = 2
+    vp_touch_tolerance_ticks: int = 2
+    vp_reclaim_buffer_ticks: int = 1
+    vp_max_trades_per_day: int = 2
+    vp_min_source_candles: int = 60
     option_wall_submodel: str = "primary_strict"
     option_wall_side_mode: str = "all"
     option_wall_long_sl_atr: float = 4.0
@@ -1840,6 +1893,12 @@ class BacktestResponse(BaseModel):
     trades: List[TradeResponse]
     zones: List[ZoneResponse]
     equity_curve: List[List[float]]   # [[timestamp_ms, equity], ...]
+    # Strategy identity is returned with the result so chart-only layers can
+    # stay scoped to the model that produced the backtest.
+    strategy: str = "factor"
+    # Delta Absorption evidence is chart-only: it contains bounded VAH/VAL,
+    # delta-decay, and price-no-break events, not another order stream.
+    delta_overlay: Optional[Dict[str, Any]] = None
     # Number of in-range Live PI audit marks replayed for this run.  These are
     # transient inputs only; the immutable historical file is unchanged.
     pi_replay_count: int = 0
@@ -2035,14 +2094,40 @@ async def connection_status():
         if feed:
             delta_snapshots.append(feed)
 
+    record_only_feed = None
+    try:
+        from backend.live.databento_orderflow import databento_mbo_recorder_status
+        record_only_feed = databento_mbo_recorder_status()
+    except Exception as exc:
+        # Provider telemetry must never make the connection endpoint fail.
+        logger.debug("Databento recorder status unavailable: %s", exc)
+
     if not databento_configured:
         databento = _connection_provider(
             "empty", configured=False, detail="Databento API key not configured"
         )
     elif not delta_snapshots:
-        databento = _connection_provider(
-            "error", configured=True, detail="Key loaded; Delta live feed not started"
-        )
+        if record_only_feed:
+            feed = record_only_feed
+            raw_state = str(feed.get("state") or "error").lower()
+            databento_state = (
+                "connected" if raw_state == "connected"
+                else ("starting" if raw_state == "starting" else "error")
+            )
+            databento = _connection_provider(
+                databento_state,
+                configured=True,
+                latency_ms=feed.get("latency_ms"),
+                detail=str(
+                    feed.get("error")
+                    or "Databento MBO record-only feed " + raw_state
+                ),
+            )
+        else:
+            databento = _connection_provider(
+                "error", configured=True,
+                detail="Key loaded; MBO recorder not started",
+            )
     else:
         feed = next(
             (item for item in delta_snapshots if item.get("state") == "connected"),
@@ -2336,6 +2421,19 @@ async def get_orderflow_footprint(
     symbol: str = "MNQ",
     interval: Literal["1m", "5m"] = "1m",
     limit: int = 10_000,
+    include_delta: bool = False,
+    delta_window: int = 5,
+    delta_baseline_window: int = 30,
+    delta_strength_multiplier: float = 1.0,
+    delta_weakening_ratio: float = 0.70,
+    delta_stall_ticks: int = 1,
+    delta_value_lookback: int = 10,
+    delta_value_touch_ticks: int = 0,
+    delta_source: str = "whole",
+    delta_gate: str = "location",
+    delta_pattern: str = "absorption",
+    delta_side_mode: str = "all",
+    delta_require_profile: bool = True,
 ):
     """Return compact MBO-derived bars for the visible chart window only.
 
@@ -2354,7 +2452,7 @@ async def get_orderflow_footprint(
     try:
         from backend.data.orderflow import load_cached_footprint
 
-        return await asyncio.to_thread(
+        payload = await asyncio.to_thread(
             load_cached_footprint,
             start_dt,
             end_dt,
@@ -2362,6 +2460,46 @@ async def get_orderflow_footprint(
             interval=interval,
             limit=max(1, min(limit, 10_000)),
         )
+        if include_delta:
+            from backend.strategy.delta_absorption import build_delta_chart_overlay
+
+            delta_params = StrategyParams(
+                strategy="delta_absorption",
+                contract_id=symbol or current_quarterly_contract_id("MNQ"),
+                delta_window=max(1, min(30, int(delta_window or 5))),
+                delta_baseline_window=max(2, min(120, int(delta_baseline_window or 30))),
+                delta_strength_multiplier=max(0.1, min(10.0, float(delta_strength_multiplier or 1.0))),
+                delta_weakening_ratio=max(0.1, min(1.0, float(delta_weakening_ratio or 0.70))),
+                delta_stall_ticks=max(0, min(20, int(delta_stall_ticks or 0))),
+                delta_value_lookback=max(2, min(120, int(delta_value_lookback or 10))),
+                delta_value_touch_ticks=max(0, min(20, int(delta_value_touch_ticks or 0))),
+                delta_source=str(delta_source or "whole"),
+                delta_gate=str(delta_gate or "location"),
+                delta_pattern=str(delta_pattern or "absorption"),
+                delta_side_mode=str(delta_side_mode or "all"),
+                delta_require_profile=bool(delta_require_profile),
+            )
+            try:
+                payload["delta_overlay"] = await asyncio.to_thread(
+                    build_delta_chart_overlay,
+                    start_dt,
+                    end_dt,
+                    symbol=symbol,
+                    params=delta_params,
+                    limit=600,
+                )
+            except (TypeError, ValueError, OSError) as exc:
+                logger.warning("Delta chart overlay unavailable: %s", exc)
+                payload["delta_overlay"] = {
+                    "model": "delta_absorption",
+                    "available": False,
+                    "mbo_available": False,
+                    "status": "error",
+                    "error": str(exc),
+                    "events": [],
+                    "value_areas": [],
+                }
+        return payload
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
@@ -3131,7 +3269,8 @@ async def fetch_historical(req: FetchHistoricalRequest):
             # 1.0.10: store 是累積器(保留全部),但**記憶體工作集只放要求的範圍**。
             # 先前不管請求什麼日期,_historical_candles 一律是整份 233 萬根 ——
             # 回測就在這上面跑,單次約 219 秒(3.7 分鐘),使用者只看到畫面不動。
-            # PI 只需要 2026-06 起的 6.8 萬根,縮到範圍內約 7 秒。
+            # PI now has source marks from 2026-03-05; slice to the requested
+            # range rather than assuming the former June-only history.
             _before = len(candles)
             _win = await asyncio.to_thread(
                 _sort_and_select_candles, candles, requested_start, requested_end,
@@ -3618,6 +3757,13 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
         trades=trades_resp,
         zones=zones_resp,
         equity_curve=equity,
+        strategy=strategy_name,
+        delta_overlay=(
+            engine.trend_follow.get_chart_overlay()
+            if strategy_name == "delta_absorption"
+            and hasattr(engine.trend_follow, "get_chart_overlay")
+            else None
+        ),
         pi_replay_count=len(pi_replay_rows),
         market_clock_version=MARKET_CLOCK_VERSION,
     )
@@ -4250,6 +4396,19 @@ class LiveStartRequest(BaseModel):
     delta_pattern: str = "absorption"
     delta_side_mode: str = "all"
     delta_require_profile: bool = True
+    # Prior-RTH 70% Volume Profile edge model
+    vp_value_area_pct: float = 0.70
+    vp_entry_mode: str = "auto"
+    vp_target_mode: str = "atr"
+    vp_side_mode: str = "all"
+    vp_sl_atr: float = 1.5
+    vp_tp_atr: float = 2.0
+    vp_confirm_bars: int = 2
+    vp_breakout_buffer_ticks: int = 2
+    vp_touch_tolerance_ticks: int = 2
+    vp_reclaim_buffer_ticks: int = 1
+    vp_max_trades_per_day: int = 2
+    vp_min_source_candles: int = 60
     pi_long_only: bool = True
     pi_signal_set: str = "long_pi_only"
     pi_long_kinds: Optional[List[str]] = None
@@ -5335,7 +5494,7 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
         # 1.0.9: TREND 已移除,未知/舊值一律落到 factor
         normalized_strategy = strategy if strategy in (
             "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
-            "delta_absorption",
+            "delta_absorption", "volume_profile",
         ) else "factor"
         # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         _cid_new = normalize_contract_id_to_front(params.get("contract_id") or "")
@@ -5362,6 +5521,10 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             params["tr_allowed_sessions"] = list(DEFAULT_ALLOWED_SESSIONS)
             changed = True
         if normalized_strategy == "delta_absorption":
+            if params.get("tr_allowed_sessions") != ["RTH"]:
+                params["tr_allowed_sessions"] = ["RTH"]
+                changed = True
+        if normalized_strategy == "volume_profile":
             if params.get("tr_allowed_sessions") != ["RTH"]:
                 params["tr_allowed_sessions"] = ["RTH"]
                 changed = True

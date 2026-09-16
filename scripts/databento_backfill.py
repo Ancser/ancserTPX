@@ -51,6 +51,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+from backend.data.futures_data import find_rolls, flatten_rolls  # noqa: E402
+
 DATASET = "GLBX.MDP3"
 SCHEMA = "ohlcv-1m"
 ROLL = "v"          # 成交量排名 —— 與本機引擎的換月規則一致(非日曆換月)
@@ -64,41 +66,6 @@ def load_local(symbol):
     from backend.data import candle_store
     bars = sorted(candle_store.load(symbol, 1), key=lambda c: c.timestamp)
     return {_utc(c.timestamp): c for c in bars}, bars
-
-
-def find_rolls(df):
-    """換月點 = instrument_id 改變。
-
-    **不要用跳幅大小去猜。** 第一版就是那樣寫的,結果把 2026-04-10 12:30
-    (美東 8:30 數據發布)的 +69.00 點真實行情誤判成換月抹平了 —— 那一分鐘
-    成交量從 2,690 暴增到 3,881 且價格站穩不回補,原始 MNQM6 合約本身有
-    完全相同的跳空。真換月時 instrument_id 一定變,行情波動時一定不變。
-    """
-    rolls = []
-    prev_iid = None
-    prev_close = None
-    for ts, r in df.iterrows():
-        iid = int(r["instrument_id"])
-        if prev_iid is not None and iid != prev_iid and prev_close is not None:
-            rolls.append((_utc(ts.to_pydatetime()),
-                          float(r["open"]) - prev_close, prev_iid, iid))
-        prev_iid = iid
-        prev_close = float(r["close"])
-    return rolls
-
-
-def flatten_rolls(bars, rolls):
-    """把換月造成的跳空補平,錨定到**最新**的那一段。
-
-    每個接縫之前的所有 bar 都加上該跳幅,使序列連續。
-    """
-    out = list(bars)
-    for seam_ts, jump, _a, _b in rolls:
-        out = [replace(c, open=c.open + jump, high=c.high + jump,
-                       low=c.low + jump, close=c.close + jump)
-               if _utc(c.timestamp) < seam_ts else c
-               for c in out]
-    return out
 
 
 def main():

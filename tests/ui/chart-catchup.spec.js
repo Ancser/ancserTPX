@@ -305,6 +305,64 @@ test("panning to the left edge prepends an older chart page", async ({ page }) =
   expect(signalRequestsDuringPaging).toEqual([]);
 });
 
+test("backtest data preparation keeps the already displayed candle snapshot", async ({ page }) => {
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname === "unpkg.com" && url.pathname.endsWith(
+      "/lightweight-charts.standalone.production.js")) {
+      await route.fulfill({ path: chartBundle, contentType: "application/javascript" });
+      return;
+    }
+    if (url.hostname !== "127.0.0.1") {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.waitForSelector("#chart-container");
+  await page.waitForTimeout(1200);
+  let chartRequests = 0;
+  await page.route("**/api/data/candles**", async (route) => {
+    chartRequests += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ candles: [], count: 0, shown: 0 }),
+    });
+  });
+  await page.route("**/api/data/fetch-historical", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        success: true,
+        contract_id: "CON.F.US.MNQ.U26",
+        contracts: ["CON.F.US.MNQ.U26"],
+        candles_count: 2,
+        fetched_count: 2,
+        from_store: true,
+        workset_token: "test-workset",
+        first: "2026-09-14T16:00:00Z",
+        last: "2026-09-14T16:01:00Z",
+      }),
+    });
+  });
+
+  const initial = bars(Date.UTC(2026, 8, 14, 16), 180);
+  const before = await page.evaluate((rows) => {
+    showCandleData(rows);
+    return window._lastChartData.map((row) => ({ ...row }));
+  }, initial);
+
+  await page.evaluate(async () => {
+    const button = document.getElementById("btn-backtest");
+    await _ensureBacktestData(button, "2026-09-14", "2026-09-14");
+  });
+
+  const after = await page.evaluate(() => window._lastChartData.map((row) => ({ ...row })));
+  expect(chartRequests).toBe(0);
+  expect(after).toEqual(before);
+});
+
 test("option-wall is continuous inside a session, breaks overnight, and keeps overlaps visible", async ({ page }) => {
   test.setTimeout(120000);
   const now = Math.floor(Date.now() / MIN) * MIN;

@@ -30,7 +30,7 @@ async function openApp(page) {
 
 test("lost backend health paints the account avatar red without closing the page", async ({ page }) => {
   await openApp(page);
-  await expect(page.locator(".account-orb")).toBeVisible();
+  await expect(page.locator(".conn-trigger")).toBeVisible();
 
   const display = await page.evaluate(async () => {
     const originalFetch = window.fetch;
@@ -53,7 +53,7 @@ test("lost backend health paints the account avatar red without closing the page
       const failed = {
         text: document.getElementById("api-status-text").textContent,
         connectionState: document.documentElement.dataset.connectionState,
-        avatarState: document.querySelector(".account-orb").dataset.conn,
+        triggerConnected: document.querySelector(".conn-trigger").classList.contains("connected"),
       };
       backendUp = true;
       await checkHealth();
@@ -61,7 +61,7 @@ test("lost backend health paints the account avatar red without closing the page
         failed,
         recovered: {
           text: document.getElementById("api-status-text").textContent,
-          avatarState: document.querySelector(".account-orb").dataset.conn,
+          triggerConnected: document.querySelector(".conn-trigger").classList.contains("connected"),
         },
         pageAlive: document.visibilityState !== "prerender",
       };
@@ -73,11 +73,54 @@ test("lost backend health paints the account avatar red without closing the page
   expect(display.failed).toEqual({
     text: "BACKEND OFFLINE",
     connectionState: "error",
-    avatarState: "error",
+    triggerConnected: false,
   });
   expect(display.recovered.text).toBe("CONNECTED");
-  expect(display.recovered.avatarState).toBe("connected");
+  expect(display.recovered.triggerConnected).toBe(true);
   expect(display.pageAlive).toBe(true);
+});
+
+test("a backtest health timeout keeps the connected state until the run ends", async ({ page }) => {
+  await openApp(page);
+
+  const display = await page.evaluate(async () => {
+    const originalFetch = window.fetch;
+    let backendUp = false;
+    window.fetch = async (url, options) => {
+      if (String(url).includes("/health")) {
+        if (!backendUp) throw new TypeError("Failed to fetch");
+        return { ok: true, json: async () => ({ status: "ok", service: "ancserTPX" }) };
+      }
+      return originalFetch(url, options);
+    };
+
+    try {
+      document.getElementById("username").value = "test@example.com";
+      document.getElementById("apikey").dataset.configured = "1";
+      setStatus("ok", "CONNECTED");
+      _backtestInProgress = true;
+      await checkHealth();
+      const during = {
+        text: document.getElementById("api-status-text").textContent,
+        connectionState: document.documentElement.dataset.connectionState,
+      };
+      _backtestInProgress = false;
+      await checkHealth();
+      return {
+        during,
+        after: {
+          text: document.getElementById("api-status-text").textContent,
+          connectionState: document.documentElement.dataset.connectionState,
+        },
+      };
+    } finally {
+      _backtestInProgress = false;
+      window.fetch = originalFetch;
+    }
+  });
+
+  expect(display.during).toEqual({ text: "CONNECTED", connectionState: "connected" });
+  expect(display.after).toEqual({ text: "BACKEND OFFLINE", connectionState: "error" });
 });
 
 test("live poll is single-flight and an aborted late response cannot win", async ({ page }) => {

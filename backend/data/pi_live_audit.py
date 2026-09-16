@@ -80,6 +80,12 @@ def _row_for_signal(signal: Any, *, event: str, received_at: Any = None,
         "size": getattr(signal, "size", None),
         "level": getattr(signal, "level", None),
         "pos": getattr(signal, "pos", None),
+        # Source provenance is diagnostic only.  It distinguishes the
+        # historical seiki replay from the live pialert stream without
+        # changing strategy selection.
+        "sender": getattr(signal, "sender", None),
+        "sender_id": getattr(signal, "sender_id", None),
+        "sender_name": getattr(signal, "sender_name", None),
         "raw": getattr(signal, "raw", ""),
     }
     if accepted is not None:
@@ -131,6 +137,12 @@ def append_message_event(message: Any, *, event: str, error: str | None = None,
         "message_id": str((message or {}).get("id") or ""),
         "ts": _iso((message or {}).get("timestamp")),
         "received_at": utc_now().isoformat(),
+        "sender": str(
+            ((message or {}).get("author") or {}).get("username")
+            or ((message or {}).get("author") or {}).get("global_name")
+            or ""
+        ),
+        "sender_id": str(((message or {}).get("author") or {}).get("id") or ""),
         "raw": (message or {}).get("content") or "",
     }
     if error:

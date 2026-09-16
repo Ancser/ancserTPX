@@ -33,7 +33,10 @@ from backend.strategy.session_filter import (
 from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.factor import FactorSignalStrategy
 from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
-from backend.strategy.volume_profile import VolumeProfileCalculator  # 1.0.8: fade 前日 VP
+from backend.strategy.volume_profile import (  # 1.0.8: fade 前日 VP
+    VolumeProfileCalculator,
+    VolumeProfileStrategy,
+)
 from backend.backtest.intrabar import resolve_same_bar_exit
 from backend.strategy.exit_policy import (
     ExitAction,
@@ -107,7 +110,7 @@ class BacktestEngine:
         _strat = str(getattr(self.strategy_params, "strategy", "") or "").lower()
         self.strategy_mode = _strat if _strat in (
             "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
-            "delta_absorption",
+            "delta_absorption", "volume_profile",
         ) else "factor"
         if self.strategy_mode == "fade":
             # 1.0.9: fade_entry_mode="or15" → 15m 開盤區間假突破(雙向);其餘走前日 VA fade
@@ -133,6 +136,8 @@ class BacktestEngine:
         elif self.strategy_mode == "delta_absorption":
             from backend.strategy.delta_absorption import DeltaAbsorptionStrategy
             self.trend_follow = DeltaAbsorptionStrategy(params=self.strategy_params)
+        elif self.strategy_mode == "volume_profile":
+            self.trend_follow = VolumeProfileStrategy(params=self.strategy_params)
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
         # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
@@ -434,6 +439,12 @@ class BacktestEngine:
                 self._fade_day_candles = []
             self._fade_day_candles.append(candle)
 
+        # Prior-RTH Volume Profile and Delta+VA entries use completed-bar
+        # observe paths even when the entry gate is closed.  The VP strategy
+        # owns its causal profile tracker and ATR blend.
+        if self.strategy_mode == "volume_profile":
+            self.trend_follow.observe(candle, [], True)
+
         # Delta+VA entries use the compact MBO provider, but their PI-style
         # ATR exit width still needs the same completed 5m warm-up on every
         # candle, including outside RTH.  This observe path never evaluates an
@@ -573,10 +584,10 @@ class BacktestEngine:
                 eval_zones = []
                 eval_mature = True
                 zone_source = "option_wall"
-            elif self.strategy_mode == "delta_absorption":
+            elif self.strategy_mode in ("delta_absorption", "volume_profile"):
                 eval_zones = []
                 eval_mature = True
-                zone_source = "delta_absorption"
+                zone_source = self.strategy_mode
             elif self.strategy_mode == "fade":
                 eval_zones = []
                 eval_mature = True

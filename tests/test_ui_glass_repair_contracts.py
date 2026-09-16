@@ -39,6 +39,7 @@ CANONICAL = [
     ("pi", "PI"),
     ("optionwall", "OPTION WALL"),
     ("delta_absorption", "DELTA ABSORPTION"),
+    ("volume_profile", "VOLUME PROFILE"),
 ]
 
 
@@ -114,6 +115,24 @@ def test_model_controls_do_not_render_strategy_description_rows():
             JS,
             re.DOTALL,
         )
+
+
+def test_volume_profile_controls_cover_the_edge_state_machine_and_atr_blend():
+    for mode in ("bt", "live"):
+        for control in (
+            "vp-entry-mode", "vp-side", "vp-target", "vp-va", "vp-sl-atr",
+            "vp-tp-atr", "vp-confirm", "vp-max-trades", "vp-break-buffer",
+            "vp-touch", "vp-reclaim-buffer",
+        ):
+            assert f'id="{control}-{mode}"' in HTML
+    collect = _function_source("collectStrategyParams")
+    for field in (
+        "vp_value_area_pct", "vp_entry_mode", "vp_target_mode", "vp_side_mode",
+        "vp_sl_atr", "vp_tp_atr", "vp_confirm_bars",
+        "vp_breakout_buffer_ticks", "vp_touch_tolerance_ticks",
+        "vp_reclaim_buffer_ticks", "vp_max_trades_per_day",
+    ):
+        assert field in collect
 
 
 def test_status_and_new_preset_names_use_canonical_identity_but_legacy_names_parse():
@@ -574,14 +593,14 @@ def test_chart_layer_popup_contract_uses_per_switch_optical_surfaces():
     assert 'data-glass-scene="chart"' in popup
     assert 'data-glass-tier="1"' in popup
     assert 'data-glass-material="popup"' in popup
-    assert popup.count('data-glass-material="local"') == 11
+    assert popup.count('data-glass-material="local"') == 15
     # Repeated rows use the PI matrix's real optical thumb path, with the
     # ordinary switch geometry AND the ordinary switch optics.  1.0.10p: a
     # per-surface data-glass-shrink="0.20" override made these the only
     # switches on the page with their own sampling; the brief was parity with
     # the parameter switches, so shrink comes from settings.switch alone.
     assert 'data-glass-sampling="material-only"' not in popup
-    assert popup.count('data-optical="switch"') == 11
+    assert popup.count('data-optical="switch"') == 15
     assert "data-glass-shrink" not in popup
     assert "dataset.glassShrink" not in _code(GLASS_JS)
     assert "const config = settings[surface.component];" in GLASS_JS
@@ -651,6 +670,36 @@ def test_chart_layer_choices_are_restored_and_persisted_through_one_state_path()
     assert toggle.index("CHART_OVERLAYS[key] = !!on") < toggle.index(
         "_persistChartLayerPreferences()"
     )
+
+
+def test_delta_absorption_chart_evidence_is_split_and_model_scoped():
+    for key, label in (
+        ("delta_absorption", "DELTA ABSORPTION"),
+        ("delta_value", "VAH / VAL (DELTA)"),
+        ("delta_decay", "DELTA DECAY"),
+        ("delta_stall", "PRICE NO-BREAK"),
+    ):
+        assert f"key: '{key}'" in JS
+        assert label in HTML
+        assert f'data-switch-proxy="lp-{key}"' in HTML
+
+    draw = _function_source("drawDeltaAbsorptionOverlay")
+    assert "_deltaChartModelActive()" in draw
+    assert "data.value_areas" in draw
+    assert "event.delta_decay" in draw
+    assert "event.stalled" in draw
+    assert "event.touched" in draw
+    assert "clearDeltaAbsorptionOverlay()" in draw
+    assert "VAH 70%" in draw
+    assert "DELTA · NO MBO IN VISIBLE WINDOW" in _code(JS)
+    assert "DELTA · LOADING MBO EVIDENCE" in _code(JS)
+    assert "delta_overlay" in _code(JS)
+    # A restored backtest installs its payload before the first candle load;
+    # showCandleData must therefore perform the initial repaint as well as the
+    # normal renderChart path.
+    assert "drawDeltaAbsorptionOverlay();" in _function_source("showCandleData")
+    assert "refreshDeltaAbsorptionOverlay" in _function_source("toggleChartLayer")
+    assert "include_delta: '1'" in _function_source("refreshDeltaAbsorptionOverlay")
 
 
 def test_option_wall_demo_is_an_opt_in_read_only_chart_layer():

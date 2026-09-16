@@ -20,6 +20,7 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from backend.data import market_data
+from backend.strategy.session_filter import market_session_code, market_session_id
 from backend.timebase import LOS_ANGELES, UTC
 
 
@@ -79,7 +80,7 @@ def _iso_from_epoch(epoch_seconds: int) -> str:
 
 
 class _MboAggregator:
-    """Streaming MBO replay state; bounded by one requested trade day."""
+    """Streaming MBO replay state; bounded by one requested time window."""
 
     def __init__(
         self,
@@ -90,6 +91,9 @@ class _MboAggregator:
         depth_radius_points: float = DEFAULT_DEPTH_RADIUS_POINTS,
         snapshot_flag: int = 0,
         last_event_flag: int = LAST_EVENT_FLAG,
+        session: str = "RTH",
+        session_start_ns: int | None = None,
+        session_end_ns: int | None = None,
     ) -> None:
         if tick_size <= 0:
             raise ValueError("tick_size must be positive")
@@ -97,10 +101,27 @@ class _MboAggregator:
         self.tick_size = float(tick_size)
         self.tick_nano = int(round(self.tick_size * PRICE_SCALE))
         self.time_zone = time_zone
+        self.session = str(session or "RTH").strip().upper()
         self.depth_radius_nano = int(depth_radius_points * PRICE_SCALE)
         self.snapshot_flag = int(snapshot_flag)
         self.last_event_flag = int(last_event_flag)
-        self.start_ns, self.end_ns = _session_bounds_ns(self.trade_date, time_zone)
+        if (session_start_ns is None) != (session_end_ns is None):
+            raise ValueError("session_start_ns and session_end_ns must be provided together")
+        if session_start_ns is None:
+            if self.session == "ALL":
+                start = datetime.combine(
+                    date.fromisoformat(self.trade_date), time.min, tzinfo=UTC,
+                )
+                end = start + timedelta(days=1)
+                self.start_ns = int(start.timestamp() * NANO)
+                self.end_ns = int(end.timestamp() * NANO)
+            else:
+                self.start_ns, self.end_ns = _session_bounds_ns(self.trade_date, time_zone)
+        else:
+            self.start_ns = int(session_start_ns)
+            self.end_ns = int(session_end_ns)
+        if self.end_ns <= self.start_ns:
+            raise ValueError("session_end_ns must be later than session_start_ns")
         self.orders: dict[int, list[Any]] = {}
         self.levels: defaultdict[tuple[str, int], int] = defaultdict(int)
         self.bid_heap: list[int] = []
@@ -431,7 +452,7 @@ class _MboAggregator:
                 for tick, values in sorted(bar["cells"].items())
                 if any(values)
             ]
-            serial.append({
+            row = {
                 "time": _iso_from_epoch(epoch),
                 "epoch": epoch,
                 "open": bar["open"],
@@ -470,8 +491,13 @@ class _MboAggregator:
                 "close_ask_price": bar["close_ask_price"],
                 "close_ask_depth": int(bar["close_ask_depth"]),
                 "cells": cells,
-            })
-        return {
+            }
+            if self.session == "ALL":
+                bar_time = datetime.fromtimestamp(epoch, tz=UTC)
+                row["session"] = market_session_code(bar_time)
+                row["session_id"] = market_session_id(bar_time)
+            serial.append(row)
+        meta = {
             "meta": {
                 "schema_version": CACHE_SCHEMA_VERSION,
                 "trade_date": self.trade_date,
@@ -479,10 +505,8 @@ class _MboAggregator:
                 "interval": "1m",
                 "interval_seconds": 60,
                 "tick_size": self.tick_size,
-                "session": "RTH",
+                "session": self.session,
                 "session_time_zone": self.time_zone,
-                "session_open": RTH_OPEN.isoformat(timespec="minutes"),
-                "session_close": RTH_CLOSE.isoformat(timespec="minutes"),
                 "depth_radius_points": self.depth_radius_nano / PRICE_SCALE,
                 "source_records": self.record_count,
                 "cell_encoding": [
@@ -496,6 +520,23 @@ class _MboAggregator:
             },
             "bars": serial,
         }
+        if self.session == "RTH":
+            meta["meta"].update({
+                "session_open": RTH_OPEN.isoformat(timespec="minutes"),
+                "session_close": RTH_CLOSE.isoformat(timespec="minutes"),
+            })
+        else:
+            meta["meta"].update({
+                "bucket": "UTC_DAY",
+                "coverage_start": datetime.fromtimestamp(
+                    self.start_ns / NANO, tz=UTC,
+                ).isoformat(),
+                "coverage_end": datetime.fromtimestamp(
+                    self.end_ns / NANO, tz=UTC,
+                ).isoformat(),
+                "session_codes": ["ASIA", "EURO", "PRE", "RTH", "AH"],
+            })
+        return meta
 
 
 def aggregate_mbo_records(
@@ -506,6 +547,9 @@ def aggregate_mbo_records(
     time_zone: str = DEFAULT_SESSION_TIME_ZONE,
     depth_radius_points: float = DEFAULT_DEPTH_RADIUS_POINTS,
     snapshot_flag: int = 0,
+    session: str = "RTH",
+    session_start_ns: int | None = None,
+    session_end_ns: int | None = None,
 ) -> dict[str, Any]:
     """Aggregate a record iterable; this pure entry point is used by tests."""
     aggregator = _MboAggregator(
@@ -514,6 +558,9 @@ def aggregate_mbo_records(
         time_zone=time_zone,
         depth_radius_points=depth_radius_points,
         snapshot_flag=snapshot_flag,
+        session=session,
+        session_start_ns=session_start_ns,
+        session_end_ns=session_end_ns,
     )
     for record in records:
         aggregator.consume(record)
@@ -529,6 +576,21 @@ def footprint_cache_path(
     base = base_symbol(symbol).lower()
     return market_data.derived_path(
         "orderflow", base, f"footprint_{base}_{trade_date}.json.gz", root=root,
+    )
+
+
+def all_session_footprint_cache_path(
+    calendar_date: str,
+    symbol: str = "MNQ",
+    *,
+    root: str | Path | None = None,
+) -> Path:
+    """Return the compact all-session cache for one UTC calendar day."""
+    base = base_symbol(symbol).lower()
+    return market_data.derived_path(
+        "orderflow", base,
+        f"all_sessions_footprint_{base}_{calendar_date}.json.gz",
+        root=root,
     )
 
 
@@ -572,6 +634,56 @@ def build_footprint_file(
         "generated_at": datetime.now(UTC).isoformat(),
     })
     destination = Path(output_path) if output_path else footprint_cache_path(trade_date, symbol)
+    write_footprint_cache(payload, destination)
+    return destination, payload
+
+
+def build_all_session_footprint_file(
+    dbn_path: str | Path,
+    calendar_date: str,
+    *,
+    symbol: str = "MNQ",
+    output_path: str | Path | None = None,
+    tick_size: float = DEFAULT_TICK_SIZE,
+    depth_radius_points: float = DEFAULT_DEPTH_RADIUS_POINTS,
+) -> tuple[Path, dict[str, Any]]:
+    """Replay one full UTC-day MBO file into an all-session compact cache.
+
+    The raw request is already a complete UTC calendar day.  Keeping the
+    derived cache on that same boundary avoids dropping the beginning or end
+    of ASIA when a New-York session crosses midnight UTC.  Every bar carries
+    its New-York session code and session id for later filtering.
+    """
+    import databento as db
+
+    day = date.fromisoformat(str(calendar_date)).isoformat()
+    source = Path(dbn_path).resolve()
+    store = db.DBNStore.from_file(source)
+    if str(store.schema) != "mbo":
+        raise ValueError(f"expected MBO DBN, got {store.schema}")
+    start = datetime.combine(date.fromisoformat(day), time.min, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    aggregator = _MboAggregator(
+        day,
+        tick_size=tick_size,
+        time_zone="America/New_York",
+        snapshot_flag=int(db.RecordFlags.F_SNAPSHOT),
+        session="ALL",
+        session_start_ns=int(start.timestamp() * NANO),
+        session_end_ns=int(end.timestamp() * NANO),
+    )
+    store.replay(aggregator.consume)
+    payload = aggregator.finish()
+    payload["meta"].update({
+        "symbol": base_symbol(symbol),
+        "calendar_date": day,
+        "source_file": source.name,
+        "source_bytes": source.stat().st_size,
+        "generated_at": datetime.now(UTC).isoformat(),
+    })
+    destination = Path(output_path) if output_path else all_session_footprint_cache_path(
+        day, symbol,
+    )
     write_footprint_cache(payload, destination)
     return destination, payload
 

@@ -9,7 +9,7 @@ decisions on the same data contract.
 from __future__ import annotations
 
 import math
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from statistics import mean, median
 from typing import Any, Mapping, Optional
@@ -21,9 +21,9 @@ from backend.data.orderflow import (
     footprint_profile,
     read_footprint_cache,
 )
-from backend.db.models import Candle, Direction, TradeSignal
+from backend.db.models import Candle, Direction, StrategyParams, TradeSignal
 from backend.strategy.pi_signal import PiSignalStrategy
-from backend.strategy.session_filter import rth_session_date
+from backend.strategy.session_filter import rth_session_bounds, rth_session_date
 from backend.timebase import UTC, as_utc
 
 
@@ -92,6 +92,8 @@ class CachedDeltaContextProvider:
             if isinstance(value, Mapping)
         }
         self._payload_cache: dict[str, Optional[dict[str, Any]]] = {}
+        self._bars_cache: dict[str, list[dict[str, Any]]] = {}
+        self._vwap_prefix_cache: dict[str, list[tuple[float, float]]] = {}
         self._profile_cache: dict[str, Optional[dict[str, float]]] = {}
         self._profile_date_cache: dict[str, Optional[str]] = {}
 
@@ -100,7 +102,10 @@ class CachedDeltaContextProvider:
         key = date.fromisoformat(str(trade_date)).isoformat()
         self._payloads[key] = dict(payload)
         self._payload_cache.pop(key, None)
+        self._bars_cache.pop(key, None)
+        self._vwap_prefix_cache.pop(key, None)
         self._profile_cache.clear()
+        self._profile_date_cache.clear()
 
     def _load_payload(self, trade_date: str) -> Optional[dict[str, Any]]:
         key = date.fromisoformat(str(trade_date)).isoformat()
@@ -197,28 +202,73 @@ class CachedDeltaContextProvider:
                 weighted += price * qty
         return weighted / volume if volume > 0 else None
 
+    def _bars_for_date(
+        self, trade_date: str, payload: Mapping[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if trade_date not in self._bars_cache:
+            self._bars_cache[trade_date] = _sorted_bars(payload)
+        return self._bars_cache[trade_date]
+
+    def _vwap_prefix(
+        self, trade_date: str, bars: list[Mapping[str, Any]],
+    ) -> list[tuple[float, float]]:
+        """Build cumulative executed-volume VWAP once per cached MBO day.
+
+        ``snapshot()`` is called once per platform candle during a replay.  The
+        old implementation rescanned every earlier cell for every snapshot,
+        turning a 390-minute day into an unnecessary quadratic workload.  The
+        prefix values preserve the exact numerator/denominator definition used
+        by ``_vwap`` while making each subsequent lookup O(1).
+        """
+        cached = self._vwap_prefix_cache.get(trade_date)
+        if cached is not None and len(cached) == len(bars):
+            return cached
+        volume = 0.0
+        weighted = 0.0
+        prefix: list[tuple[float, float]] = []
+        for bar in bars:
+            if _bar_epoch(bar) > 0:
+                for cell in bar.get("cells") or []:
+                    if not isinstance(cell, (list, tuple)) or len(cell) < 3:
+                        continue
+                    try:
+                        qty = max(0, int(cell[1] or 0)) + max(0, int(cell[2] or 0))
+                        price = float(cell[0]) * self.tick_size
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    volume += qty
+                    weighted += price * qty
+            prefix.append((volume, weighted))
+        self._vwap_prefix_cache[trade_date] = prefix
+        return prefix
+
     def snapshot(self, timestamp: datetime) -> Optional[dict[str, Any]]:
         now = as_utc(timestamp)
         current_date = rth_session_date(now).isoformat()
         payload = self._load_payload(current_date)
-        bars = _sorted_bars(payload)
+        bars = self._bars_for_date(current_date, payload)
         if not bars:
             return None
         decision_epoch = _epoch_minute(now)
-        eligible = [
-            row for row in bars
-            if _bar_epoch(row) > 0 and _bar_epoch(row) + 60 <= decision_epoch
-        ]
+        eligible: list[dict[str, Any]] = []
+        last_eligible_index = -1
+        for index, row in enumerate(bars):
+            epoch = _bar_epoch(row)
+            if epoch > 0 and epoch + 60 <= decision_epoch:
+                eligible.append(row)
+                last_eligible_index = index
         if not eligible:
             return None
         previous_date, profile = self._previous_profile(current_date)
+        prefix = self._vwap_prefix(current_date, bars)
+        volume, weighted = prefix[last_eligible_index]
         return {
             "date": current_date,
             "bars": eligible,
             "bar": eligible[-1],
             "profile": profile,
             "previous_profile_date": previous_date,
-            "vwap": self._vwap(eligible),
+            "vwap": weighted / volume if volume > 0 else None,
             "provider": self.provider_name,
         }
 
@@ -277,6 +327,12 @@ class DeltaAbsorptionStrategy(PiSignalStrategy):
         self._last_signal_epoch: Optional[int] = None
         self._last_context: Optional[dict[str, Any]] = None
         self._last_status = "waiting_for_mbo"
+        # Chart diagnostics are deliberately separate from trade metadata.
+        # They show only the three pieces of evidence used by this model and
+        # stay bounded so a long live session cannot grow process memory.
+        self._chart_events: list[dict[str, Any]] = []
+        self._chart_event_keys: set[tuple[int, str]] = set()
+        self._chart_value_areas: dict[str, dict[str, Any]] = {}
 
     def reset(self) -> None:
         super().reset()
@@ -284,6 +340,201 @@ class DeltaAbsorptionStrategy(PiSignalStrategy):
         self._last_signal_epoch = None
         self._last_context = None
         self._last_status = "waiting_for_mbo"
+        self._chart_events.clear()
+        self._chart_event_keys.clear()
+        self._chart_value_areas.clear()
+
+    @staticmethod
+    def _chart_time(epoch: int) -> str:
+        return datetime.fromtimestamp(int(epoch), UTC).isoformat()
+
+    def _record_chart_value_area(
+        self, snapshot: Mapping[str, Any], event_epoch: int,
+    ) -> None:
+        """Keep one previous-RTH value area per current session.
+
+        The strategy uses yesterday's complete profile as a location gate.
+        A single segment per session makes that causal context visible without
+        drawing one line for every MBO minute.
+        """
+        profile = snapshot.get("profile")
+        if not isinstance(profile, Mapping):
+            return
+        try:
+            vah = float(profile["vah"])
+            val = float(profile["val"])
+            poc = float(profile["poc"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return
+        current_date = str(snapshot.get("date") or "")
+        profile_date = str(snapshot.get("previous_profile_date") or "")
+        if not current_date or not profile_date:
+            return
+        key = f"{current_date}|{profile_date}"
+        bars = [row for row in (snapshot.get("bars") or []) if isinstance(row, Mapping)]
+        first_epoch = _bar_epoch(bars[0]) if bars else event_epoch
+        if first_epoch <= 0:
+            first_epoch = event_epoch
+        area = self._chart_value_areas.get(key)
+        if area is None:
+            area = {
+                "session_date": current_date,
+                "profile_date": profile_date,
+                "poc": round(poc, 4),
+                "vah": round(vah, 4),
+                "val": round(val, 4),
+                "start_time": self._chart_time(first_epoch),
+                "end_time": self._chart_time(event_epoch),
+            }
+            self._chart_value_areas[key] = area
+        else:
+            start_epoch = min(
+                first_epoch,
+                int(datetime.fromisoformat(str(area["start_time"])).timestamp()),
+            )
+            end_epoch = max(
+                event_epoch,
+                int(datetime.fromisoformat(str(area["end_time"])).timestamp()),
+            )
+            area["start_time"] = self._chart_time(start_epoch)
+            area["end_time"] = self._chart_time(end_epoch)
+        # Keep a small safety bound for an unusually long process lifetime.
+        if len(self._chart_value_areas) > 90:
+            oldest = next(iter(self._chart_value_areas))
+            self._chart_value_areas.pop(oldest, None)
+
+    def _record_chart_event(
+        self,
+        *,
+        snapshot: Mapping[str, Any],
+        bars: list[Mapping[str, Any]],
+        index: int,
+        direction: Direction,
+        profile: Mapping[str, Any] | None,
+        family: Optional[str],
+        gate_passed: bool,
+        p0: float,
+        p1: float,
+        n0: float,
+        n1: float,
+        scale: float,
+        absorption: bool,
+        exhaustion: bool,
+        stalled: bool,
+        touched: bool,
+        reclaimed: bool,
+        confirming: bool,
+        aligned: bool,
+        vwap: Optional[float],
+    ) -> None:
+        """Record a compact, type-addressable explanation for one bar.
+
+        ``delta_decay`` is a meaningful weakening of opposing pressure
+        (recent opposing delta is lower than the prior window while still at
+        or above the model's weakening floor).  ``stalled`` and ``touched``
+        map directly to the price no-break and VAH/VAL evidence layers.
+        """
+        if index < 0 or index >= len(bars):
+            return
+        event_epoch = _bar_epoch(bars[index])
+        if event_epoch <= 0:
+            return
+        opposing_previous, opposing_recent = (
+            (n0, n1) if direction == Direction.BUY else (p0, p1)
+        )
+        delta_ratio = (
+            opposing_recent / opposing_previous
+            if opposing_previous > 0 else None
+        )
+        delta_decay = bool(
+            opposing_previous > 0
+            and opposing_recent < opposing_previous
+            and opposing_recent >= self.delta_weakening * opposing_previous
+        )
+        delta_pressure = bool(opposing_recent >= self.delta_strength * scale)
+        # Do not retain ordinary bars.  At least one of the displayed model
+        # components must be present, so the chart remains an explanation of
+        # the preset rather than a second full indicator stream.  Decay is a
+        # standalone diagnostic layer; it must not disappear merely because
+        # the stronger entry-pressure threshold was not also met.
+        if not (touched or stalled or delta_decay):
+            return
+        direction_label = "long" if direction == Direction.BUY else "short"
+        row = bars[index]
+        try:
+            anchor_price = float(row["low"] if direction == Direction.BUY else row["high"])
+            close = float(row["close"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return
+        vah = val = poc = None
+        profile_date = snapshot.get("previous_profile_date")
+        if isinstance(profile, Mapping):
+            try:
+                vah = round(float(profile["vah"]), 4)
+                val = round(float(profile["val"]), 4)
+                poc = round(float(profile["poc"]), 4)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass
+        key = (event_epoch, direction_label)
+        if key in self._chart_event_keys:
+            return
+        self._chart_event_keys.add(key)
+        self._chart_events.append({
+            "epoch": event_epoch,
+            "time": self._chart_time(event_epoch),
+            "session_date": snapshot.get("date"),
+            "profile_date": profile_date,
+            "direction": direction_label,
+            "pattern": family or (
+                "absorption" if absorption else ("exhaustion" if exhaustion else "")
+            ),
+            "qualified": bool(family and gate_passed),
+            "gate_passed": bool(gate_passed),
+            "vah": vah,
+            "val": val,
+            "poc": poc,
+            "anchor_price": round(anchor_price, 4),
+            "close": round(close, 4),
+            "positive_previous": round(p0, 4),
+            "positive_recent": round(p1, 4),
+            "negative_previous": round(n0, 4),
+            "negative_recent": round(n1, 4),
+            "opposing_previous": round(opposing_previous, 4),
+            "opposing_recent": round(opposing_recent, 4),
+            "delta_ratio": round(delta_ratio, 4) if delta_ratio is not None else None,
+            "scale": round(scale, 4),
+            "delta_pressure": delta_pressure,
+            "delta_decay": delta_decay,
+            "stalled": bool(stalled),
+            "touched": bool(touched),
+            "reclaimed": bool(reclaimed),
+            "confirming": bool(confirming),
+            "aligned": bool(aligned),
+            "vwap": round(float(vwap), 4) if vwap is not None else None,
+            "source": self.delta_source,
+            "gate": self.delta_gate,
+            "window": self.delta_window,
+        })
+        if len(self._chart_events) > 600:
+            self._chart_events.pop(0)
+            self._chart_event_keys = {
+                (int(item["epoch"]), str(item["direction"]))
+                for item in self._chart_events
+            }
+
+    def get_chart_overlay(self, limit: int = 600) -> dict[str, Any]:
+        """Return bounded chart-only evidence for backtest and live UI."""
+        count = max(0, int(limit or 0))
+        events = self._chart_events[-count:] if count else []
+        areas = list(self._chart_value_areas.values())
+        return {
+            "model": "delta_absorption",
+            "pattern": self.delta_pattern,
+            "source": self.delta_source,
+            "gate": self.delta_gate,
+            "events": [dict(event) for event in events],
+            "value_areas": [dict(area) for area in areas],
+        }
 
     def observe(self, candle: Candle, zones=None, is_mature: bool = True) -> None:
         # Keep the PI 5m ATR accumulator warm even when the RTH entry gate is
@@ -438,14 +689,37 @@ class DeltaAbsorptionStrategy(PiSignalStrategy):
             family = "absorption"
         elif self.delta_pattern in ("exhaustion", "both") and exhaustion:
             family = "exhaustion"
-        if not family or not self._gate_accepts(
+        gate_passed = self._gate_accepts(
             direction, touched=touched, reclaimed=reclaimed,
             stalled=stalled, confirming=confirming, aligned=bool(aligned),
-        ):
+        )
+        event_epoch = _bar_epoch(bars[index])
+        self._record_chart_event(
+            snapshot=snapshot,
+            bars=bars,
+            index=index,
+            direction=direction,
+            profile=profile,
+            family=family,
+            gate_passed=gate_passed,
+            p0=p0,
+            p1=p1,
+            n0=n0,
+            n1=n1,
+            scale=scale,
+            absorption=absorption,
+            exhaustion=exhaustion,
+            stalled=stalled,
+            touched=touched,
+            reclaimed=reclaimed,
+            confirming=confirming,
+            aligned=bool(aligned),
+            vwap=vwap,
+        )
+        if not family or not gate_passed:
             self._last_status = "monitoring"
             return None, None
 
-        event_epoch = _bar_epoch(bars[index])
         if self._last_signal_epoch == event_epoch:
             return None, None
         width = self._atr_blend()
@@ -499,6 +773,9 @@ class DeltaAbsorptionStrategy(PiSignalStrategy):
         if self.delta_require_profile and not snapshot.get("profile"):
             self._last_status = "waiting_for_prior_profile"
             return None
+        event_epoch = _bar_epoch(snapshot.get("bar") or {})
+        if event_epoch > 0:
+            self._record_chart_value_area(snapshot, event_epoch)
         candidates: list[tuple[TradeSignal, dict[str, Any]]] = []
         for direction in (Direction.BUY, Direction.SELL):
             signal, meta = self._candidate(candle, snapshot, direction)
@@ -527,3 +804,191 @@ class DeltaAbsorptionStrategy(PiSignalStrategy):
         if isinstance(provider, Mapping) and provider.get("state"):
             status = f"{status} · {provider.get('state')}"
         return f"{self.NAME} {status}"
+
+
+def _overlay_session_dates(start: datetime, end: datetime) -> list[date]:
+    """Return RTH session dates intersecting a chart request."""
+    first = rth_session_date(start)
+    last = rth_session_date(end)
+    if last < first:
+        first, last = last, first
+    span = (last - first).days
+    # The API already limits a chart request to 14 days. Keep this helper
+    # defensive when called directly by a test or another local tool.
+    if span > 31:
+        last = first + timedelta(days=31)
+    return [first + timedelta(days=offset) for offset in range((last - first).days + 1)]
+
+
+def _overlay_cached_bars(
+    provider: CachedDeltaContextProvider,
+    start: datetime,
+    end: datetime,
+) -> list[dict[str, Any]]:
+    """Read only the compact MBO bars intersecting the requested window."""
+    start_epoch = int(math.floor(as_utc(start).timestamp()))
+    end_epoch = int(math.ceil(as_utc(end).timestamp()))
+    rows: list[dict[str, Any]] = []
+    for session_date in _overlay_session_dates(start, end):
+        payload = provider._load_payload(session_date.isoformat())
+        for row in _sorted_bars(payload):
+            epoch = _bar_epoch(row)
+            if start_epoch <= epoch <= end_epoch:
+                rows.append(row)
+    rows.sort(key=_bar_epoch)
+    return rows
+
+
+def _overlay_profile_area(
+    session_date: date,
+    profile_date: str,
+    profile: Mapping[str, Any],
+    start: datetime,
+    end: datetime,
+) -> Optional[dict[str, Any]]:
+    """Clip one prior-RTH 70% profile segment to the visible request."""
+    session_start, session_end = rth_session_bounds(session_date)
+    visible_start = max(as_utc(start), session_start)
+    visible_end = min(as_utc(end), session_end)
+    if visible_end <= visible_start:
+        return None
+    try:
+        vah = float(profile["vah"])
+        val = float(profile["val"])
+        poc = float(profile["poc"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+    return {
+        "session_date": session_date.isoformat(),
+        "profile_date": profile_date,
+        "poc": round(poc, 4),
+        "vah": round(vah, 4),
+        "val": round(val, 4),
+        "start_time": visible_start.isoformat(),
+        "end_time": visible_end.isoformat(),
+        "profile_pct": 0.70,
+    }
+
+
+def build_delta_chart_overlay(
+    start: datetime,
+    end: datetime,
+    *,
+    symbol: str = "MNQ",
+    params: Any | None = None,
+    root: str | Path | None = None,
+    limit: int = 600,
+) -> dict[str, Any]:
+    """Replay compact MBO evidence for a visible chart window.
+
+    This is intentionally separate from the trading backtest: selecting the
+    chart layer must not create trades or replace the chart's candle workset.
+    It uses the same ``DeltaAbsorptionStrategy`` and ``CachedDeltaContextProvider``
+    as backtest/live, so the VAH/VAL and event definitions cannot drift. When
+    the current session has no MBO cache yet, the prior complete 70% profile is
+    still returned for context, while ``mbo_available`` stays false and no
+    decay/no-break events are fabricated.
+    """
+    normalized_symbol = str(symbol or "MNQ").upper().replace("/", "")
+    if "MNQ" not in normalized_symbol:
+        return {
+            "model": "delta_absorption",
+            "available": False,
+            "mbo_available": False,
+            "status": "mnq_only",
+            "events": [],
+            "value_areas": [],
+            "mbo_bars": 0,
+            "files": [],
+        }
+
+    start_utc = as_utc(start)
+    end_utc = as_utc(end)
+    if end_utc < start_utc:
+        raise ValueError("end must not be earlier than start")
+
+    effective_params = params or StrategyParams(strategy="delta_absorption")
+    effective_params.strategy = "delta_absorption"
+    require_profile = bool(getattr(effective_params, "delta_require_profile", True))
+    provider = CachedDeltaContextProvider(
+        symbol="MNQ",
+        root=root,
+        tick_size=float(getattr(effective_params, "tick_size", DEFAULT_TICK_SIZE) or DEFAULT_TICK_SIZE),
+        require_complete_profile=require_profile,
+    )
+    rows = _overlay_cached_bars(provider, start_utc, end_utc)
+    strategy = DeltaAbsorptionStrategy(effective_params, context_provider=provider)
+    for row in rows:
+        epoch = _bar_epoch(row)
+        if epoch <= 0 or not _valid_ohlc(row):
+            continue
+        try:
+            candle = Candle(
+                # The compact row at ``epoch`` is a completed MBO minute. Feed
+                # the same row to the strategy one minute later so the
+                # provider's causal eligibility rule can expose that row and
+                # the final visible minute is not silently omitted.
+                timestamp=datetime.fromtimestamp(epoch + 60, UTC),
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=float(row["close"]),
+                volume=int(row.get("trades") or row.get("volume") or 0),
+                symbol="MNQ",
+                interval="1m",
+                source="databento_mbo",
+            )
+            strategy.evaluate(candle, [], True)
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            # One malformed compact row must not blank the rest of the chart
+            # overlay. The ingestion validator remains responsible for fixing
+            # the source cache itself.
+            continue
+
+    overlay = strategy.get_chart_overlay(limit=limit)
+    # A visible value-area line is useful even on a quiet session with no
+    # event. Merge the strategy's event-driven areas with the same prior-RTH
+    # profile for every intersecting session. This also makes the source/date
+    # semantics explicit to the UI.
+    areas_by_session = {
+        str(area.get("session_date")): dict(area)
+        for area in overlay.get("value_areas", [])
+        if isinstance(area, Mapping) and area.get("session_date")
+    }
+    for session_date in _overlay_session_dates(start_utc, end_utc):
+        profile_date, profile = provider._previous_profile(session_date.isoformat())
+        if not profile or not profile_date:
+            continue
+        area = _overlay_profile_area(
+            session_date, profile_date, profile, start_utc, end_utc,
+        )
+        if area is None:
+            continue
+        current = areas_by_session.get(area["session_date"])
+        if current is None:
+            areas_by_session[area["session_date"]] = area
+        else:
+            current["start_time"] = min(current["start_time"], area["start_time"])
+            current["end_time"] = max(current["end_time"], area["end_time"])
+            current["profile_pct"] = 0.70
+    overlay["value_areas"] = [
+        areas_by_session[key] for key in sorted(areas_by_session)
+    ]
+    overlay.update({
+        "available": bool(rows),
+        "mbo_available": bool(rows),
+        "mbo_bars": len(rows),
+        "status": (
+            "ok" if rows else
+            "prior_profile_only" if overlay["value_areas"] else
+            "mbo_unavailable"
+        ),
+        "files": [
+            f"footprint_mnq_{session_date.isoformat()}.json.gz"
+            for session_date in _overlay_session_dates(start_utc, end_utc)
+            if provider._load_payload(session_date.isoformat())
+        ],
+        "requested_start": start_utc.isoformat(),
+        "requested_end": end_utc.isoformat(),
+    })
+    return overlay

@@ -53,6 +53,7 @@ from scripts.databento_orderflow_download import (  # noqa: E402
     DATASET,
     _acquire_download_lock,
     _base_symbol,
+    _ensure_all_session_cache,
     _ensure_footprint_cache,
     _existing_inventory,
     _file_name,
@@ -386,6 +387,71 @@ def validate_cache_payload(
     return result
 
 
+def validate_all_session_cache_payload(
+    payload: Mapping[str, Any] | None,
+    calendar_date: date,
+) -> dict[str, Any]:
+    """Validate an ALL cache without imposing an RTH 390-bar shape."""
+    result: dict[str, Any] = {
+        "status": "missing",
+        "complete": False,
+        "calendar_date": calendar_date.isoformat(),
+        "bar_count": 0,
+        "errors": [],
+    }
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("bars"), list):
+        result["errors"] = ["all_cache_missing_or_invalid"]
+        return result
+    meta = payload.get("meta") or {}
+    errors: list[str] = []
+    if not isinstance(meta, Mapping):
+        meta = {}
+    try:
+        version = int(meta.get("schema_version") or 0)
+    except (TypeError, ValueError, OverflowError):
+        version = 0
+    if version != orderflow.CACHE_SCHEMA_VERSION:
+        errors.append("all_cache_schema_version")
+    if str(meta.get("session") or "").upper() != "ALL":
+        errors.append("all_cache_session")
+    if str(meta.get("calendar_date") or meta.get("trade_date") or "") != calendar_date.isoformat():
+        errors.append("all_cache_calendar_date")
+    start_epoch = int(datetime.combine(calendar_date, time.min, tzinfo=UTC).timestamp())
+    end_epoch = start_epoch + 24 * 60 * 60
+    epochs: list[int] = []
+    missing_session_labels = 0
+    for row in payload.get("bars") or []:
+        if not isinstance(row, Mapping):
+            continue
+        try:
+            epoch = int(row.get("epoch"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        epochs.append(epoch)
+        if not str(row.get("session") or "") or not str(row.get("session_id") or ""):
+            missing_session_labels += 1
+    if len(epochs) != len(set(epochs)):
+        errors.append("all_cache_duplicate_minutes")
+    if any(epoch < start_epoch or epoch >= end_epoch or epoch % 60 for epoch in epochs):
+        errors.append("all_cache_epoch_range")
+    if missing_session_labels:
+        errors.append("all_cache_session_labels")
+    if not epochs:
+        errors.append("all_cache_no_bars")
+    result.update({
+        "status": "ok" if not errors else "invalid",
+        "complete": not errors,
+        "bar_count": len(epochs),
+        "schema_version": version,
+        "source_records": meta.get("source_records"),
+        "errors": errors,
+    })
+    if epochs:
+        result["first_epoch"] = min(epochs)
+        result["last_epoch"] = max(epochs)
+    return result
+
+
 def inspect_settlement_day(
     session_date: date,
     *,
@@ -418,12 +484,31 @@ def inspect_settlement_day(
         cache["status"] = "invalid"
         cache["complete"] = False
         cache.setdefault("errors", []).append(cache_error)
+    all_cache_path = orderflow.all_session_footprint_cache_path(
+        session_date.isoformat(), _base_symbol(actual_symbol), root=primary,
+    )
+    all_cache_payload: dict[str, Any] | None = None
+    all_cache_error: str | None = None
+    if all_cache_path.is_file():
+        try:
+            all_cache_payload = orderflow.read_footprint_cache(all_cache_path)
+        except (OSError, ValueError, EOFError):
+            all_cache_error = "all_cache_unreadable"
+    all_cache = validate_all_session_cache_payload(
+        all_cache_payload, session_date,
+    )
+    if all_cache_error:
+        all_cache["status"] = "invalid"
+        all_cache["complete"] = False
+        all_cache.setdefault("errors", []).append(all_cache_error)
     if raw["status"] == "missing":
         action = "download_required"
     elif raw["status"] != "ok":
         action = "repair_raw_required"
     elif cache["status"] != "ok":
         action = "rebuild_cache_required"
+    elif all_cache["status"] != "ok":
+        action = "build_all_session_cache_required"
     else:
         action = "complete"
     start, end = mbo_request_range(session_date)
@@ -437,6 +522,10 @@ def inspect_settlement_day(
         "cache": {
             **cache,
             "path": str(cache_path),
+        },
+        "all_session_cache": {
+            **all_cache,
+            "path": str(all_cache_path),
         },
         "action": action,
     }
@@ -581,11 +670,23 @@ def _execute_plan(
         plan["action"] = "manual_repair_required"
         return
     if action not in {"download_required", "repair_raw_required"}:
-        if action == "rebuild_cache_required" and plan["raw"].get("status") == "ok":
+        if (
+            action in {"rebuild_cache_required", "build_all_session_cache_required"}
+            and plan["raw"].get("status") == "ok"
+        ):
             source = Path(str(plan["raw"]["path"]))
-            _ensure_footprint_cache(
+            trade_date = date.fromisoformat(str(plan["trade_date"]))
+            if action == "rebuild_cache_required":
+                _ensure_footprint_cache(
+                    source,
+                    trade_date,
+                    "MNQ",
+                    force=True,
+                    root=primary,
+                )
+            _ensure_all_session_cache(
                 source,
-                date.fromisoformat(str(plan["trade_date"])),
+                trade_date,
                 "MNQ",
                 force=True,
                 root=primary,
@@ -609,6 +710,13 @@ def _execute_plan(
         "primary_only": True,
     }
     _ensure_footprint_cache(
+        target,
+        date.fromisoformat(str(plan["trade_date"])),
+        "MNQ",
+        force=True,
+        root=primary,
+    )
+    _ensure_all_session_cache(
         target,
         date.fromisoformat(str(plan["trade_date"])),
         "MNQ",
@@ -708,6 +816,7 @@ def run_settlement(
         for plan in plans:
             if plan.get("action") not in {
                 "download_required", "repair_raw_required", "rebuild_cache_required",
+                "build_all_session_cache_required",
             }:
                 continue
             if plan.get("action") in {"download_required", "repair_raw_required"} and client is None:

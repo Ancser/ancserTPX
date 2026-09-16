@@ -359,6 +359,57 @@ def _ensure_footprint_cache(
     return output
 
 
+def _ensure_all_session_cache(
+    source: Path,
+    calendar_date: date,
+    symbol: str,
+    *,
+    force: bool = False,
+    root: str | Path | None = None,
+) -> Path:
+    """Build the regenerable compact cache that keeps every market session."""
+    from backend.data.orderflow import (
+        CACHE_SCHEMA_VERSION,
+        all_session_footprint_cache_path,
+        build_all_session_footprint_file,
+        read_footprint_cache,
+    )
+
+    output = all_session_footprint_cache_path(
+        calendar_date.isoformat(), _base_symbol(symbol), root=root,
+    )
+    if output.is_file() and output.stat().st_size > 0:
+        try:
+            meta = read_footprint_cache(output).get("meta") or {}
+            version = int(meta.get("schema_version", 0))
+            session = str(meta.get("session") or "").upper()
+            source_name = str(meta.get("source_file") or "")
+        except (OSError, ValueError, TypeError):
+            version, session, source_name = 0, "", ""
+        if (
+            version == CACHE_SCHEMA_VERSION
+            and session == "ALL"
+            and source_name == source.name
+            and not force
+        ):
+            print(f"ALL CACHE SKIP {output.name} | schema v{version}")
+            return output
+        print(
+            f"ALL CACHE REBUILD {output.name} | "
+            f"schema v{version}/{session or 'unknown'}",
+        )
+    output, payload = build_all_session_footprint_file(
+        source,
+        calendar_date.isoformat(),
+        symbol=_base_symbol(symbol),
+        output_path=output,
+    )
+    print(
+        f"ALL CACHE {output.name} | {len(payload['bars'])} UTC-day minute bars",
+    )
+    return output
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", required=True, help="inclusive UTC date YYYY-MM-DD")
@@ -378,7 +429,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--no-build-footprint", action="store_true",
-        help="keep raw MBO only; normally each downloaded day also builds chart cache",
+        help="keep raw MBO only; normally each downloaded day also builds RTH and ALL caches",
     )
     args = parser.parse_args()
 
@@ -446,6 +497,7 @@ def main() -> int:
                 continue
             if start <= range_start < end:
                 _ensure_footprint_cache(existing, range_start, args.symbol)
+                _ensure_all_session_cache(existing, range_start, args.symbol)
 
     downloaded = 0
     for request in requests:
@@ -464,6 +516,7 @@ def main() -> int:
 
         if schema == "mbo" and not args.no_build_footprint:
             _ensure_footprint_cache(target, range_start, args.symbol)
+            _ensure_all_session_cache(target, range_start, args.symbol)
 
     print(f"Complete: {downloaded} new source request(s).")
     return 0

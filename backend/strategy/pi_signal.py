@@ -65,6 +65,17 @@ _LEVEL_RE = re.compile(r"^\s*(?:level|lv)\s*(\d+)\b", re.IGNORECASE)
 # 路徑定義在 backend/data/pi_history.py —— 這裡只是轉出去給舊呼叫端用
 from backend.data.pi_history import HIST_PATH as _HIST_PATH  # noqa: E402
 _HIST_CACHE: Optional[list] = None
+_HIST_CACHE_SIGNATURE: Optional[tuple[int, int]] = None
+
+
+def _history_file_signature() -> Optional[tuple[int, int]]:
+    """Return the current canonical PI file generation for cache invalidation."""
+    try:
+        from backend.data import pi_history
+        stat = pi_history.HIST_PATH.stat()
+    except (AttributeError, OSError):
+        return None
+    return stat.st_mtime_ns, stat.st_size
 
 
 def _normalize_short_levels(value) -> Optional[tuple[int, ...]]:
@@ -169,12 +180,14 @@ def _load_history(replay_rows: Optional[list[dict]] = None) -> list:
     只讀一次(模組層快取)。``replay_rows`` 是單次 Backtest 的暫時
     Live-audit overlay；它永遠不會寫回歷史檔或污染模組快取。
     """
-    global _HIST_CACHE
-    if _HIST_CACHE is None:
+    global _HIST_CACHE, _HIST_CACHE_SIGNATURE
+    signature = _history_file_signature()
+    if _HIST_CACHE is None or _HIST_CACHE_SIGNATURE != signature:
         # 1.0.10: 走共用 loader —— 開盤前重播的過濾規則只能有一份
         # (見 docs/INVARIANTS.md PI-006)。讀不到檔案時 loader 回空 list。
         from backend.data.pi_history import load_rows
         _HIST_CACHE = _rows_to_signals(load_rows())
+        _HIST_CACHE_SIGNATURE = signature
         logger.info("[PI] 載入 %d 個歷史訊號(%s → %s)供回測使用",
                     len(_HIST_CACHE),
                     _HIST_CACHE[0][0].date() if _HIST_CACHE else "-",

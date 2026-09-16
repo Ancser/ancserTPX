@@ -706,6 +706,10 @@ button:focus-visible {
 .chart-layer-pop .layer-row { min-height: 34px; }
 .chart-layer-pop .layer-name { color: var(--ink-secondary); }
 .chart-layer-pop .layer-row:hover .layer-name { color: var(--ink-primary); }
+.chart-layer-pop .delta-layer-child .layer-name {
+    padding-left: 0.75rem;
+    color: var(--ink-muted);
+}
 
 /* These empty controls are legacy forwarding targets for the optional Glass
    skin.  Native mode handles the visible switch directly; leaving the targets
