@@ -1,0 +1,91 @@
+{
+  "schema": "ancsertpx.study.v1",
+  "study_id": "vp_baseline_2022_2026",
+  "status": "runner_available_research_gates_pending",
+  "replay": {
+    "runner_package": "ancsertpx-vp-replay",
+    "config_path": "vp_baseline_2022_2026_replay.json"
+  },
+  "research_gates_pending": [
+    "causal bar-availability timestamps and executable next-bar fill contract",
+    "versioned Topstep account-path MLL/DLL/consistency risk simulation",
+    "multi-timeframe point-in-time option-regime candidates with walk-forward, Monte Carlo, date-cluster, and 12-month prospective gates"
+  ],
+  "purpose": "Rust/Python parity sample for a frozen, medium-frequency prior-RTH Volume Profile candidate; no option filter in this baseline.",
+  "retrospective_window": {
+    "start": "2022-01-01",
+    "end": "2026-09-23",
+    "interpretation": "Exploratory historical data with prior strategy/report exposure; chronological slices are diagnostics, not a clean holdout."
+  },
+  "prospective_shadow": {
+    "start": "2026-09-24",
+    "minimum_coverage_months": 12
+  },
+  "input_contract": {
+    "timezone": "UTC instants; RTH session labels use America/New_York",
+    "symbols": ["MNQ", "MES"],
+    "immutable_snapshot_hashes_required": true,
+    "MNQ_canonical_sha256": "C9088546C058F3C4C68892DC1807CF256B78CA07303E8943951D341DEC3FAB1F",
+    "MES_canonical_sha256": "F30223BFD52C2A37AD61AF62460E38F6E137A87C988746647474E7A78EE3E817",
+    "missing_minutes": [
+      {"symbol": "MES", "session_date": "2023-07-04", "missing_et_minute": "12:19"},
+      {"symbol": "MES", "session_date": "2023-11-23", "missing_et_minute": "12:13"}
+    ],
+    "known_continuous_series_seam": {"symbol": "MNQ", "date": "2026-08-31", "status": "quarantine_until_reconciled"},
+    "2026_data_end": {"MNQ": "2026-09-23T20:59:00Z", "MES": "2026-09-14T17:45:00Z"}
+  },
+  "price_baseline": {
+    "reference_version": "2026-09-15-volume-profile-v1",
+    "reference_runner": "scripts/volume_profile_research.py via backend.backtest.engine.BacktestEngine",
+    "entry_mode": "breakout",
+    "target_mode": "atr",
+    "side_mode": "all",
+    "value_area_pct": 0.70,
+    "confirm_bars": 2,
+    "breakout_buffer_ticks": 2,
+    "touch_tolerance_ticks": 2,
+    "reclaim_buffer_ticks": 1,
+    "max_trades_per_day": 2,
+    "min_source_candles": 60,
+    "stop_atr": 1.5,
+    "target_atr": 2.0,
+    "contracts": 1
+  },
+  "execution_parity": {
+    "signal_source": "existing Python BacktestEngine baseline ledger",
+    "rust_must_match_trade_rows_before_feature_research": true,
+    "compare_fields": ["entry_time", "exit_time", "direction", "size", "entry_price", "exit_price", "fees", "net_pnl"],
+    "same_bar_stop_target_ambiguity": "preserve_reference_engine_behavior_and_report_ambiguous_rows",
+    "additional_slippage_stress_round_trip_ticks": 14
+  },
+  "option_context": {
+    "enabled": false,
+    "future_stage": "coverage-matched paired regime features from point-in-time published unsigned OI and available 0DTE trade/quote/Greeks data",
+    "dealer_direction_inferred_from_oi": false
+  },
+  "topstep_risk_profiles": {
+    "rules_checked_utc": "2026-09-25",
+    "profiles_to_simulate": ["standard_combine_50k", "standard_combine_100k", "standard_combine_150k"],
+    "account_path_is_versioned_input": true,
+    "include_unrealized_pnl_in_mll_path": true,
+    "simulate_dll_only_when_configured": true,
+    "apply_contract_caps_and_consistency_objective": true,
+    "never_size_up_before_one_contract_edge_research": true
+  },
+  "scorecard": [
+    "net_expectancy_and_profit_factor",
+    "paired_14_tick_stress",
+    "max_drawdown_and_date_cluster_interval",
+    "best_day_removed",
+    "chronological_slices_and_yearly_coverage",
+    "trigger_frequency_by_month_and_symbol",
+    "topstep_mll_survival_and_objective_path"
+  ],
+  "outputs": {
+    "root": "F:/ancserQuant/ancserMarketData/derived/research",
+    "immutable_run_manifest": true,
+    "decision_trace": true,
+    "trade_ledger": true,
+    "no_overwrite": true
+  }
+}

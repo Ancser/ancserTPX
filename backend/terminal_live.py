@@ -47,6 +47,13 @@ TRAIL_TICK_STEP = 5
 # Keep in sync with backend.api.routes.ML_TIMEFRAMES so terminal honours the
 # same area-timeframe / overlap selections the web UI saves into presets.
 ML_TIMEFRAMES = ("15m", "30m", "1h", "4h")
+SUPPORTED_STRATEGIES = (
+    "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+    "delta_absorption", "volume_profile",
+)
+PI_LONG_KINDS = frozenset(("青π", "深蓝圈", "淡蓝圈"))
+PI_SHORT_KINDS = frozenset(("粉π", "紫圈"))
+PI_SHORT_LEVELS = frozenset((1, 2))
 DEFAULT_PRESET_NAME = "TREND MNQx1 DEFAULT"
 DEFAULT_PRESET_PARAMS = {
     "strategy": "factor",   # 1.0.9: TREND 已移除
@@ -188,6 +195,31 @@ def _normalize_factor_pmo_mode(value) -> str:
     return v if v in ("normal", "early", "both") else "normal"
 
 
+def _normalize_pi_kinds(value: Any, allowed: frozenset[str]) -> Optional[List[str]]:
+    if value is None or not isinstance(value, (list, tuple, set)):
+        return None
+    out: List[str] = []
+    for item in value:
+        kind = str(item or "").strip()
+        if kind in allowed and kind not in out:
+            out.append(kind)
+    return out
+
+
+def _normalize_pi_levels(value: Any) -> Optional[List[int]]:
+    if value is None or not isinstance(value, (list, tuple, set)):
+        return None
+    out: List[int] = []
+    for item in value:
+        try:
+            level = int(item)
+        except (TypeError, ValueError):
+            continue
+        if level in PI_SHORT_LEVELS and level not in out:
+            out.append(level)
+    return sorted(out)
+
+
 def _activate_preset_model(preset: Dict[str, Any]) -> None:
     """Retired: confluence model activation is disabled in the terminal path."""
     return
@@ -256,7 +288,7 @@ def _load_presets_file() -> dict:
         if not isinstance(params, dict):
             continue
         strategy = str(params.get("strategy") or "").lower()
-        params["strategy"] = strategy if strategy in ("fade", "sigma", "pmo", "factor", "volume_profile") else "trend"
+        params["strategy"] = strategy if strategy in SUPPORTED_STRATEGIES else "factor"
         params["contract_id"] = normalize_contract_id_to_front(params.get("contract_id") or "")
         params["value_area_pct"] = _normalize_value_area_pct(params.get("value_area_pct"))
         # 1.0.9: HOLD 5m 系統已移除 — 一律 SL/TP-only
@@ -520,8 +552,8 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
     # 1.0.9: +factor(EMAPMO / MREV / KDJMA)— 修復:之前漏了 factor,
     # FACTOR preset 會被靜默降級成 trend 突破策略跑。
     strategy_mode = str(preset.get("strategy") or "trend").lower()
-    if strategy_mode not in ("fade", "sigma", "pmo", "factor", "volume_profile"):
-        strategy_mode = "trend"
+    if strategy_mode not in SUPPORTED_STRATEGIES:
+        strategy_mode = "factor"
 
     def _conf_float(key, default):
         try:
@@ -631,6 +663,30 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         factor_max_hold_bars=0,  # 1.0.9: HOLD 5m system removed → SL/TP-only exits
         factor_max_trades_per_day=max(0, _conf_int("factor_max_trades_per_day", 3)),
         factor_warmup_bars=max(20, _conf_int("factor_warmup_bars", 150)),
+        pi_long_only=bool(preset.get("pi_long_only", True)),
+        pi_signal_set=str(preset.get("pi_signal_set") or "long_pi_only").lower(),
+        pi_long_kinds=_normalize_pi_kinds(preset.get("pi_long_kinds"), PI_LONG_KINDS),
+        pi_short_kinds=_normalize_pi_kinds(preset.get("pi_short_kinds"), PI_SHORT_KINDS),
+        pi_short_levels=_normalize_pi_levels(preset.get("pi_short_levels")),
+        pi_continue_long_kinds=_normalize_pi_kinds(
+            preset.get("pi_continue_long_kinds"), PI_LONG_KINDS
+        ),
+        pi_continue_short_kinds=_normalize_pi_kinds(
+            preset.get("pi_continue_short_kinds"), PI_SHORT_KINDS
+        ),
+        pi_continue_short_levels=_normalize_pi_levels(
+            preset.get("pi_continue_short_levels")
+        ),
+        pi_reopen_max_gap_r=min(
+            5.0, max(0.0, _conf_float("pi_reopen_max_gap_r", 1.0))
+        ),
+        pi_lv2_replace_pi=bool(preset.get("pi_lv2_replace_pi", False)),
+        pi_max_signal_age_min=max(
+            1, min(60, _conf_int("pi_max_signal_age_min", 5))
+        ),
+        pi_short_sl_value=max(0.1, _conf_float("pi_short_sl_value", 2.5)),
+        pi_long_hold_min=max(0, _conf_int("pi_long_hold_min", 0)),
+        pi_short_hold_min=max(0, _conf_int("pi_short_hold_min", 60)),
         vp_value_area_pct=max(0.50, min(0.95, _conf_float("vp_value_area_pct", 0.70))),
         vp_entry_mode=normalize_volume_profile_entry_mode(
             preset.get("vp_entry_mode", "auto")

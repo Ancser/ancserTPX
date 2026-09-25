@@ -15,6 +15,7 @@ from backend.strategy.session_filter import (
     MARKET_PHASE_OPEN,
     MARKET_PHASE_PRE_FLATTEN,
     market_close_phase,
+    market_reopen_elapsed_minutes,
     market_session,
     market_session_code,
     market_session_id,
@@ -77,6 +78,24 @@ def test_close_window_is_1530_and_1545_new_york_year_round(
     ts: datetime, expected_phase: str,
 ):
     assert market_close_phase(ts) == expected_phase
+
+
+@pytest.mark.parametrize(
+    ("ts", "expected"),
+    [
+        (_utc(2026, 7, 15, 21, 59), None),
+        (_utc(2026, 7, 15, 22, 0), 0.0),
+        (_utc(2026, 7, 15, 22, 5), 5.0),
+        (_utc(2026, 7, 16, 6, 0), None),  # next calendar date's 02:00 ET
+        (_utc(2026, 1, 15, 22, 59), None),
+        (_utc(2026, 1, 15, 23, 0), 0.0),
+        (_utc(2026, 1, 15, 23, 5), 5.0),
+    ],
+)
+def test_reopen_window_minutes_are_same_day_and_dst_aware(
+    ts: datetime, expected: float | None,
+):
+    assert market_reopen_elapsed_minutes(ts) == expected
 
 
 def test_market_session_returns_the_real_utc_start_in_summer_and_winter():

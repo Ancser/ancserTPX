@@ -12,11 +12,13 @@
 
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import logging
 import math
 import os
 import time as time_mod
+from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,7 +35,8 @@ from backend.strategy.consolidation import SessionZoneDetector, build_zone_detec
 from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, MARKET_CLOCK_VERSION, MARKET_PHASE_FLATTEN,
     MARKET_PHASE_PRE_FLATTEN, allowed_sessions_label, is_allowed_session,
-    market_close_phase,
+    as_new_york, is_market_reopen, market_close_phase,
+    market_reopen_elapsed_minutes,
 )
 from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.factor import FactorSignalStrategy
@@ -43,7 +46,7 @@ from backend.strategy.volume_profile import (  # 1.0.8: fade 前日 VP
     VolumeProfileStrategy,
 )
 from backend.data import market_data
-from backend.timebase import CHICAGO, UTC, topstep_trade_date, utc_now, utc_now_naive
+from backend.timebase import CHICAGO, UTC, as_utc, topstep_trade_date, utc_now, utc_now_naive
 from backend.strategy.exit_policy import (
     ExitAction,
     ExitDecision,
@@ -318,6 +321,8 @@ class LiveTradingEngine:
         self._sl_order_id: Optional[int] = None
         self._tp_order_id: Optional[int] = None
         self._active_signal: Optional[TradeSignal] = None  # preserved after fill for SL/TP
+        self._pi_reopen_ticket: Optional[Dict[str, Any]] = None
+        self._pi_replacement_ticket: Optional[TradeSignal] = None
         self._position_just_closed: bool = False  # skip strategy eval on same tick as close
         self._position_age: int = 0              # candles since position opened (for display)
         self._exit_state = ExitState()
@@ -385,6 +390,10 @@ class LiveTradingEngine:
         self._breakout_locks_file = str(
             market_data.runtime_path("state", "live_breakout_locks.json")
         )
+        contract_key = hashlib.sha256(str(self.contract_id).encode("utf-8")).hexdigest()[:16]
+        self._pi_reopen_state_file = str(market_data.runtime_path(
+            "state", f"live_pi_reopen_{int(self.account_id)}_{contract_key}.json"
+        ))
         # Bot-only daily win/loss counters.  This is deliberately separate
         # from account DAILY PNL: discretionary/manual fills still belong in
         # the account PnL display, but must not consume strategy risk gates.
@@ -1396,6 +1405,184 @@ class LiveTradingEngine:
         except Exception:
             pass
         return None
+
+    def _restore_pi_reopen_ticket(self) -> bool:
+        """Restore one same-day PI continuation ticket for this account/contract."""
+        data = self._read_json_list_or_dict(self._pi_reopen_state_file)
+        if data is None:
+            self._pi_reopen_ticket = None
+            return False
+        valid = bool(
+            isinstance(data, dict)
+            and data.get("version") == 1
+            and str(data.get("account_id")) == str(self.account_id)
+            and str(data.get("contract_id")) == str(self.contract_id)
+            and self.strategy_mode == "pi"
+            and self.trend_follow.continuation_enabled(data)
+        )
+        if not valid:
+            self._clear_pi_reopen_ticket("saved ticket does not match the active PI settings")
+            return False
+        self._pi_reopen_ticket = data
+        self._log_event(
+            f"[PI REOPEN] Restored one continuation ticket for "
+            f"{data.get('pi', {}).get('kind', 'PI')}"
+        )
+        return True
+
+    def _persist_pi_reopen_ticket(self, ticket: Dict[str, Any]) -> bool:
+        path = self._pi_reopen_state_file
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(ticket, handle, indent=2, ensure_ascii=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            self._pi_reopen_ticket = ticket
+            return True
+        except Exception as exc:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            self._log_event(f"[PI REOPEN] Ticket persistence failed: {exc}", "error")
+            return False
+
+    def _clear_pi_reopen_ticket(self, reason: str = "") -> None:
+        self._pi_reopen_ticket = None
+        try:
+            if os.path.exists(self._pi_reopen_state_file):
+                os.remove(self._pi_reopen_state_file)
+        except OSError as exc:
+            self._log_event(f"[PI REOPEN] Could not remove ticket: {exc}", "error")
+        if reason:
+            self._log_event(f"[PI REOPEN] Ticket cleared: {reason}")
+
+    def _arm_pi_reopen_ticket(
+        self,
+        candle: Candle,
+        flat_time: Optional[datetime] = None,
+    ) -> bool:
+        signal = self._active_signal
+        if (
+            self.strategy_mode != "pi"
+            or self._open_position is None
+            or signal is None
+            or self._pi_reopen_ticket is not None
+            or not self.trend_follow.continuation_enabled(signal)
+        ):
+            return False
+
+        original_sl = float(getattr(signal, "original_sl_price", signal.sl_price))
+        original_tp = float(getattr(signal, "original_tp_price", signal.tp_price))
+        active_sl = float(signal.sl_price)
+        active_tp = float(signal.tp_price)
+        if signal.direction == Direction.BUY:
+            touched = candle.low <= active_sl or candle.high >= active_tp
+        else:
+            touched = candle.high >= active_sl or candle.low <= active_tp
+        if touched:
+            self._log_event("[PI REOPEN] Source bracket touched on flatten candle; continuation cancelled")
+            return False
+
+        source_entry = float(
+            self._fill_price
+            or getattr(signal, "original_entry_price", None)
+            or signal.entry_price
+        )
+        if abs(source_entry - original_sl) <= 0:
+            return False
+        meta = deepcopy(signal.meta or {})
+        ticket = {
+            "version": 1,
+            "account_id": self.account_id,
+            "contract_id": self.contract_id,
+            "direction": signal.direction.value,
+            "source_entry": source_entry,
+            "original_sl": original_sl,
+            "original_tp": original_tp,
+            "flat_price": float(candle.close),
+            "flat_time": as_utc(flat_time or candle.timestamp).isoformat(),
+            "pi": deepcopy(meta.get("pi") or {}),
+            "source_reason": str(signal.reason or "PI signal"),
+        }
+        if not self._persist_pi_reopen_ticket(ticket):
+            return False
+        self._log_event(
+            f"[PI REOPEN] Armed {ticket['pi'].get('kind', 'PI')} for one same-day "
+            "18:00 ET re-entry"
+        )
+        return True
+
+    def _update_pi_reopen_ticket(self, candle: Candle) -> None:
+        ticket = self._pi_reopen_ticket
+        if ticket is None:
+            return
+        if (
+            self.strategy_mode != "pi"
+            or str(ticket.get("account_id")) != str(self.account_id)
+            or str(ticket.get("contract_id")) != str(self.contract_id)
+            or not self.trend_follow.continuation_enabled(ticket)
+        ):
+            self._clear_pi_reopen_ticket("ticket identity or selected signal changed")
+            return
+        try:
+            flat_time = as_utc(datetime.fromisoformat(
+                str(ticket["flat_time"]).replace("Z", "+00:00")
+            ))
+            current_time = as_utc(candle.timestamp)
+            original_sl = float(ticket["original_sl"])
+            original_tp = float(ticket["original_tp"])
+        except (KeyError, TypeError, ValueError):
+            self._clear_pi_reopen_ticket("ticket data is incomplete")
+            return
+        flat_ny = as_new_york(flat_time)
+        current_ny = as_new_york(current_time)
+        if current_ny.date() > flat_ny.date():
+            self._clear_pi_reopen_ticket("same-day reopen missed; overnight carry is disabled")
+            return
+        if current_ny.date() != flat_ny.date() or current_time < flat_time:
+            return
+
+        direction = str(ticket.get("direction") or "").lower()
+        stop_hit = (
+            candle.low <= original_sl if direction == Direction.BUY.value
+            else candle.high >= original_sl
+        )
+        target_hit = (
+            candle.high >= original_tp if direction == Direction.BUY.value
+            else candle.low <= original_tp
+        )
+        if stop_hit or target_hit:
+            reason = "original stop touched while flat" if stop_hit else "original target reached while flat"
+            self._clear_pi_reopen_ticket(reason)
+            return
+
+        elapsed = market_reopen_elapsed_minutes(current_time)
+        if elapsed is None:
+            return
+        if self._open_position is not None:
+            self._clear_pi_reopen_ticket("an account position remained open at the reopen")
+            return
+        if elapsed > getattr(self.trend_follow, "REOPEN_WINDOW_MINUTES", 5):
+            self._clear_pi_reopen_ticket("reopen entry window elapsed")
+
+    def _take_pi_reopen_ticket(self, candle: Candle) -> Optional[Dict[str, Any]]:
+        ticket = self._pi_reopen_ticket
+        if ticket is None or self._open_position is not None or self._pending_order_id:
+            return None
+        self._update_pi_reopen_ticket(candle)
+        ticket = self._pi_reopen_ticket
+        if ticket is None:
+            return None
+        elapsed = market_reopen_elapsed_minutes(candle.timestamp)
+        if elapsed is None or elapsed > getattr(self.trend_follow, "REOPEN_WINDOW_MINUTES", 5):
+            return None
+        self._clear_pi_reopen_ticket("claimed for the one-time reopen order")
+        return ticket
 
     def _persist_daily_bot_risk_state(self) -> None:
         """Atomically persist bot-only daily lock counters for this account."""
@@ -2673,6 +2860,7 @@ class LiveTradingEngine:
         # Manual/account PnL is intentionally not reconstructed into these
         # counters; only bot-owned outcomes written by this engine are loaded.
         self._restore_daily_bot_risk_state()
+        self._restore_pi_reopen_ticket()
         self._param_snapshot_id = self._register_param_snapshot()  # 1.0.8: 參數快照入庫
         try:   # 1.0.9: 本帳號設為 shadow replay 主帳號(其餘為跟單,忽略)
             from backend.backtest.shadow_replay import set_main_account
@@ -2700,6 +2888,13 @@ class LiveTradingEngine:
         historical_candles = sorted(historical_candles, key=lambda c: c.timestamp)
         can_observe_strategy = hasattr(self.trend_follow, "observe")
         for c in historical_candles:
+            pi_reopen_bar = bool(
+                self.strategy_mode == "pi"
+                and self._pi_reopen_ticket is not None
+                and is_market_reopen(c.timestamp)
+            )
+            if self.strategy_mode == "pi":
+                self._update_pi_reopen_ticket(c)
             self.detector.update(c)
             self._update_tf_breakout(c)
             if can_observe_strategy:
@@ -2713,6 +2908,16 @@ class LiveTradingEngine:
                         self.detector.get_recent_zones(),
                         self.detector.is_zone_mature,
                     )
+                elif self.strategy_mode == "pi":
+                    if (
+                        not pi_reopen_bar
+                        and (
+                            self._pi_reopen_ticket is not None
+                            or market_close_phase(c.timestamp) == MARKET_PHASE_FLATTEN
+                            or self._trend_session_allowed(c.timestamp)
+                        )
+                    ):
+                        self.trend_follow.observe(c, [], True)
                 elif self._trend_session_allowed(c.timestamp):
                     self.trend_follow.observe(
                         c,
@@ -3083,6 +3288,58 @@ class LiveTradingEngine:
         self._protection_synced = False
         self._position_open_ts = 0.0
         self._last_auto_oco_retry_ts = 0.0
+
+    async def _close_bot_position_for_pi_replacement(self) -> tuple[bool, bool]:
+        """Close only this engine's configured contract before an LV2 entry.
+
+        Returns ``(broker_accepted, confirmed_flat)``.  The replacement order
+        is never submitted until ``_sync_position`` has observed the contract
+        flat.  Account-wide ``flatten_all`` is deliberately excluded here.
+        """
+        if self._open_position is None or self._active_signal is None:
+            return False, False
+        active_signal = self._active_signal
+        for order_id, label in (
+            (self._sl_order_id, "SL (PI replacement)"),
+            (self._tp_order_id, "TP (PI replacement)"),
+        ):
+            if order_id:
+                try:
+                    await self._cancel_with_retry(order_id, label)
+                except Exception as exc:
+                    self._log_event(
+                        f"[PI REPLACE] {label} cancel error: {exc}", "error"
+                    )
+        self._sl_order_id = None
+        self._tp_order_id = None
+        self._protection_synced = False
+        try:
+            response = await self.client.close_position(
+                self.account_id, self.contract_id
+            )
+        except Exception as exc:
+            self._log_event(f"[PI REPLACE] contract close error: {exc}", "error")
+            if self._open_position is not None:
+                await self._sync_auto_oco_protection(active_signal, wait_seconds=2.0)
+            return False, False
+        if not getattr(response, "success", False):
+            self._log_event(
+                "[PI REPLACE] contract close rejected; LV2 entry cancelled",
+                "error",
+            )
+            if self._open_position is not None:
+                await self._sync_auto_oco_protection(active_signal, wait_seconds=2.0)
+            return False, False
+        self._force_exit_reason = "manual"
+        await self._sync_position()
+        confirmed_flat = self._open_position is None
+        if not confirmed_flat:
+            self._log_event(
+                "[PI REPLACE] close accepted; waiting for broker FLAT confirmation",
+                "warn",
+            )
+            await self._sync_auto_oco_protection(active_signal, wait_seconds=2.0)
+        return True, confirmed_flat
 
     def _auto_oco_missing_timed_out(self) -> bool:
         """True when an engine-filled position stayed without SL/TP past the grace period."""
@@ -3662,6 +3919,34 @@ class LiveTradingEngine:
             # candle; the RTH session gate below still blocks entries outside
             # the strategy's configured session.
             self.trend_follow.observe(candle, [], True)
+        elif self.strategy_mode == "pi":
+            pi_reopen_bar = bool(
+                self._pi_reopen_ticket is not None
+                and is_market_reopen(candle.timestamp)
+            )
+            self._update_pi_reopen_ticket(candle)
+            selected_active_position = bool(
+                self._open_position is not None
+                and self._active_signal is not None
+                and (
+                    self.trend_follow.continuation_enabled(self._active_signal)
+                    or (
+                        hasattr(self.trend_follow, "replacement_source_active")
+                        and self.trend_follow.replacement_source_active(
+                            self._active_signal
+                        )
+                    )
+                )
+            )
+            if (
+                not pi_reopen_bar
+                and (
+                    self._pi_reopen_ticket is not None
+                    or selected_active_position
+                    or market_close_phase(candle.timestamp) == MARKET_PHASE_FLATTEN
+                )
+            ):
+                self.trend_follow.observe(candle, [], True)
         elif (
             self.strategy_mode == "optionwall"
             and not self._open_position
@@ -3694,6 +3979,10 @@ class LiveTradingEngine:
                 # Keep completed-bar factor indicators warm while orders are blocked.
                 self.trend_follow.observe(candle, [], True)
             if self._open_position and self._active_signal is not None:
+                flat_at = as_new_york(now).replace(
+                    hour=15, minute=45, second=0, microsecond=0
+                )
+                self._arm_pi_reopen_ticket(candle, flat_at)
                 self._log_event("ET 15:45 session-close flatten")
                 await self.flatten_now()
             elif self._open_position:
@@ -3751,6 +4040,32 @@ class LiveTradingEngine:
         if self._open_position:
             self._position_age += 1   # track for display only
             if self._active_signal is not None:
+                if (
+                    self.strategy_mode == "pi"
+                    and self._pi_replacement_ticket is None
+                    and hasattr(self.trend_follow, "take_lv2_replacement")
+                ):
+                    replacement = self.trend_follow.take_lv2_replacement(
+                        candle, self._active_signal
+                    )
+                    if replacement is not None:
+                        self._active_signal.meta.setdefault(
+                            "pi_replaced_by", {}
+                        ).update(replacement.meta.get("pi") or {})
+                        accepted, confirmed_flat = (
+                            await self._close_bot_position_for_pi_replacement()
+                        )
+                        if accepted and confirmed_flat:
+                            # The ticket is local and one-shot; the next tick
+                            # enters only after this broker sync proved FLAT.
+                            self._pi_replacement_ticket = replacement
+                        else:
+                            self.trend_follow.notify_order_cancelled()
+                        if confirmed_flat:
+                            self._log_event(
+                                "[PI REPLACE] 青π closed; LV2 queued for fresh entry"
+                            )
+                        return
                 held = (
                     (utc_now_naive() - self._entry_time).total_seconds() / 60.0
                     if self._entry_time is not None else 0.0
@@ -3836,7 +4151,32 @@ class LiveTradingEngine:
             )
             strat.reset()
 
-        signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
+        signal = self._pi_replacement_ticket
+        if signal is not None:
+            # A close-confirmed ticket is claimed once.  A broker/order reject
+            # does not retry the same external event.
+            self._pi_replacement_ticket = None
+            self._log_event("[PI REPLACE] Fresh LV2 signal ready")
+        reopen_ticket = (
+            self._take_pi_reopen_ticket(candle)
+            if signal is None and self.strategy_mode == "pi" else None
+        )
+        if reopen_ticket is not None:
+            signal = self.trend_follow.build_reopen_continuation(
+                reopen_ticket,
+                candle,
+                getattr(self.strategy_params, "pi_reopen_max_gap_r", 1.0),
+            )
+            if signal is None:
+                self._log_event(
+                    "[PI REOPEN] Re-entry skipped by gap, ATR, or bracket guard"
+                )
+            else:
+                self._log_event(
+                    f"[PI REOPEN] One-time continuation signal ready @ {signal.entry_price:.2f}"
+                )
+        if signal is None:
+            signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
         if signal and self.strategy_mode in (
             "sigma", "factor", "fade", "optionwall", "delta_absorption",
             "volume_profile",
@@ -3899,7 +4239,10 @@ class LiveTradingEngine:
                 self._unlock_signal_breakout(signal)
                 strat.notify_order_cancelled()
                 return
-            if self._session_direction_is_locked(signal):
+            if (
+                self._session_direction_is_locked(signal)
+                and not (signal.meta or {}).get("pi_replacement")
+            ):
                 direction = self._breakout_direction_from_trade_direction(signal.direction.value)
                 self._log_event(
                     f"Session-direction lock: zone={signal.zone_id} dir={direction} "
@@ -5169,6 +5512,20 @@ class LiveTradingEngine:
                     self.detector.get_recent_zones(),
                     self.detector.is_zone_mature,
                 )
+            elif self.strategy_mode == "pi":
+                pi_reopen_bar = bool(
+                    self._pi_reopen_ticket is not None
+                    and is_market_reopen(candle.timestamp)
+                )
+                self._update_pi_reopen_ticket(candle)
+                if (
+                    not pi_reopen_bar
+                    and (
+                        self._pi_reopen_ticket is not None
+                        or market_close_phase(candle.timestamp) == MARKET_PHASE_FLATTEN
+                    )
+                ):
+                    self.trend_follow.observe(candle, [], True)
             elif self._trend_session_allowed(candle.timestamp):
                 self.trend_follow.observe(
                     candle,

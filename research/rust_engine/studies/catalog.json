@@ -1,0 +1,51 @@
+{
+  "schema": "ancsertpx.study-catalog.v1",
+  "catalog_version": "2026-09-25.5",
+  "studies": [
+    {
+      "study_id": "vp_baseline_2022_2026",
+      "name": "MNQ/MES volume-profile parity baseline",
+      "spec_path": "vp_baseline_2022_2026.json",
+      "status": "runner_available_research_gates_pending",
+      "evidence_tier": "implementation_parity_only",
+      "ranking": "not_ranked",
+      "description": "Frozen replay baseline with exact Python ledger parity. Causal fill, Topstep account-path, option-regime durability, and prospective-coverage gates remain open."
+    },
+    {
+      "study_id": "vp_causal_nextbar_databento_2022_2026",
+      "name": "VP causal next-bar — Databento verified",
+      "spec_path": "vp_causal_nextbar_databento_2022_2026.json",
+      "status": "runner_available_research_gates_pending",
+      "evidence_tier": "candidate_execution_research",
+      "ranking": "not_ranked",
+      "description": "Next 1m RTH open after completed signal bar; source-verified Databento RTH sessions only."
+    },
+    {
+      "study_id": "vp_causal_nextbar_source_sensitivity_2022_2026",
+      "name": "VP causal next-bar — source timestamp sensitivity",
+      "spec_path": "vp_causal_nextbar_source_sensitivity_2022_2026.json",
+      "status": "runner_available_research_gates_pending",
+      "evidence_tier": "candidate_execution_research",
+      "ranking": "not_ranked",
+      "description": "Next 1m RTH open using all sources under explicit interval-start assumption; TopstepX results are sensitivity evidence."
+    },
+    {
+      "study_id": "tsm_60_session_tff_2022_2026",
+      "name": "60-session TSM with lagged CFTC TFF context",
+      "spec_path": "tsm_60_session_tff_2022_2026.json",
+      "supported_strategies": [
+        "price_only_60_session_tsm",
+        "60_session_tsm_with_lagged_tff_alignment",
+        "price_only_paired_on_candidate_intervals",
+        "vol20_scaled_price_tsm",
+        "vol20_scaled_passive_long_paired_on_price_tsm",
+        "vol20_scaled_tff_tsm",
+        "vol20_scaled_passive_long_paired_on_tff_tsm"
+      ],
+      "status": "runner_available_research_gates_pending",
+      "evidence_tier": "candidate_execution_research",
+      "ranking": "not_ranked",
+      "description": "Reusable Rust session-event replay with frozen 60-session momentum, conservative TFF timing, one-contract reference ledgers, and a predeclared 20-session volatility-scaled TSM/passive-long comparison. Shared robustness is computed; this candidate currently fails durability gates. Topstep MLL and prospective gates remain open."
+    }
+  ]
+}

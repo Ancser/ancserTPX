@@ -330,7 +330,9 @@ def test_pi_matrix_switches_use_the_real_optical_thumb_surface():
     """The PI matrix must not fall back to a plain, unpositioned thumb span."""
     for mode in ("bt", "live"):
         start = HTML.index(f'id="pi-params-{mode}"')
-        end = HTML.index('class="pi-legacy-controls"', start)
+        # Keep this assertion scoped to the original PI entry matrix. The new
+        # reopen-continuation matrix has its own six optical switch thumbs.
+        end = HTML.index("pi-continuation-shell", start)
         matrix = HTML[start:end]
         assert matrix.count('class="optical-surface switch-thumb"') == 6
         assert matrix.count('data-optical="switch"') == 6
@@ -445,6 +447,20 @@ def test_pi_matrix_is_two_column_glass_switch_ui_and_keeps_legacy_wire_fields():
     assert "pi_long_kinds: piMatrix.pi_long_kinds" in JS
     assert "pi_short_kinds: piMatrix.pi_short_kinds" in JS
     assert "pi_short_levels: piMatrix.pi_short_levels" in JS
+    assert "pi_continue_long_kinds: piContinueMatrix.pi_continue_long_kinds" in JS
+    assert "pi_continue_short_kinds: piContinueMatrix.pi_continue_short_kinds" in JS
+    assert "pi_continue_short_levels: piContinueMatrix.pi_continue_short_levels" in JS
+    assert "pi_lv2_replace_pi: _piLv2ReplaceEnabled(mode)" in JS
+    assert "_setPiLv2ReplaceEnabled(mode, Boolean(p.pi_lv2_replace_pi))" in JS
+    assert "onPiContinueMatrixProxy" in JS
+    assert "onPiLv2ReplaceProxy" in JS
+
+    for mode in ("bt", "live"):
+        assert f'data-pi-continue-matrix="{mode}"' in HTML
+        assert f'id="pi-continue-{mode}-long-level2"' in HTML
+        assert f'id="pi-continue-{mode}-short-level2"' in HTML
+        assert f'id="pi-reopen-gap-{mode}"' in HTML
+        assert f'id="pi-lv2-replace-{mode}"' in HTML
 
 
 def test_pi_matrix_light_mode_uses_light_surface_instead_of_dark_overlay():

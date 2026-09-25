@@ -1,15 +1,53 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-15. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-09-19. Current HEAD + the uncommitted fixes listed below.
 
 ## State
 
 ```
-tests            743 pytest passing + 8 subtests; footprint Chromium regression passing (full browser suite not rerun for this change)
-invariants       90 documented / 86 active / 4 explicitly retired
+tests            759 pytest passing + 8 subtests; one known Volume Profile preset failure; 99 focused regressions and PI selector/preset browser smoke pass
+invariants       91 documented / 87 active / 4 explicitly retired
 strategies       factor · momentum · betafib · pi · optionwall · delta_absorption · volume_profile · fade · sigma  (+ confluence, live-only)
 presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST · DELTA ABSORPTION BEST · VOLUME PROFILE RESEARCH
 ```
+
+### 2026-09-21 — Opt-in Level-2 replacement for active long PI
+
+Backtest and Live now expose `pi_lv2_replace_pi`, default off. When enabled,
+only a fresh selected BUY 深蓝圈 carrying structured source Level 2 can replace
+an active bot-owned BUY 青π carrying structured source Level 3. The original trade closes first; Live uses the
+configured-contract close API and waits for broker-flat confirmation before a
+fresh ATR-blend market entry travels through the existing attached Auto-OCO
+and daily-risk path. Manual/external positions, missing levels, active Level 1/2 sources, shorts, reopen
+continuations, and prior replacements are excluded.
+
+The user-requested `PI 2MNQ BOTH BEST` preset keeps two MNQ and enables both
+long 深蓝圈 close/reopen continuation with a 1R gap cap and the LV2 replacement
+toggle. Exploratory H5 evidence remains weak: baseline n=42 / PnL $1,359 /
+PF 1.43 / DD $1,139 versus deep-blue preemption n=51 / PnL $651 / PF 1.16 /
+DD $1,934. The controls are live/backtest-capable; the result does not establish
+a durable BEST promotion.
+
+### 2026-09-19 — Per-signal PI reopen continuation
+
+Backtest and Live expose independent continuation selectors for each PI
+direction/kind and each short-circle level. They default off. A selected,
+bot-owned PI position must survive to the 15:45 ET flatten before one
+same-day ticket is armed. Live stores it by account/contract and restores it
+after a process restart. A touch of the source SL/TP while flat, a missed
+same-day reopen, or a reopen later than 18:05 ET cancels the ticket. A claimed
+ticket creates one market re-entry with a fresh ATR-blend bracket and follows
+the standard entry, risk, and OCO-protection path. The default maximum reopen
+gap is 1R; `0` disables the gap cap.
+
+The production BacktestEngine study covers available Level-2 bullish-bubble
+signals from 2026-03-05 to 2026-09-14: MNQ baseline n=6 / -$931.44 / PF 0.096;
+MES baseline n=7 / -$59.93 / PF 0.884. With the 1R cap, three MNQ and five MES
+continuations re-entered. Net results became MNQ -$520.66 / PF 0.618 and MES
++$946.37 / PF 2.266 (14-tick stress PF: 0.585 and 1.882). The combined PnL
+moved from -$991.37 to +$425.71. MNQ remains negative, and the marked-signal
+sample spans only about six months; this is exploratory evidence, not a BEST
+promotion. Report: `ancserMarketData/derived/research/pi_reopen_continuation_lv2_20260919_135830.md`.
 
 ### 2026-09-15 — Delta Absorption chart evidence layers
 

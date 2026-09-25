@@ -487,6 +487,15 @@ class StrategyParams:
     # carried separately. None preserves legacy kind-only presets; [] turns
     # both short circle levels off.
     pi_short_levels: Optional[List[int]] = None
+    # Optional per-mark one-time continuation at the same-day 18:00 ET reopen.
+    # The empty/default selection keeps normal PI entries single-shot.
+    pi_continue_long_kinds: Optional[List[str]] = None
+    pi_continue_short_kinds: Optional[List[str]] = None
+    pi_continue_short_levels: Optional[List[int]] = None
+    pi_reopen_max_gap_r: float = 1.0
+    # Optional one-time preemption: a fresh long Level-2 深蓝圈 may replace an
+    # active bot-owned long 青π position.  General defaults stay conservative.
+    pi_lv2_replace_pi: bool = False
     pi_max_signal_age_min: int = 5        # 超過即丟棄(BLOCK 不是 WARN)
     pi_short_sl_value: float = 2.5        # 空單 SL(×atr_blend)
     pi_long_hold_min: int = 0             # 多單時間出場(分鐘);0 = 不用

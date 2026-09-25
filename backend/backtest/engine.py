@@ -13,6 +13,7 @@
 from __future__ import annotations
 import uuid
 import logging
+from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -28,7 +29,8 @@ from backend.strategy.consolidation import SessionZoneDetector, build_zone_detec
 from backend.strategy.session_filter import (
     DEFAULT_ALLOWED_SESSIONS, MARKET_PHASE_FLATTEN,
     MARKET_PHASE_PRE_FLATTEN, allowed_sessions_label, is_allowed_session,
-    market_close_phase,
+    as_new_york, is_market_reopen, market_close_phase,
+    market_reopen_elapsed_minutes,
 )
 from backend.strategy.sigma import RollingSigmaFade
 from backend.strategy.factor import FactorSignalStrategy
@@ -47,7 +49,7 @@ from backend.strategy.exit_policy import (
     evaluate_exit_operation,
     resolve_exit_policy,
 )
-from backend.timebase import CHICAGO, UTC, topstep_trade_date as _topstep_trade_date
+from backend.timebase import CHICAGO, UTC, as_utc, topstep_trade_date as _topstep_trade_date
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +191,8 @@ class BacktestEngine:
         # State
         self._capital = self.config.initial_capital
         self._open_position: Optional[Trade] = None
+        self._pi_reopen_ticket: Optional[dict] = None
+        self.pi_reopen_events: List[dict] = []
         self._pending_order: Optional[TradeSignal] = None
         self._pending_age: int = 0
         self._pending_max_age: int = self.trend_follow.PENDING_TIMEOUT_CANDLES
@@ -352,6 +356,8 @@ class BacktestEngine:
     def _reset(self):
         self._capital = self.config.initial_capital
         self._open_position = None
+        self._pi_reopen_ticket = None
+        self.pi_reopen_events = []
         self._pending_order = None
         self._pending_age = 0
         self._pending_lock_key = None
@@ -414,6 +420,25 @@ class BacktestEngine:
     def _process_candle(self, candle: Candle):
         if self._record_equity:
             self._equity_curve.append((candle.timestamp, self._capital))
+
+        pi_reopen_bar = bool(
+            self.strategy_mode == "pi"
+            and self._pi_reopen_ticket is not None
+            and is_market_reopen(candle.timestamp)
+        )
+        self._update_pi_reopen_ticket(candle)
+        if self.strategy_mode == "pi":
+            pi_strategy = self.trend_follow
+            needs_atr_observe = bool(
+                self._open_position is not None
+                or self._pi_reopen_ticket is not None
+                or (
+                    self.CLOSE_WINDOW_ENABLED
+                    and market_close_phase(candle.timestamp) == MARKET_PHASE_FLATTEN
+                )
+            )
+            if needs_atr_observe and not pi_reopen_bar:
+                pi_strategy.observe(candle, [], True)
 
         # 1.0.8: 交易日 rollover — 日虧斷路器計數重置 + fade 前日 VP 水位計算
         _ts_date = _topstep_trade_date(candle.timestamp)
@@ -526,6 +551,52 @@ class BacktestEngine:
         if self._open_position:
             self._check_exit(candle)
             if self._open_position:
+                replacement = None
+                if (
+                    self.strategy_mode == "pi"
+                    and not getattr(self, "_near_data_end", False)
+                    and self._trend_session_allowed(candle.timestamp)
+                    and hasattr(self.trend_follow, "take_lv2_replacement")
+                ):
+                    replacement = self.trend_follow.take_lv2_replacement(
+                        candle, self._open_position
+                    )
+                if replacement is not None:
+                    # The current bar has already been observed above.  Record
+                    # the preemption on the original trade, close it first,
+                    # then run every ordinary new-entry risk gate.  The only
+                    # intentionally skipped gate is the same-session direction
+                    # lock consumed by the original 青π entry.
+                    self._open_position.meta.setdefault("pi_replaced_by", {}).update(
+                        replacement.meta.get("pi") or {}
+                    )
+                    self._execute_exit(
+                        candle, candle.close, ExitReason.MANUAL
+                    )
+                    replacement.zone_source = "current"
+                    ensure_exit_policy(
+                        replacement, self.strategy_params, self.strategy_mode
+                    )
+                    if (self._tr_daily_loss_stop
+                            and self._daily_loss_count >= self._tr_daily_loss_stop):
+                        self.trend_follow.notify_order_cancelled()
+                        return
+                    if (self._tr_daily_win_stop
+                            and self._daily_win_count >= self._tr_daily_win_stop):
+                        self.trend_follow.notify_order_cancelled()
+                        return
+                    if (self._tr_daily_profit_stop
+                            and self._daily_profit_td >= self._tr_daily_profit_stop):
+                        self.trend_follow.notify_order_cancelled()
+                        return
+                    if self._signal_full_tp_locked(replacement, candle):
+                        self.trend_follow.notify_order_cancelled()
+                        return
+                    self._mark_session_direction_used(replacement, candle)
+                    self._execute_entry(replacement, candle)
+                    if self._open_position:
+                        self._check_sl_only(candle)
+                    return
                 decision = self._evaluate_active_exit(candle)
                 if decision.action == ExitAction.CLOSE:
                     self._store_exit_state(decision.state)
@@ -598,7 +669,30 @@ class BacktestEngine:
                 eval_mature = self.detector.is_zone_mature
                 zone_source = "current"
 
-            signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
+            signal = None
+            reopen_ticket = self._take_pi_reopen_ticket(candle) if self.strategy_mode == "pi" else None
+            if reopen_ticket is not None:
+                signal = self.trend_follow.build_reopen_continuation(
+                    reopen_ticket,
+                    candle,
+                    getattr(self.strategy_params, "pi_reopen_max_gap_r", 1.0),
+                )
+                if signal is None:
+                    self.pi_reopen_events.append({
+                        "event": "skipped",
+                        "reason": "gap cap, ATR blend, or PI bracket guard",
+                        "reopen_time": candle.timestamp.isoformat(),
+                    })
+                else:
+                    self.pi_reopen_events.append({
+                        "event": "reentered",
+                        "reopen_time": candle.timestamp.isoformat(),
+                        "entry": signal.entry_price,
+                        "gap_r": signal.meta["pi_continuation"]["reopen_gap_r"],
+                        "atr_blend": signal.meta["pi_continuation"]["atr_blend"],
+                    })
+            if signal is None:
+                signal = self.trend_follow.evaluate(candle, eval_zones, eval_mature)
             if signal:
                 signal.zone_source = zone_source
                 ensure_exit_policy(signal, self.strategy_params, self.strategy_mode)
@@ -954,9 +1048,138 @@ class BacktestEngine:
         # Without this, profitable trail-protected positions closed by 12:45 PT
         # auto-flatten end up in the 'other' bucket and disappear from
         # TP/SL/TRAIL counts and AVG $ stats.
+        if reason == ExitReason.FLATTEN:
+            self._arm_pi_reopen_ticket(candle)
         if reason == ExitReason.FLATTEN and self._trail_sl_triggered:
             reason = ExitReason.TRAIL_SL
         self._execute_exit(candle, candle.close, reason)
+
+    def _arm_pi_reopen_ticket(self, candle: Candle) -> None:
+        position = self._open_position
+        if (
+            self.strategy_mode != "pi"
+            or position is None
+            or self._pi_reopen_ticket is not None
+            or market_close_phase(candle.timestamp) != MARKET_PHASE_FLATTEN
+            or not hasattr(self.trend_follow, "continuation_enabled")
+            or not self.trend_follow.continuation_enabled(position)
+        ):
+            return
+
+        original_sl = float(position.original_sl_price or position.sl_price)
+        original_tp = float(position.original_tp_price or position.tp_price)
+        # A close-window bar can still contain the original bracket fill. Carry
+        # only a position whose bracket remained untouched into the flatten.
+        if position.direction == Direction.BUY:
+            touched = candle.low <= float(position.sl_price) or candle.high >= float(position.tp_price)
+        else:
+            touched = candle.high >= float(position.sl_price) or candle.low <= float(position.tp_price)
+        if touched:
+            self.pi_reopen_events.append({
+                "event": "skipped",
+                "reason": "source bracket touched on flatten candle",
+                "flat_time": candle.timestamp.isoformat(),
+            })
+            return
+        risk = abs(float(position.entry_price) - original_sl)
+        if risk <= 0:
+            return
+        meta = deepcopy(getattr(position, "meta", None) or {})
+        self._pi_reopen_ticket = {
+            "direction": position.direction.value,
+            "source_entry": float(position.entry_price),
+            "original_sl": original_sl,
+            "original_tp": original_tp,
+            "risk": risk,
+            "flat_price": float(candle.close),
+            "flat_time": candle.timestamp.isoformat(),
+            "pi": deepcopy(meta.get("pi") or {}),
+            "source_reason": str(meta.get("signal_reason") or "PI signal"),
+        }
+        self.pi_reopen_events.append({
+            "event": "armed",
+            "flat_time": candle.timestamp.isoformat(),
+            "entry": float(position.entry_price),
+            "flat_price": float(candle.close),
+            "risk": risk,
+        })
+
+    def _update_pi_reopen_ticket(self, candle: Candle) -> None:
+        ticket = self._pi_reopen_ticket
+        if ticket is None:
+            return
+        flat_time = as_utc(datetime.fromisoformat(
+            str(ticket["flat_time"]).replace("Z", "+00:00")
+        ))
+        current_time = as_utc(candle.timestamp)
+        flat_ny = as_new_york(flat_time)
+        current_ny = as_new_york(current_time)
+        if current_ny.date() > flat_ny.date():
+            self.pi_reopen_events.append({
+                "event": "expired",
+                "reason": "same-day reopen missed; overnight carry disabled",
+                "flat_time": flat_time.isoformat(),
+            })
+            self._pi_reopen_ticket = None
+            return
+        if current_ny.date() != flat_ny.date() or current_time < flat_time:
+            return
+        direction = ticket["direction"]
+        stop_hit = (
+            candle.low <= ticket["original_sl"]
+            if direction == Direction.BUY.value
+            else candle.high >= ticket["original_sl"]
+        )
+        target_hit = (
+            candle.high >= ticket["original_tp"]
+            if direction == Direction.BUY.value
+            else candle.low <= ticket["original_tp"]
+        )
+        if stop_hit or target_hit:
+            self.pi_reopen_events.append({
+                "event": "invalidated",
+                "reason": "original stop touched while flat" if stop_hit else "original target reached while flat",
+                "time": candle.timestamp.isoformat(),
+            })
+            self._pi_reopen_ticket = None
+            return
+        elapsed = market_reopen_elapsed_minutes(current_time)
+        if (
+            elapsed is not None
+            and elapsed > getattr(self.trend_follow, "REOPEN_WINDOW_MINUTES", 5)
+        ):
+            self.pi_reopen_events.append({
+                "event": "expired",
+                "reason": "reopen entry window elapsed",
+                "flat_time": flat_time.isoformat(),
+            })
+            self._pi_reopen_ticket = None
+
+    def _take_pi_reopen_ticket(self, candle: Candle) -> Optional[dict]:
+        ticket = self._pi_reopen_ticket
+        if ticket is None:
+            return None
+        flat_time = as_utc(datetime.fromisoformat(
+            str(ticket["flat_time"]).replace("Z", "+00:00")
+        ))
+        current_ny = as_new_york(candle.timestamp)
+        flat_ny = as_new_york(flat_time)
+        if current_ny.date() > flat_ny.date():
+            self._update_pi_reopen_ticket(candle)
+            return None
+        elapsed = market_reopen_elapsed_minutes(candle.timestamp)
+        if current_ny.date() != flat_ny.date() or elapsed is None:
+            return None
+        if elapsed > getattr(self.trend_follow, "REOPEN_WINDOW_MINUTES", 5):
+            self.pi_reopen_events.append({
+                "event": "expired",
+                "reason": "reopen entry window elapsed",
+                "flat_time": flat_time.isoformat(),
+            })
+            self._pi_reopen_ticket = None
+            return None
+        self._pi_reopen_ticket = None
+        return ticket
 
     @staticmethod
     def aggregate_1m_to_5m(candles_1m: List[Candle]) -> List[Candle]:

@@ -1,0 +1,68 @@
+{
+  "schema": "ancsertpx.study.v1",
+  "study_id": "tsm_60_session_tff_2022_2026",
+  "status": "runner_available_research_gates_pending",
+  "supported_strategies": [
+    "price_only_60_session_tsm",
+    "60_session_tsm_with_lagged_tff_alignment",
+    "price_only_paired_on_candidate_intervals",
+    "vol20_scaled_price_tsm",
+    "vol20_scaled_passive_long_paired_on_price_tsm",
+    "vol20_scaled_tff_tsm",
+    "vol20_scaled_passive_long_paired_on_tff_tsm"
+  ],
+  "replay": {
+    "runner_package": "ancsertpx-tsm-replay",
+    "config_path": "tsm_60_session_tff_2022_2026_replay.json"
+  },
+  "purpose": "Reusable, immutable session-event runner for 60-completed-session futures momentum with conservative lagged CFTC TFF context. Adds a predeclared 20-session volatility-scaled TSM versus same-interval passive-long comparison, with Python row-level parity.",
+  "retrospective_window": {
+    "start": "2022-01-01",
+    "end": "2026-09-23",
+    "interpretation": "2022-2025 historical years plus 2026 YTD; this is a previously explored sample, not a clean holdout."
+  },
+  "prospective_shadow": {
+    "start": "2026-09-24",
+    "minimum_coverage_months": 12
+  },
+  "input_contract": {
+    "timezone": "UTC instants; Topstep CME trade-date session labels from immutable Arrow export",
+    "symbols": ["MNQ", "MES"],
+    "immutable_snapshot_hashes_required": true,
+    "MNQ_canonical_sha256": "C9088546C058F3C4C68892DC1807CF256B78CA07303E8943951D341DEC3FAB1F",
+    "MES_canonical_sha256": "F30223BFD52C2A37AD61AF62460E38F6E137A87C988746647474E7A78EE3E817",
+    "CFTC_source_sha256": "825B7ADC3FC9E0EB9E99ECA951A31C92B2E74D3C8E9466ED20F9B41780D2870",
+    "known_data_quality_notes": [
+      "MNQ 2026-08-31 continuous-series seam remains a quarantined source-quality sensitivity.",
+      "MES has two known missing minutes in shortened 2023 holiday RTH sessions.",
+      "2026 is YTD; MNQ snapshot ends 2026-09-23 and MES snapshot ends 2026-09-14."
+    ]
+  },
+  "frozen_protocol": {
+    "lookback_completed_cme_sessions": 60,
+    "CFTC_market_codes": {"MNQ": "209742", "MES": "13874A"},
+    "TFF_feature": "sign((Leveraged Funds long - short) / total open interest)",
+    "CFTC_availability": "report as-of date + 7 calendar days at 15:30 America/New_York; first session open strictly after availability",
+    "candidate": "take the 60-session close-to-close trend only when lagged TFF sign agrees",
+    "baseline": "same 60-session trend without the TFF alignment filter",
+    "execution": "fixed-size reference uses one contract; sized variants use sequential non-overlapping intervals, entry at eligible session open, exit at next eligible report-event session open",
+    "costs": {"MNQ_round_turn_usd": 1.24, "MES_round_turn_usd": 1.24},
+    "additional_stress": "subtract 14 additional round-turn ticks",
+    "volatility_scaling": {
+      "window": "20 prior completed CME close-to-close returns",
+      "estimator": "population standard deviation of simple returns, annualized by sqrt(252)",
+      "target_annualized_volatility": 0.30,
+      "size": "round half up target / realized volatility; clip to 1-3 micro contracts",
+      "passive_long_pair": "same report intervals, realized-vol size, entry/exit, costs and 14-tick stress",
+      "parameter_search": false
+    },
+    "parameter_search": false
+  },
+  "research_gates_pending": [
+    "candidate must pass shared walk-forward and Monte Carlo gates in net and 14-tick stress",
+    "date-cluster net/stress uncertainty, best-entry-day removal, annual slices, and at least 12-month coverage must support durability",
+    "versioned Topstep MLL account-path simulation with intraday unrealized P&L",
+    "volatility-scaled trend candidate must show a durable advantage over its same-event passive-long pair",
+    "minimum 12-month prospective shadow tracking after the rule freeze"
+  ]
+}

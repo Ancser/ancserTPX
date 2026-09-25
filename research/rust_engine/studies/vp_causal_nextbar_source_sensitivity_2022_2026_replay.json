@@ -1,0 +1,60 @@
+{
+  "schema": "ancsertpx.vp-rust-baseline-replay-config.v1",
+  "study_id": "vp_causal_nextbar_source_sensitivity_2022_2026",
+  "reference_version": "2026-09-15-volume-profile-v1",
+  "repo": {
+    "path": "F:\\ancserQuant\\ancserTPX",
+    "git_head": "f63de66d26933126f68d044d06f850c1179b872f",
+    "working_tree_was_preexisting_dirty": true
+  },
+  "inputs": {
+    "bars_root": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\rust_arrow_full_export_2022_2026_20260925T0632Z",
+    "bars_manifest": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\rust_arrow_full_export_2022_2026_20260925T0632Z\\manifest.json",
+    "warmup_root": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\vp_rust_trade_replay_20260925T0710Z\\warmup_inputs",
+    "warmup_manifest": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\vp_rust_trade_replay_20260925T0710Z\\warmup_inputs\\warmup_manifest.json"
+  },
+  "references": {
+    "MNQ": {
+      "summary": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\vp_baseline_python_reference_2022_2026_20260925T0645Z\\mnq_vp_baseline_summary_2022-01-01_2026-09-23.json",
+      "ledger": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\vp_baseline_python_reference_2022_2026_20260925T0645Z\\mnq_vp_baseline_trades_2022-01-01_2026-09-23.csv.gz"
+    },
+    "MES": {
+      "summary": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\vp_baseline_python_reference_2022_2026_20260925T0645Z\\mes_vp_baseline_summary_2022-01-01_2026-09-14.json",
+      "ledger": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\vp_baseline_python_reference_2022_2026_20260925T0645Z\\mes_vp_baseline_trades_2022-01-01_2026-09-14.csv.gz"
+    }
+  },
+  "execution": {
+    "contracts": 1,
+    "max_daily_loss_usd": 2000.0,
+    "allowed_entry_session": "RTH",
+    "live_edge_guard_bars": 3,
+    "entry_fill": "next_1m_open_after_completed_signal",
+    "entry_bar_exit_check": "sl_only",
+    "same_bar_stop_target": "nearest_to_bar_open_ties_sl",
+    "flatten_start_et": "15:45",
+    "reopen_et": "18:00",
+    "daily_loss_accounting_date": "UTC_calendar_date",
+    "same_position_count": 1,
+    "trailing_enabled": false,
+    "timestamp_source_policy": "assume_source_label_is_interval_start"
+  },
+  "quality_flags_by_symbol_entry_date_et": {
+    "MNQ": {
+      "2026-08-31": [
+        "MNQ_2026-08-31_continuous_series_seam_or_prior_RTH_profile_carry"
+      ]
+    },
+    "MES": {
+      "2023-07-04": [
+        "MES_2023-07-04_missing_RTH_minute_or_prior_RTH_profile_carry"
+      ],
+      "2023-07-05": [
+        "MES_2023-07-04_missing_RTH_minute_or_prior_RTH_profile_carry"
+      ],
+      "2023-11-24": [
+        "MES_2023-11-23_missing_RTH_minute_or_prior_RTH_profile_carry"
+      ]
+    }
+  },
+  "output_root": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\vp_rust_causal_nextbar_source_sensitivity_20260925T113746Z\\runs"
+}

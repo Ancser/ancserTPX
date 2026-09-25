@@ -34,6 +34,8 @@ ROUTES = ROOT / "backend" / "api" / "routes.py"
 # 否則「改預設」這個動作會靜默失效。
 BEHAVIOUR_PARAMS = {
     "pi_long_only", "pi_signal_set", "pi_short_levels", "pi_max_signal_age_min",
+    "pi_continue_long_kinds", "pi_continue_short_kinds",
+    "pi_continue_short_levels", "pi_reopen_max_gap_r",
     "pi_short_sl_value", "pi_long_hold_min", "pi_short_hold_min",
     "option_wall_submodel", "option_wall_side_mode",
     "option_wall_long_sl_atr", "option_wall_short_sl_atr",
@@ -203,6 +205,44 @@ def test_pi_time_exit_explicit_zero_survives_route_construction():
 
     assert params.pi_long_hold_min == 0
     assert params.pi_short_hold_min == 0
+
+
+def test_pi_reopen_continuation_is_independent_and_gap_zero_survives_routes():
+    from types import SimpleNamespace
+
+    from backend.api.routes import _build_strategy_params_from_request
+
+    params = _build_strategy_params_from_request(
+        SimpleNamespace(
+            strategy="pi",
+            pi_long_only=False,
+            pi_long_kinds=["深蓝圈", "invalid", "深蓝圈"],
+            pi_short_kinds=["紫圈"],
+            pi_short_levels=[2, 1, 4],
+            pi_continue_long_kinds=["深蓝圈", "淡藍圈"],
+            pi_continue_short_kinds=["紫圈", "unknown"],
+            pi_continue_short_levels=[2, "1", 9],
+            pi_reopen_max_gap_r=0,
+            pi_lv2_replace_pi=True,
+        ),
+        contract_size=1,
+    )
+
+    assert params.pi_continue_long_kinds == ["深蓝圈"]
+    assert params.pi_continue_short_kinds == ["紫圈"]
+    assert params.pi_continue_short_levels == [1, 2]
+    assert params.pi_reopen_max_gap_r == 0
+    assert params.pi_lv2_replace_pi is True
+
+
+def test_pi_reopen_continuation_defaults_are_all_off_with_one_r_gap_cap():
+    params = StrategyParams()
+
+    assert params.pi_continue_long_kinds is None
+    assert params.pi_continue_short_kinds is None
+    assert params.pi_continue_short_levels is None
+    assert params.pi_reopen_max_gap_r == 1.0
+    assert params.pi_lv2_replace_pi is False
 
 
 def test_shipped_pi_presets_keep_long_time_exit_off():

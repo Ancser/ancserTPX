@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from copy import deepcopy
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -215,6 +216,7 @@ class PiSignalStrategy(_ResearchBase):
     """外部 π 訊號驅動。`push()` 由 listener 呼叫,`evaluate()` 由引擎呼叫。"""
 
     NAME = "PI"
+    REOPEN_WINDOW_MINUTES = 5
 
     # 1.0.10: 級別過濾。實測(SL3.5/TP3R 做多、SL2.5/60m 做空,366 筆):
     #   多  青π   n=49 PF 3.05 每筆 $162   ← π 級別
@@ -231,6 +233,8 @@ class PiSignalStrategy(_ResearchBase):
     # 所以預設不做空。
     DEFAULT_LONG_KINDS = ("青π", "深蓝圈")
     DEFAULT_SHORT_KINDS = ()
+    LONG_KINDS = frozenset(("青π", "深蓝圈", "淡蓝圈"))
+    SHORT_KINDS = frozenset(("粉π", "紫圈"))
 
     def __init__(self, params, replay_rows: Optional[list[dict]] = None):
         super().__init__(params)
@@ -257,6 +261,22 @@ class PiSignalStrategy(_ResearchBase):
         # 沒有這一條的話,選了 pi_only 之類含空方的 set 就會繞過它。
         if self.pi_long_only:
             self.pi_short_kinds = ()
+        # Reopen continuation is an independent opt-in matrix.  An absent or
+        # empty selector keeps every signal on the ordinary one-entry path.
+        self.pi_continue_long_kinds = self._normalize_kinds(
+            getattr(params, "pi_continue_long_kinds", None), self.LONG_KINDS
+        )
+        self.pi_continue_short_kinds = self._normalize_kinds(
+            getattr(params, "pi_continue_short_kinds", None), self.SHORT_KINDS
+        )
+        self.pi_continue_short_levels = _normalize_short_levels(
+            getattr(params, "pi_continue_short_levels", None)
+        )
+        if self.pi_long_only:
+            self.pi_continue_short_kinds = ()
+        self.pi_lv2_replace_pi = bool(
+            getattr(params, "pi_lv2_replace_pi", False)
+        )
         # 多空方向出場不能共用同一組。多單沿用 factor_sl_value / rr_ratio,
         # 時間出場預設 OFF;空單保留獨立 SL 與 60m 時間出場。
         self.pi_short_sl = float(getattr(params, "pi_short_sl_value", 2.5) or 2.5)
@@ -287,6 +307,240 @@ class PiSignalStrategy(_ResearchBase):
             logger.warning("[PI] 無法從 contract_id 判斷商品 —— 將接受所有訊號"
                            "(QQQ 與 SPY 混用同一份價格,結果不可信)")
         self._seen: set[str] = set()
+
+    @staticmethod
+    def _normalize_kinds(value, allowed) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple, set, frozenset)):
+            return ()
+        return tuple(dict.fromkeys(
+            str(item or "").strip() for item in value
+            if str(item or "").strip() in allowed
+        ))
+
+    @staticmethod
+    def _direction_value(value) -> str:
+        raw = getattr(value, "value", value)
+        text = str(raw or "").strip().lower()
+        if text in ("buy", "long", "1"):
+            return "buy"
+        if text in ("sell", "short", "-1"):
+            return "sell"
+        return ""
+
+    def continuation_enabled(self, source) -> bool:
+        """Whether a source trade's exact PI mark may continue at reopen."""
+        if isinstance(source, dict):
+            meta = source.get("meta") or {}
+            if not meta and isinstance(source.get("pi"), dict):
+                meta = {"pi": source["pi"]}
+            direction = source.get("direction")
+        else:
+            meta = getattr(source, "meta", None) or {}
+            direction = getattr(source, "direction", None)
+        if not isinstance(meta, dict) or meta.get("pi_continuation"):
+            return False
+        pi = meta.get("pi")
+        if not isinstance(pi, dict):
+            return False
+        kind = str(pi.get("kind") or "").strip()
+        side = self._direction_value(direction)
+        if side == "buy":
+            return (
+                kind in self.pi_long_kinds
+                and kind in self.pi_continue_long_kinds
+            )
+        if side != "sell" or self.pi_long_only:
+            return False
+        if kind not in self.pi_short_kinds or kind not in self.pi_continue_short_kinds:
+            return False
+        if kind == "紫圈" and self.pi_continue_short_levels is not None:
+            try:
+                level = int(pi.get("level"))
+            except (TypeError, ValueError):
+                return False
+            if level not in self.pi_continue_short_levels:
+                return False
+        if kind == "紫圈" and self.pi_short_levels is not None:
+            try:
+                level = int(pi.get("level"))
+            except (TypeError, ValueError):
+                return False
+            if level not in self.pi_short_levels:
+                return False
+        return True
+
+    def replacement_source_active(self, source) -> bool:
+        """Return whether ``source`` is the bot-owned long Level-3 青π LV2 may replace."""
+        if not self.pi_lv2_replace_pi:
+            return False
+        if isinstance(source, dict):
+            meta = source.get("meta") or {}
+            direction = source.get("direction")
+        else:
+            meta = getattr(source, "meta", None) or {}
+            direction = getattr(source, "direction", None)
+        if not isinstance(meta, dict):
+            return False
+        pi = meta.get("pi")
+        try:
+            active_level = int(pi.get("level")) if isinstance(pi, dict) else None
+        except (TypeError, ValueError):
+            active_level = None
+        return bool(
+            self._direction_value(direction) == "buy"
+            and isinstance(pi, dict)
+            and pi.get("kind") == "青π"
+            and active_level == 3
+            and not meta.get("pi_continuation")
+            and not meta.get("pi_replacement")
+        )
+
+    def _source_signal(self, sig: Any, candle: Candle, now: datetime):
+        """Build one ordinary PI TradeSignal after the shared causal guards."""
+        ts = getattr(sig, "ts", None)
+        if ts is not None:
+            age = (now - _utc(ts)).total_seconds() / 60.0
+            if age > self.pi_max_age_min:
+                logger.warning("[PI] 丟棄過期訊號 %s(%.1f 分鐘 > 上限 %d)",
+                               getattr(sig, "kind", "?"), age, self.pi_max_age_min)
+                return None
+            if age < -2:
+                logger.warning("[PI] 訊號時間在未來 %.1f 分鐘,丟棄(時鐘不同步?)", -age)
+                return None
+
+        direction = Direction.BUY if getattr(sig, "direction", 0) > 0 else Direction.SELL
+        if self.pi_long_only and direction != Direction.BUY:
+            return None
+        width = self._atr_blend()
+        if width is None or width <= 0:
+            logger.warning("[PI] atr_blend 尚未暖機完成,丟棄訊號 %s",
+                           getattr(sig, "kind", "?"))
+            return None
+        if direction == Direction.SELL and self.sl_atr > 0:
+            width *= self.pi_short_sl / self.sl_atr
+        reason = (f"PI {getattr(sig, 'equity', '?')} {getattr(sig, 'kind', '?')}"
+                  f"/{getattr(sig, 'size', '?')}"
+                  f"{'/' + sig.pos if getattr(sig, 'pos', None) else ''}")
+        out = self._make(candle, direction, reason, width=width)
+        if out is not None:
+            out.meta.setdefault("pi", {}).update({
+                "message_id": getattr(sig, "message_id", None),
+                "equity": getattr(sig, "equity", None),
+                "kind": getattr(sig, "kind", None),
+                "level": _signal_level(sig),
+                "size": getattr(sig, "size", None),
+                "pos": getattr(sig, "pos", None),
+                "signal_ts": str(ts) if ts else None,
+            })
+        return out
+
+    def take_lv2_replacement(self, candle: Candle, active_source):
+        """Consume one fresh selected long Level-2 深蓝圈 that may replace Level-3 青π.
+
+        The caller already observed this candle while the position was open,
+        so this method must not roll the ATR state a second time.
+        """
+        if not self.replacement_source_active(active_source):
+            return None
+        now = _utc(candle.timestamp)
+        if self._hist:
+            self._drain_history(now)
+        while self._queue:
+            sig = self._queue.popleft()
+            try:
+                structured_level = int(getattr(sig, "level", None))
+            except (TypeError, ValueError):
+                structured_level = None
+            if not (
+                getattr(sig, "direction", 0) > 0
+                and getattr(sig, "kind", "") == "深蓝圈"
+                and structured_level == 2
+            ):
+                continue
+            signal = self._source_signal(sig, candle, now)
+            if signal is None:
+                continue
+            active_meta = (
+                active_source.get("meta") or {}
+                if isinstance(active_source, dict)
+                else getattr(active_source, "meta", None) or {}
+            )
+            signal.meta["pi_replacement"] = {
+                "replaces_kind": "青π",
+                "source_level": 2,
+                "replacement_time": now.isoformat(),
+                "original_pi": deepcopy(active_meta.get("pi") or {}),
+            }
+            return signal
+        return None
+
+    def build_reopen_continuation(
+        self,
+        ticket: dict,
+        candle: Candle,
+        max_gap_r: float = 1.0,
+    ):
+        """Build one fresh ATR-blend market signal from a persisted carry ticket.
+
+        The caller consumes the ticket before invoking this method, enforcing
+        at-most-once entry even when a live broker rejects the order.
+        """
+        self._roll(candle)
+        pi = ticket.get("pi") if isinstance(ticket.get("pi"), dict) else {}
+        direction = self._direction_value(ticket.get("direction"))
+        if direction not in ("buy", "sell"):
+            return None
+        side = Direction.BUY if direction == "buy" else Direction.SELL
+        source = {"direction": side, "meta": {"pi": pi}}
+        if not self.continuation_enabled(source):
+            return None
+
+        try:
+            source_entry = float(ticket.get("source_entry"))
+            source_sl = float(ticket.get("original_sl"))
+            flat_price = float(ticket.get("flat_price"))
+        except (TypeError, ValueError):
+            return None
+        source_risk = abs(source_entry - source_sl)
+        if source_risk <= 0:
+            return None
+        entry = self._round(candle.close)
+        gap_r = abs(entry - flat_price) / source_risk
+        try:
+            gap_cap = max(0.0, float(max_gap_r))
+        except (TypeError, ValueError):
+            gap_cap = 1.0
+        if gap_cap > 0 and gap_r > gap_cap:
+            return None
+
+        width = self._atr_blend()
+        if width is None or width <= 0:
+            return None
+        if side == Direction.SELL and self.sl_atr > 0:
+            width *= self.pi_short_sl / self.sl_atr
+        source_reason = str(ticket.get("source_reason") or "PI continuation")
+        signal = self._make(
+            candle,
+            side,
+            f"{source_reason} | REOPEN CONTINUATION",
+            width=width,
+        )
+        if signal is None:
+            return None
+
+        signal.meta["pi"] = deepcopy(pi)
+        signal.meta["pi_continuation"] = {
+            "source_flat_time": ticket.get("flat_time"),
+            "reopen_time": _utc(candle.timestamp).isoformat(),
+            "source_entry": source_entry,
+            "source_flat_price": flat_price,
+            "reopen_gap_r": round(gap_r, 5),
+            "atr_blend": round(float(width), 6),
+            "reentries_for_source": 1,
+        }
+        return signal
 
     # ── listener 介面 ────────────────────────────────────
     def push(self, sig: Any) -> bool:
@@ -363,50 +617,7 @@ class PiSignalStrategy(_ResearchBase):
 
         while self._queue:
             sig = self._queue.popleft()
-            ts = getattr(sig, "ts", None)
-            if ts is not None:
-                # ``sig.ts`` is the PI source/event timestamp (NY event line
-                # when present).  The
-                # listener's local ``received_at`` is diagnostic only and is
-                # deliberately not used for the trading-age gate.
-                age = (now - _utc(ts)).total_seconds() / 60.0
-                if age > self.pi_max_age_min:
-                    # BLOCK,不是 WARN —— 過期訊號的進場理由已經不成立
-                    logger.warning("[PI] 丟棄過期訊號 %s(%.1f 分鐘 > 上限 %d)",
-                                   getattr(sig, "kind", "?"), age, self.pi_max_age_min)
-                    continue
-                if age < -2:
-                    logger.warning("[PI] 訊號時間在未來 %.1f 分鐘,丟棄(時鐘不同步?)", -age)
-                    continue
-
-            d = Direction.BUY if getattr(sig, "direction", 0) > 0 else Direction.SELL
-            if self.pi_long_only and d != Direction.BUY:
-                continue
-
-            width = self._atr_blend()
-            if width is None or width <= 0:
-                # 沒有波動基準就沒有 SL 寬度 → 拒絕下單,不猜
-                logger.warning("[PI] atr_blend 尚未暖機完成,丟棄訊號 %s",
-                               getattr(sig, "kind", "?"))
-                continue
-            # 空單用自己的 SL 倍數。_make() 內部是 risk = width × self.sl_atr,
-            # 所以預先把 width 縮放成 width × (pi_short_sl / sl_atr),
-            # 乘進去之後剛好等於 width × pi_short_sl。
-            if d == Direction.SELL and self.sl_atr > 0:
-                width = width * (self.pi_short_sl / self.sl_atr)
-
-            reason = (f"PI {getattr(sig, 'equity', '?')} {getattr(sig, 'kind', '?')}"
-                      f"/{getattr(sig, 'size', '?')}"
-                      f"{'/' + sig.pos if getattr(sig, 'pos', None) else ''}")
-            out = self._make(candle, d, reason, width=width)
+            out = self._source_signal(sig, candle, now)
             if out is not None:
-                out.meta.setdefault("pi", {}).update({
-                    "message_id": getattr(sig, "message_id", None),
-                    "equity": getattr(sig, "equity", None),
-                    "kind": getattr(sig, "kind", None),
-                    "size": getattr(sig, "size", None),
-                    "pos": getattr(sig, "pos", None),
-                    "signal_ts": str(ts) if ts else None,
-                })
                 return out
         return None

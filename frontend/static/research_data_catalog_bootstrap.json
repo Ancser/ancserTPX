@@ -1,0 +1,647 @@
+{
+  "schema": "ancsertpx.data-strategy-catalog.v1",
+  "catalog_id": "app_data_strategy_catalog_20260925T180829Z",
+  "generated_at_utc": "2026-09-25T18:08:29Z",
+  "evidence_cutoff_utc": "2026-09-25T18:08:29Z",
+  "ranking_basis": "研究優先序依因果資料品質、成本壓力、跨期檢查、日期群集區間、最佳日移除、Topstep account-path 與前瞻覆蓋排序；rank 表示研究優先級，不表示跨樣本原始 P&L 名次。各候選 P&L 僅能在其標註期間內解讀；全部仍為 research-only。",
+  "disk_free_gib_f_drive": 368.6,
+  "data_sources": [
+    {
+      "id": "futures_mnq_mes_continuous_1m",
+      "label": "MNQ / MES continuous 1m OHLCV",
+      "provider": "Local canonical candle store",
+      "availability": "local",
+      "coverage": {
+        "mnq": {
+          "start": "2020-01-01",
+          "through": "2026-09-23",
+          "bars": 2376404
+        },
+        "mes": {
+          "start": "2020-01-01",
+          "through": "2026-09-14",
+          "bars": 2365689
+        },
+        "complete_rth_years": [
+          2022,
+          2023,
+          2024,
+          2025
+        ],
+        "partial_year": 2026,
+        "prospective_snapshot": {
+          "mnq_rth_date": "2026-09-24",
+          "rows": 390,
+          "canonical_merge": false,
+          "details": "Separate TopstepX pending-journal snapshot; see prospective dataset row."
+        }
+      },
+      "research_use": [
+        "1m",
+        "5m/15m/60m causal aggregation",
+        "daily and multi-session regimes",
+        "low/mid-frequency futures replay"
+      ],
+      "quality_notes": [
+        "2026-08-31 MNQ continuous seam quarantined in frozen study",
+        "MES missing-minute flags: 2023-07-04 12:19 ET and 2023-11-23 12:13 ET",
+        "2026 MNQ and MES coverage ends on different dates"
+      ],
+      "sufficient_for_2022_2025_low_mid_frequency": true,
+      "timestamp_semantics": "Source timestamps remain UTC instants; RTH/session features use America/New_York and completed-minute availability.",
+      "quality_flags": [
+        "2022–2025 are the four completed calendar years in the requested 2022–2026 interval; 2026 is YTD.",
+        "MNQ canonical through 2026-09-23; MES canonical through 2026-09-14.",
+        "MNQ 2026-08-31 continuous-series seam quarantined; MES has two flagged historical RTH minutes."
+      ],
+      "limitations": "Sufficient for multi-year low/mid-frequency futures research and causal 5m/15m/60m aggregation. Keep 2026 partial, seams, short sessions, and symbol-specific endpoints explicit."
+    },
+    {
+      "id": "thetadata_monthly_oi_eod_qqq_spy",
+      "label": "QQQ / SPY monthly OI and EOD option chain, 0–60 DTE partial-chain universe",
+      "provider": "ThetaData; existing local entitlement/archive",
+      "availability": "local_existing_entitlement",
+      "coverage": {
+        "start_month": "2021-01",
+        "through_month": "2026-09",
+        "partitions_per_symbol_per_dataset": 69,
+        "qqq_monthly_oi_rows": 5818465,
+        "spy_monthly_oi_rows": 6770905,
+        "latest_daily_files": {
+          "request_date": "2026-09-24",
+          "oi_effective_session": "2026-09-23",
+          "eod_available_after_close": true
+        }
+      },
+      "research_use": [
+        "lagged OI structure",
+        "put/call totals",
+        "expiry and strike concentration context",
+        "daily/weekly regime features"
+      ],
+      "five_year_option_premium_replay": false,
+      "timestamp_semantics": "Preserve each Theta vendor timestamp and effective session. OI around 06:30 ET reports the prior trading session close; EOD rows become available after close.",
+      "quality_flags": [
+        "69 monthly partitions per symbol and dataset from 2021-01 to 2026-09.",
+        "Partial strike/expiry chain coverage.",
+        "Open interest is unsigned; it does not reveal dealer/customer long-short inventory."
+      ],
+      "limitations": "Supports lagged daily/weekly option-structure context and strike concentration hypotheses; joins must use published_at <= decision time."
+    },
+    {
+      "id": "thetadata_option_quote_greeks_1m_qqq_spy",
+      "label": "QQQ / SPY 1m option quotes and first-order Greeks",
+      "provider": "ThetaData; existing local entitlement/archive",
+      "availability": "local_existing_entitlement",
+      "coverage": {
+        "start": "2026-03-05",
+        "through": "2026-09-15",
+        "qqq_dates": 131,
+        "spy_dates": 128,
+        "rows_per_dataset_approx": {
+          "qqq": 35290000,
+          "spy": 34580000
+        }
+      },
+      "research_use": [
+        "bid/ask premium replay",
+        "1DTE and 0DTE exit studies",
+        "signal-time IV and first-order Greek attribution"
+      ],
+      "five_year_option_execution_validation": false,
+      "timestamp_semantics": "Use vendor quote timestamps and record the actual available_at for each contract row; option entry fills start only after the decision/trigger is available.",
+      "quality_flags": [
+        "Minute quotes and first-order Greeks cover 2026-03-05 through 2026-09-15 only.",
+        "QQQ and SPY date counts differ; contract/session continuity needs per-file verification.",
+        "No 2022–2025 intraday option premium path; broker acknowledgements and queue fills are unobserved."
+      ],
+      "limitations": "Supports short-horizon premium, IV, and Greek attribution studies; does not support a five-year option execution validation."
+    },
+    {
+      "id": "thetadata_0dte_trade_quote_greeks_archives",
+      "label": "QQQ / SPY 0DTE option trade, quote and Greek archives used in prior research",
+      "provider": "ThetaData; existing local entitlement/archive",
+      "availability": "local_existing_research_sample",
+      "coverage": {
+        "qqq_history_from": 2016,
+        "spy_history_from": 2020,
+        "research_sample_rows_total": 1257290327
+      },
+      "research_use": [
+        "intraday option-flow features",
+        "signed-flow hypothesis studies",
+        "coverage-matched option regime research"
+      ],
+      "timestamp_semantics": "Use contract and quote/trade event timestamps from the per-file manifests; eligibility requires vendor availability before the signal.",
+      "quality_flags": [
+        "Existing research sample totals 1,257,290,327 rows.",
+        "QQQ archive history starts 2016; SPY starts 2020.",
+        "Large row count alone does not establish complete daily contract/session coverage; signed flow is a classification hypothesis."
+      ],
+      "limitations": "Retain per-file coverage and event-time audits; existing signed-flow candidates did not pass full stress/stability gates."
+    },
+    {
+      "id": "cftc_tff_futures_only",
+      "label": "CFTC Traders in Financial Futures, futures-only",
+      "provider": "CFTC public data",
+      "availability": "public_free",
+      "coverage": {
+        "manifest_rows": 2696,
+        "latest_positions_as_of": "2026-09-15",
+        "local_retrieval_date": "2026-09-23",
+        "micro_index_contract_history_from": 2020,
+        "e_mini_history_from": 2006
+      },
+      "research_use": [
+        "週級 positioning context",
+        "中長週期 regime context",
+        "研究滯後 positioning / time-series trend interaction"
+      ],
+      "timestamp_semantics": "Tuesday as-of positions; normally released Friday 15:30 ET. Join after the recorded public release time.",
+      "quality_flags": [
+        "2,696 local rows; E-mini histories begin 2006, micro-index proxy histories begin 2020.",
+        "Weekly lag makes the features medium/long context, not an intraday trigger.",
+        "Direct weekly-follow candidate failed cost and walk-forward gates."
+      ],
+      "limitations": "Public-free lagged context source; report ES/NQ proxy mapping and release-time availability."
+    },
+    {
+      "id": "cme_mnq_mbo",
+      "label": "MNQ CME Market by Order / footprint cache",
+      "provider": "Databento historical CME MBO; existing entitled files",
+      "availability": "local_partial_entitlement",
+      "coverage": {
+        "strategy_replay": "31 RTH dates, 2026-08-07 through 2026-09-18",
+        "newest_complete_crosschecked_sessions": [
+          "2026-09-23",
+          "2026-09-24"
+        ],
+        "crosschecked_minutes_per_session": 390,
+        "settled_2026_09_24": {
+          "rth_minutes": 390,
+          "full_session_records": 58818799,
+          "raw_bytes": 1079962286,
+          "replay_trade_ledger_identical_to_prior_rth_source": true,
+          "candidate_trades": 5,
+          "net_usd": 981.3,
+          "stress_14_tick_usd": 946.3
+        }
+      },
+      "research_use": [
+        "passive fills/refills",
+        "aggressor flow and depth",
+        "executed-volume profile",
+        "recent prospective shadow"
+      ],
+      "download_policy": "每個 Databento request 先取 fresh quote，max cost=$0；僅在報價為 $0 時下載 completed day。正價報價即停止。",
+      "latest_two_day_profile_sensitivity": "MBO 執行量 VAP 與 OHLCV 均勻分布代理在 2026-09-24 的 POC 相差 320 ticks；VAH/VAL 僅差 1/2 ticks。POC source-sensitive，VA edges 待長期驗證。",
+      "timestamp_semantics": "Databento MBO source preserves event timestamps. Historical requests require a fresh quote for each request, max cost $0, and completed dates only.",
+      "quality_flags": [
+        "Strategy replay history: 31 RTH dates through 2026-09-18.",
+        "Complete cross-check includes 2026-09-23 and 2026-09-24.",
+        "Settled 2026-09-24 full-session source has 58,818,799 records; 390 RTH minutes.",
+        "Order IDs are anonymous; named institution identity is unavailable."
+      ],
+      "limitations": "Useful for recent execution and prospective checks. Current dates do not support five-year order-flow durability estimates."
+    },
+    {
+      "id": "mnq_prospective_topstepx_rth_1m",
+      "label": "MNQ TopstepX prospective RTH 1m snapshot",
+      "provider": "TopstepX accumulated candle journal",
+      "availability": "local_immutable_snapshot",
+      "coverage": {
+        "first_post_freeze_session": "2026-09-24",
+        "last_completed_session": "2026-09-24",
+        "complete_rth_rows": 390,
+        "expected_rth_rows": 390,
+        "missing_rows": 0,
+        "duplicates": 0,
+        "following_session": "2026-09-25",
+        "following_session_rth_rows_at_capture": 260,
+        "last_partial_label_et": "2026-09-25T13:49:00-04:00",
+        "snapshot_sha256": "b8e0165aca86512d582dd14a538de177ba0c553e3feae55a50f33abcccd87ebe"
+      },
+      "research_use": [
+        "Strict prospective shadow tracking after 2026-09-23 freeze",
+        "1m OHLCV with causal 5m/15m/60m regime features"
+      ],
+      "timestamp_semantics": "Original source timestamp text retained; the 9/24 RTH checkpoint is a snapshot and is separate from canonical candles.",
+      "quality_flags": [
+        "Raw symbol alias is NQ; accumulator normalizes to MNQ. This journal row does not preserve contract_id.",
+        "Sidecar first_ts is 39 minutes earlier than the physical journal minimum; count and last timestamp match.",
+        "2026-09-25 was partial at capture and is excluded from outcomes."
+      ],
+      "limitations": "One completed prospective session; insufficient for walk-forward, date-cluster, Monte Carlo, or 12-month durability gates."
+    }
+  ],
+  "strategy_research_priority": [
+    {
+      "rank": 1,
+      "id": "mnq_passive_touch_rejection_value_reversion",
+      "label": "MNQ 被動觸價拒絕 × 前一 RTH value 回歸",
+      "status": "prospective_shadow_lead",
+      "scope": "31 MBO RTH historical evaluation dates through 2026-09-18; complete source cross-checks on 2026-09-23/24; first prospective session 2026-09-24; account-path sample through 2026-09-22.",
+      "evaluation": {
+        "trades": 171,
+        "dates": 25,
+        "net_usd": 2823.46,
+        "pf": 1.4214,
+        "stress_14_tick_net_usd": 1626.46,
+        "stress_14_tick_pf": 1.2231,
+        "best_date_removed_net_usd": 2319.36,
+        "date_cluster_95_ci_usd": [
+          -69.04,
+          5551.98
+        ]
+      },
+      "prospective_latest": {
+        "date": "2026-09-24",
+        "trades": 5,
+        "net_after_fees_usd": 981.3,
+        "stress_14_tick_net_usd": 946.3,
+        "settled_full_session_source": "58,818,799 records; candidate ledger matched the earlier RTH-source replay exactly."
+      },
+      "reason_for_rank": "Causal entry and +14-tick historical stress remain a research lead. The 2026-09-21/22 extension lowered combined stress to +$374; the first prospective day added 5 trades (+$981.30, +$946.30 under stress), with no multi-date inference. The 50K one-contract path remains below target; two contracts pass in the historical scenario and five breach MLL. Queue, intrabar event order, market impact, and liquidation latency remain unmodeled.",
+      "gates": {
+        "12_month_coverage": false,
+        "date_cluster_ci_excludes_zero": false,
+        "walk_forward_and_monte_carlo_full_shared_gate": false,
+        "topstep_unrealized_mll_path": false,
+        "live_ready": false
+      },
+      "added_date_extension": {
+        "trades": 24,
+        "dates": 2,
+        "net_usd": -1084.26,
+        "stress_14_tick_net_usd": -1252.26
+      },
+      "combined_through_2026_09_22": {
+        "trades": 195,
+        "net_usd": 1739.2,
+        "stress_14_tick_net_usd": 374.2
+      },
+      "topstep_account_path": {
+        "profile": "50K Trading Combine; standard MLL; +14-tick stress; no optional DLL",
+        "one_mnq": {
+          "net_usd": 374.2,
+          "mll_breach": false,
+          "minimum_intraday_mll_headroom_usd": 585.04,
+          "pass_date": null
+        },
+        "two_mnq": {
+          "net_usd": 3441.56,
+          "mll_breach": false,
+          "minimum_intraday_mll_headroom_usd": 623.56,
+          "pass_date": "2026-09-16"
+        },
+        "five_mnq": {
+          "net_usd": -774.6,
+          "mll_breach": true,
+          "minimum_intraday_mll_headroom_usd": -19.3,
+          "pass_date": null
+        },
+        "assumptions": "Single-contract price paths scaled linearly; one-minute intrabar order remains unresolved; no queue, market-impact, or liquidation-latency simulation.",
+        "report": "F:/ancserQuant/ancserMarketData/derived/research/topstep_mll_value_reversion_20260925T1450Z/report.md"
+      }
+    },
+    {
+      "rank": 2,
+      "id": "mnq_60_session_price_tsm",
+      "label": "MNQ 60-session time-series momentum, price-only",
+      "status": "historical_candidate_gates_failed",
+      "scope": "2020–2026 YTD, non-overlapping weekly/report intervals",
+      "evaluation": {
+        "trades": 338,
+        "net_usd": 12624,
+        "pf": 1.101,
+        "stress_14_tick_net_usd": 10258,
+        "walk_forward_pass": false,
+        "monte_carlo_pass": false,
+        "13_week_block_p5_net_usd": -18210,
+        "best_interval_removed_net_usd": 7882
+      },
+      "paired_tff_alignment": {
+        "trades": 98,
+        "net_usd": -11306,
+        "pf": 0.791,
+        "stress_14_tick_net_usd": -11992
+      },
+      "reason_for_rank": "Long sample and low turnover support its value as a benchmark. Volatility-scaled TSM underperformed matched passive-long by $28,091 MNQ and $8,092.50 MES on identical intervals; date-cluster intervals span zero and shared walk-forward/Monte Carlo gates fail. Lagged TFF alignment lowered paired results."
+    },
+    {
+      "rank": 3,
+      "id": "mnq_mbo_cvd_aligned_turnover",
+      "label": "MNQ MBO CVD-aligned turnover",
+      "status": "short_sample_candidate",
+      "scope": "25 evaluation RTH dates within the current MBO history",
+      "evaluation": {
+        "trades": 45,
+        "net_usd": 646.2,
+        "pf": 1.4963,
+        "stress_14_tick_net_usd": 331.2,
+        "stress_14_tick_pf": 1.2242,
+        "best_date_removed_net_usd": 241.66,
+        "date_cluster_95_ci_usd": [
+          -506.36,
+          1981.94
+        ]
+      },
+      "reason_for_rank": "成本壓力及移除最佳日仍為正；信賴區間跨零且 MBO 日期很短。"
+    },
+    {
+      "rank": 4,
+      "id": "qqq_spy_1dte_pi_lock20_be_stop50",
+      "label": "PI signal → 1DTE option；+20% bid trigger 後成本止損；初始 −50% premium stop",
+      "status": "options_replay_candidate_gates_pending",
+      "scope": "473 signals, 125 market dates, 2026-03 through 2026-09; QQQ/SPY ETF proxies",
+      "evaluation": {
+        "fills_proxy": 473,
+        "net_usd": 13097.1,
+        "mean_net_per_signal_usd": 27.69,
+        "pf": 1.31,
+        "wins": 71,
+        "losses": 402,
+        "best_date_removed_net_usd": 5710.6,
+        "date_cluster_95_ci_per_signal_usd": [
+          -21.77,
+          80.02
+        ],
+        "near_total_exit_count": 6,
+        "zero_bid_path_count": 14
+      },
+      "reason_for_rank": "期權報價重播原始淨額最高；日期群集區間跨零，只有七個月，成交是假設代理，shared walk-forward/Monte Carlo 與 14-tick option translation 未完成。"
+    },
+    {
+      "rank": 5,
+      "id": "mnq_vp_three_condition_theta_oi_gate",
+      "label": "MNQ VP breakout × frozen three-condition QQQ OI gate",
+      "status": "validation_cost_gate_failed",
+      "scope": "2021–2023 calibration; 2024–2025 validation; 2026 retrospective holdout",
+      "evaluation": {
+        "calibration_trades": 32,
+        "calibration_stress_14_tick_pf": 1.0104,
+        "validation_trades": 172,
+        "validation_stress_14_tick_pf": 0.9365,
+        "holdout_trades": 95,
+        "holdout_stress_14_tick_pf": 0.9323
+      },
+      "reason_for_rank": "OI timestamp join具因果規則；後兩期壓力 PF 均低於 1，2021–2023 calibration trade count 偏少。"
+    },
+    {
+      "rank": 6,
+      "id": "mnq_mes_vp_breakout_baseline",
+      "label": "MNQ/MES prior-RTH Volume Profile breakout baseline",
+      "status": "price_baseline_gate_failed",
+      "scope": "2022-01 through latest 2026 YTD snapshot; exact Rust/Python ledger parity sample",
+      "evaluation": {
+        "mnq_net_usd": -1599.02,
+        "mnq_pf": 0.9638,
+        "mnq_stress_14_tick_net_usd": -8060.02,
+        "mnq_stress_14_tick_pf": 0.8315,
+        "mes_net_usd": -2284.12,
+        "mes_pf": 0.9062,
+        "mes_stress_14_tick_net_usd": -19136.62,
+        "mes_stress_14_tick_pf": 0.4394,
+        "walk_forward_pass": false,
+        "monte_carlo_pass": false
+      },
+      "reason_for_rank": "Rust/Python trade ledgers match exactly and the causal next-bar replay is available. Net/stress are negative for both symbols. In the 50K Topstep path prototype, every continuous 14-tick stress path across MNQ/MES 1/2/5 micros breached the $2,000 MLL before reaching the $3,000 target."
+    },
+    {
+      "rank": 7,
+      "id": "mnq_mes_cftc_tff_weekly_follow",
+      "label": "CFTC TFF Leveraged Funds weekly net-change follow",
+      "status": "cost_and_walk_forward_failed",
+      "scope": "2020–2026 YTD, one trade per available weekly signal interval",
+      "evaluation": {
+        "mnq_trades": 349,
+        "mnq_net_usd": -8711.26,
+        "mnq_stress_14_tick_net_usd": -11154.26,
+        "mes_trades": 347,
+        "mes_net_usd": -8330.28,
+        "mes_stress_14_tick_net_usd": -14402.78,
+        "walk_forward_pass": false
+      },
+      "reason_for_rank": "低頻定位資料適合作背景研究；直接週度追隨策略跨商品皆為負。"
+    }
+  ],
+  "rust_research_status": {
+    "workspace": "research/rust_engine",
+    "catalog_version": "2026-09-25.5",
+    "registered_studies": 4,
+    "registered_study_scope": "Prior-RTH Volume Profile parity/causal variants plus 60-session TSM with lagged CFTC TFF. No option-VP study runner is registered.",
+    "callable_api": [
+      "audit_inputs",
+      "validate_study",
+      "list_studies",
+      "run_study",
+      "compare_runs",
+      "explain_trade"
+    ],
+    "verified_results": {
+      "oi_csv_streaming_speedup_median": 6.95,
+      "prior_rth_profile_workload_speedup_median": 39.06,
+      "profile_sessions_exact_parity": 2431,
+      "mnq_vp_ledger_exact_parity_trades": 923,
+      "mes_vp_ledger_exact_parity_trades": 963,
+      "latest_registered_study_count": 4,
+      "tsm_paired_passive_comparison": "2026-09-25: MNQ and MES paired volatility-scaled TSM deltas negative; shared WF/MC false."
+    },
+    "benchmark_limits": [
+      "OI gzip parsing speedup: 6.95x three-run median; newest single warm-cache comparison 8.48x.",
+      "Prior-RTH profile workload reported 39.06x; implementation and warm-cache scope differ.",
+      "Five-year VP parity has exact trade-ledger matching; this does not establish strategy edge.",
+      "Topstep account-path and holiday-cutoff simulation exists as an external Rust prototype; it is not registered in the callable study catalog.",
+      "No five-year option-minute quote history, option-VP Rust runner, Rust live adapter, or apples-to-apples cold-load/peak-RSS suite."
+    ],
+    "production_live_ready": false,
+    "topstep_vp_path_prototype": {
+      "report": "F:/ancserQuant/ancserMarketData/derived/research/rust_topstep_vp_account_path_holiday_20260925T1743Z/report.md",
+      "scenarios": 288,
+      "continuous_14_tick_stress_paths": 6,
+      "all_stress_paths_breach_before_target": true,
+      "early_close_adjustments": 4,
+      "research_api_registered": false
+    }
+  },
+  "application_data_section_fields": [
+    "dataset",
+    "provider_or_entitlement",
+    "coverage_start_end",
+    "granularity",
+    "row_or_session_count",
+    "availability_timestamp_semantics",
+    "quality_flags",
+    "last_verified_utc",
+    "research_uses",
+    "limitations",
+    "source_links"
+  ],
+  "source_artifacts": [
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/rust_2022_2026_data_readiness_20260925T125920Z/report.md",
+      "sha256": "4f719f99b0daA3f28821f79bbbBd53cce9d983b3ee727ee4349eb35940795c1b"
+    },
+    {
+      "path": "F:/ancserQuant/ancserTPX/docs/INSTITUTIONAL_BEHAVIOR_EXECUTION_2026-09-23.md",
+      "sha256": "05c5a5aedfcf0d5f50562dbc831eaa3b8a60e8bbbbc870f7294381eefab49f77"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/tff_confirmed_60s_tsm_20260925T0745Z/tff_confirmed_60s_tsm_20260925T0745Z.md",
+      "sha256": "c961e8ae2293329a6af93dff1e2aa4a9a833dc8b0142353ce3b1ffecc03861fc"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/pi_option_time60_plus20_lock_20260925T1345Z/report.md",
+      "sha256": "2e1b3c98806e30cb24b0989e9da6b4ab2cd4ae98b7645ca035a07756781cf878"
+    },
+    {
+      "path": "F:/ancserQuant/ancserTPX/docs/VP_THETA_OI_ENGINE_GATE_2026-09-23.md",
+      "sha256": "abd54d392e0473198429c28bba9486bf51304db75340329bb90ba7e13c7bdbc2"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/volume_profile_research_mnq_2021_2025.md",
+      "sha256": "a74192a2e7ee1312d008e44e43b9625425c46bff0907b8c930a9d451d39fbbea"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/cftc_tff_leveraged_money_weekly_change_replay_20260924.md",
+      "sha256": "ed73a5bf7aa2e85e272d9bb9fc76859943e4a5584552d534f9fc62df6385a1aa"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/mnq_prospective_profile_replay_20260924_20260925T0524Z.md",
+      "sha256": "8ee74cdf571e8c40922c71cac6afbeaec0f2b4d0e280e1cbc73e4c26452e886b"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/rust_profile_and_benchmark_findings_20260925T0707Z.md",
+      "sha256": "9493a5d0f8c14b364867cca1e7acd94dc2ac453a8bceccfae33e5a885e1431eb"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/topstep_mll_value_reversion_20260925T1450Z/report.md",
+      "sha256": "d36ebe261fd40f78f2f4d9dbd790e9255a65e3b2a13ef14d0cded3d92e0673b5"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/topstep_mll_value_reversion_20260925T1450Z/provenance.json",
+      "sha256": "8be924ae27356191f50bd1983f0f9c45eff1c89caf2defa8908c5f86f84b54c1"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/rust_research_readiness_followup_20260925T1550Z/report.md",
+      "sha256": "aa4860147c995951b57d5f07b699861795ddc98d29d387d4be0ae12f8e9bd58f"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/rust_vp_tsm_research_checkpoint_20260925T1559Z/report.md",
+      "sha256": "114a3e7a0e7e11a3f5965ea0436555031efcdb382a5a9d64f523472368d41bac"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/tsm_volscale_pair_review_20260925T1708Z/report.md",
+      "sha256": "c361dd803e7f6e6359432e3ff26fdea79011c25bbc5c37393d4f49e2f960c5c9"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/rust_topstep_vp_account_path_holiday_20260925T1743Z/report.md",
+      "sha256": "7c4373d917193489b3a4087d7815481b53a971cf95c75c2579b8a77a9cda28c0"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/mnq_mbo_settlement_validation_20260925T152215Z/report.md",
+      "sha256": "df738e6c1ecd011908009212faab9fa440b9e7358dfb91a5b73fb3226b37846e"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/mnq_prospective_data_checkpoint_20260925T1752Z/report.md",
+      "sha256": "924d5396285f3d2968c653fbedf78c6150d5e362c5a7e7e2e391c70af224806a"
+    },
+    {
+      "path": "F:/ancserQuant/ancserMarketData/derived/research/pi_channel_visual_option_addendum_20260925T1756Z/report.md",
+      "sha256": "efa3e0e265259c8e40d5d66313e95369688f1a0dfac68f5d21a44740149fb50b"
+    },
+    {
+      "path": "F:/ancserQuant/ancserTPX/research/rust_engine/studies/catalog.json",
+      "sha256": "1c98f33cccce8dae49c591ce83790c85438fcb6c0ad26b3b4eca6fae4b6c4e90"
+    }
+  ],
+  "external_sources": [
+    {
+      "title": "CFTC About the COT Reports",
+      "url": "https://www.cftc.gov/MarketReports/CommitmentsofTraders/AbouttheCOTReports/cot_about.html"
+    },
+    {
+      "title": "CFTC Release Schedule",
+      "url": "https://www.cftc.gov/MarketReports/CommitmentsofTraders/ReleaseSchedule/index.htm"
+    },
+    {
+      "title": "ThetaData historical open interest timestamp semantics",
+      "url": "https://thetadata.net/docs/operations/option_history_open_interest.html"
+    },
+    {
+      "title": "CME Group Market by Order",
+      "url": "https://www.cmegroup.com/articles/faqs/market-by-order-mbo.html"
+    },
+    {
+      "title": "Topstep Trading Combine parameters",
+      "url": "https://help.topstep.com/en/articles/8284197-trading-combine-parameters",
+      "verified_at_utc": "2026-09-25T18:08:29Z"
+    },
+    {
+      "title": "Topstep Maximum Loss Limit and unrealized P&L",
+      "url": "https://help.topstep.com/en/articles/8284204-what-is-the-maximum-loss-limit",
+      "verified_at_utc": "2026-09-25T18:08:29Z"
+    },
+    {
+      "title": "Topstep trading hours",
+      "url": "https://help.topstep.com/en/articles/8284206-when-and-what-products-can-i-trade",
+      "verified_at_utc": "2026-09-25T18:08:29Z"
+    },
+    {
+      "title": "Topstep holiday close rules",
+      "url": "https://help.topstep.com/en/articles/13350348-topstep-holiday-trading-hours",
+      "verified_at_utc": "2026-09-25T18:08:29Z"
+    }
+  ],
+  "new_downloads_this_run": 0,
+  "tests_run": 0,
+  "disk_free_gib": 368.6,
+  "live_promotion_count": 0,
+  "databento_quote_requests_this_run": 0,
+  "five_year_readiness": {
+    "requested_calendar_interval": "2022–2026",
+    "complete_futures_calendar_years": [
+      2022,
+      2023,
+      2024,
+      2025
+    ],
+    "current_2026_status": "YTD, through 2026-09-23 MNQ and 2026-09-14 MES canonical snapshots",
+    "futures_low_mid_frequency": "sufficient for full 2022–2025 studies and causal multi-timeframe features, subject to recorded seam/missing-minute flags",
+    "theta_oi_eod": "69 monthly partitions per dataset and symbol, 2021-01 through 2026-09; partial-chain and unsigned-OI limits",
+    "minute_option_premium": "2026-03-05 through 2026-09-15, about seven months; insufficient for 2022–2025 premium-entry/exit validation",
+    "mbo": "31 replay RTH dates plus recent cross-check sessions; insufficient for five-year durability",
+    "need_for_five_complete_calendar_years": "Wait for 2026 to complete and freeze; use 2021 history for warmup and predeclared calibration where applicable."
+  },
+  "next_research_proposal": {
+    "id": "lagged_option_volume_profile_levels_with_futures_rejection",
+    "status": "hypothesis_not_yet_registered_or_tested_in_Rust",
+    "first_principles": "Prior-session option OI/EOD volume concentration may mark inventory/hedging-relevant strike zones. Unsigned OI cannot identify dealer direction, so levels are context zones and direction comes from subsequent futures price acceptance/rejection.",
+    "features": [
+      "Separate calls and puts by expiration and moneyness.",
+      "Build prior published-session strike concentration bands and normalize by underlying price/ATR.",
+      "Map QQQ/SPY strikes to MNQ/MES context with contemporaneous underlying ratio; preserve mapping timestamp.",
+      "Use completed 5m touch/rejection or reclaim as the trigger; evaluate exits at profile center/next band, causal invalidation, and fixed time cap."
+    ],
+    "research_splits": "2021 warmup/context; 2022–2023 calibration; 2024–2025 validation; 2026 retrospective data through frozen cutoff; 2026-09-24 onward held as strict prospective only.",
+    "gates": "Paired net and 14-tick stress, shared walk-forward/Monte Carlo, date-cluster uncertainty, best-day removal, 12-month coverage, and Topstep real-time MLL path including unrealized P&L.",
+    "option_execution_limit": "Use actual 1m option quotes only within their seven-month window; five-year study scores executable futures price action with lagged option context."
+  },
+  "topstep_rule_snapshot": {
+    "checked_at_utc": "2026-09-25T18:08:29Z",
+    "profile": "Trading Combine 50K",
+    "mll_usd": 2000,
+    "profit_target_usd": 3000,
+    "best_day_consistency_pct": 55,
+    "unrealized_pnl_in_realtime_mll": true,
+    "flat_by_ct": "15:10 weekdays",
+    "early_close_flatten_minutes": 15,
+    "optional_50k_dll_usd": 1000,
+    "sources": [
+      "https://help.topstep.com/en/articles/8284197-trading-combine-parameters",
+      "https://help.topstep.com/en/articles/8284204-what-is-the-maximum-loss-limit",
+      "https://help.topstep.com/en/articles/8284206-when-and-what-products-can-i-trade",
+      "https://help.topstep.com/en/articles/13350348-topstep-holiday-trading-hours"
+    ]
+  }
+}

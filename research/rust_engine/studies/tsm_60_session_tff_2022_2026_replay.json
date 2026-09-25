@@ -1,0 +1,76 @@
+{
+  "schema": "ancsertpx.tsm-rust-replay-config.v1",
+  "study_id": "tsm_60_session_tff_2022_2026",
+  "reference_version": "2026-09-25-tsm-60-session-vol20-shared-robustness-v3",
+  "inputs": {
+    "bars_root": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\rust_arrow_full_export_2022_2026_20260925T0632Z",
+    "bars_manifest": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\rust_arrow_full_export_2022_2026_20260925T0632Z\\manifest.json",
+    "warmup_root": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_2021_warmup_export_20260925T1620Z",
+    "warmup_manifest": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_2021_warmup_export_20260925T1620Z\\warmup_manifest.json",
+    "cftc_csv_gz": "F:\\ancserQuant\\ancserMarketData\\source\\positioning\\cftc_tff_futures_only\\tff_futures_only_equity_index_codes_20260923.csv.gz",
+    "cftc_manifest": "F:\\ancserQuant\\ancserMarketData\\source\\positioning\\cftc_tff_futures_only\\tff_futures_only_equity_index_codes_20260923.manifest.json",
+    "cftc_sha256": "825b7adc3fc9e0ebe9e99eca951a31c92b2e74d3c8e9466ed20f9b41780d2870",
+    "canonical_sha256": {
+      "MNQ": "c9088546c058f3c4c68892dc1807cf256b78ca07303e8943951d341dec3fab1f",
+      "MES": "f30223bfd52c2a37ad61af62460e38f6e137a87c988746647474e7a78ee3e817"
+    }
+  },
+  "evaluation_window": {"start": "2022-01-01", "end": "2026-09-23"},
+  "protocol": {
+    "lookback_sessions": 60,
+    "report_lag_days": 7,
+    "release_hour_et": 15,
+    "release_minute_et": 30,
+    "min_session_bars": 300,
+    "stress_ticks": 14.0,
+    "candidate_strategy": "60_session_tsm_with_lagged_tff_alignment",
+    "tff_market_codes": {"MNQ": "209742", "MES": "13874A"}
+  },
+  "volatility_scaling": {
+    "lookback_returns": 20,
+    "target_annualized_volatility": 0.30,
+    "minimum_contracts": 1,
+    "maximum_contracts": 3
+  },
+  "instruments": {
+    "MNQ": {"point_value": 2.0, "tick_size": 0.25, "tick_value": 0.5, "round_trip_cost": 1.24},
+    "MES": {"point_value": 5.0, "tick_size": 0.25, "tick_value": 1.25, "round_trip_cost": 1.24}
+  },
+  "reference_ledgers": {
+    "price_only_60_session_tsm": {
+      "MNQ": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tff_confirmed_60s_tsm_20260925T0745Z\\trades_MNQ_price_only_60_session_tsm.csv.gz",
+      "MES": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tff_confirmed_60s_tsm_20260925T0745Z\\trades_MES_price_only_60_session_tsm.csv.gz"
+    },
+    "60_session_tsm_with_lagged_tff_alignment": {
+      "MNQ": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tff_confirmed_60s_tsm_20260925T0745Z\\trades_MNQ_60_session_tsm_with_lagged_tff_alignment.csv.gz",
+      "MES": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tff_confirmed_60s_tsm_20260925T0745Z\\trades_MES_60_session_tsm_with_lagged_tff_alignment.csv.gz"
+    },
+    "price_only_paired_on_candidate_intervals": {
+      "MNQ": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tff_confirmed_60s_tsm_20260925T0745Z\\trades_MNQ_price_only_paired_on_candidate_intervals.csv.gz",
+      "MES": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tff_confirmed_60s_tsm_20260925T0745Z\\trades_MES_price_only_paired_on_candidate_intervals.csv.gz"
+    },
+    "vol20_scaled_price_tsm": {
+      "MNQ": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_volscale_reference_20260925T1628Z\\trades_MNQ_vol20_scaled_price_tsm.csv.gz",
+      "MES": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_volscale_reference_20260925T1628Z\\trades_MES_vol20_scaled_price_tsm.csv.gz"
+    },
+    "vol20_scaled_passive_long_paired_on_price_tsm": {
+      "MNQ": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_volscale_reference_20260925T1628Z\\trades_MNQ_vol20_scaled_passive_long_paired_on_price_tsm.csv.gz",
+      "MES": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_volscale_reference_20260925T1628Z\\trades_MES_vol20_scaled_passive_long_paired_on_price_tsm.csv.gz"
+    },
+    "vol20_scaled_tff_tsm": {
+      "MNQ": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_volscale_reference_20260925T1628Z\\trades_MNQ_vol20_scaled_tff_tsm.csv.gz",
+      "MES": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_volscale_reference_20260925T1628Z\\trades_MES_vol20_scaled_tff_tsm.csv.gz"
+    },
+    "vol20_scaled_passive_long_paired_on_tff_tsm": {
+      "MNQ": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_volscale_reference_20260925T1628Z\\trades_MNQ_vol20_scaled_passive_long_paired_on_tff_tsm.csv.gz",
+      "MES": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_volscale_reference_20260925T1628Z\\trades_MES_vol20_scaled_passive_long_paired_on_tff_tsm.csv.gz"
+    }
+  },
+  "python_reference_source": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tff_confirmed_60s_tsm_20260925T0745Z.py",
+  "additional_python_reference_sources": [
+    "F:\\ancserQuant\\ancserTPX\\research\\rust_engine\\tools\\tsm_volscale_reference.py",
+    "F:\\ancserQuant\\ancserTPX\\research\\rust_engine\\tools\\compare_shared_gate_parity.py"
+  ],
+  "selected_strategy": "60_session_tsm_with_lagged_tff_alignment",
+  "output_root": "F:\\ancserQuant\\ancserMarketData\\derived\\research\\tsm_volscale_rust_20260925T1630Z\\runs"
+}

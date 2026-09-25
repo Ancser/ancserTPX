@@ -124,6 +124,17 @@ def is_market_reopen(ts: datetime) -> bool:
     )
 
 
+def market_reopen_elapsed_minutes(ts: datetime) -> Optional[float]:
+    """Minutes since the same-day 18:00 ET reopen, or ``None`` beforehand."""
+    if not is_market_reopen(ts):
+        return None
+    local = as_new_york(ts)
+    if local.time().replace(tzinfo=None) < _REOPEN:
+        return None
+    reopen = datetime.combine(local.date(), _REOPEN, tzinfo=MARKET_TIMEZONE)
+    return (local - reopen).total_seconds() / 60.0
+
+
 def normalize_allowed_sessions(value) -> Optional[tuple[str, ...]]:
     """Normalize UI/API/preset values to a sorted tuple or ``None`` for ALL."""
     if value is None:

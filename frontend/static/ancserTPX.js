@@ -460,6 +460,13 @@ const DEFAULT_STRATEGY_PARAMS = {
     // Optional source levels for short circle signals.  null preserves the
     // legacy kind-only behavior; [] intentionally disables both levels.
     pi_short_levels: null,
+    // Reopen continuation is an independent per-signal opt-in; old presets
+    // inherit the safe all-off selection and the 1R gap guard.
+    pi_continue_long_kinds: [],
+    pi_continue_short_kinds: [],
+    pi_continue_short_levels: [],
+    pi_reopen_max_gap_r: 1.0,
+    pi_lv2_replace_pi: false,
     pi_short_sl_value: 2.5,
     pi_long_hold_min: 0,
     pi_short_hold_min: 60,
@@ -1639,6 +1646,9 @@ function collectStrategyParams(mode) {
     const piMatrix = strategy === 'pi'
         ? _piMatrixPayload(mode)
         : { pi_long_kinds: null, pi_short_kinds: null, pi_short_levels: null };
+    const piContinueMatrix = strategy === 'pi'
+        ? _piContinueMatrixPayload(mode)
+        : { pi_continue_long_kinds: null, pi_continue_short_kinds: null, pi_continue_short_levels: null };
     const _deltaChoice = (idBase, key, fallback, allowed) => {
         const raw = String(_paramVal(idBase, key, fallback) || '').toLowerCase();
         return allowed.includes(raw) ? raw : fallback;
@@ -1750,6 +1760,12 @@ function collectStrategyParams(mode) {
         pi_long_kinds: piMatrix.pi_long_kinds,
         pi_short_kinds: piMatrix.pi_short_kinds,
         pi_short_levels: piMatrix.pi_short_levels,
+        pi_continue_long_kinds: piContinueMatrix.pi_continue_long_kinds,
+        pi_continue_short_kinds: piContinueMatrix.pi_continue_short_kinds,
+        pi_continue_short_levels: piContinueMatrix.pi_continue_short_levels,
+        pi_reopen_max_gap_r: Math.max(0, Math.min(5,
+            _paramNum('pi-reopen-gap', 'pi_reopen_max_gap_r', 1.0))),
+        pi_lv2_replace_pi: _piLv2ReplaceEnabled(mode),
         pi_max_signal_age_min: _int('pi-max-age-' + mode, 5),
         pi_short_sl_value: _float('pi-short-sl-' + mode, 2.5),
         pi_long_hold_min: _int('pi-long-hold-' + mode, 0),
@@ -1980,6 +1996,28 @@ function applyStrategyParams(mode, params) {
     } else {
         _piMatrixSyncFromLegacy(mode);
     }
+    const continueState = _piMatrixStateEmpty();
+    const continueLongKinds = new Set(Array.isArray(p.pi_continue_long_kinds) ? p.pi_continue_long_kinds : []);
+    const continueShortKinds = new Set(Array.isArray(p.pi_continue_short_kinds) ? p.pi_continue_short_kinds : []);
+    const continueShortLevels = new Set(Array.isArray(p.pi_continue_short_levels)
+        ? p.pi_continue_short_levels.map(Number).filter((level) => level === 1 || level === 2)
+        : []);
+    ['long', 'short'].forEach((side) => {
+        ['pi', 'level2', 'level1'].forEach((level) => {
+            const kind = PI_MATRIX_KIND_BY_SIDE_LEVEL[side][level];
+            if (side === 'short' && level !== 'pi') {
+                continueState[side][level] = continueShortKinds.has('紫圈')
+                    && continueShortLevels.has(PI_MATRIX_LEVEL_BY_SIDE_LEVEL[side][level]);
+            } else {
+                continueState[side][level] = Boolean(kind && (side === 'long'
+                    ? continueLongKinds : continueShortKinds).has(kind));
+            }
+        });
+    });
+    if (p.pi_long_only) continueState.short = { pi: false, level2: false, level1: false };
+    _piContinueMatrixWriteState(mode, continueState);
+    _setChoice('pi-reopen-gap-' + mode, String(p.pi_reopen_max_gap_r != null ? p.pi_reopen_max_gap_r : 1));
+    _setPiLv2ReplaceEnabled(mode, Boolean(p.pi_lv2_replace_pi));
     _set('pi-max-age-' + mode, String(p.pi_max_signal_age_min != null ? p.pi_max_signal_age_min : 5));
     const piShortSl = String(p.pi_short_sl_value != null ? p.pi_short_sl_value : 2.5);
     _setChoice('pi-short-sl-' + mode, piShortSl, piShortSl + ' x ATR');
@@ -2248,6 +2286,10 @@ function _piMatrixSwitchId(mode, side, level) {
     return 'pi-matrix-' + mode + '-' + side + '-' + level;
 }
 
+function _piContinueMatrixSwitchId(mode, side, level) {
+    return 'pi-continue-' + mode + '-' + side + '-' + level;
+}
+
 function _piMatrixStateEmpty() {
     return {
         long: { pi: false, level2: false, level1: false },
@@ -2399,6 +2441,76 @@ function _piMatrixPayload(mode) {
         pi_short_kinds: _piMatrixStateKinds(state, 'short'),
         pi_short_levels: _piMatrixStateLevels(state, 'short'),
     };
+}
+
+function _piContinueMatrixReadState(mode) {
+    const state = _piMatrixStateEmpty();
+    let found = false;
+    ['long', 'short'].forEach((side) => {
+        ['pi', 'level2', 'level1'].forEach((level) => {
+            const el = document.getElementById(_piContinueMatrixSwitchId(mode, side, level));
+            if (!el) return;
+            found = true;
+            state[side][level] = el.classList.contains('on') || el.getAttribute('aria-checked') === 'true';
+        });
+    });
+    return found ? state : null;
+}
+
+function _piContinueMatrixWriteState(mode, state) {
+    ['long', 'short'].forEach((side) => {
+        ['pi', 'level2', 'level1'].forEach((level) => {
+            const el = document.getElementById(_piContinueMatrixSwitchId(mode, side, level));
+            if (!el) return;
+            const on = Boolean(state?.[side]?.[level]);
+            if (el.tpxSetState) el.tpxSetState(on);
+            else {
+                el.classList.toggle('on', on);
+                el.setAttribute('aria-checked', String(on));
+            }
+        });
+    });
+}
+
+function onPiContinueMatrixProxy(mode, side, level) {
+    // The switch itself owns the visible state; the proxy preserves the same
+    // keyboard/event path as the PI entry matrix.
+    _piContinueMatrixReadState(mode);
+}
+
+function _piContinueMatrixPayload(mode) {
+    const state = _piContinueMatrixReadState(mode);
+    if (!state) return {
+        pi_continue_long_kinds: null,
+        pi_continue_short_kinds: null,
+        pi_continue_short_levels: null,
+    };
+    return {
+        pi_continue_long_kinds: _piMatrixStateKinds(state, 'long'),
+        pi_continue_short_kinds: _piMatrixStateKinds(state, 'short'),
+        pi_continue_short_levels: _piMatrixStateLevels(state, 'short'),
+    };
+}
+
+function _piLv2ReplaceEnabled(mode) {
+    const el = document.getElementById('pi-lv2-replace-' + mode);
+    return Boolean(el && (
+        el.classList.contains('on') || el.getAttribute('aria-checked') === 'true'
+    ));
+}
+
+function _setPiLv2ReplaceEnabled(mode, enabled) {
+    const el = document.getElementById('pi-lv2-replace-' + mode);
+    if (!el) return;
+    if (el.tpxSetState) el.tpxSetState(Boolean(enabled));
+    else {
+        el.classList.toggle('on', Boolean(enabled));
+        el.setAttribute('aria-checked', String(Boolean(enabled)));
+    }
+}
+
+function onPiLv2ReplaceProxy(mode) {
+    _piLv2ReplaceEnabled(mode);
 }
 
 function _normalizeNamingModel(model) {
@@ -3374,6 +3486,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (mainEl) mainEl.style.display = 'none';
                 if (calView) calView.classList.remove('hidden');
                 liveTopBar.style.display = 'none';
+                renderResearchDataCatalog();
                 renderCalendar();   // 1.0.9: robustness 面板由 renderCalendar 末端刷新
                 return;
             }
@@ -11691,6 +11804,240 @@ function _robMeasureSlip() {
 function _robBadge(pass, passText, failText) {
     return '<span class="rob-badge ' + (pass ? 'institution-pos' : 'institution-neg') + '">'
         + (pass ? passText : failText) + '</span>';
+}
+
+function _researchDataFlatten(value) {
+    if (value == null) return '—';
+    if (Array.isArray(value)) return value.map(_researchDataFlatten).join(' · ');
+    if (typeof value === 'object') {
+        return Object.entries(value)
+            .map(([key, item]) => key.replace(/_/g, ' ') + ': ' + _researchDataFlatten(item))
+            .join(' · ');
+    }
+    return String(value);
+}
+
+function _researchDataMoney(value) {
+    const number = Number(value);
+    return Number.isFinite(number)
+        ? '$' + number.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : '—';
+}
+
+function _researchDataMetrics(entry) {
+    const evaluation = entry.evaluation || {};
+    const items = [];
+    const add = (label, value) => {
+        if (value == null) return;
+        items.push(label + ' ' + value);
+    };
+    const usd = (value) => _researchDataMoney(value);
+
+    add('Trades', evaluation.trades);
+    add('Dates', evaluation.dates);
+    add('Net', evaluation.net_usd == null ? null : usd(evaluation.net_usd));
+    add('PF', evaluation.pf == null ? null : Number(evaluation.pf).toFixed(2));
+    add('+14t', evaluation.stress_14_tick_net_usd == null
+        ? null : usd(evaluation.stress_14_tick_net_usd));
+    add('Stress PF', evaluation.stress_14_tick_pf == null
+        ? null : Number(evaluation.stress_14_tick_pf).toFixed(2));
+    add('Best date removed', evaluation.best_date_removed_net_usd == null
+        ? null : usd(evaluation.best_date_removed_net_usd));
+    add('WF', evaluation.walk_forward_pass == null
+        ? null : (evaluation.walk_forward_pass ? 'pass' : 'fail'));
+    add('MC', evaluation.monte_carlo_pass == null
+        ? null : (evaluation.monte_carlo_pass ? 'pass' : 'fail'));
+
+    const dateCi = Array.isArray(evaluation.date_cluster_95_ci_usd)
+        ? evaluation.date_cluster_95_ci_usd
+        : evaluation.date_cluster_95_ci_per_signal_usd;
+    if (Array.isArray(dateCi) && dateCi.length === 2) {
+        const perSignal = !Array.isArray(evaluation.date_cluster_95_ci_usd);
+        add(perSignal ? 'Date-cluster 95% CI / signal' : 'Date-cluster 95% CI',
+            usd(dateCi[0]) + ' to ' + usd(dateCi[1]));
+    }
+
+    ['mnq', 'mes'].forEach((symbol) => {
+        const upper = symbol.toUpperCase();
+        add(upper + ' net', evaluation[symbol + '_net_usd'] == null
+            ? null : usd(evaluation[symbol + '_net_usd']));
+        add(upper + ' +14t', evaluation[symbol + '_stress_14_tick_net_usd'] == null
+            ? null : usd(evaluation[symbol + '_stress_14_tick_net_usd']));
+    });
+
+    if (entry.added_date_extension) {
+        add('Extension net', usd(entry.added_date_extension.net_usd));
+        add('Extension +14t', usd(entry.added_date_extension.stress_14_tick_net_usd));
+    }
+    if (entry.combined_through_2026_09_22) {
+        add('Combined +14t', usd(entry.combined_through_2026_09_22.stress_14_tick_net_usd));
+    }
+    if (entry.topstep_account_path) {
+        const path = entry.topstep_account_path;
+        const one = path.one_mnq || {};
+        const two = path.two_mnq || {};
+        const five = path.five_mnq || {};
+        add('50K / 1 MNQ headroom', one.minimum_intraday_mll_headroom_usd == null
+            ? null : usd(one.minimum_intraday_mll_headroom_usd));
+        add('2 MNQ pass', two.pass_date || (two.mll_breach ? 'MLL breach' : 'running'));
+        add('5 MNQ', five.mll_breach ? 'MLL breach' : 'survived');
+    }
+    if (entry.prospective_latest) {
+        const latest = entry.prospective_latest;
+        const date = String(latest.date || 'latest').slice(5);
+        add('Prospective ' + date + ' trades', latest.trades);
+        add('Prospective net', latest.net_after_fees_usd == null
+            ? null : usd(latest.net_after_fees_usd));
+        add('Prospective +14t', latest.stress_14_tick_net_usd == null
+            ? null : usd(latest.stress_14_tick_net_usd));
+    }
+    return items.map((item) => '<span class="research-data-metric">' + _attr(item) + '</span>').join('');
+}
+
+async function renderResearchDataCatalog(_force) {
+    const status = document.getElementById('research-data-status');
+    const summary = document.getElementById('research-data-summary');
+    const sourcesHost = document.getElementById('research-data-sources');
+    const strategiesHost = document.getElementById('research-data-strategies');
+    const footnote = document.getElementById('research-data-footnote');
+    if (!status || !summary || !sourcesHost || !strategiesHost || !footnote) return;
+
+    status.textContent = 'Loading latest research catalog…';
+    try {
+        let catalogSource = 'API';
+        let response = await fetch(API + '/research/data-catalog', { cache: 'no-store' });
+        if (response.status === 404) {
+            response = await fetch('/static/research_data_catalog_bootstrap.json', { cache: 'no-store' });
+            catalogSource = 'static snapshot';
+        }
+        const catalog = await response.json();
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        if (catalogSource === 'static snapshot' && catalog && catalog.available == null) {
+            catalog.available = true;
+        }
+        if (!catalog || !catalog.available) {
+            throw new Error((catalog && catalog.message) || 'Catalog is unavailable.');
+        }
+
+        const sources = Array.isArray(catalog.data_sources) ? catalog.data_sources : [];
+        const strategies = (Array.isArray(catalog.strategy_research_priority)
+            ? catalog.strategy_research_priority.slice() : [])
+            .sort((a, b) => Number(a.rank || 999) - Number(b.rank || 999));
+        const sourceLimits = {
+            futures_mnq_mes_continuous_1m: '2026-08-31 MNQ continuous-series seam is quarantined. MES has two flagged historical minutes. 2026 coverage ends on different dates.',
+            thetadata_monthly_oi_eod_qqq_spy: 'Partial strike and expiry coverage. Open interest is unsigned and does not identify dealer inventory direction.',
+            thetadata_option_quote_greeks_1m_qqq_spy: 'About seven months of minute quotes. Broker fills and queue position are unavailable; no 2022–2025 premium path.',
+            thetadata_0dte_trade_quote_greeks_archives: 'Large row counts do not guarantee complete contract or session coverage. Current signed-flow candidates failed stress or robustness gates.',
+            cftc_tff_futures_only: 'Weekly release lag; E-mini markets proxy MNQ/MES positioning. Direct weekly-follow results failed cost and cross-period gates.',
+            cme_mnq_mbo: 'Short sample. MBO order IDs are anonymous and do not identify named institutions. VA edges are less source-sensitive than POC in the latest comparison.',
+        };
+        const sourceTiming = {
+            thetadata_monthly_oi_eod_qqq_spy: 'Vendor timestamp is preserved; OI around 06:30 ET reports the prior trading session close. Join only after publication.',
+            cftc_tff_futures_only: 'Tuesday positioning, normally released Friday at 15:30 ET. Features become available after the public release.',
+            cme_mnq_mbo: 'Per-request fresh Databento quote; max cost $0; download completed sessions only.',
+        };
+        const strategyCopy = {
+            mnq_passive_touch_rejection_value_reversion: {
+                label: 'MNQ passive touch rejection × prior RTH value reversion',
+                scope: '31 MBO RTH dates in the historical replay; first prospective session 2026-09-24; account path through 2026-09-22.',
+                reason: 'Combined +14-tick stress remains positive at $374 after the 2026-09-21/22 extension lost. The 50K one-contract path stayed below target; two contracts passed on 2026-09-16 and five breached MLL. Linear scaling is a scenario, not capacity evidence.',
+            },
+            mnq_60_session_price_tsm: {
+                label: 'MNQ 60-session price-only time-series momentum',
+                scope: '2020–2026 YTD; non-overlapping weekly and report-date intervals.',
+                reason: 'Long sample and low turnover; cost-stressed net stayed positive. Walk-forward and Monte Carlo failed, and TFF alignment hurt the paired sample.',
+            },
+            mnq_mbo_cvd_aligned_turnover: {
+                label: 'MNQ MBO CVD-aligned turnover',
+                scope: '25 evaluation RTH dates in the current MBO history.',
+                reason: 'Positive cost stress and best-date removal; the date-cluster interval includes zero and the MBO sample is short.',
+            },
+            qqq_spy_1dte_pi_lock20_be_stop50: {
+                label: 'PI signal → 1DTE QQQ/SPY option; +20% trigger to breakeven; 50% premium stop',
+                scope: '473 signals, 125 dates, March–September 2026; QQQ/SPY ETF proxies.',
+                reason: 'Highest raw net in this option exit grid. Seven-month coverage, a date-cluster interval crossing zero, proxy fills, and unfinished shared stability gates keep it exploratory.',
+            },
+            mnq_vp_three_condition_theta_oi_gate: {
+                label: 'MNQ volume-profile breakout × three-condition QQQ OI gate',
+                scope: '2021–2023 calibration; 2024–2025 validation; 2026 retrospective holdout.',
+                reason: 'The OI join uses a causal publication rule. Cost-stress PF fell below one in validation and the retrospective holdout.',
+            },
+            mnq_mes_vp_breakout_baseline: {
+                label: 'MNQ/MES prior-RTH volume-profile breakout baseline',
+                scope: '2022 through latest 2026 YTD snapshot; Rust/Python parity sample.',
+                reason: 'Rust and Python trade ledgers match exactly. Net and 14-tick stress are negative for both instruments.',
+            },
+            mnq_mes_cftc_tff_weekly_follow: {
+                label: 'MNQ/MES CFTC TFF leveraged-funds weekly-change follow',
+                scope: '2020–2026 YTD; one trade per weekly signal interval.',
+                reason: 'TFF remains useful as lagged context. Direct weekly-follow results are negative after cost stress for both instruments.',
+            },
+        };
+        const cutoff = catalog.evidence_cutoff_utc || catalog.generated_at_utc || 'unknown';
+        const disk = Number(catalog.disk_free_gib);
+        status.textContent = 'Catalog ' + (catalog.catalog_id || 'latest')
+            + ' · evidence through ' + cutoff
+            + ' · ' + catalogSource
+            + (Number.isFinite(disk) ? ' · F: ' + disk.toFixed(1) + ' GiB free' : '');
+        summary.innerHTML = [
+            '<span class="research-data-summary-item">' + sources.length + ' data sources</span>',
+            '<span class="research-data-summary-item">' + strategies.length + ' ranked research candidates</span>',
+            '<span class="research-data-summary-item">Live promotions: '
+                + _attr(catalog.live_promotion_count == null ? 0 : catalog.live_promotion_count) + '</span>',
+        ].join('');
+
+        const sourceRows = sources.map((source) => {
+            const provider = source.provider || '—';
+            const availability = String(source.availability || 'unknown').replace(/_/g, ' ');
+            const boundary = [
+                source.timestamp_semantics || sourceTiming[source.id] || '',
+                source.quality_flags == null ? ''
+                    : 'Quality: ' + _researchDataFlatten(source.quality_flags),
+                source.limitations || sourceLimits[source.id]
+                    || 'See the linked research source for coverage and quality details.',
+            ].filter(Boolean).join(' ');
+            return '<tr>'
+                + '<td><strong>' + _attr(source.label || source.id || 'Dataset') + '</strong>'
+                + '<small>' + _attr(provider) + '</small></td>'
+                + '<td><span class="research-data-availability">' + _attr(availability) + '</span></td>'
+                + '<td>' + _attr(_researchDataFlatten(source.coverage)) + '</td>'
+                + '<td>' + _attr(_researchDataFlatten(source.research_use)) + '</td>'
+                + '<td>' + _attr(boundary) + '</td>'
+                + '</tr>';
+        }).join('');
+        sourcesHost.innerHTML = '<table class="research-data-table"><thead><tr>'
+            + '<th>DATASET / PROVIDER</th><th>ACCESS</th><th>COVERAGE</th>'
+            + '<th>RESEARCH USE</th><th>TIMESTAMP / QUALITY LIMITS</th>'
+            + '</tr></thead><tbody>' + sourceRows + '</tbody></table>';
+
+        strategiesHost.innerHTML = strategies.map((entry) => {
+            const copy = strategyCopy[entry.id] || {};
+            const label = entry.label || copy.label || String(entry.id || 'Research candidate').replace(/_/g, ' ');
+            const scope = entry.scope || copy.scope || 'See the linked study record for its sample window.';
+            const reason = entry.reason_for_rank || copy.reason
+                || 'Evidence remains research-only pending the shared stability gates.';
+            return '<article class="research-data-strategy">'
+                + '<div class="research-data-rank">#' + _attr(entry.rank) + '</div>'
+                + '<div><div class="research-data-strategy-title">' + _attr(label)
+                + '</div><div class="research-data-strategy-scope">'
+                + _attr(String(entry.status || '').replace(/_/g, ' ')) + ' · '
+                + _attr(scope) + '</div></div>'
+                + '<div class="research-data-strategy-evidence"><div class="research-data-metrics">'
+                + _researchDataMetrics(entry) + '</div></div>'
+                + '<div class="research-data-strategy-reason">' + _attr(reason)
+                + '</div></article>'
+        }).join('');
+
+        footnote.textContent = String(catalog.ranking_basis || 'Priority reflects evidence quality, cost stress, cross-period checks, date-cluster uncertainty, and prospective coverage.')
+            + ' P&L totals belong to each candidate’s stated sample; all candidates remain research-only.';
+        if (typeof glassResample === 'function') glassResample('#research-data-panel');
+    } catch (error) {
+        status.textContent = 'Research catalog unavailable · ' + String(error && error.message || error);
+        summary.innerHTML = '';
+        sourcesHost.innerHTML = '';
+        strategiesHost.innerHTML = '';
+        footnote.textContent = 'The read-only data catalog will appear after a valid derived research snapshot is available.';
+    }
 }
 
 async function renderResearchRobustness(force) {

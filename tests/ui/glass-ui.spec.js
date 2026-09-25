@@ -906,6 +906,52 @@ test("PI parameters use the LONG/SHORT liquid-glass matrix and preserve preset p
   expect(payload.pi_signal_set).toBe("all");
   expect(payload.pi_short_kinds).toEqual(["粉π", "紫圈"]);
   expect(payload.pi_short_levels).toEqual([1, 2]);
+
+  await page.evaluate(() => applyStrategyParams("live", {
+    strategy: "pi",
+    pi_signal_set: "long_pi_only",
+    pi_long_only: true,
+  }));
+  for (const mode of ["bt", "live"]) {
+    const continuation = page.locator(`#pi-params-${mode} [data-pi-continue-matrix="${mode}"]`);
+    await expect(continuation).toBeVisible();
+    await expect(continuation.locator(".pi-matrix-row-label")).toHaveText(["PI", "LEVEL 2", "LEVEL 1"]);
+    await expect(continuation.locator(".glass-switch")).toHaveCount(6);
+    await expect(page.locator(`#pi-reopen-gap-${mode}`)).toHaveValue("1");
+  }
+
+  payload = await page.evaluate(() => collectStrategyParams("bt"));
+  expect(payload.pi_continue_long_kinds).toEqual([]);
+  expect(payload.pi_continue_short_kinds).toEqual([]);
+  expect(payload.pi_continue_short_levels).toEqual([]);
+  expect(payload.pi_reopen_max_gap_r).toBe(1);
+  await page.locator("#pi-continue-bt-long-level2").click();
+  await page.locator("#pi-continue-bt-short-level1").click();
+  payload = await page.evaluate(() => collectStrategyParams("bt"));
+  expect(payload.pi_continue_long_kinds).toEqual(["深蓝圈"]);
+  expect(payload.pi_continue_short_kinds).toEqual(["紫圈"]);
+  expect(payload.pi_continue_short_levels).toEqual([1]);
+
+  await page.evaluate(() => applyStrategyParams("bt", {
+    strategy: "pi",
+    pi_long_only: false,
+    pi_long_kinds: ["深蓝圈"],
+    pi_short_kinds: ["紫圈"],
+    pi_short_levels: [1, 2],
+    pi_continue_long_kinds: ["深蓝圈"],
+    pi_continue_short_kinds: ["紫圈"],
+    pi_continue_short_levels: [2],
+    pi_reopen_max_gap_r: 0.5,
+  }));
+  await expect(page.locator("#pi-continue-bt-long-level2")).toHaveClass(/on/);
+  await expect(page.locator("#pi-continue-bt-short-level2")).toHaveClass(/on/);
+  await expect(page.locator("#pi-continue-bt-short-level1")).not.toHaveClass(/on/);
+  await expect(page.locator("#pi-reopen-gap-bt")).toHaveValue("0.5");
+  payload = await page.evaluate(() => collectStrategyParams("bt"));
+  expect(payload.pi_continue_long_kinds).toEqual(["深蓝圈"]);
+  expect(payload.pi_continue_short_kinds).toEqual(["紫圈"]);
+  expect(payload.pi_continue_short_levels).toEqual([2]);
+  expect(payload.pi_reopen_max_gap_r).toBe(0.5);
 });
 
 test("parameter help tooltip uses the canonical English copy", async ({ page }) => {

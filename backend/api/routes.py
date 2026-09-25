@@ -696,6 +696,17 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         pi_long_kinds=_normalize_pi_kinds(getattr(req, "pi_long_kinds", None), _PI_LONG_KINDS),
         pi_short_kinds=_normalize_pi_kinds(getattr(req, "pi_short_kinds", None), _PI_SHORT_KINDS),
         pi_short_levels=_normalize_pi_levels(getattr(req, "pi_short_levels", None)),
+        pi_continue_long_kinds=_normalize_pi_kinds(
+            getattr(req, "pi_continue_long_kinds", None), _PI_LONG_KINDS),
+        pi_continue_short_kinds=_normalize_pi_kinds(
+            getattr(req, "pi_continue_short_kinds", None), _PI_SHORT_KINDS),
+        pi_continue_short_levels=_normalize_pi_levels(
+            getattr(req, "pi_continue_short_levels", None)),
+        pi_reopen_max_gap_r=min(5.0, max(0.0, float(
+            _request_value_or(req, "pi_reopen_max_gap_r",
+                              _PARAM_DEFAULTS.pi_reopen_max_gap_r)))),
+        pi_lv2_replace_pi=bool(getattr(
+            req, "pi_lv2_replace_pi", _PARAM_DEFAULTS.pi_lv2_replace_pi)),
         pi_max_signal_age_min=max(1, min(60, int(
             getattr(req, "pi_max_signal_age_min", None)
             or _PARAM_DEFAULTS.pi_max_signal_age_min))),
@@ -1701,6 +1712,11 @@ class BacktestRequest(BaseModel):
     pi_long_kinds: Optional[List[str]] = None
     pi_short_kinds: Optional[List[str]] = None
     pi_short_levels: Optional[List[int]] = None
+    pi_continue_long_kinds: Optional[List[str]] = None
+    pi_continue_short_kinds: Optional[List[str]] = None
+    pi_continue_short_levels: Optional[List[int]] = None
+    pi_reopen_max_gap_r: Optional[float] = None
+    pi_lv2_replace_pi: bool = False
     pi_max_signal_age_min: int = 5
     pi_short_sl_value: float = 2.5
     pi_long_hold_min: int = 0
@@ -2618,6 +2634,49 @@ async def institution_research_latest():
         return data
     except Exception as exc:
         raise HTTPException(500, f"Could not read institution research: {exc}")
+
+
+def _load_latest_research_data_catalog() -> dict:
+    """Read the newest valid immutable app data catalog from derived research."""
+    research_root = market_data.derived_path("research")
+    if not research_root.is_dir():
+        return {"available": False, "message": "Research data catalog is unavailable."}
+
+    candidates = sorted(
+        research_root.glob("app_data_strategy_catalog_*/catalog.json"),
+        key=lambda path: path.parent.name,
+        reverse=True,
+    )
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            not isinstance(data, dict)
+            or data.get("schema") != "ancsertpx.data-strategy-catalog.v1"
+            or not isinstance(data.get("data_sources"), list)
+            or not isinstance(data.get("strategy_research_priority"), list)
+        ):
+            continue
+        data["available"] = True
+        data["catalog_path"] = str(path)
+        return data
+
+    return {
+        "available": False,
+        "message": "No valid app data catalog is available under derived research.",
+    }
+
+
+@router.get("/research/data-catalog")
+async def research_data_catalog():
+    """Return the latest read-only dataset inventory and strategy ranking."""
+    try:
+        return await asyncio.to_thread(_load_latest_research_data_catalog)
+    except Exception as exc:
+        logger.exception("Could not load research data catalog")
+        raise HTTPException(500, f"Could not read research data catalog: {exc}")
 
 
 @router.get("/data/latest-candles")
@@ -4414,6 +4473,11 @@ class LiveStartRequest(BaseModel):
     pi_long_kinds: Optional[List[str]] = None
     pi_short_kinds: Optional[List[str]] = None
     pi_short_levels: Optional[List[int]] = None
+    pi_continue_long_kinds: Optional[List[str]] = None
+    pi_continue_short_kinds: Optional[List[str]] = None
+    pi_continue_short_levels: Optional[List[int]] = None
+    pi_reopen_max_gap_r: Optional[float] = None
+    pi_lv2_replace_pi: bool = False
     pi_max_signal_age_min: int = 5
     pi_short_sl_value: float = 2.5
     pi_long_hold_min: int = 0
