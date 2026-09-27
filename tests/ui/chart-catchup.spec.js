@@ -89,7 +89,9 @@ async function openWithStubbedCandles(page, {
   });
 
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.waitForSelector('html[data-tpx-glass-skin="on"]');
+  // Liquid Glass (and its html[data-tpx-glass-skin] marker) left the
+  // production page on 2026-09-12; wait for the chart itself instead.
+  await page.waitForFunction(() => typeof candleSeries !== "undefined" && !!candleSeries);
   await page.waitForTimeout(1200);
 }
 
@@ -240,6 +242,126 @@ test("chartTimeToUtcMs round-trips utcMsToChartTime", async ({ page }) => {
       window.chartTimeToUtcMs(window.utcMsToChartTime(ms)) - Math.floor(ms / 1000) * 1000));
   });
   for (const d of drift) expect(d).toBeLessThan(1000);
+});
+
+/* Building an Intl.DateTimeFormat costs ~170us in Chromium. The chart used to
+ * build one for every candle converted at boot (60k candles ~= 10s frozen) and
+ * for every session boundary on every pan/zoom frame. Count constructions
+ * instead of timing them: a slow CI runner cannot turn a count red. */
+async function countDateTimeFormatBuilds(page) {
+  await page.addInitScript(() => {
+    window.__dtfBuilt = 0;
+    const Original = Intl.DateTimeFormat;
+    Intl.DateTimeFormat = new Proxy(Original, {
+      construct(target, args) {
+        window.__dtfBuilt += 1;
+        return new target(...args);
+      },
+      apply(target, thisArg, args) {
+        window.__dtfBuilt += 1;
+        return target(...args);
+      },
+    });
+  });
+}
+
+test("chart boot converts candles without building a formatter per candle", async ({ page }) => {
+  test.setTimeout(60000);
+  await countDateTimeFormatBuilds(page);
+  const now = Date.now();
+  await openWithStubbedCandles(page, {
+    storeFrom: now - 120 * MIN, storeCount: 120,
+    liveFrom: now - 60 * MIN, liveCount: 60,
+  });
+  const result = await page.evaluate((nowMs) => {
+    const rows = [];
+    for (let i = 0; i < 5000; i++) {
+      const t = new Date(nowMs - (5000 - i) * 60000).toISOString();
+      rows.push({ time: t, open: 100, high: 101, low: 99, close: 100.5, volume: 1 });
+    }
+    const before = window.__dtfBuilt;
+    window.showCandleData(rows);
+    return { shown: window._lastChartData.length, built: window.__dtfBuilt - before };
+  }, now);
+  expect(result.shown).toBe(5000);          // the candles really were applied
+  expect(result.built).toBeLessThan(50);    // was >= 5000 (one per candle)
+});
+
+test("session-divider redraws reuse formatters and still paint", async ({ page }) => {
+  test.setTimeout(60000);
+  await countDateTimeFormatBuilds(page);
+  // Minute-aligned like real candles: timeToCoordinate only resolves bar times.
+  const now = Math.floor(Date.now() / MIN) * MIN;
+  await openWithStubbedCandles(page, {
+    storeFrom: now - 120 * MIN, storeCount: 120,
+    liveFrom: now - 60 * MIN, liveCount: 60,
+  });
+  await page.evaluate((nowMs) => {
+    const rows = [];
+    for (let i = 0; i < 5000; i++) {
+      const t = new Date(nowMs - (5000 - i) * 60000).toISOString();
+      rows.push({ time: t, open: 100, high: 101, low: 99, close: 100.5, volume: 1 });
+    }
+    window.showCandleData(rows);
+    chart.timeScale().setVisibleLogicalRange({ from: 0, to: 4999 });  // ~3.5 days visible
+  }, now);
+  const result = await page.evaluate(async () => {
+    // Lightweight Charts applies new data/range on the next frame; the real
+    // redraw path runs from rAF too, so let two frames pass before drawing.
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    drawSessionDividers();                                           // warm
+    const before = window.__dtfBuilt;
+    for (let i = 0; i < 10; i++) drawSessionDividers();
+    const canvas = document.getElementById("session-divider-overlay");
+    const px = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+    let painted = 0;
+    for (let i = 3; i < px.length; i += 4) if (px[i] > 0) painted += 1;
+    const box = document.getElementById("chart-container");
+    return {
+      hidden: document.hidden, built: window.__dtfBuilt - before, painted,
+      box: [box.clientWidth, box.clientHeight], canvas: [canvas.width, canvas.height],
+      range: chart.timeScale().getVisibleRange(),
+    };
+  });
+  const detail = JSON.stringify(result);
+  expect(result.hidden, detail).toBe(false);
+  expect(result.painted, detail).toBeGreaterThan(0);   // dividers were actually drawn
+  expect(result.built, detail).toBe(0);                // was dozens per redraw
+});
+
+test("memoized zone offsets match a fresh formatter across DST transitions", async ({ page }) => {
+  test.setTimeout(60000);
+  const now = Date.now();
+  await openWithStubbedCandles(page, {
+    storeFrom: now - 120 * MIN, storeCount: 120,
+    liveFrom: now - 60 * MIN, liveCount: 60,
+  });
+  const mismatches = await page.evaluate(() => {
+    const fresh = (tz, ms) => {
+      const name = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
+        .formatToParts(new Date(ms)).find((p) => p.type === "timeZoneName").value;
+      const m = name.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+      return m ? (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3] || 0)) * 60000 : 0;
+    };
+    // 2026 US transitions: NY 07:00Z Mar 8 / 06:00Z Nov 1; LA three hours later.
+    const edges = [Date.UTC(2026, 2, 8, 7), Date.UTC(2026, 10, 1, 6),
+      Date.UTC(2026, 2, 8, 10), Date.UTC(2026, 10, 1, 9)];
+    const out = [];
+    for (const tz of ["America/New_York", "America/Los_Angeles", "America/Chicago"]) {
+      for (const edge of edges) {
+        // Visit the pre-transition bucket first so a leaked memo would show.
+        for (const d of [-15, -1, 0, 1, 14, 15]) {
+          const ms = edge + d * 60000;
+          const got = _timeZoneOffsetMs(tz, ms);
+          if (got !== fresh(tz, ms)) out.push({ tz, iso: new Date(ms).toISOString(), got });
+        }
+      }
+    }
+    const sampleMs = Date.UTC(2026, 2, 8, 6, 59);
+    if (utcMsToChartTime(sampleMs) !== Math.floor(sampleMs / 1000) - 5 * 3600) out.push({ chartTime: sampleMs });
+    return out;
+  });
+  expect(mismatches).toEqual([]);
 });
 
 test("panning to the left edge prepends an older chart page", async ({ page }) => {

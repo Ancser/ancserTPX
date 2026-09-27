@@ -668,6 +668,7 @@ class OrderRequest:
     stop_price: Optional[float] = None
     stop_loss_bracket: Optional[Dict[str, Any]] = None
     take_profit_bracket: Optional[Dict[str, Any]] = None
+    custom_tag: Optional[str] = None
 
 
 @dataclass
@@ -678,6 +679,7 @@ class OrderResponse:
     error_code: int = 0
     error_message: Optional[str] = None
     raw: Optional[Dict[str, Any]] = None
+    ambiguous: bool = False
 
 
 @dataclass

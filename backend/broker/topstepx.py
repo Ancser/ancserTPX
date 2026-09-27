@@ -173,6 +173,12 @@ class TopstepXClient:
         self._http: Optional[httpx.AsyncClient] = None
         self._signalr_market = None
         self._signalr_user = None
+        self._user_account_id: Optional[int] = None
+        self._market_ready = False
+        self._market_trade_contracts: set[str] = set()
+        self._market_quote_contracts: set[str] = set()
+        self._user_ready = False
+        self._connection_callbacks: Dict[str, List[Callable]] = {}
         self._callbacks: Dict[str, List[Callable]] = {}
         # Non-sensitive transport telemetry for the UI connection rail.  This
         # records the most recent completed REST attempt; credentials and JWTs
@@ -756,6 +762,8 @@ class TopstepXClient:
             payload["stopLossBracket"] = order.stop_loss_bracket
         if order.take_profit_bracket is not None:
             payload["takeProfitBracket"] = order.take_profit_bracket
+        if order.custom_tag:
+            payload["customTag"] = order.custom_tag
 
         # Use direct request to capture 400 error body (not _request which raises)
         client = await self._ensure_http()
@@ -767,7 +775,24 @@ class TopstepXClient:
             client = await self._ensure_http()
             raw_resp = await client.request("POST", "/api/Order/place", json=payload)
 
-        data = raw_resp.json()
+        if raw_resp.status_code == 429 or raw_resp.status_code >= 500:
+            return OrderResponse(
+                order_id=0,
+                success=False,
+                error_code=raw_resp.status_code,
+                error_message="submission_outcome_requires_reconciliation",
+                ambiguous=True,
+            )
+        try:
+            data = raw_resp.json()
+        except Exception as exc:
+            return OrderResponse(
+                order_id=0,
+                success=False,
+                error_code=raw_resp.status_code,
+                error_message=f"response_parse_failed:{type(exc).__name__}",
+                ambiguous=raw_resp.status_code < 400,
+            )
 
         resp = OrderResponse(
             order_id=data.get("orderId", 0),
@@ -792,6 +817,104 @@ class TopstepXClient:
                 f"raw_keys={list(data.keys())}"
             )
         return resp
+
+    async def _single_mutation_request(
+        self, path: str, payload: Dict[str, Any], fallback_order_id: int = 0
+    ) -> OrderResponse:
+        """Submit one state-changing request and preserve uncertain outcomes.
+
+        Only an explicit 401 response is retried after reauthentication. Network,
+        429, server, and unparseable-success responses are returned as ambiguous;
+        callers must reconcile before issuing another mutation.
+        """
+        try:
+            client = await self._ensure_http()
+            response = await client.request("POST", path, json=payload)
+            if response.status_code == 401:
+                await self.authenticate()
+                client = await self._ensure_http()
+                response = await client.request("POST", path, json=payload)
+        except Exception as exc:
+            logger.error("Single mutation outcome ambiguous for %s: %s", path, type(exc).__name__)
+            return OrderResponse(
+                order_id=fallback_order_id,
+                success=False,
+                error_message="mutation_outcome_requires_reconciliation",
+                ambiguous=True,
+            )
+
+        if response.status_code == 429 or response.status_code >= 500:
+            return OrderResponse(
+                order_id=fallback_order_id,
+                success=False,
+                error_code=response.status_code,
+                error_message="mutation_outcome_requires_reconciliation",
+                ambiguous=True,
+            )
+        try:
+            data = response.json()
+        except Exception as exc:
+            return OrderResponse(
+                order_id=fallback_order_id,
+                success=False,
+                error_code=response.status_code,
+                error_message=f"response_parse_failed:{type(exc).__name__}",
+                ambiguous=response.status_code < 400,
+            )
+        order_id = int(data.get("orderId", fallback_order_id) or fallback_order_id)
+        error_code = int(data.get("errorCode", 0) or 0)
+        if error_code in (6, 7):
+            return OrderResponse(
+                order_id=order_id,
+                success=False,
+                error_code=error_code,
+                error_message=data.get("errorMessage") or "mutation_outcome_requires_reconciliation",
+                raw=data,
+                ambiguous=True,
+            )
+        success = response.status_code < 400 and data.get("success") is True
+        return OrderResponse(
+            order_id=order_id,
+            success=success,
+            error_code=error_code,
+            error_message=data.get("errorMessage"),
+            raw=data,
+        )
+
+    async def modify_order_once(
+        self,
+        account_id: int,
+        order_id: int,
+        *,
+        size: Optional[int] = None,
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+    ) -> OrderResponse:
+        payload: Dict[str, Any] = {"accountId": account_id, "orderId": order_id}
+        if size is not None:
+            payload["size"] = size
+        if limit_price is not None:
+            payload["limitPrice"] = limit_price
+        if stop_price is not None:
+            payload["stopPrice"] = stop_price
+        return await self._single_mutation_request(
+            "/api/Order/modify", payload, fallback_order_id=order_id
+        )
+
+    async def cancel_order_once(self, account_id: int, order_id: int) -> OrderResponse:
+        return await self._single_mutation_request(
+            "/api/Order/cancel",
+            {"accountId": account_id, "orderId": order_id},
+            fallback_order_id=order_id,
+        )
+
+    async def close_position_once(
+        self, account_id: int, contract_id: str
+    ) -> OrderResponse:
+        return await self._single_mutation_request(
+            "/api/Position/closeContract",
+            {"accountId": account_id, "contractId": contract_id},
+        )
 
     async def modify_order(
         self,
@@ -1028,9 +1151,30 @@ class TopstepXClient:
         self._signalr_market.on("GatewayTrade", self._on_trade)
         self._signalr_market.on("GatewayQuote", self._on_quote)
         self._signalr_market.on("GatewayDepth", self._on_depth)
+        self._signalr_market.on_open(self._on_market_open)
+        self._signalr_market.on_close(self._on_market_close)
 
         self._signalr_market.start()
-        logger.info("SignalR market data connected")
+        logger.info("SignalR market data start requested")
+
+    def _on_market_open(self) -> None:
+        self._market_ready = True
+        connection = self._signalr_market
+        if connection is None:
+            return
+        try:
+            for contract_id in sorted(self._market_trade_contracts):
+                connection.send("SubscribeContractTrades", [contract_id])
+            for contract_id in sorted(self._market_quote_contracts):
+                connection.send("SubscribeContractQuotes", [contract_id])
+        except Exception:
+            self._market_ready = False
+            logger.error("TopstepX market resubscription failed; refresh data before entries")
+        self._notify_connection("market", self._market_ready)
+
+    def _on_market_close(self) -> None:
+        self._market_ready = False
+        self._notify_connection("market", False)
 
     def subscribe_trades(
         self, contract_id: str, callback: Callable
@@ -1046,8 +1190,9 @@ class TopstepXClient:
         if "trade" not in self._callbacks:
             self._callbacks["trade"] = []
         self._callbacks["trade"].append(callback)
+        self._market_trade_contracts.add(str(contract_id))
 
-        if self._signalr_market:
+        if self._signalr_market and self._market_ready:
             self._signalr_market.send(
                 "SubscribeContractTrades", [contract_id]
             )
@@ -1060,11 +1205,106 @@ class TopstepXClient:
         if "quote" not in self._callbacks:
             self._callbacks["quote"] = []
         self._callbacks["quote"].append(callback)
+        self._market_quote_contracts.add(str(contract_id))
 
-        if self._signalr_market:
+        if self._signalr_market and self._market_ready:
             self._signalr_market.send(
                 "SubscribeContractQuotes", [contract_id]
             )
+
+    async def connect_user_ws(self, account_id: int):
+        """Connect and subscribe to authenticated account lifecycle events.
+
+        The account/order/position/trade callbacks run on SignalR's worker
+        thread. Consumers should enqueue their payloads before doing I/O.
+        """
+        if not self.token:
+            await self._ensure_http()
+        try:
+            from signalrcore.hub_connection_builder import HubConnectionBuilder
+        except ImportError as exc:
+            raise ImportError("Install signalrcore: pip install signalrcore") from exc
+
+        hub_url = f"{self.DEFAULT_USER_HUB}?access_token={self.token}"
+        connection = (
+            HubConnectionBuilder()
+            .with_url(hub_url, options={
+                "skip_negotiation": True,
+                "headers": {"Authorization": f"Bearer {self.token}"},
+            })
+            .with_automatic_reconnect({
+                "type": "interval",
+                "intervals": [1, 3, 5, 10, 30],
+            })
+            .build()
+        )
+        self._signalr_user = connection
+        self._user_account_id = int(account_id)
+        connection.on("GatewayUserAccount", self._on_user_account)
+        connection.on("GatewayUserOrder", self._on_user_order)
+        connection.on("GatewayUserPosition", self._on_user_position)
+        connection.on("GatewayUserTrade", self._on_user_trade)
+        connection.on_open(lambda: self._on_user_open(account_id))
+        connection.on_close(self._on_user_close)
+        connection.on_error(lambda _error: logger.error("TopstepX user hub reported a transport error"))
+        connection.start()
+        logger.info("SignalR user hub start requested")
+
+    def _on_user_open(self, account_id: int) -> None:
+        self._user_ready = self._subscribe_user(account_id)
+        self._notify_connection("user", self._user_ready)
+
+    def _on_user_close(self) -> None:
+        self._user_ready = False
+        self._notify_connection("user", False)
+
+    def add_connection_callback(self, callback: Callable) -> None:
+        self._connection_callbacks.setdefault("state", []).append(callback)
+
+    def _notify_connection(self, hub_name: str, connected: bool) -> None:
+        for callback in self._connection_callbacks.get("state", []):
+            try:
+                callback(hub_name, connected)
+            except Exception:
+                logger.error("TopstepX connection state callback failed")
+
+    def _subscribe_user(self, account_id: int) -> bool:
+        connection = self._signalr_user
+        if connection is None:
+            return False
+        try:
+            connection.send("SubscribeAccounts", [])
+            connection.send("SubscribeOrders", [int(account_id)])
+            connection.send("SubscribePositions", [int(account_id)])
+            connection.send("SubscribeTrades", [int(account_id)])
+            return True
+        except Exception:
+            logger.error("TopstepX user hub subscription failed; reconnect and reconcile required")
+            return False
+
+    def add_user_callback(self, event_name: str, callback: Callable) -> None:
+        if event_name not in {"account", "order", "position", "trade"}:
+            raise ValueError("unsupported user event callback")
+        self._callbacks.setdefault(f"user_{event_name}", []).append(callback)
+
+    def _dispatch_user_event(self, event_name: str, args) -> None:
+        for callback in self._callbacks.get(f"user_{event_name}", []):
+            try:
+                callback(*args)
+            except Exception:
+                logger.error("TopstepX user event callback failed; reconciliation required")
+
+    def _on_user_account(self, args):
+        self._dispatch_user_event("account", args)
+
+    def _on_user_order(self, args):
+        self._dispatch_user_event("order", args)
+
+    def _on_user_position(self, args):
+        self._dispatch_user_event("position", args)
+
+    def _on_user_trade(self, args):
+        self._dispatch_user_event("trade", args)
 
     def _on_trade(self, args):
         """SignalR GatewayTrade 回調"""
@@ -1112,6 +1352,9 @@ class TopstepXClient:
         if self._signalr_user:
             self._signalr_user.stop()
             self._signalr_user = None
+        self._market_ready = False
+        self._user_ready = False
+        self._user_account_id = None
         if self._http:
             await self._http.aclose()
             self._http = None

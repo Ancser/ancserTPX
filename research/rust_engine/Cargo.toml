@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/vp-replay", "crates/tsm-replay", "crates/research-api"]
+members = [".", "crates/vp-replay", "crates/tsm-replay", "crates/research-api", "crates/live-runtime"]
 resolver = "3"
 
 [package]

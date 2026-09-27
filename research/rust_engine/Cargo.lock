@@ -47,6 +47,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ancsertpx-live-runtime"
+version = "0.1.0"
+dependencies = [
+ "ancsertpx-vp-replay",
+ "chrono",
+ "chrono-tz",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "ancsertpx-research-api"
 version = "0.1.0"
 dependencies = [
@@ -433,6 +445,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]

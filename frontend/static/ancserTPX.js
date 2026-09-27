@@ -5731,22 +5731,53 @@ function chartTimeToUtcMs(chartTime) {
     return utcMs;
 }
 
+// Constructing an Intl.DateTimeFormat costs ~170us in Chromium; formatting
+// with an existing one costs ~7us.  Chart boot converts every candle (60k)
+// and each pan/zoom frame converts every visible session boundary, so building
+// a formatter per call cost ~10s at boot and 100ms+ per frame.  Formatters are
+// immutable, so one instance per (locale, options) is exactly equivalent.
+const _dateTimeFormatCache = new Map();
+function _cachedDateTimeFormat(locale, options) {
+    const key = locale + '|' + JSON.stringify(options);
+    let fmt = _dateTimeFormatCache.get(key);
+    if (!fmt) {
+        fmt = new Intl.DateTimeFormat(locale, options);
+        _dateTimeFormatCache.set(key, fmt);
+    }
+    return fmt;
+}
+
+// A zone's UTC offset can only change on a quarter-hour UTC instant (modern
+// IANA offsets and transition times are whole quarter hours; NY/Chicago/LA
+// switch exactly on the hour).  One lookup per zone per 15-minute bucket
+// therefore returns the same value as formatting every instant.
+const _TZ_OFFSET_BUCKET_MS = 15 * 60000;
+const _tzOffsetMemo = new Map();
 function _timeZoneOffsetMs(timeZone, utcMs) {
+    const memoKey = timeZone + '|' + Math.floor(utcMs / _TZ_OFFSET_BUCKET_MS);
+    const memoHit = _tzOffsetMemo.get(memoKey);
+    if (memoHit !== undefined) return memoHit;
     try {
-        const parts = new Intl.DateTimeFormat('en-US', {
+        const parts = _cachedDateTimeFormat('en-US', {
             timeZone,
             timeZoneName: 'shortOffset',
             hour: '2-digit',
             minute: '2-digit',
         }).formatToParts(new Date(utcMs));
         const name = (parts.find(p => p.type === 'timeZoneName') || {}).value || 'GMT';
-        if (name === 'GMT' || name === 'UTC') return 0;
-        const m = name.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
-        if (!m) return 0;
-        const sign = m[1] === '-' ? -1 : 1;
-        const hours = parseInt(m[2], 10) || 0;
-        const mins = parseInt(m[3] || '0', 10) || 0;
-        return sign * (hours * 60 + mins) * 60000;
+        let offset = 0;
+        const m = (name === 'GMT' || name === 'UTC')
+            ? null : name.match(/GMT([+-])(\d{1,2})(?::?(\d{2}))?/);
+        if (m) {
+            const sign = m[1] === '-' ? -1 : 1;
+            const hours = parseInt(m[2], 10) || 0;
+            const mins = parseInt(m[3] || '0', 10) || 0;
+            offset = sign * (hours * 60 + mins) * 60000;
+        }
+        // Bounded: a chart paged back through years stays well under this.
+        if (_tzOffsetMemo.size >= 200000) _tzOffsetMemo.clear();
+        _tzOffsetMemo.set(memoKey, offset);
+        return offset;
     } catch (e) {
         // Futures dates in this app are modern US dates; if Intl shortOffset is
         // unavailable, EDT/EST precision only affects the background annotation.
@@ -5764,7 +5795,7 @@ function nyLocalToUtcMs(year, month, day, hour, minute) {
 }
 
 function _newYorkParts(utcMs) {
-    const parts = new Intl.DateTimeFormat('en-US-u-ca-gregory', {
+    const parts = _cachedDateTimeFormat('en-US-u-ca-gregory', {
         timeZone: SYSTEM_TIME_ZONES.market,
         year: 'numeric', month: '2-digit', day: '2-digit',
         weekday: 'short', hour: '2-digit', minute: '2-digit',
@@ -9063,7 +9094,7 @@ function _piChartSourceAllowed(ts) {
     // in the configured PI source zone so PDT/PST both keep the
     // 07:00 boundary and replay rows can never become chart marks.
     try {
-        const parts = new Intl.DateTimeFormat('en-US', {
+        const parts = _cachedDateTimeFormat('en-US', {
             timeZone: SYSTEM_TIME_ZONES.pi_source, hour: '2-digit', minute: '2-digit',
             hour12: false, hourCycle: 'h23',
         }).formatToParts(new Date(ts));
@@ -10513,7 +10544,7 @@ function _tradeDisplayTime(iso) {
     if (!iso) return null;
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return null;
-    const parts = new Intl.DateTimeFormat('en-US', {
+    const parts = _cachedDateTimeFormat('en-US', {
         timeZone: TRADE_DISPLAY_TIME_ZONE,
         month: '2-digit', day: '2-digit', year: 'numeric',
         hour: '2-digit', minute: '2-digit', hour12: true,
