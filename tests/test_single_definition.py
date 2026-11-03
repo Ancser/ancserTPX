@@ -71,6 +71,19 @@ SINGLE_DEFINITION = {
         "The split decides which trades land in which third. Two copies means "
         "'walk-forward PASS' can mean different things in different reports.",
     ),
+    "bar aggregation into higher timeframes": (
+        r"def aggregate_candles\b|def bucket_start\b",
+        {"backend/data/timeframes.py"},
+        "Chart bars, the 5m factor markers and any research roll-up must bucket "
+        "the same minutes (4h session anchor, Topstep trade date); a second "
+        "copy draws different bars than the ones signals were computed on.",
+    ),
+    "strategy name normalisation": (
+        r"def known_strategy_name\b|SUPPORTED_STRATEGIES\s*=\s*\(",
+        {"backend/db/models.py"},
+        "The 2026-09-15 preset rewrite: one loader did not know a strategy "
+        "another build had written, and normalised it to factor on disk.",
+    ),
     "contract economics table": (
         r"_CONTRACT_SPECS\s*=\s*\{",
         {"backend/db/models.py"},
@@ -92,6 +105,14 @@ SINGLE_DEFINITION = {
         {"backend/backtest/robustness.py"},
         "This is the kernel under Monte Carlo, walk-forward AND the slip "
         "table; a second copy lets all three drift at once.",
+    ),
+    "PI option limit fill / stop-target-time exit": (
+        r"def limit_price\b|def limit_fill_index\b|def exit_after\b",
+        {"backend/options/pi_options.py"},
+        "The PI OPTIONS backtest model, the published limit-entry / exit-grid "
+        "studies (their scripts wrap these) and a future paper/live options "
+        "path must fill and exit by the same rules, or the backtest stops "
+        "describing what the account would have done.",
     ),
 }
 

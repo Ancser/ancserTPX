@@ -44,14 +44,20 @@ import pickle
 import time as _time
 import calendar
 import threading
+import os
+import shutil
+import hashlib
+import uuid
+from contextlib import contextmanager
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from backend.db.models import Candle
-from backend.data import market_data
+from backend.data import contract_ledger, market_data
+from backend.data.columnar_store import CandleColumns, ColumnarBars, sidecar_path
 from backend.data.market_data_sync import mirror_files
 from backend.timebase import CHICAGO, NEW_YORK, UTC, utc_now
 
@@ -187,6 +193,8 @@ def _candle_record(candle: Candle) -> dict:
         "symbol": str(getattr(candle, "symbol", "MNQ") or "MNQ"),
         "interval": str(getattr(candle, "interval", "1m") or "1m"),
         "source": str(getattr(candle, "source", "topstepx") or "topstepx"),
+        "contract_id": getattr(candle, "contract_id", None),
+        "price_adjustment": getattr(candle, "price_adjustment", None),
     }
 
 
@@ -205,6 +213,11 @@ def _record_candle(record: dict, fallback_symbol: str) -> Optional[Candle]:
             symbol=str(record.get("symbol") or fallback_symbol),
             interval=str(record.get("interval") or "1m"),
             source=str(record.get("source") or "topstepx"),
+            contract_id=record.get("contract_id") or None,
+            price_adjustment=(
+                float(record["price_adjustment"])
+                if record.get("price_adjustment") is not None else None
+            ),
         )
     except (KeyError, TypeError, ValueError, OverflowError):
         return None
@@ -228,7 +241,7 @@ def _read_pending_meta(symbol: str = "MNQ", base: int = 1) -> dict:
 def _atomic_json_write(path: Path, payload: dict) -> None:
     STORE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     tmp.replace(path)
 
 
@@ -365,21 +378,20 @@ def append_pending(new_bars: List[Candle], symbol: str = "MNQ",
     it with copies of the same bar.  ``merge_pending`` is the only operation
     that materializes the canonical pickle.
     """
-    if not new_bars:
-        status = pending_status(symbol, base)
-        return status["count"], 0
-
-    incoming_by_ts: Dict[datetime, Candle] = {}
-    for candle in new_bars:
-        try:
-            incoming_by_ts[_as_utc(candle.timestamp)] = candle
-        except (AttributeError, TypeError):
-            continue
-    if not incoming_by_ts:
-        status = pending_status(symbol, base)
-        return status["count"], 0
-
-    with _store_lock(symbol, base):
+    with _store_transaction(symbol, base):
+        new_bars = enforce_store_contract(new_bars, symbol, base)
+        if not new_bars:
+            status = pending_status(symbol, base)
+            return status["count"], 0
+        incoming_by_ts: Dict[datetime, Candle] = {}
+        for candle in new_bars:
+            try:
+                incoming_by_ts[_as_utc(candle.timestamp)] = candle
+            except (AttributeError, TypeError):
+                continue
+        if not incoming_by_ts:
+            status = pending_status(symbol, base)
+            return status["count"], 0
         path = _pending_path(symbol, base)
         meta = _read_pending_meta(symbol, base)
         last = _parse_meta_time(meta.get("last_ts"))
@@ -429,7 +441,7 @@ def append_pending(new_bars: List[Candle], symbol: str = "MNQ",
 
 def pending_status(symbol: str = "MNQ", base: int = 1) -> dict:
     """Read pending-journal metadata without touching the full candle store."""
-    with _store_lock(symbol, base):
+    with _store_transaction(symbol, base):
         meta = _read_pending_meta(symbol, base)
         path = _pending_path(symbol, base)
         # A crash between the journal and its metadata is repaired by a small
@@ -529,23 +541,28 @@ def _seed_meta_path(symbol: str = "MNQ", base: int = 1) -> Path:
 # (fetch-historical、帳號輪詢、圖表),前端就卡在 LOADING DATA。
 # mtime 變了就自動失效,所以 save() 之後一定讀得到新資料。
 #
-# ⚠️ 記憶體代價:每根 Candle 約 576 bytes → 233 萬根約 1.25GB/商品。
+# 1.3.0: the cached generation is columnar (backend/data/columnar_store.py).
+# Measured on MNQ, 2.38M bars: pickle + Candle objects ~8 s and ~1.3 GB
+# (~4 GB before Candle got slots); the columns sidecar loads in ~0.6 s into
+# ~150 MB.  The pickle stays the canonical store; the sidecar is rebuilt
+# whenever it does not match the pickle's generation.
 # 這只會在明確的完整歷史操作中發生；啟動／CONNECT 走 pending journal。
 @dataclass(frozen=True)
 class CandleSnapshot:
     """Immutable index over one sorted persistent-store generation.
 
-    The tuple owns the collection structure while the ``Candle`` objects remain
-    shared and read-only, matching ``load()``'s long-standing shallow-copy
-    contract. Range reads use ``bisect`` directly over the tuple, so a short
-    request does not copy or scan the multi-million-bar store first.
+    ``bars`` is a read-only sequence: a :class:`ColumnarBars` view for a
+    loaded store (each access creates new ``Candle`` objects, so callers can
+    never mutate the cached generation), or a tuple when a caller builds a
+    snapshot from bars it already holds.  Range reads binary-search the
+    timestamps, so a short request does not copy or scan the whole store.
     """
 
     symbol: str
     base: int
     source_path: Path
-    version: Optional[Tuple[int, int]]
-    bars: Tuple[Candle, ...]
+    version: Optional[Tuple[int, ...]]
+    bars: Sequence[Candle]
 
     @property
     def first_time(self) -> Optional[datetime]:
@@ -559,17 +576,145 @@ class CandleSnapshot:
 _CACHE: Dict[str, CandleSnapshot] = {}
 _STORE_LOCKS: Dict[str, threading.RLock] = {}
 _STORE_LOCKS_GUARD = threading.Lock()
+_STORE_LOCK_LOCAL = threading.local()
 
 
 def _store_lock(symbol: str = "MNQ", base: int = 1) -> threading.RLock:
-    """Return the process-local transaction lock for one persistent store."""
-    key = f"{str(symbol).upper()}:{int(base)}"
+    """Return the process-local reentrant lock for the current store."""
+    key = f"{STORE_DIR.resolve()}:{str(symbol).upper()}:{int(base)}"
     with _STORE_LOCKS_GUARD:
         lock = _STORE_LOCKS.get(key)
         if lock is None:
             lock = threading.RLock()
             _STORE_LOCKS[key] = lock
         return lock
+
+
+@contextmanager
+def _store_transaction(symbol: str = "MNQ", base: int = 1):
+    """Reentrant per-store lock, shared by cooperating processes."""
+    key = f"{STORE_DIR.resolve()}:{str(symbol).upper()}:{int(base)}"
+    lock = _store_lock(symbol, base)
+    with lock:
+        held = getattr(_STORE_LOCK_LOCAL, "held", None)
+        if held is None:
+            held = _STORE_LOCK_LOCAL.held = set()
+        if key in held:
+            yield
+            return
+        STORE_DIR.mkdir(parents=True, exist_ok=True)
+        lock_path = _store_path(symbol, base).with_suffix(".lock")
+        with lock_path.open("a+b") as handle:
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+                deadline = _time.monotonic() + 60
+                while True:
+                    try:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if _time.monotonic() >= deadline:
+                            raise TimeoutError(f"Timed out waiting for candle store lock: {lock_path}")
+                        _time.sleep(0.1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            held.add(key)
+            try:
+                _recover_roll_transaction(symbol, base)
+                yield
+            finally:
+                held.remove(key)
+                if os.name == "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _roll_journal_path(symbol: str, base: int) -> Path:
+    return _store_path(symbol, base).with_suffix(".roll-transaction.json")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _recover_roll_transaction(symbol: str, base: int) -> None:
+    """Roll back an interrupted transaction before exposing this store."""
+    journal = _roll_journal_path(symbol, base)
+    if not journal.exists():
+        return
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    if payload.get("version") != 1:
+        raise RuntimeError(f"Unknown roll transaction format: {journal}")
+    entries = payload["files"]
+    store = _store_path(symbol, base)
+    expected = {p.name for p in (store, _meta_path(symbol, base), _pending_path(symbol, base),
+                                  _pending_meta_path(symbol, base), sidecar_path(store))}
+    if len(entries) != len(expected) or {item["target"] for item in entries} != expected:
+        raise RuntimeError(f"Invalid roll transaction targets: {journal}")
+    # Validate all backups before touching any canonical file.
+    for item in entries:
+        backup = (STORE_DIR / item["backup"]).resolve()
+        if backup.parent.parent != STORE_DIR.resolve() or not backup.parent.name.startswith(store.stem + ".roll-backup-"):
+            raise RuntimeError(f"Invalid roll backup path: {backup}")
+        if item["existed"] and (not backup.is_file() or _file_sha256(backup) != item["sha256"]):
+            raise RuntimeError(f"Roll backup missing or invalid: {backup}")
+    for item in entries:
+        target = STORE_DIR / item["target"]
+        if item["existed"]:
+            temp = target.with_name(target.name + ".roll-restore.tmp")
+            shutil.copyfile(STORE_DIR / item["backup"], temp)
+            os.replace(temp, target)
+        else:
+            target.unlink(missing_ok=True)
+    invalidate_cache(symbol, base)
+    journal.unlink()
+    try:
+        mirror_files((_store_path(symbol, base), _meta_path(symbol, base),
+                      _pending_path(symbol, base), _pending_meta_path(symbol, base)), delete_missing=True)
+    except Exception:
+        logger.exception("[CandleStore] Recovery completed; backup mirror needs attention")
+    logger.error("[CandleStore] Recovered interrupted %s roll using backup", symbol)
+
+
+def _prepare_roll_transaction(symbol: str, base: int) -> Path:
+    """Persist checked backups before modifying any canonical roll files."""
+    store = _store_path(symbol, base)
+    targets = (store, _meta_path(symbol, base), _pending_path(symbol, base),
+               _pending_meta_path(symbol, base), sidecar_path(store))
+    backup_dir = STORE_DIR / (store.stem + ".roll-backup-" + uuid.uuid4().hex)
+    backup_dir.mkdir(parents=True)
+    entries = []
+    for target in targets:
+        backup = backup_dir / target.name
+        exists = target.exists()
+        digest = None
+        if exists:
+            shutil.copyfile(target, backup)
+            with backup.open("r+b") as fh:
+                os.fsync(fh.fileno())
+            digest = _file_sha256(backup)
+            if digest != _file_sha256(target):
+                raise RuntimeError(f"Roll backup verification failed: {target}")
+        entries.append({"target": target.name, "backup": str(backup.relative_to(STORE_DIR)),
+                        "existed": exists, "sha256": digest})
+    journal = _roll_journal_path(symbol, base)
+    _atomic_json_write(journal, {"version": 1, "files": entries})
+    with journal.open("r+b") as fh:
+        os.fsync(fh.fileno())
+    return journal
 
 
 def _path_version(path: Path) -> Optional[Tuple[int, int]]:
@@ -587,6 +732,11 @@ def _empty_snapshot(symbol: str, base: int, path: Path) -> CandleSnapshot:
 def load_snapshot(symbol: str = "MNQ", base: int = 1,
                   use_cache: bool = True) -> CandleSnapshot:
     """Return the immutable sorted snapshot for the current store generation."""
+    with _store_transaction(symbol, base):
+        return _load_snapshot_locked(symbol, base, use_cache)
+
+
+def _load_snapshot_locked(symbol: str, base: int, use_cache: bool) -> CandleSnapshot:
     p = _store_path(symbol, base)
     if not p.exists():
         seed = _seed_path(symbol, base)
@@ -603,18 +753,34 @@ def load_snapshot(symbol: str = "MNQ", base: int = 1,
                 and hit.source_path == p):
             return hit
 
-    try:
-        with p.open("rb") as fh:
-            bars = pickle.load(fh)
-        bars = sorted(bars, key=lambda c: _as_utc(c.timestamp))
-    except Exception as e:
-        logger.warning(f"[CandleStore] failed to load {p}: {e}")
-        return _empty_snapshot(symbol, base, p)
+    columns = CandleColumns.load(sidecar_path(p), version)
+    if columns is None:
+        try:
+            with p.open("rb") as fh:
+                bars = pickle.load(fh)
+            bars = sorted(bars, key=lambda c: _as_utc(c.timestamp))
+            columns = CandleColumns.from_bars(bars)
+        except Exception as e:
+            logger.warning(f"[CandleStore] failed to load {p}: {e}")
+            return _empty_snapshot(symbol, base, p)
+        del bars
+        if p == _store_path(symbol, base):   # seeds are read-only repo files
+            _write_sidecar(p, version, columns)
 
-    snapshot = CandleSnapshot(symbol, base, p, version, tuple(bars))
+    snapshot = CandleSnapshot(symbol, base, p, version, ColumnarBars(columns))
     if use_cache and version is not None:
         _CACHE[key] = snapshot
     return snapshot
+
+
+def _write_sidecar(store: Path, version, columns: CandleColumns) -> None:
+    """Best effort: a missing sidecar only costs the next load a rebuild."""
+    if version is None:
+        return
+    try:
+        columns.save(sidecar_path(store), version)
+    except OSError as exc:
+        logger.warning("[CandleStore] columns sidecar write failed for %s: %s", store.name, exc)
 
 
 def select_range(snapshot: CandleSnapshot,
@@ -622,6 +788,9 @@ def select_range(snapshot: CandleSnapshot,
                  end: Optional[datetime] = None) -> List[Candle]:
     """Return an owned list for the inclusive ``start``/``end`` subrange."""
     bars = snapshot.bars
+    if isinstance(bars, ColumnarBars):
+        lo, hi = bars.columns.search(start, end)
+        return bars.columns.candles(lo, hi)
     lo = 0
     hi = len(bars)
     if start is not None:
@@ -645,6 +814,50 @@ def snapshot_contains(snapshot: CandleSnapshot,
             and (end is None or (last is not None and last >= _as_utc(end))))
 
 
+_VIEWS: Dict[str, CandleSnapshot] = {}
+
+
+def load_view(symbol: str = "MNQ", base: int = 1) -> CandleSnapshot:
+    """The store generation plus pending-journal bars newer than its last
+    bar, without writing anything.
+
+    Chart reads use this instead of ``merge_pending``: merging rewrites the
+    whole store, which made a read cost a full write whenever the background
+    saver had journaled new bars.  Pending bars at or before the store's last
+    bar (revisions) are left to the real merge, which backtest/store loads
+    still perform (DATA-009).
+    """
+    with _store_transaction(symbol, base):
+        return _load_view_locked(symbol, base)
+
+
+def _load_view_locked(symbol: str, base: int) -> CandleSnapshot:
+    snapshot = load_snapshot(symbol, base)
+    pending_version = _path_version(_pending_path(symbol, base))
+    if pending_version is None or snapshot.version is None:
+        return snapshot
+    key = f"{symbol}:{base}"
+    version = tuple(snapshot.version) + tuple(pending_version)
+    hit = _VIEWS.get(key)
+    if hit is not None and hit.version == version:
+        return hit
+    with _store_transaction(symbol, base):
+        pending = _read_pending_locked(symbol, base)
+    last = snapshot.last_time
+    newer = [b for b in pending if last is None or _as_utc(b.timestamp) > last]
+    newer = enforce_store_contract(newer, symbol, base)
+    if not newer:
+        view = CandleSnapshot(symbol, base, snapshot.source_path, version, snapshot.bars)
+    elif isinstance(snapshot.bars, ColumnarBars):
+        view = CandleSnapshot(symbol, base, snapshot.source_path, version,
+                              ColumnarBars(snapshot.bars.columns.appended(newer)))
+    else:
+        view = CandleSnapshot(symbol, base, snapshot.source_path, version,
+                              tuple(snapshot.bars) + tuple(newer))
+    _VIEWS[key] = view
+    return view
+
+
 def load(symbol: str = "MNQ", base: int = 1, use_cache: bool = True) -> List[Candle]:
     """Load the persistent store (sorted), or [] if none yet."""
     # Always return an owned list. The immutable cached tuple remains private,
@@ -656,13 +869,16 @@ def invalidate_cache(symbol: Optional[str] = None, base: int = 1) -> None:
     """手動清快取。symbol=None 清全部。"""
     if symbol is None:
         _CACHE.clear()
+        _VIEWS.clear()
     else:
         _CACHE.pop(f"{symbol}:{base}", None)
+        _VIEWS.pop(f"{symbol}:{base}", None)
 
 
 def save(bars: List[Candle], symbol: str = "MNQ", base: int = 1) -> None:
     """Write the full bar list to disk (atomic via tmp+rename)."""
-    with _store_lock(symbol, base):
+    with _store_transaction(symbol, base):
+        bars = enforce_store_contract(bars, symbol, base)
         _save_locked(bars, symbol, base)
 
 
@@ -675,10 +891,14 @@ def _save_locked(bars: List[Candle], symbol: str, base: int) -> None:
     with tmp.open("wb") as fh:
         pickle.dump(ordered, fh)
     tmp.replace(p)
-    # Publish the exact generation just written. This avoids an immediate
-    # multi-million-row disk reload and does not depend only on mtime precision.
+    # Publish the exact generation just written (and its columns sidecar).
+    # This avoids an immediate multi-million-row disk reload and does not
+    # depend only on mtime precision.
+    version = _path_version(p)
+    columns = CandleColumns.from_bars(ordered)
+    _write_sidecar(p, version, columns)
     _CACHE[f"{symbol}:{base}"] = CandleSnapshot(
-        symbol, base, p, _path_version(p), tuple(ordered)
+        symbol, base, p, version, ColumnarBars(columns)
     )
     # Keep cheap bounds beside the pickle so future startup scans do not need
     # to unpickle the full store just to decide where the next delta begins.
@@ -756,7 +976,7 @@ def merge(new_bars: List[Candle], symbol: str = "MNQ",
     1.0.10: 併入前先做換錨偵測。store 的價格錨點是權威,incoming 若換了錨
     就先平移回來 —— 否則換月時會在 store 內部長出假跳空。
     """
-    with _store_lock(symbol, base):
+    with _store_transaction(symbol, base):
         return _merge_locked(new_bars, symbol, base)
 
 
@@ -767,7 +987,7 @@ def merge_pending(symbol: str = "MNQ", base: int = 1) -> Tuple[int, int]:
     When bars exist, this is deliberately a full operation: the caller is at
     a backtest/store request or has panned to the chart's left edge.
     """
-    with _store_lock(symbol, base):
+    with _store_transaction(symbol, base):
         pending = _read_pending_locked(symbol, base)
         if not pending:
             return 0, 0
@@ -790,6 +1010,7 @@ def _merge_locked(new_bars: List[Candle], symbol: str,
         _as_utc(b.timestamp): b for b in existing
     }
     before = len(by_ts)
+    new_bars = enforce_store_contract(new_bars, symbol, base)
 
     offset = detect_reanchor(new_bars, by_ts) if by_ts else None
     if offset is not None:
@@ -809,9 +1030,101 @@ def _merge_locked(new_bars: List[Candle], symbol: str,
     for b in new_bars:
         by_ts[_as_utc(b.timestamp)] = b
     merged = sorted(by_ts.values(), key=lambda c: c.timestamp)
-    save(merged, symbol, base)
+    # The incoming subset was enforced above; stored bars already are.
+    _save_locked(merged, symbol, base)
     added = len(merged) - before
     return len(merged), added
+
+
+# ── Contract identity (1.3.0) ────────────────────────────────────────────
+# The roll ledger in meta["contract_rolls"] decides which contract owns each
+# minute and the back-adjustment onto the newest contract's price level
+# (backend/data/contract_ledger.py).  Every writer above passes through
+# enforce_store_contract(), so no writer can mix contracts or price levels.
+
+def contract_rolls(symbol: str = "MNQ", base: int = 1) -> list:
+    return contract_ledger.normalize_rolls(load_meta(symbol, base).get("contract_rolls", []))
+
+
+def store_contract_at(symbol: str, ts: datetime, base: int = 1) -> Optional[str]:
+    """Contract id owning minute ``ts`` in this store, or None without a ledger."""
+    code = contract_ledger.contract_at(contract_rolls(symbol, base), ts)
+    return contract_ledger.make_contract_id(symbol, code) if code else None
+
+
+def enforce_store_contract(bars: List[Candle], symbol: str = "MNQ",
+                           base: int = 1) -> List[Candle]:
+    rolls = contract_rolls(symbol, base)
+    kept, dropped, reexpressed = contract_ledger.enforce(bars, rolls)
+    if dropped or reexpressed:
+        logger.warning(
+            "[CandleStore] %s contract ledger: dropped %d wrong-contract bars, "
+            "re-expressed %d bars at the store price level", symbol, dropped, reexpressed,
+        )
+    return kept
+
+
+def apply_contract_roll(symbol: str, at: datetime, from_contract: str,
+                        to_contract: str, offset: float, basis: str,
+                        base: int = 1) -> dict:
+    """Roll the store to ``to_contract`` at ``at`` (idempotent).
+
+    Back-adjusts every stored bar before ``at`` by ``offset`` (new minus old
+    price at the roll), removes stored minutes at/after ``at`` that are not
+    ``to_contract`` (the caller re-fetches them from the new contract), and
+    appends the roll to the ledger.
+    """
+    at = _as_utc(at)
+    to_code = contract_ledger.expiry_code(to_contract)
+    with _store_transaction(symbol, base):
+        rolls = contract_rolls(symbol, base)
+        if any(r["to"] == to_code for r in rolls):
+            return {"applied": False, "reason": "already rolled", "to": to_code}
+        pending = _read_pending_locked(symbol, base)
+        existing = load(symbol, base)
+        by_ts = {_as_utc(b.timestamp): b for b in existing}
+        for b in pending:
+            by_ts[_as_utc(b.timestamp)] = b
+        shifted = removed = 0
+        out: List[Candle] = []
+        for ts, bar in sorted(by_ts.items()):
+            if ts < at:
+                have = getattr(bar, "price_adjustment", None)
+                out.append(contract_ledger.shift_bar(
+                    bar, offset, (have or 0.0) + offset if have is not None else None))
+                shifted += 1
+                continue
+            cid = getattr(bar, "contract_id", None)
+            if cid and contract_ledger.expiry_code(cid) == to_code:
+                out.append(bar)
+            else:
+                removed += 1
+        rolls.append({
+            "at": at, "from": contract_ledger.expiry_code(from_contract),
+            "to": to_code, "offset": float(offset), "basis": basis,
+        })
+        meta = load_meta(symbol, base)
+        meta["contract_rolls"] = contract_ledger.rolls_to_meta(rolls)
+        journal = _prepare_roll_transaction(symbol, base)
+        try:
+            save_meta(meta, symbol, base)
+            _save_locked(out, symbol, base)
+            _write_pending_locked([], symbol, base)
+            if _pending_path(symbol, base).exists() or _pending_meta_path(symbol, base).exists():
+                raise OSError("Pending journal could not be cleared during roll")
+            for path in (_store_path(symbol, base), _meta_path(symbol, base)):
+                with path.open("r+b") as fh:
+                    os.fsync(fh.fileno())
+            journal.unlink()
+        except BaseException:
+            _recover_roll_transaction(symbol, base)
+            raise
+    logger.warning(
+        "[CandleStore] %s rolled %s -> %s at %s (offset %+.2f, %s): %d bars "
+        "back-adjusted, %d post-roll bars removed for re-fetch",
+        symbol, from_contract, to_contract, at.isoformat(), offset, basis, shifted, removed,
+    )
+    return {"applied": True, "shifted": shifted, "removed": removed, "to": to_code}
 
 
 # ── Gap detection ─────────────────────────────────────────────────────────
@@ -946,6 +1259,11 @@ def last_complete_day_end(candles: List[Candle]) -> Optional[datetime]:
 # ── Completeness metadata ─────────────────────────────────────────────────
 
 def load_meta(symbol: str = "MNQ", base: int = 1) -> dict:
+    with _store_transaction(symbol, base):
+        return _load_meta_locked(symbol, base)
+
+
+def _load_meta_locked(symbol: str, base: int) -> dict:
     # An accumulated sidecar is not authoritative without its matching
     # canonical pickle. A stale private sidecar must not claim full history on
     # a fresh clone that only has the small seed.
@@ -969,11 +1287,11 @@ def load_meta(symbol: str = "MNQ", base: int = 1) -> dict:
 
 
 def save_meta(meta: dict, symbol: str = "MNQ", base: int = 1) -> None:
-    STORE_DIR.mkdir(parents=True, exist_ok=True)
-    p = _meta_path(symbol, base)
-    with open(p, "w", encoding="utf-8") as fh:
-        json.dump(meta, fh, indent=2, default=str)
-    mirror_files((p,))
+    with _store_transaction(symbol, base):
+        STORE_DIR.mkdir(parents=True, exist_ok=True)
+        p = _meta_path(symbol, base)
+        _atomic_json_write(p, meta)
+        mirror_files((p,))
 
 
 # ── Known-bad seam registry (1.0.10) ──────────────────────────────────────

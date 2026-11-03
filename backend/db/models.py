@@ -9,7 +9,7 @@
 #   - Contract helpers resolve NQ/MNQ point value, tick size, commission, and fees.
 # ============================================================
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from enum import Enum
@@ -57,7 +57,7 @@ class BarUnit(int, Enum):
 
 # ── 市場數據 ──────────────────────────────────────────
 
-@dataclass
+@dataclass(slots=True)
 class Candle:
     """單根 K 線"""
     timestamp: datetime
@@ -70,9 +70,61 @@ class Candle:
     interval: str = "5m"
     # 1.0.10: 資料來源。回測預設把所有來源一起用,這個欄位只做內部區分
     # 與稽核 —— live 與未來的資料累積仍然只靠 topstepx。
-    # 舊 pickle 沒有這個欄位,但 dataclass 的預設值是類別屬性,所以舊物件
-    # 讀到的是 "topstepx",正好正確(store 裡既有的 bar 全部來自券商)。
+    # 舊 pickle 沒有這個欄位;__setstate__ 補上預設值 "topstepx",正好正確
+    # (當時 store 裡的 bar 全部來自券商)。
     source: str = "topstepx"
+    # 1.3.0: the exchange contract this OHLCV came from (e.g.
+    # "CON.F.US.MNQ.Z26") and the additive back-adjustment applied to reach
+    # the store's price level (raw exchange price = price - price_adjustment).
+    # None = unknown.  backend/data/contract_ledger.py decides which contract
+    # owns a minute.
+    contract_id: Optional[str] = None
+    price_adjustment: Optional[float] = None
+
+    # 1.3.0: slots.  A full MNQ store is ~2.4M candles; an unpickled instance
+    # carried its own 11-key __dict__ and its own copy of every repeated
+    # string/float, ~1.7 KB per bar (+4 GB RSS for one load).  The pickle
+    # format is unchanged (a plain field dict), so stores written before and
+    # after this change load in either version, and older pickles that lack
+    # the later fields get the same defaults the non-slotted class supplied.
+    def __getstate__(self) -> Dict[str, Any]:
+        return {name: getattr(self, name) for name in _CANDLE_FIELDS}
+
+    def __setstate__(self, state) -> None:
+        # Hot path: runs once per bar while a multi-million-bar store loads,
+        # so it assigns explicitly instead of looping over setattr.
+        if state.__class__ is not dict:       # (dict_state, slot_state) form
+            merged: Dict[str, Any] = {}
+            for part in state:
+                if part:
+                    merged.update(part)
+            state = merged
+        if len(state) != len(_CANDLE_FIELDS):  # older/newer pickle shape
+            state = {**_CANDLE_DEFAULTS, **state}
+        self.timestamp = state["timestamp"]
+        self.open = state["open"]
+        self.high = state["high"]
+        self.low = state["low"]
+        self.close = state["close"]
+        self.volume = state["volume"]
+        text = _CANDLE_TEXT_POOL
+        if len(text) > _CANDLE_POOL_LIMIT:
+            text.clear()
+        value = state["symbol"]
+        self.symbol = text.setdefault(value, value) if value.__class__ is str else value
+        value = state["interval"]
+        self.interval = text.setdefault(value, value) if value.__class__ is str else value
+        value = state["source"]
+        self.source = text.setdefault(value, value) if value.__class__ is str else value
+        value = state["contract_id"]
+        self.contract_id = text.setdefault(value, value) if value.__class__ is str else value
+        value = state["price_adjustment"]
+        if value.__class__ is float:
+            numbers = _CANDLE_FLOAT_POOL
+            if len(numbers) > _CANDLE_POOL_LIMIT:
+                numbers.clear()
+            value = numbers.setdefault(value, value)
+        self.price_adjustment = value
 
     @property
     def mid(self) -> float:
@@ -89,6 +141,19 @@ class Candle:
     @property
     def is_bullish(self) -> bool:
         return self.close >= self.open
+
+
+_CANDLE_FIELDS: Tuple[str, ...] = tuple(f.name for f in fields(Candle))
+_CANDLE_DEFAULTS: Dict[str, Any] = {
+    f.name: f.default for f in fields(Candle) if f.default is not MISSING
+}
+# Low-cardinality fields: millions of candles carry a handful of distinct
+# strings (symbol, interval, source, contract id) and back-adjustment offsets,
+# so unpickled bars share one object per value instead of one each.  Separate
+# pools keep 0 and 0.0 from merging; a runaway pool is simply reset.
+_CANDLE_TEXT_POOL: Dict[str, str] = {}
+_CANDLE_FLOAT_POOL: Dict[float, float] = {}
+_CANDLE_POOL_LIMIT = 4096
 
 
 # ── Volume Profile ────────────────────────────────────
@@ -324,7 +389,7 @@ class BreakoutAnalysis:
 #   1. 正確性 —— `engine.py` 只對 FACTOR_PIPELINE_STRATEGIES 在**持倉期間**
 #      呼叫 observe()。不在名單裡的策略,持倉那幾小時完全看不到 K 棒,
 #      內部 5m 聚合出現斷層 → _atr_blend() 算錯 → SL/TP 寬度不同。
-#      實測同一組參數 PnL 差 33%(見 docs/1.0.9_RESEARCH_FINDINGS.md)。
+#      實測同一組參數 PnL 差 33%(見 docs/RESEARCH_REPORT.md 附錄 B)。
 #   2. 效能 —— 不在 ZONELESS_STRATEGIES 裡就會每根 K 棒跑 volume-profile
 #      zone detector。這兩個策略根本不看 zone,那是純浪費。
 #
@@ -450,13 +515,13 @@ class StrategyParams:
     # 1.0.9: INTRAMOM(Market Intraday Momentum)—— 開盤 N 分鐘的報酬方向
     # 預測當日稍晚的同向延續。960 格密網格 × 雙商品交集 22 組,鄰域 6/7
     # 在門檻之上(高原);是唯一在 MNQ 與 MES 上 MC+走查全通過的策略。
-    # 見 docs/1.0.9_RESEARCH_FINDINGS.md。SL/側/RR 沿用 factor_* 與 rr_ratio。
+    # 見 docs/RESEARCH_REPORT.md 附錄 B。SL/側/RR 沿用 factor_* 與 rr_ratio。
     momentum_first_minutes: int = 30      # 交集內 22/22 一致
     momentum_entry_hour: int = 18         # UTC;實測 17~20 通過率幾乎相同
     # 1.0.9: SESSFIB(Session Fib Retrace)—— RTH 推動腿的 fib 回撤位掛單,
     # 夜盤觸價後市價順勢進場。576 變體 × 雙商品掃描:MNQ 10 組通過 G0–G4,
     # 全部集中在進場 fib 0.618;0.786 太淺(94% 夜盤都會觸及,不篩選)。
-    # ⚠ 尚未通過 G5(MES 死在走查)—— 觀察用,見 docs/1.0.9_RESEARCH_FINDINGS.md。
+    # ⚠ 尚未通過 G5(MES 死在走查)—— 觀察用,見 docs/RESEARCH_REPORT.md 附錄 B。
     betafib_entry_fib: float = 0.618      # 進場 fib(1.0 = 推動腿終點)
     betafib_anchor: str = "hl"            # "hl" 擺動低→高 / "oc" RTH open→close
     betafib_risk_basis: str = "atr_blend"  # SL/TP 基準,與 BEST 同口徑
@@ -750,6 +815,35 @@ def current_quarterly_contract_id(symbol: str = "MNQ", now: "Optional[datetime]"
             if now < _third_friday(yy, mm) - timedelta(days=8):
                 return f"CON.F.US.{sym}.{codes[mm]}{str(yy)[-2:]}"
     return f"CON.F.US.{sym}.H{str(now.year + 2)[-2:]}"
+
+
+SUPPORTED_STRATEGIES = (
+    "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
+    "delta_absorption", "volume_profile",
+)
+# Renamed and retired strategy names.  Retired families (TREND 1.0.9, PMO
+# 1.0.10, mlc2 1.0.8) migrate to the equivalent FACTOR family.
+STRATEGY_ALIASES = {
+    "intramom": "momentum", "claudefib": "momentum", "sessfib": "betafib",
+    "delta": "delta_absorption", "delta_va": "delta_absorption",
+    "delta+va": "delta_absorption", "delta_absorb": "delta_absorption",
+    "vp": "volume_profile", "volumeprofile": "volume_profile",
+    "option_wall": "optionwall",
+    "trend": "factor", "pmo": "factor", "mlc2": "factor",
+    "ml_consolidation_v2": "factor",
+}
+
+
+def known_strategy_name(value: object) -> Optional[str]:
+    """Canonical name of a supported, renamed or retired strategy, else None.
+
+    Callers that must run something fall back to "factor"; callers that
+    persist data must leave an unknown name untouched (a newer build may know
+    it -- see the 2026-09-15 VOLUME PROFILE RESEARCH rewrite).
+    """
+    v = str(value or "").strip().lower()
+    v = STRATEGY_ALIASES.get(v, v)
+    return v if v in SUPPORTED_STRATEGIES else None
 
 
 def normalize_contract_id_to_front(contract_id: str) -> str:

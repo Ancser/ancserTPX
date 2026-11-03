@@ -19,8 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.data import market_data  # noqa: E402
-from backend.data.pi_history import load_rows  # noqa: E402
+from backend.data.pi_history import HIST_PATH, load_rows  # noqa: E402
 from scripts.pi_underlying_path_study_20260921 import (  # noqa: E402
     canonical_buy_signals,
     expected_entry,
@@ -96,8 +95,7 @@ PILOT_FILES = pilot_files()
 
 
 def default_pi_path() -> Path:
-    root = market_data.configured_market_data_root()
-    return market_data.pi_source_root(root) / "pi_signals.json"
+    return HIST_PATH
 
 
 def canonical_episode_specs(pi_path: Path | None = None) -> list[tuple[PilotSpec, dict[str, str]]]:
@@ -218,6 +216,7 @@ def _entry_selection(
     *,
     entry_time: datetime = ENTRY_TIME,
     expiration: str = EXPIRATION,
+    otm_offsets: tuple[float, ...] = (3.0, 10.0),
 ) -> tuple[float, dict[str, float], dict[str, Any], dict[float, dict[str, float | None]]]:
     rows_at_entry: list[dict[str, str]] = []
     all_rights_at_entry = 0
@@ -250,11 +249,10 @@ def _entry_selection(
         raise ValueError(f"expected one synchronized entry spot, observed {sorted(spots)}")
     spot = next(iter(spots))
     strikes = sorted({strike for strike, _ in synchronized})
-    selected = {
-        "atm": min(strikes, key=lambda strike: (abs(strike - spot), strike)),
-        "otm_3": min((strike for strike in strikes if strike >= spot + 3.0), default=math.nan),
-        "otm_10": min((strike for strike in strikes if strike >= spot + 10.0), default=math.nan),
-    }
+    selected = {"atm": min(strikes, key=lambda strike: (abs(strike - spot), strike))}
+    for offset in otm_offsets:
+        selected[f"otm_{offset:g}"] = min(
+            (strike for strike in strikes if strike >= spot + offset), default=math.nan)
     if any(not math.isfinite(strike) for strike in selected.values()):
         raise ValueError(f"entry chain lacks one or more target strikes: {selected}")
     entry_greeks = {
@@ -273,7 +271,7 @@ def _entry_selection(
         "first_order_file_rows": row_count,
         "underlying_timestamp": entry_time.isoformat(),
         "underlying_spot": spot,
-        "strike_rule": "ATM minimizes absolute strike distance (ties choose lower strike); OTM selects the lowest listed call strike at or above spot + $3 / spot + $10.",
+        "strike_rule": "ATM minimizes absolute strike distance (ties choose lower strike); OTM selects the lowest listed call strike at or above spot + each $ offset.",
         "actual_strikes": selected,
     }
     return spot, selected, details, entry_greeks

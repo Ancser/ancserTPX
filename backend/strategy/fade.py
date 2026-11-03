@@ -197,7 +197,7 @@ class OpeningRangeFade:
 
     注意:需要 MARKET SESSION 允許 RTH(建議 ALL),否則盤段過濾會在 13:30–13:45
     擋掉 evaluate → OR 無法累積、訊號不會觸發。回測驗證見
-    docs/1.0.9_FADE_PROFESSIONAL_IDEA_SWEEP_REPORT.md。此模式可在 practice account
+    docs/RESEARCH_REPORT.md 附錄 B。此模式可在 practice account
     做 live order 測試;是否用於 express 仍應由使用者手動選帳號與 preset。
     """
 

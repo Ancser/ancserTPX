@@ -609,7 +609,7 @@ button:focus-visible {
 .toggle-field:hover { background: var(--surface-button-hover); }
 
 /* Native switch used by chart layers and PI level settings. */
-.glass-switch {
+.ui-switch {
     flex: 0 0 68px;
     width: 68px;
     height: 28px;
@@ -617,8 +617,8 @@ button:focus-visible {
     border-radius: 999px;
     background: var(--switch-off);
 }
-.glass-switch.on { background: transparent; border-color: var(--positive); }
-.glass-switch .switch-thumb {
+.ui-switch.on { background: transparent; border-color: var(--positive); }
+.ui-switch .switch-thumb {
     width: 22px;
     height: 22px;
     left: 2px;
@@ -628,7 +628,7 @@ button:focus-visible {
     background: var(--ink-primary);
     transition: transform 120ms ease;
 }
-.glass-switch.on .switch-thumb { transform: translateX(40px); }
+.ui-switch.on .switch-thumb { transform: translateX(40px); }
 
 /* 5. Chart density: the chart stays visually dominant; layers are tools,
    while overview/detail is decided by the existing footprint renderer. */
@@ -679,6 +679,68 @@ button:focus-visible {
     opacity: 0.065;
 }
 #chart-quick-btns { gap: var(--ui-space-2); }
+/* Contract sync hint: the store rolls by the calendar rule, the chart's live
+   feed follows Topstep's active contract.  Shown only when they differ, on the
+   chart-tool row just above the date axis, left of the buttons (the renderer
+   measures the button row; these values are only the fallback). */
+.chart-contract-sync {
+    position: absolute;
+    right: calc(var(--chart-plot-right) + 330px);
+    bottom: 34px;
+    height: 28px;
+    box-sizing: border-box;
+    z-index: 24;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(8, 12, 18, 0.72);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.3px;
+    color: #fbbf24;
+    cursor: help;
+    pointer-events: auto;
+    user-select: none;
+    white-space: nowrap;
+}
+.chart-contract-sync.hidden { display: none; }
+/* PI OPTIONS controls (Backtest model + Live options account). */
+.piopt-tiers { display: flex; gap: 12px; flex-wrap: wrap; margin: -2px 0 8px; }
+.piopt-note { display: block; margin-top: 6px; line-height: 1.4; }
+.opt-tickets { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.opt-ticket {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: var(--amber, #fbbf24);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: help;
+}
+:root[data-tpx-theme="apple-light"] .chart-contract-sync { background: rgba(255, 255, 255, 0.82); }
+/* Chart timeframe selector (1m .. W), same surface as the square chart tools. */
+.chart-tf-group {
+    display: flex;
+    align-items: stretch;
+    height: 28px;
+    background: var(--surface-button);
+}
+.chart-tf-btn {
+    min-width: 30px;
+    padding: 0 7px;
+    border: 0;
+    background: transparent;
+    color: var(--ink-secondary);
+    font: 600 11px/1 'IBM Plex Mono', monospace;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: background-color var(--ui-motion-duration) var(--ui-motion-ease),
+        color var(--ui-motion-duration) var(--ui-motion-ease);
+}
+.chart-tf-btn:hover { background: var(--surface-button-hover); color: var(--accent); }
+.chart-tf-btn.active { background: var(--surface-button-hover); color: var(--accent); }
 .chart-sq-btn {
     background: var(--surface-button);
     border: 0;
@@ -711,13 +773,6 @@ button:focus-visible {
     color: var(--ink-muted);
 }
 
-/* These empty controls are legacy forwarding targets for the optional Glass
-   skin.  Native mode handles the visible switch directly; leaving the targets
-   in layout creates the stray white pixels at the far right of every row. */
-#chart-layer-pop .glass-proxy-hidden {
-    display: none !important;
-    pointer-events: none !important;
-}
 
 /* 6. States are explicit and calm: color communicates state, text explains
    it. These classes are shared by live, loading and error surfaces. */
@@ -796,15 +851,15 @@ select,
 textarea {
     border-radius: 0 !important;
 }
-.glass-switch {
+.ui-switch {
     border-radius: 999px !important;
     border: 1px solid var(--line-strong) !important;
 }
-.glass-switch.on {
+.ui-switch.on {
     background: transparent !important;
     border-color: var(--positive) !important;
 }
-.glass-switch .switch-thumb { border-radius: 50% !important; }
+.ui-switch .switch-thumb { border-radius: 50% !important; }
 
 /* Utility surface: fixed rail, single scrolling body, no wrapped headers. */
 .bottom-panel { background: var(--surface-rail); border-top-color: var(--line-strong); }
@@ -1316,22 +1371,22 @@ html.theme-transitioning #lv-levels-panel {
     transition-duration: var(--ui-theme-duration);
     transition-timing-function: var(--ui-theme-ease);
 }
-.glass-switch {
+.ui-switch {
     transition:
         background-color var(--ui-motion-duration) var(--ui-motion-ease),
         border-color var(--ui-motion-duration) var(--ui-motion-ease),
         box-shadow var(--ui-motion-duration) var(--ui-motion-ease);
 }
-.glass-switch .switch-thumb {
+.ui-switch .switch-thumb {
     transition:
         transform var(--ui-motion-duration) var(--ui-motion-ease),
         background-color var(--ui-motion-duration) var(--ui-motion-ease);
 }
-html.theme-transitioning .glass-switch {
+html.theme-transitioning .ui-switch {
     transition-duration: var(--ui-theme-duration);
     transition-timing-function: var(--ui-theme-ease);
 }
-html.theme-transitioning .glass-switch .switch-thumb {
+html.theme-transitioning .ui-switch .switch-thumb {
     transition-property: transform, background-color;
     transition-duration: var(--ui-motion-duration), var(--ui-theme-duration);
     transition-timing-function: var(--ui-motion-ease), var(--ui-theme-ease);

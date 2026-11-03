@@ -439,221 +439,8 @@ _LINE_TP = "#00e5a0"
 _LINE_SL = "#ff4060"
 
 
-# ── liquid glass, ported from frontend/static/tpx-glass.js ─────────────
-# capsuleCoordinate / createDisplacementMap / createShrinkMap and the
-# refraction chain, reproduced on the rendered
-# raster.  The frontend hands these maps to feDisplacementMap; numpy does
-# the same resample here, so the alert carries the app's actual optics
-# rather than a lookalike.
-#
-# Element geometry is .chart-lens (200x140) and .optical-surface's
-# border-radius: 999px, which clamps to a full capsule.  Coefficients are
-# the `precision` row of that file's `defaults` table -- the pointer lens,
-# the one tuned for looking through.
-_LENS_W = 200
-_LENS_H = 140
-_LENS_BEZEL = 30.0
-_LENS_THICKNESS = 150.0
-_LENS_REFRACTION = 1.5
-_LENS_SHRINK = -0.20
-_LENS_BLUR = 0.0
-_LENS_SATURATION = 1.30
-
-
-def _capsule_coordinate(value, size, radius):
-    """Vectorised capsuleCoordinate(): distance from the capsule's spine,
-    zero along the straight body."""
-    import numpy as np
-
-    body = size - radius * 2
-    return np.where(
-        value < radius, value - radius,
-        np.where(value >= size - radius, value - radius - body, 0.0),
-    )
-
-
-def _refraction_profile(bezel, thickness, samples=256):
-    """physicalProfile(): Snell through the convex-squircle bezel at
-    eta = 1/1.5, giving the refraction offset across the bezel width."""
-    import numpy as np
-
-    x = np.linspace(0.0, 1.0, samples, endpoint=False)
-    surface = lambda t: (1.0 - (1.0 - t) ** 4) ** 0.25  # noqa: E731
-    y = surface(x)
-    step = 1e-4
-    derivative = (surface(np.clip(x + step, 0.0, 1.0)) - y) / step
-    magnitude = np.hypot(derivative, 1.0)
-    normal_x = -derivative / magnitude
-    normal_y = -1.0 / magnitude
-
-    eta = 1.0 / 1.5
-    dot = normal_y
-    k = 1.0 - eta * eta * (1.0 - dot * dot)
-    root = np.sqrt(np.clip(k, 0.0, None))
-    refracted_x = -(eta * dot + root) * normal_x
-    refracted_y = eta - (eta * dot + root) * normal_y
-
-    safe_y = np.where(np.abs(refracted_y) < 1e-6, 1.0, refracted_y)
-    profile = refracted_x * ((y * bezel + thickness) / safe_y)
-    profile[np.abs(refracted_y) < 1e-6] = 0.0
-    profile[k < 0] = 0.0
-    return profile
-
-
-def _displacement_map(width, height, radius, bezel, thickness):
-    """createDisplacementMap(): R/G channels carrying the bezel's
-    refraction.  The interior stays neutral -- only the bezel band bends
-    light; the centre is moved by the shrink pass alone."""
-    import numpy as np
-
-    profile = _refraction_profile(bezel, thickness)
-    maximum = max(1e-6, float(np.max(np.abs(profile))))
-    ys, xs = np.mgrid[0:height, 0:width]
-    cx = _capsule_coordinate(xs, width, radius)
-    cy = _capsule_coordinate(ys, height, radius)
-    squared = cx * cx + cy * cy
-
-    outer_squared = (radius + 1.0) ** 2
-    radius_squared = radius ** 2
-    inner_squared = max(0.0, radius - bezel) ** 2
-    band = (squared <= outer_squared) & (squared >= inner_squared)
-
-    distance = np.sqrt(np.maximum(squared, 1e-12))
-    alpha = np.where(
-        squared < radius_squared, 1.0,
-        1.0 - (distance - radius) / (np.sqrt(outer_squared) - radius),
-    )
-    index = np.clip((radius - distance) / bezel, 0.0, 1.0)
-    index = np.clip((index * profile.size).astype(np.int32), 0, profile.size - 1)
-    displacement = profile[index]
-    normal_x = np.where(distance > 0, -cx / distance, 0.0)
-    normal_y = np.where(distance > 0, -cy / distance, 0.0)
-
-    scaled = (displacement / maximum) * 127.0 * alpha
-    red = np.where(band, np.clip(128.0 + normal_x * scaled, 0, 255), 128.0)
-    green = np.where(band, np.clip(128.0 + normal_y * scaled, 0, 255), 128.0)
-    return red, green, maximum
-
-
-def _shrink_map(width, height, shrink):
-    """createShrinkMap(): uniform push from the centre.  Negative shrink
-    displaces inward, which magnifies -- `precision` uses -0.20."""
-    import numpy as np
-
-    shrink = float(min(max(shrink, -0.8), 0.8))
-    zoom_out = (1.0 / (1.0 - shrink) - 1.0) if shrink else 0.0
-    maximum = max(
-        1e-6, abs(width * 0.5 * zoom_out), abs(height * 0.5 * zoom_out)
-    )
-    ys, xs = np.mgrid[0:height, 0:width]
-    dx = (xs - width / 2.0) * zoom_out
-    dy = (ys - height / 2.0) * zoom_out
-    red = np.clip(128.0 + dx / maximum * 127.0, 0, 255)
-    green = np.clip(128.0 + dy / maximum * 127.0, 0, 255)
-    return red, green, (maximum * 2.0 if shrink else 0.0)
-
-
-def _displace(source, origin_x, origin_y, red, green, scale, box):
-    """One feDisplacementMap pass over `box` = (x0, y0, x1, y1).
-
-    Channels are the element-space maps placed at (origin_x, origin_y);
-    everything outside them decodes to the neutral 128, i.e. no shift --
-    the same job the filter's feFlood/feMerge pad does.
-    """
-    import numpy as np
-
-    x0, y0, x1, y1 = box
-    ys, xs = np.mgrid[y0:y1, x0:x1]
-    map_h, map_w = red.shape
-    local_x = xs - int(origin_x)
-    local_y = ys - int(origin_y)
-    inside = (
-        (local_x >= 0) & (local_x < map_w) & (local_y >= 0) & (local_y < map_h)
-    )
-    safe_x = np.clip(local_x, 0, map_w - 1)
-    safe_y = np.clip(local_y, 0, map_h - 1)
-    red_channel = np.where(inside, red[safe_y, safe_x], 128.0)
-    green_channel = np.where(inside, green[safe_y, safe_x], 128.0)
-
-    shift_x = scale * (red_channel / 255.0 - 0.5)
-    shift_y = scale * (green_channel / 255.0 - 0.5)
-    return _sample_bilinear(source, xs + shift_x, ys + shift_y)
-
-
-def _sample_bilinear(source, sx, sy):
-    import numpy as np
-
-    height, width = source.shape[:2]
-    sx = np.clip(sx, 0.0, width - 1.001)
-    sy = np.clip(sy, 0.0, height - 1.001)
-    x0 = np.floor(sx).astype(np.int32)
-    y0 = np.floor(sy).astype(np.int32)
-    fx = (sx - x0)[..., None]
-    fy = (sy - y0)[..., None]
-    top = source[y0, x0] * (1 - fx) + source[y0, x0 + 1] * fx
-    bottom = source[y0 + 1, x0] * (1 - fx) + source[y0 + 1, x0 + 1] * fx
-    return top * (1 - fy) + bottom * fy
-
-
-def _apply_glass_lens(buffer, centre_x, centre_y):
-    """Run the app's filter chain over a .chart-lens-sized box.
-
-    Order matches the SVG exactly: blur -> shrink displacement -> bezel
-    displacement -> saturate.
-    """
-    import numpy as np
-
-    height, width = buffer.shape[:2]
-    lens_w, lens_h = _LENS_W, _LENS_H
-    radius = min(lens_w, lens_h) / 2.0 - 1.0  # border-radius: 999px
-
-    # Keep the capsule on-canvas; the caller only picks where to look.
-    origin_x = int(round(min(max(centre_x - lens_w / 2.0, 0), width - lens_w)))
-    origin_y = int(round(min(max(centre_y - lens_h / 2.0, 0), height - lens_h)))
-
-    disp_r, disp_g, maximum = _displacement_map(
-        lens_w, lens_h, radius, _LENS_BEZEL, _LENS_THICKNESS
-    )
-    disp_scale = maximum * _LENS_REFRACTION
-    shrink_r, shrink_g, shrink_scale = _shrink_map(lens_w, lens_h, _LENS_SHRINK)
-
-    # The second pass reads what the first produced at displaced
-    # coordinates, so the first has to cover that reach.
-    pad = int(np.ceil(max(abs(disp_scale), abs(shrink_scale)) / 2.0)) + 2
-    box = (
-        max(0, origin_x - pad), max(0, origin_y - pad),
-        min(width, origin_x + lens_w + pad), min(height, origin_y + lens_h + pad),
-    )
-    inner = (origin_x, origin_y, origin_x + lens_w, origin_y + lens_h)
-
-    source = buffer
-    if _LENS_BLUR > 0:
-        source = _box_blur(buffer, _LENS_BLUR)
-
-    shrunk = _displace(source, origin_x, origin_y, shrink_r, shrink_g,
-                       shrink_scale, box)
-    # Re-frame the intermediate so the next pass can index it directly.
-    padded = buffer.copy()
-    padded[box[1]:box[3], box[0]:box[2]] = shrunk
-    refracted = _displace(padded, origin_x, origin_y, disp_r, disp_g,
-                          disp_scale, inner)
-
-    rgb = refracted[..., :3]
-    grey = rgb.mean(axis=-1, keepdims=True)
-    rgb = np.clip(grey + (rgb - grey) * _LENS_SATURATION, 0.0, 255.0)
-
-    # Clip to the capsule, feathered over the last pixel.
-    ys, xs = np.mgrid[0:lens_h, 0:lens_w]
-    cx = _capsule_coordinate(xs, lens_w, radius)
-    cy = _capsule_coordinate(ys, lens_h, radius)
-    distance = np.sqrt(cx * cx + cy * cy)
-    coverage = np.clip(radius + 0.5 - distance, 0.0, 1.0)[..., None]
-
-    out = buffer.copy()
-    patch = out[inner[1]:inner[3], inner[0]:inner[2]]
-    patch[..., :3] = patch[..., :3] * (1 - coverage) + rgb * coverage
-    out[inner[1]:inner[3], inner[0]:inner[2]] = patch
-    return out
+# Device-space gap between the entry marker and its caption box.
+_CAPTION_GAP_PX = 62.6
 
 
 def _candle_artists(ax, xs, bars, min_body, linewidth=0.85, zorder=3):
@@ -686,9 +473,7 @@ def _render_signal_chart_png(snapshot: _SignalSnapshot) -> bytes:
 
     Drawn to match the in-app chart: same near-black background, grey
     candles, right-hand price scale, faint cyan grid and dashed day
-    separators.  The entry sits under a liquid-glass lens -- the same
-    optical idea the frontend uses -- which magnifies the signal bars and
-    doubles as the "look here" pointer.
+    separators.  A caption box marks the entry.
     """
     if not snapshot.bars:
         raise ValueError("no_chart_bars")
@@ -811,15 +596,9 @@ def _render_signal_chart_png(snapshot: _SignalSnapshot) -> bytes:
             ax.set_xlim(-1.0, len(bars) + right_pad)
 
             pad = price_span * 0.06
-            # Reserve room past the marker for the capsule's lower half and
-            # the caption beneath it.  Both are fixed pixel sizes, so this
-            # is a comfortable over-estimate rather than an exact figure --
-            # _apply_glass_lens clamps the capsule on-canvas regardless.
-            # Headroom on both sides for the capsule's half-height, plus a
-            # little more on the marker's side for the caption.  A rally puts
-            # the newest bars hard against the top, and without this the
-            # capsule clamped against the canvas edge instead of centring on
-            # the signal.
+            # Headroom on both sides, plus a little more on the marker's side
+            # for the caption.  A rally puts the newest bars hard against the
+            # top; without this the caption would be clipped at the edge.
             headroom = price_span * 0.16
             reserve = price_span * 0.12
             ax.set_ylim(
@@ -837,20 +616,14 @@ def _render_signal_chart_png(snapshot: _SignalSnapshot) -> bytes:
                           edgecolor=_BOX_EDGE),
             )
 
-            # .chart-lens is a fixed 200x140 element, so where it sits and
-            # where its caption goes are device-space questions.  Limits are
+            # The caption sits a fixed device-space distance past the marker
+            # (unchanged position).  Limits are
             # final by now, so transData is trustworthy.
             figure_h = fig.get_size_inches()[1] * fig.dpi
             marker_px, marker_py = ax.transData.transform((last_x, marker_y))
-            lens_x = marker_px
-            # Nudge off the marker toward the bars it came from, so the
-            # capsule frames the signal instead of empty space below it.
-            lens_y = (figure_h - marker_py) + (
-                -_LENS_H * 0.16 if is_long else _LENS_H * 0.16
-            )
-            caption_y = lens_y + (_LENS_H / 2.0 + 15.0) * (1 if is_long else -1)
+            caption_y = (figure_h - marker_py) + _CAPTION_GAP_PX * (1 if is_long else -1)
             caption_point = ax.transData.inverted().transform(
-                (lens_x, figure_h - caption_y)
+                (marker_px, figure_h - caption_y)
             )
             # Knocked out of the background: where the caption lands relative
             # to the SL/TP rules depends on the trade, and a dashed line
@@ -868,9 +641,6 @@ def _render_signal_chart_png(snapshot: _SignalSnapshot) -> bytes:
             fig.canvas.draw()
             raster = np.asarray(fig.canvas.buffer_rgba()).astype(np.float32)
 
-            # Data space -> buffer pixels.  transData has a bottom-left
-            # origin; the raster is top-left, hence the flip.
-            raster = _apply_glass_lens(raster, lens_x, lens_y)
 
             with io.BytesIO() as out:
                 mpimg.imsave(out, raster.astype(np.uint8), format="png")

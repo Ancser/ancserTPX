@@ -14,12 +14,12 @@
 而券商只保留約 60 天 1m 資料 —— 任何商品超過 60 天沒抓,中間就出現
 **永久補不回來的空洞**(store 只增不減,但缺掉的那段再也拿不到)。
 
-## 換月正確性
+## 換月正確性(1.3.0)
 
-current_quarterly_contract_id() 用日曆判定(季月第 3 個週五 − 8 天),但
-實測流動性晚約 4 天才搬家(MNQ 2026-06-11 00:00Z 成交量 1563 → 36)。
-換月窗口內本模組會同時抓新舊兩張約,**逐日取成交量較大者**,避免把空盤
-報價寫進 store。
+store 的合約帳本(`contract_ledger`,meta["contract_rolls"])決定每一分鐘屬於哪張約。
+新的換月沿用 live 交易與連續圖表同一條規則(`contract_roll_start`:季月第 3 個週五 − 8 天):
+時間到了就量兩張約在錨點分鐘的價差、回溯調整整個 store 一次、記入帳本,之後只寫新約。
+舊版「逐日取成交量大者」會在換月後寫回舊約,已移除。
 """
 from __future__ import annotations
 
@@ -30,7 +30,8 @@ import threading
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
-from backend.data import candle_store
+from backend.broker.topstepx import contract_roll_start
+from backend.data import candle_store, contract_ledger
 from backend.db.models import BarUnit, current_quarterly_contract_id
 from backend.timebase import UTC, as_utc as _utc, utc_now
 
@@ -80,34 +81,6 @@ def active_symbols() -> tuple[str, ...]:
         return tuple(sorted(_ACTIVE_SYMBOLS))
 
 
-def _third_friday(year: int, month: int) -> datetime:
-    d = datetime(year, month, 1, tzinfo=UTC)
-    n = 0
-    while True:
-        if d.weekday() == 4:
-            n += 1
-            if n == 3:
-                return d
-        d += timedelta(days=1)
-
-
-def _split_code(cid: str) -> tuple[int, int]:
-    code = cid.rsplit(".", 1)[-1]
-    return _CODE_MONTH[code[0]], 2000 + int(code[1:])
-
-
-def in_roll_window(symbol: str, now: datetime) -> bool:
-    month, year = _split_code(current_quarterly_contract_id(symbol, now))
-    roll = _third_friday(year, month) - timedelta(days=8)
-    return abs((now - roll).days) <= ROLL_WINDOW_DAYS
-
-
-def prev_contract_id(symbol: str, now: datetime) -> str:
-    month, year = _split_code(current_quarterly_contract_id(symbol, now))
-    pm, py = (month - 3, year) if month > 3 else (12, year - 1)
-    return f"CON.F.US.{symbol}.{MONTH_CODE[pm]}{py % 100:02d}"
-
-
 def store_status(symbol: str) -> dict:
     # Startup status must never decode the full persistent pickle.  The
     # lightweight sidecars include canonical bounds plus the pending journal.
@@ -120,17 +93,69 @@ def store_status(symbol: str) -> dict:
     return status
 
 
+async def _ensure_store_roll(client, symbol: str, now: datetime,
+                             log=logger.info) -> tuple:
+    """Roll the store once its current contract's calendar roll has passed.
+
+    Uses the same rule live trading and the continuous chart use
+    (``contract_roll_start``: third Friday - 8 days).  The price offset is
+    measured from both contracts' bars at the roll anchor.  Returns
+    ``(store contract id, roll instant if a roll was just applied)``; the id is
+    None for a store without a contract ledger (then the calendar front is
+    used directly).
+    """
+    rolls = await asyncio.to_thread(candle_store.contract_rolls, symbol)
+    if not rolls:
+        return None, None
+    current = contract_ledger.make_contract_id(symbol, contract_ledger.contract_at(rolls, now))
+    roll_at = contract_roll_start(current)
+    if roll_at is None or now < roll_at:
+        return current, None
+    nxt = contract_ledger.next_contract(current)
+    start = (roll_at - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end = min(now, roll_at + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        old = await client.get_historical_bars_paginated(
+            current, BarUnit.MINUTE, 1, start_time=start, end_time=end)
+        new = await client.get_historical_bars_paginated(
+            nxt, BarUnit.MINUTE, 1, start_time=start, end_time=end)
+    except Exception as exc:
+        log(f"[accumulate] {symbol} roll {current} -> {nxt} deferred: {type(exc).__name__}: {exc}")
+        return current, None
+    offset, anchor = contract_ledger.roll_offset(old, new, roll_at)
+    if offset is None:
+        log(f"[accumulate] {symbol} roll {current} -> {nxt} deferred: no shared minute yet")
+        return current, None
+    result = await asyncio.to_thread(
+        candle_store.apply_contract_roll, symbol, roll_at, current, nxt, offset,
+        f"calendar_roll; anchor {anchor.isoformat()}",
+    )
+    log(f"[accumulate] {symbol} store rolled {current.rsplit('.', 1)[-1]} -> "
+        f"{nxt.rsplit('.', 1)[-1]} at {roll_at:%Y-%m-%d %H:%M}Z, offset {offset:+.2f}: {result}")
+    return nxt, roll_at
+
+
 async def _fetch(client, symbol: str, since: datetime, now: datetime,
                  log=logger.info) -> list:
-    cids = [current_quarterly_contract_id(symbol, now)]
-    if in_roll_window(symbol, now):
-        cids.append(prev_contract_id(symbol, now))
-        log(f"[accumulate] {symbol} 換月窗口 → 同時抓 "
-            + ", ".join(c.rsplit('.', 1)[-1] for c in cids))
+    """Bars of the store's contract (per the contract ledger) for [since, now].
+
+    Replaces the former per-day volume winner, which could write the old
+    contract after the roll the rest of the app uses.  Minutes before the
+    store's latest roll are fetched from the previous contract; the store's
+    writer keeps only the contract that owns each minute.
+    """
+    store_cid, rolled_at = await _ensure_store_roll(client, symbol, now, log)
+    current = store_cid or current_quarterly_contract_id(symbol, now)
+    if rolled_at is not None and rolled_at < since:
+        since = rolled_at        # the roll removed the old contract from here on
+    cids = [current]
+    rolls = await asyncio.to_thread(candle_store.contract_rolls, symbol)
+    if rolls and since < rolls[-1]["at"]:
+        cids.insert(0, contract_ledger.make_contract_id(symbol, rolls[-1]["from"]))
 
     start = since.strftime("%Y-%m-%dT%H:%M:%SZ")
     end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    by_cid: dict[str, list] = {}
+    out: list = []
     for cid in cids:
         try:
             bars = await client.get_historical_bars_paginated(
@@ -138,26 +163,7 @@ async def _fetch(client, symbol: str, since: datetime, now: datetime,
         except Exception as exc:
             log(f"[accumulate] {symbol} {cid} 抓取失敗: {type(exc).__name__}: {exc}")
             continue
-        by_cid[cid] = [b for b in bars if getattr(b, "volume", 0) > 0]
-
-    if len(by_cid) <= 1:
-        return next(iter(by_cid.values()), [])
-
-    # 逐日取量大者 —— 日曆換月比實際量能換月早約 4 天
-    daily: dict = {}
-    for cid, bars in by_cid.items():
-        for b in bars:
-            d = _utc(b.timestamp).date()
-            daily.setdefault(d, {})
-            daily[d][cid] = daily[d].get(cid, 0) + getattr(b, "volume", 0)
-    winner = {d: max(v, key=v.get) for d, v in daily.items()}
-    for d in sorted(daily):
-        if len(daily[d]) > 1:
-            log(f"[accumulate] {symbol} {d}: 取 {winner[d].rsplit('.',1)[-1]} "
-                + " ".join(f"{c.rsplit('.',1)[-1]}={v:,}" for c, v in daily[d].items()))
-    out = []
-    for cid, bars in by_cid.items():
-        out += [b for b in bars if winner.get(_utc(b.timestamp).date()) == cid]
+        out += [b for b in bars if getattr(b, "volume", 0) > 0]
     return out
 
 

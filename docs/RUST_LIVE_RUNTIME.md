@@ -188,7 +188,7 @@ decisions and production entrypoints stay on Python. Each row advances through
 native implementation, Python differential verification, and entrypoint integration.
 Keep live disarmed until the selected route passes exact-preset decision, fill,
 risk, and broker-contract gates. Data coverage and current quantitative findings remain
-in [`QUANT_RESEARCH_STATUS_2026-09-26.md`](QUANT_RESEARCH_STATUS_2026-09-26.md).
+in [`RESEARCH_REPORT.md`](RESEARCH_REPORT.md).
 
 ## Native Rust migration plan and first PI vertical slice
 

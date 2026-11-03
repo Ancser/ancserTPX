@@ -52,7 +52,7 @@ test("robustness panel renders from the endpoint", async ({ page }) => {
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
 
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.waitForSelector('link[href*="ancserTPX-design.css"]');
+  await page.waitForSelector('link[href*="ancserTPX-design.css"]', { state: 'attached' });
   await page.waitForTimeout(1200);
 
   // Feed the panel a synthetic backtest and render it.
@@ -146,7 +146,7 @@ test("robustness panel renders from the endpoint", async ({ page }) => {
   expect(warningClasses.negativeP5).toContain("tpx-warn");
 
   await page.locator(
-    'body > .glass-topbar > .glass-dock > .tab[data-tab="calendar"]',
+    '.app-rail .tab[data-tab="calendar"]',
   ).click();
   await expect(page.locator("#calendar-view")).toBeVisible();
   const layout = await page.evaluate(() => {

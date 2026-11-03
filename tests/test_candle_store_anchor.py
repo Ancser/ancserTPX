@@ -161,12 +161,23 @@ class LoadReturnsShallowCopy(_Store):
         self.assertEqual(second, sorted(second, key=lambda c: c.timestamp))
 
     def test_cache_actually_serves_the_second_call(self):
-        """正向斷言:證明上面測的是快取路徑,不是每次都重讀檔案。"""
+        """正向斷言:證明上面測的是快取路徑,不是每次都重讀檔案。
+
+        1.3.0 起快取是唯讀欄位(DATA-016),每次 load 都產生新的 Candle,
+        所以改成直接證明第二次呼叫沒有碰磁碟(pkl 與 sidecar 都不解碼)。
+        """
+        from unittest.mock import patch
+        from backend.data.columnar_store import CandleColumns
+
         cs.merge(_bars(30, 20000.0), "MNQ", 1)
         a = cs.load("MNQ", 1)
-        b = cs.load("MNQ", 1)
+        with patch.object(cs.pickle, "load", side_effect=AssertionError("pkl re-read")), \
+                patch.object(CandleColumns, "load", side_effect=AssertionError("sidecar re-read")):
+            b = cs.load("MNQ", 1)
         self.assertIsNot(a, b, "回傳了同一個 list 物件 —— 不是淺拷貝")
-        self.assertIs(a[0], b[0], "連 Candle 都複製了 —— 那是深拷貝,太貴")
+        self.assertEqual(a, b)
+        a[0].close = -1.0                       # mutating a returned bar
+        self.assertNotEqual(cs.load("MNQ", 1)[0].close, -1.0, "快取被呼叫端修改的 bar 污染了")
 
 
 if __name__ == "__main__":

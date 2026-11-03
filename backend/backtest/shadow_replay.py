@@ -8,7 +8,7 @@
 # 通過標準(1.0.9 P0): 連續 2 週 match_rate ≥ 0.9 才允許新策略上真錢。
 # 關聯: → backend/api/routes.py  (/live/shadow-replay 端點 + 每日排程)
 #       → ancserMarketData/runtime/state/strategy_snapshots.jsonl (strategy parameter snapshots)
-#       → docs/1.0.9_SKILL_REPORT.md   (P0 規格)
+#       → docs/RESEARCH_REPORT.md 附錄 B/C (P0 由來)
 # ============================================================
 """P0 影子重放:實盤 vs 同參數回測 逐筆對賬。"""
 

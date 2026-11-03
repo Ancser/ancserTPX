@@ -9,6 +9,8 @@ exact failure mode this repository keeps hitting.
 1. `CLAUDE.md` — working rules, verification standard, research discipline
 2. `docs/INVARIANTS.md` — behavioural invariants + which test proves each one
 3. `docs/HANDOFF.md` — current baseline, open questions, next research
+4. `docs/RESEARCH_REPORT.md` — the single research report: verdicts, closed
+   directions, and what is left to test
 
 Then:
 
@@ -25,13 +27,16 @@ When two sources disagree, trust them in this order:
 2. current code
 3. docs/INVARIANTS.md
 4. CLAUDE.md / docs/HANDOFF.md
-5. docs/1.0.x_*.md — historical evidence, NOT current specification
+5. docs/RESEARCH_REPORT.md — research evidence, NOT current specification
 6. README.md       — user-facing summary, drifts fastest
 ```
 
-Old version reports (`docs/1.0.8_*`, `1.0.9_*`, `1.0.10_*`) record *what was
-decided at the time and why*. They are evidence for a decision, not a
-description of today's system. Several describe strategies that no longer exist.
+`docs/RESEARCH_REPORT.md` replaced the old per-version and per-study reports
+(`docs/1.0.x_*`, dated `*_2026-09-*` files) on 2026-09-27; its appendix A maps
+each old file to a section and says how to recover the original from git.
+Research records *what was decided at the time and why*; it is evidence for a
+decision, not a description of today's system. Add new findings to that one
+report instead of creating another dated file.
 
 ## Rules
 

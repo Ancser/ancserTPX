@@ -168,21 +168,25 @@ class GridPiSignalStrategy(PiSignalStrategy):
         self._grid_variant = variant
         super().__init__(params)
 
-    def evaluate(self, candle: Candle, zones=None, is_mature: bool = True):
-        signal = super().evaluate(candle, zones, is_mature)
-        if signal is None:
-            return None
+    def research_exit_policy(self, direction: Direction) -> ExitPolicy:
+        """The variant's exit contract for one direction (shared by subclasses)."""
         hold = (
             self._grid_variant.long_hold
-            if signal.direction == Direction.BUY
+            if direction == Direction.BUY
             else self._grid_variant.short_hold
         )
-        signal.exit_policy = ExitPolicy(
+        return ExitPolicy(
             model="pi",
             max_hold_minutes=max(0, int(hold)),
             hard_tp_enabled=bool(self._grid_variant.hard_tp),
             trail_mode=ExitTrailMode.NONE,
         )
+
+    def evaluate(self, candle: Candle, zones=None, is_mature: bool = True):
+        signal = super().evaluate(candle, zones, is_mature)
+        if signal is None:
+            return None
+        signal.exit_policy = self.research_exit_policy(signal.direction)
         return signal
 
 

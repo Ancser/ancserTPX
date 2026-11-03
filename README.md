@@ -25,8 +25,7 @@ The Web Backtest and Web LIVE panels provide these strategy choices:
 > `tests/test_strategy_pipeline_classification.py`, not by this README.
 > **TREND, DAY ZONE, DISTRIBUTION and standalone PMO were removed** (1.0.9/1.0.10);
 > `pmo` survives only as a FACTOR-family alias. Do not reintroduce them
-> from this document — see `docs/1.0.9_DELETE_LIST.md` and
-> `docs/1.0.10_REMOVE_PMO.md` for why they were cut.
+> from this document — see `docs/RESEARCH_REPORT.md` (appendix C) for why they were cut.
 
 The preset selector includes **Default** and user-saved presets. Terminal-only LIVE has no separate strategy selector; it follows the saved or assigned LIVE preset.
 

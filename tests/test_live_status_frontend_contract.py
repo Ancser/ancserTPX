@@ -125,5 +125,9 @@ def test_backtest_health_timeout_does_not_repaint_connection_offline():
 
 
 def test_active_script_url_busts_cache_for_status_health_code():
-    assert 'ancserTPX.js?' in HTML
-    assert '&statushealth=1"' in HTML
+    # Presence on the active script URL is the contract; later cache-bust
+    # parameters (e.g. datacatalog) may follow it.
+    import re
+    src = re.search(r'<script src="(/static/ancserTPX\.js\?[^"]+)"', HTML)
+    assert src, "active ancserTPX.js script tag not found"
+    assert re.search(r'[?&]statushealth=1(&|$)', src.group(1))

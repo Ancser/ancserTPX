@@ -184,6 +184,7 @@ cython_debug/
 /node_modules/
 /.playwright-browsers/
 /.playwright-output/
+/test-results/
 
 # ─── /data retention policy (1.0.9) ──────────────────────────────────────────
 # Active market data and generated state live outside the repository in the

@@ -111,8 +111,36 @@ async def lifespan(app: FastAPI):
     # eligible messages for the chart/audit stream.  A PI Live engine pauses
     # this worker while it owns the trading callback.
     from backend.live.pi_recorder import start_pi_recorder, stop_pi_recorder
+    # Separate live process: engines live in backend/live_host.py and outlive
+    # this UI process.  Mirror its PI engine onto the local recorder pause.
+    _pi_sync_task = None
+    from backend import live_host_client
+    # A separately launched terminal also owns a PI listener. Reuse the
+    # existing reference-counted pause mechanism when this UI is opened.
+    _pi_held = await live_host_client.sync_pi_recorder_once(
+        False, await live_host_client.engine_snapshots(max_age=0.0)
+    )
     await start_pi_recorder()
+    if live_host_client.enabled():
+        logger.info("Live engines run in the separate live process")
+    _pi_sync_task = _asyncio.create_task(
+        live_host_client.pi_recorder_sync_task(initial_held=_pi_held), name="live-host-pi-sync"
+    )
+    # PI options account (Robinhood): resume ALERT mode if it was left on.
+    try:
+        from backend.api.routes import start_options_alerts_if_enabled
+        if start_options_alerts_if_enabled():
+            logger.info("PI options ALERT mode resumed")
+    except Exception:
+        logger.exception("PI options alerts could not start")
     yield
+    try:
+        from backend.api.routes import stop_options_alerts
+        await stop_options_alerts()
+    except Exception:
+        logger.exception("PI options alerts shutdown failed")
+    if _pi_sync_task is not None:
+        _pi_sync_task.cancel()
     try:
         from backend.api.routes import shutdown_live_engines
         await shutdown_live_engines()
@@ -144,6 +172,17 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if dev_docs else None,
         openapi_url="/openapi.json" if dev_docs else None,
     )
+
+    # Separate live process: relay the engine endpoints.  Registered before
+    # the security middleware so that one stays outermost and every relayed
+    # request has already passed the local session + CSRF checks.
+    from backend import live_host_client
+    if live_host_client.enabled():
+        @app.middleware("http")
+        async def _relay_live_engine(request, call_next):
+            if live_host_client.is_forwarded(request.method, request.url.path):
+                return await live_host_client.forward(request)
+            return await call_next(request)
 
     # The UI is served by this same process. Cross-origin access is neither
     # needed nor allowed; all API mutations require a local session + CSRF.

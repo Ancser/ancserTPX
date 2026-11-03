@@ -358,6 +358,44 @@ class TopstepXClient:
         # 按到期日排序，取最近的
         return nq_contracts[0]["id"]
 
+    async def _contract_candidates(self, symbol_or_id: str) -> List[tuple]:
+        """``(id, (year, month) | None, active_flag)`` for every listed
+        contract of the product behind ``symbol_or_id``."""
+        raw = (symbol_or_id or "").strip().upper()
+        # Determine the product token used inside ids (MNQ / ENQ / ...).
+        if raw.startswith("CON."):
+            parts = raw.split(".")
+            product = parts[3] if len(parts) >= 4 else "MNQ"
+        else:
+            m = re.match(r"^([A-Z]+?)(?:[FGHJKMNQUVXZ]\d{2})?$", raw)
+            root = m.group(1) if m else raw
+            product = _PRODUCT_TOKEN.get(root, root)
+
+        # Search text: ENQ-family searches under "NQ"; others use the token.
+        search_text = "NQ" if product == "ENQ" else product
+        contracts = await self.search_contracts(search_text)
+        candidates = []
+        for c in contracts:
+            cid = c.get("id", "")
+            cparts = cid.split(".")
+            if len(cparts) < 5 or cparts[3].upper() != product:
+                continue
+            active = c.get("activeContract")
+            if active is None:
+                active = c.get("active", c.get("isActive"))
+            candidates.append((cid, _parse_contract_expiry(cid), active))
+        return candidates
+
+    async def get_active_contract_id(self, symbol_or_id: str) -> Optional[str]:
+        """The contract TopstepX itself flags as active, or None.
+
+        Unlike :meth:`get_front_month_contract_id` this never falls back to the
+        calendar rule, so callers can compare Topstep's choice with it.
+        """
+        candidates = await self._contract_candidates(symbol_or_id)
+        actives = [c for c in candidates if c[2] is True]
+        return actives[0][0] if len(actives) == 1 else None
+
     async def get_front_month_contract_id(self, symbol_or_id: str) -> str:
         """Resolve any symbol/contract id to the CURRENT front-month tradable id.
 
@@ -372,33 +410,9 @@ class TopstepXClient:
              later (i.e. not yet expired), by soonest expiry.
         Falls back to _resolve_contract_id on any failure so callers are safe.
         """
-        raw = (symbol_or_id or "").strip().upper()
-        # Determine the product token used inside ids (MNQ / ENQ / ...).
-        if raw.startswith("CON."):
-            parts = raw.split(".")
-            product = parts[3] if len(parts) >= 4 else "MNQ"
-        else:
-            m = re.match(r"^([A-Z]+?)(?:[FGHJKMNQUVXZ]\d{2})?$", raw)
-            root = m.group(1) if m else raw
-            product = _PRODUCT_TOKEN.get(root, root)
-
-        # Search text: ENQ-family searches under "NQ"; others use the token.
-        search_text = "NQ" if product == "ENQ" else product
-
         try:
-            contracts = await self.search_contracts(search_text)
+            candidates = await self._contract_candidates(symbol_or_id)
             today = utc_now().date()
-            candidates = []  # (id, (year, month) | None, active_flag)
-            for c in contracts:
-                cid = c.get("id", "")
-                cparts = cid.split(".")
-                if len(cparts) < 5 or cparts[3].upper() != product:
-                    continue
-                active = c.get("activeContract")
-                if active is None:
-                    active = c.get("active", c.get("isActive"))
-                candidates.append((cid, _parse_contract_expiry(cid), active))
-
             if candidates:
                 # 1. Trust an unambiguous API active flag.
                 actives = [c for c in candidates if c[2] is True]
@@ -566,6 +580,12 @@ class TopstepXClient:
                           f"errorMessage={data.get('errorMessage')}")
             return []
         interval_str = self._make_interval_str(unit, unit_number)
+        # 1.3.0: record which contract these raw exchange prices belong to
+        # (the store's contract ledger needs it) and label the real product
+        # root; every bar used to be labelled "NQ", even MNQ and MES.
+        parts = str(contract_id or "").upper().split(".")
+        root = parts[3] if len(parts) >= 5 else "NQ"
+        symbol_label = "NQ" if root == "ENQ" else root
 
         candles = []
         for bar in bars_raw:
@@ -578,8 +598,10 @@ class TopstepXClient:
                 low=float(bar["l"]),
                 close=float(bar["c"]),
                 volume=int(bar["v"]),
-                symbol="NQ",
+                symbol=symbol_label,
                 interval=interval_str,
+                contract_id=contract_id or None,
+                price_adjustment=0.0,
             ))
 
         logger.info(f"Retrieved {len(candles)} {interval_str} candles")

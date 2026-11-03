@@ -17,30 +17,42 @@ import json
 import logging
 import math
 import asyncio
+import time
 import uuid
 from collections import deque
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.db.models import (
     current_quarterly_contract_id, normalize_contract_id_to_front,  # 1.0.8: 自動換月
+    known_strategy_name,
     BacktestConfig, BarUnit, Candle, Direction, StrategyParams,
     get_point_value, get_contract_label, get_tick_size, contract_specs_manifest,
     get_commission_rt, get_fees_rt, _extract_symbol,
 )
 from backend.backtest.engine import BacktestEngine
+from backend.data import contract_ledger
+from backend.data.columnar_store import ColumnarBars
+from backend.data.timeframes import (
+    aggregate_candles, aggregate_columns,
+    aggregate_many, bucket_start, normalize_timeframe, timeframe_seconds,
+)
 from backend.data.candle_store import (
     save as _store_save, merge as _store_merge,
     append_pending as _store_append_pending,
     merge_pending as _store_merge_pending,
     load_snapshot as _store_load_snapshot,
+    load_view as _store_load_view,
     select_range as _store_select_range,
+    enforce_store_contract as _store_enforce_contract,
+    store_contract_at as _store_contract_at,
     snapshot_contains as _store_snapshot_contains,
     detect_gaps as _store_detect_gaps, advance_frozen as _store_advance_frozen,
     last_complete_day_end as _store_last_complete_day_end,
@@ -284,19 +296,8 @@ _ZONE_TIMELINE_STRATEGIES: frozenset = frozenset()
 
 def _normalize_strategy_name(value: str) -> str:
     # 1.0.8: +fade(前日 VA 回歸);confluence 由呼叫端先行判斷
-    v = str(value or "").strip().lower()
-    # 1.0.9: 改名相容 —— 舊 preset 存的是 intramom / sessfib
-    v = {
-        "intramom": "momentum", "claudefib": "momentum", "sessfib": "betafib",
-        "delta": "delta_absorption", "delta_va": "delta_absorption",
-        "delta+va": "delta_absorption", "delta_absorb": "delta_absorption",
-        "vp": "volume_profile", "volumeprofile": "volume_profile",
-    }.get(v, v)
-    # 1.0.9: TREND 已移除 —— 未知值一律落到 factor
-    return v if v in (
-        "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
-        "delta_absorption", "volume_profile",
-    ) else "factor"
+    # Dispatch needs a runnable model, so an unknown request value runs FACTOR.
+    return known_strategy_name(value) or "factor"
 
 
 def _normalize_option_wall_submodel(value: object) -> str:
@@ -1093,6 +1094,9 @@ def _dedupe_candles(candles: List[Candle]) -> List[Candle]:
 def _shift_candle(c: Candle, offset: float) -> Candle:
     if abs(offset) < 1e-9:
         return c
+    # Keep provenance: the bar's contract and the adjustment now applied (the
+    # store ledger re-expresses it at its own level on write).
+    have = getattr(c, "price_adjustment", None)
     return Candle(
         timestamp=c.timestamp,
         open=c.open + offset,
@@ -1102,6 +1106,9 @@ def _shift_candle(c: Candle, offset: float) -> Candle:
         volume=c.volume,
         symbol=c.symbol,
         interval=c.interval,
+        source=getattr(c, "source", "topstepx"),
+        contract_id=getattr(c, "contract_id", None),
+        price_adjustment=(have or 0.0) + offset,
     )
 
 
@@ -1135,25 +1142,17 @@ def _build_continuous_candles(
     if not prev_bars or not current_bars:
         return _dedupe_candles(raw), meta
 
-    prev_by_ts = {_candle_key(c): c for c in prev_bars}
-    current_by_ts = {_candle_key(c): c for c in current_bars}
-    common_keys = sorted(set(prev_by_ts).intersection(current_by_ts), key=lambda k: _candle_time(prev_by_ts[k]))
     roll_ts = roll_at.astimezone(UTC) if roll_at.tzinfo else roll_at.replace(tzinfo=UTC)
-
-    anchor_key = None
-    if common_keys:
-        after_roll = [k for k in common_keys if _candle_time(prev_by_ts[k]) >= roll_ts]
-        anchor_key = after_roll[0] if after_roll else common_keys[-1]
+    # One offset definition shared with the store's roll ledger.
+    offset, anchor_time = contract_ledger.roll_offset(prev_bars, current_bars, roll_ts)
 
     adjustment = 0.0
-    if anchor_key:
-        prev_anchor = prev_by_ts[anchor_key]
-        current_anchor = current_by_ts[anchor_key]
-        adjustment = current_anchor.close - prev_anchor.close
+    if offset is not None:
+        adjustment = offset
         meta.update({
             "price_adjustment": adjustment,
             "adjusted_contract": prev_id,
-            "anchor_time": _candle_time(prev_anchor).isoformat(),
+            "anchor_time": anchor_time.isoformat(),
         })
 
     adjusted_prev = [
@@ -1231,6 +1230,23 @@ def _path_generation(path: Optional[Path]) -> Optional[Tuple[int, int]]:
     except OSError:
         return None
     return stat.st_mtime_ns, stat.st_size
+
+
+async def _live_engine_statuses() -> list[dict[str, Any]]:
+    """``get_status()`` of every live engine, in this process or the separate
+    live process (``backend/live_host.py``)."""
+    from backend import live_host_client
+
+    if live_host_client.enabled():
+        snapshots = await live_host_client.engine_snapshots() or []
+        return [dict(item.get("status") or {}) for item in snapshots]
+    statuses: list[dict[str, Any]] = []
+    for engine in (globals().get("_live_engines", {}) or {}).values():
+        try:
+            statuses.append(engine.get_status())
+        except Exception:
+            continue
+    return statuses
 
 
 def _has_running_live_engine() -> bool:
@@ -1904,6 +1920,42 @@ class MetricsResponse(BaseModel):
     trend_follow: Optional[SubMetricsResponse] = None
 
 
+def _metrics_response(m: Any) -> "MetricsResponse":
+    """``Metrics`` (backend/backtest/metrics.py) -> API response, shared by
+    the futures backtest and the PI options model."""
+    def _sub_resp(sm):
+        if not sm:
+            return None
+        return SubMetricsResponse(
+            total_trades=sm.total_trades, wins=sm.wins, losses=sm.losses,
+            win_rate=sm.win_rate, avg_win=sm.avg_win, avg_loss=sm.avg_loss,
+            avg_rr_ratio=sm.avg_rr_ratio, total_pnl=sm.total_pnl,
+            profit_factor=sm.profit_factor,
+        )
+
+    return MetricsResponse(
+        total_trades=m.total_trades,
+        wins=m.wins,
+        losses=m.losses,
+        win_rate=m.win_rate,
+        avg_win=m.avg_win,
+        avg_loss=m.avg_loss,
+        avg_rr_ratio=m.avg_rr_ratio,
+        expectancy=m.expectancy,
+        max_drawdown=m.max_drawdown,
+        max_drawdown_pct=m.max_drawdown_pct,
+        calmar_ratio=m.calmar_ratio,
+        profit_factor=m.profit_factor,
+        max_consecutive_losses=m.max_consecutive_losses,
+        total_pnl=m.total_pnl,
+        total_gain=getattr(m, "total_gain", 0.0),
+        total_loss=getattr(m, "total_loss", 0.0),
+        daily_pnl=m.daily_pnl or {},
+        weekly_stats=_weekly_stats(m.daily_pnl or {}),
+        trend_follow=_sub_resp(getattr(m, "trend_follow_metrics", None)),
+    )
+
+
 class BacktestResponse(BaseModel):
     metrics: MetricsResponse
     trades: List[TradeResponse]
@@ -1991,6 +2043,78 @@ def _connection_provider(
     }
 
 
+# ── Contract sync hint (chart) ──────────────────────────────────────────────
+# The persistent store rolls by the calendar rule (third Friday - 8 days;
+# DATA-014).  The chart's live tail and live orders follow the contract
+# TopstepX flags as active.  They normally agree; the chart shows a warning
+# mark when they do not.  Topstep is asked at most once per TTL, in the
+# background, so the 2.5 s status poll never adds broker traffic.
+_CONTRACT_SYNC_TTL_S = 600.0
+_contract_sync_state: Dict[str, Any] = {
+    "at": 0.0, "for": None, "active": None, "error": None, "task": None,
+}
+
+
+def _expiry_code(contract_id: Optional[str]) -> Optional[str]:
+    token = str(contract_id or "").rsplit(".", 1)[-1].strip().upper()
+    return token or None
+
+
+async def _refresh_topstep_active(client: Any, contract_id: str) -> None:
+    try:
+        active = await client.get_active_contract_id(contract_id)
+        _contract_sync_state.update(active=active, error=None)
+    except Exception as exc:  # the hint must never break the status poll
+        _contract_sync_state.update(active=None, error=type(exc).__name__)
+    finally:
+        _contract_sync_state["at"] = time.monotonic()
+
+
+def _contract_sync_status() -> Dict[str, Any]:
+    chart = str(_live_contract_id or "")
+    calendar = current_quarterly_contract_id(_extract_symbol(chart or "MNQ"))
+    state = _contract_sync_state
+    if state["for"] != chart:
+        state.update(**{"for": chart, "active": None, "error": None, "at": 0.0})
+    client = globals().get("_topstepx_client")
+    if client is not None and getattr(client, "token", None):
+        task = state.get("task")
+        stale = time.monotonic() - float(state["at"]) >= _CONTRACT_SYNC_TTL_S
+        if stale and (task is None or task.done()):
+            state["at"] = time.monotonic()      # one refresh in flight per TTL
+            state["task"] = asyncio.get_running_loop().create_task(
+                _refresh_topstep_active(client, chart or "MNQ"))
+    active = state["active"]
+    codes = {
+        "chart": _expiry_code(chart),
+        "calendar": _expiry_code(calendar),
+        "topstep": _expiry_code(active) if active else None,
+    }
+    known = {value for value in codes.values() if value}
+    in_sync = len(known) <= 1
+    detail = ""
+    if not in_sync:
+        lines = [
+            f"Chart live feed (Topstep): {codes['chart'] or '--'}",
+            f"History & backtests (calendar roll): {codes['calendar'] or '--'}",
+            f"Topstep active contract: {codes['topstep'] or 'unknown'}",
+        ]
+        if codes["topstep"] and codes["chart"] and codes["topstep"] != codes["chart"]:
+            lines.append("Topstep has switched its active contract; reconnect to follow it.")
+        if codes["calendar"] != (codes["topstep"] or codes["chart"]):
+            lines.append("Live trading follows Topstep; stored history uses the calendar roll "
+                         "until the two agree.")
+        detail = "\n".join(lines)
+    return {
+        "chart": chart or None,
+        "calendar": calendar,
+        "topstep_active": active,
+        "codes": codes,
+        "in_sync": in_sync,
+        "detail": detail,
+    }
+
+
 @router.get("/connection/status")
 async def connection_status():
     """Return non-sensitive startup/transport state for the chart status rail.
@@ -2034,14 +2158,11 @@ async def connection_status():
 
     # A PI Live engine temporarily pauses the record-only worker. Prefer the
     # engine-owned listener in that case, otherwise use the process recorder.
-    pi_listener_snapshots: list[dict[str, Any]] = []
-    for engine in (globals().get("_live_engines", {}) or {}).values():
-        try:
-            snapshot = engine.get_status()
-        except Exception:
-            continue
-        if snapshot.get("strategy_mode") == "pi" and snapshot.get("running"):
-            pi_listener_snapshots.append(snapshot)
+    engine_statuses = await _live_engine_statuses()
+    pi_listener_snapshots: list[dict[str, Any]] = [
+        snapshot for snapshot in engine_statuses
+        if snapshot.get("strategy_mode") == "pi" and snapshot.get("running")
+    ]
 
     if not discord_configured:
         discord = _connection_provider(
@@ -2101,11 +2222,7 @@ async def connection_status():
 
     databento_configured = bool(_env("DATABENTO_API_KEY").strip())
     delta_snapshots: list[dict[str, Any]] = []
-    for engine in (globals().get("_live_engines", {}) or {}).values():
-        try:
-            snapshot = engine.get_status()
-        except Exception:
-            continue
+    for snapshot in engine_statuses:
         feed = snapshot.get("databento_mbo")
         if feed:
             delta_snapshots.append(feed)
@@ -2167,6 +2284,7 @@ async def connection_status():
             "topstep": topstep,
             "databento": databento,
         },
+        "contract": _contract_sync_status(),
         "startup": {
             "backend": "connected",
             "provider_count": 3,
@@ -2248,11 +2366,75 @@ def _chart_row_dict(candle: Candle) -> Dict[str, Any]:
     }
 
 
+# Higher chart timeframes are aggregated from the 1m store by the one shared
+# definition (backend/data/timeframes.py).  Hourly and slower frames cover the
+# whole store and are cached per store generation; faster frames aggregate only
+# the requested window (a full 5m history would be ~0.5M objects).
+_CHART_TF_FULL_HISTORY = ("1h", "4h", "1d", "1w")
+_chart_tf_cache: Dict[Tuple[str, str], Tuple[Any, List[Candle]]] = {}
+
+
+def _chart_tf_store_snapshot():
+    symbols = [_extract_symbol(_live_contract_id or "MNQ"), "MNQ"]
+    for symbol in dict.fromkeys(symbols):
+        # Read-only: pending bars are overlaid, never merged, on a chart read.
+        snapshot = _store_load_view(symbol)
+        if snapshot.bars:
+            return symbol, snapshot
+    return symbols[-1], None
+
+
+def _chart_timeframe_rows(tf: str, before: Optional[datetime], limit: int) -> Tuple[List[Candle], bool]:
+    """Sorted ``tf`` bars (store plus any newer live tail), and whether older store
+    history exists beyond a windowed result."""
+    symbol, snapshot = _chart_tf_store_snapshot()
+    store_bars = snapshot.bars if snapshot is not None else ()
+    store_last = _candle_time(store_bars[-1]) if store_bars else None
+    working = list(_historical_candles or [])
+    tail = [c for c in working if store_last is None or _candle_time(c) > store_last]
+
+    if tf in _CHART_TF_FULL_HISTORY:
+        version = snapshot.version if snapshot is not None else None
+        cached = _chart_tf_cache.get((symbol, tf))
+        if cached is None or cached[0] != version:
+            # One pass over the store builds every full-history frame, so the
+            # next timeframe switch is instant.
+            built = (
+                aggregate_columns(store_bars.columns, _CHART_TF_FULL_HISTORY)
+                if isinstance(store_bars, ColumnarBars)
+                else aggregate_many(store_bars, _CHART_TF_FULL_HISTORY)
+            )
+            for frame, rows in built.items():
+                _chart_tf_cache[(symbol, frame)] = (version, rows)
+            cached = _chart_tf_cache[(symbol, tf)]
+        history = cached[1]
+        more_before = False
+    else:
+        # Window large enough for ``limit`` bars through weekends/holidays.
+        end = before or (_candle_time(tail[-1]) if tail else store_last) or utc_now()
+        window_start = end - timedelta(seconds=timeframe_seconds(tf) * limit * 1.8)
+        history = aggregate_candles(
+            _store_select_range(snapshot, window_start, before) if snapshot is not None else [],
+            tf,
+        )
+        more_before = bool(store_bars) and _candle_time(store_bars[0]) < window_start
+    if not tail:
+        return history, more_before
+    # Rebuild from the first bucket the live tail touches; older buckets stay.
+    boundary = bucket_start(_candle_time(tail[0]), tf)
+    head = [b for b in history if _candle_time(b) < boundary]
+    rebuilt_source = (
+        (_store_select_range(snapshot, boundary, None) if snapshot is not None else []) + tail
+    )
+    return head + aggregate_candles(rebuilt_source, tf), more_before
+
+
 @router.get("/data/candles")
 async def get_stored_candles(
     limit: int = 60000,
     before: str = "",
     after: str = "",
+    tf: str = "1m",
 ):
     """Return chart candles, with optional cursor pagination for left-panning.
 
@@ -2283,9 +2465,22 @@ async def get_stored_candles(
     # request behaviour (up to 60k rows) so existing chart boot remains intact.
     paged = before_dt is not None or after_dt is not None
     page_limit = min(requested_limit, _CHART_HISTORY_PAGE_MAX) if paged else requested_limit
+    try:
+        timeframe = normalize_timeframe(tf)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
-    rows = _chart_rows_from_memory(before_dt, after_dt)
-    source = "working_set"
+    if timeframe != "1m":
+        # Choosing a higher timeframe is an explicit request for history, so it
+        # may read the persistent store (like a left-edge pan does).
+        rows, tf_more_before = await asyncio.to_thread(
+            _chart_timeframe_rows, timeframe, before_dt, page_limit,
+        )
+        source = "timeframe"
+    else:
+        rows = _chart_rows_from_memory(before_dt, after_dt)
+        source = "working_set"
+        tf_more_before = False
     if rows is None:
         if not paged:
             # A pre-CONNECT chart boot must stay cheap.  The user-visible
@@ -2301,8 +2496,8 @@ async def get_stored_candles(
             symbols = [_extract_symbol(_live_contract_id or "MNQ"), "MNQ"]
             snapshot = None
             for symbol in dict.fromkeys(symbols):
-                await asyncio.to_thread(_store_merge_pending, symbol, 1)
-                candidate = await asyncio.to_thread(_store_load_snapshot, symbol)
+                # Read-only: pending bars are overlaid, never merged, here.
+                candidate = await asyncio.to_thread(_store_load_view, symbol)
                 if candidate.bars:
                     snapshot = candidate
                     break
@@ -2319,16 +2514,18 @@ async def get_stored_candles(
             rows, page_limit, before_dt, after_dt,
         )
 
-    return {
+    # Plain str/float/int rows: skip FastAPI's generic encoder (1.7s per 60k).
+    return JSONResponse(content={
         "candles": [_chart_row_dict(candle) for candle in selected],
         "count": total,
         "shown": len(selected),
         "first": selected[0].timestamp.isoformat() if selected else None,
         "last": selected[-1].timestamp.isoformat() if selected else None,
-        "has_more_before": has_more_before,
+        "has_more_before": has_more_before or tf_more_before,
         "has_more_after": has_more_after,
         "source": source,
-    }
+        "timeframe": timeframe,
+    })
 
 
 def _daily_profile_candles(
@@ -2355,8 +2552,7 @@ def _daily_profile_candles(
     profile_start = start - timedelta(days=14) if start is not None else None
     profile_end = end + timedelta(days=1) if end is not None else None
     for store_symbol in symbols:
-        _store_merge_pending(store_symbol, 1)
-        snapshot = _store_load_snapshot(store_symbol)
+        snapshot = _store_load_view(store_symbol)   # read-only overlay
         if not snapshot.bars:
             continue
         selected = _store_select_range(snapshot, profile_start, profile_end)
@@ -2613,6 +2809,19 @@ async def get_mnq_signal_markers(limit: int = 60000):
     return payload
 
 
+@router.get("/research/orderflow-events")
+async def research_orderflow_events():
+    """Frozen MNQ order-flow research candidates for the chart's research
+    layers (saved rows only; never a live or backtest signal)."""
+    from backend.data.research_events import load_orderflow_research_events
+
+    try:
+        return await asyncio.to_thread(load_orderflow_research_events)
+    except (OSError, ValueError, KeyError) as exc:
+        logger.warning("Order-flow research events unavailable: %s", exc)
+        return {"available": False, "events": [], "summary": {}, "note": str(exc)}
+
+
 @router.get("/research/institution/latest")
 async def institution_research_latest():
     """Latest hunter/liquidity research summary for the Data tab."""
@@ -2679,6 +2888,14 @@ async def research_data_catalog():
         raise HTTPException(500, f"Could not read research data catalog: {exc}")
 
 
+def _store_contract_expiry(symbol: str, ts: datetime) -> str:
+    """Expiry code owning ``ts`` in the store: the contract ledger when the
+    store has one, else the calendar rule the ledger's new rolls also use."""
+    store_cid = _store_contract_at(symbol, ts)
+    cid = store_cid or current_quarterly_contract_id(symbol, ts)
+    return cid.rsplit(".", 1)[-1]
+
+
 @router.get("/data/latest-candles")
 async def get_latest_candles(since: str = ""):
     """
@@ -2736,11 +2953,24 @@ async def get_latest_candles(since: str = ""):
         # through the journal so a 5-second chart refresh never decodes the
         # full store; a later backtest/left-edge read will consolidate it.
         live_symbol = _extract_symbol(_live_contract_id or "MNQ")
-        newest_closed = _candle_time(closed_candles[-1])
-        if newest_closed > _pending_live_last.get(live_symbol, datetime.min.replace(tzinfo=UTC)):
+        # 1.3.0: the store holds one contract per minute -- the calendar front
+        # from current_quarterly_contract_id, the same rule the accumulator
+        # and the continuous roll use.  A chart still connected to the old
+        # expiry after the roll must not journal its raw bars into those
+        # minutes: on 2026-09-10/11 that interleaved 133 raw U26 minutes
+        # ~295 points below the Z26 series.  Display is unaffected.
+        live_expiry = str(_live_contract_id or "").rsplit(".", 1)[-1]
+        persistable = [
+            c for c in closed_candles
+            if _store_contract_expiry(live_symbol, _candle_time(c)) == live_expiry
+        ]
+        newest_closed = _candle_time(persistable[-1]) if persistable else None
+        if newest_closed is not None and newest_closed > _pending_live_last.get(
+            live_symbol, datetime.min.replace(tzinfo=UTC)
+        ):
             try:
                 pending_count, pending_changed = await asyncio.to_thread(
-                    _store_append_pending, closed_candles, live_symbol, 1
+                    _store_append_pending, persistable, live_symbol, 1
                 )
                 _pending_live_last[live_symbol] = newest_closed
                 if pending_changed:
@@ -3170,6 +3400,9 @@ async def fetch_historical(req: FetchHistoricalRequest):
         candles, continuous_meta = await asyncio.to_thread(
             _build_continuous_candles, contract_batches, fetch_contracts, roll_at,
         )
+        # The working set follows the store's contract ledger: wrong-contract
+        # minutes are dropped and adjusted bars are put on the store level.
+        candles = await asyncio.to_thread(_store_enforce_contract, candles, symbol)
         if len(fetch_contracts) > 1:
             logger.info(
                 "Continuous contract adjusted: %s -> %s roll_at=%s anchor=%s offset=%.2f",
@@ -3498,6 +3731,8 @@ async def run_backtest(req: BacktestRequest):
     2. 餵入回測引擎
     3. 返回績效、交易列表、盤整區間、equity curve
     """
+    if str(req.strategy or "").strip().lower() == "pi_options":
+        raise HTTPException(400, "PI OPTIONS backtests use /backtest/pi-options")
     try:
         _strat = str(req.strategy or "").strip().lower()
         _sess = getattr(req, "tr_allowed_sessions", None) or getattr(req, "conf_allowed_sessions", None)
@@ -3517,7 +3752,7 @@ async def run_backtest(req: BacktestRequest):
                 detail="Fetch data through /api/data/fetch-historical first"
             )
 
-        # 1.0.9: confluence/ML removed wholesale (docs/1.0.9_DELETE_LIST.md)
+        # 1.0.9: confluence/ML removed wholesale (docs/RESEARCH_REPORT.md 附錄 C)
         return await _run_trend_backtest(req)
     except BaseException as exc:
         _update_bt_error(exc)
@@ -3766,39 +4001,7 @@ async def _run_trend_backtest(req: BacktestRequest) -> BacktestResponse:
             va_curve=getattr(z, "va_curve", None) or None,
         ))
 
-    m = result.metrics
-
-    def _sub_resp(sm):
-        if not sm:
-            return None
-        return SubMetricsResponse(
-            total_trades=sm.total_trades, wins=sm.wins, losses=sm.losses,
-            win_rate=sm.win_rate, avg_win=sm.avg_win, avg_loss=sm.avg_loss,
-            avg_rr_ratio=sm.avg_rr_ratio, total_pnl=sm.total_pnl,
-            profit_factor=sm.profit_factor,
-        )
-
-    metrics_resp = MetricsResponse(
-        total_trades=m.total_trades,
-        wins=m.wins,
-        losses=m.losses,
-        win_rate=m.win_rate,
-        avg_win=m.avg_win,
-        avg_loss=m.avg_loss,
-        avg_rr_ratio=m.avg_rr_ratio,
-        expectancy=m.expectancy,
-        max_drawdown=m.max_drawdown,
-        max_drawdown_pct=m.max_drawdown_pct,
-        calmar_ratio=m.calmar_ratio,
-        profit_factor=m.profit_factor,
-        max_consecutive_losses=m.max_consecutive_losses,
-        total_pnl=m.total_pnl,
-        total_gain=getattr(m, "total_gain", 0.0),
-        total_loss=getattr(m, "total_loss", 0.0),
-        daily_pnl=m.daily_pnl or {},
-        weekly_stats=_weekly_stats(m.daily_pnl or {}),
-        trend_follow=_sub_resp(m.trend_follow_metrics),
-    )
+    metrics_resp = _metrics_response(result.metrics)
 
     equity = [
         [ts.timestamp() * 1000, val]
@@ -3838,6 +4041,182 @@ class RobustnessRequest(BaseModel):
     seed: Optional[int] = None          # None -> module default (reproducible)
     dd_threshold: float = 2000.0
     slip_levels: List[int] = [1, 2, 4, 8]
+
+
+class PiOptionsBacktestRequest(BaseModel):
+    tiers: List[str] = Field(default_factory=lambda: ["LV2", "LV3"])
+    strike: str = "otm_3"
+    entry_discount: float = 0.0
+    stop: Optional[float] = None
+    target: Optional[float] = None
+    exit_time: str = "15:30"
+    contracts: Optional[int] = 1          # None = size by budget
+    budget: float = 1000.0
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+
+
+@router.post("/backtest/pi-options")
+async def backtest_pi_options(req: PiOptionsBacktestRequest):
+    """PI long signal -> next-session QQQ/SPY call, replayed on saved Theta
+    quotes (backend/options/pi_options.py).  Research data window only."""
+    from backend.backtest.metrics import MetricsCalculator
+    from backend.db.models import Direction, ExitReason, StrategyType, Trade
+    from backend.options.pi_options import PiOptionSettings, run_backtest
+
+    def _day(value: Optional[str]) -> Optional[date]:
+        return date.fromisoformat(value[:10]) if value else None
+
+    try:
+        settings = PiOptionSettings(
+            tiers=tuple(req.tiers), strike=req.strike, entry_discount=float(req.entry_discount),
+            stop=req.stop, target=req.target, exit_time=req.exit_time,
+            contracts=req.contracts, budget=float(req.budget),
+            start=_day(req.start_date), end=_day(req.end_date),
+        )
+        result = await asyncio.to_thread(run_backtest, settings)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+    def _iso(epoch: Optional[int]) -> Optional[str]:
+        return datetime.fromtimestamp(epoch, UTC).isoformat() if epoch else None
+
+    def _contract(t: Dict[str, Any]) -> str:
+        strike = f"{t['strike']:g}C" if t.get("strike") is not None else "?C"
+        return f"{t['symbol']} {strike} {t['expiration'][5:].replace('-', '/')}"
+
+    reasons = {"sl": ExitReason.SL, "tp": ExitReason.TP, "time": ExitReason.FLATTEN}
+    trades: List[Trade] = []
+    rows: List[Dict[str, Any]] = []
+    for index, t in enumerate(result["trades"], 1):
+        entry_at = datetime.fromtimestamp(t["entry_epoch"], UTC)
+        exit_at = datetime.fromtimestamp(t["exit_epoch"], UTC)
+        label = _contract(t)
+        trades.append(Trade(
+            trade_id=f"PIOPT-{index}", strategy=StrategyType.TREND_FOLLOW,
+            direction=Direction.BUY, entry_price=t["fill"], entry_time=entry_at,
+            exit_price=t["exit"], exit_time=exit_at, pnl=t["net"],
+            commission=t["commission"], fees=0.0, exit_reason=reasons[t["reason"]],
+            contracts=t["contracts"], point_value=100.0, contract_id=label,
+        ))
+        rows.append({
+            "trade_id": f"PIOPT-{index}", "strategy": "pi_options", "asset": "option",
+            "symbol": label, "size": t["contracts"], "direction": "buy",
+            "entry_price": t["fill"], "entry_time": entry_at.isoformat(),
+            "exit_price": t["exit"], "exit_time": exit_at.isoformat(),
+            "sl_price": round(t["fill"] * (1 - req.stop), 2) if req.stop else 0.0,
+            "tp_price": round(t["fill"] * (1 + req.target), 2) if req.target else 0.0,
+            "pnl": round(t["net"], 2), "commission": round(t["commission"], 2), "fees": 0.0,
+            "exit_reason": t["reason"], "zone_id": "", "labels": [t["tier"], req.strike],
+            "premium_return": round(t["ret"], 4), "spot": t.get("spot"),
+        })
+    metrics = MetricsCalculator().calculate_all(trades, max(1.0, settings.budget * 10))
+    equity, running = [], 0.0
+    for t in result["trades"]:
+        running += t["net"]
+        equity.append([t["exit_epoch"] * 1000, round(running, 2)])
+
+    # One row per considered signal (fills and non-fills) for the trade list.
+    option_rows: List[Dict[str, Any]] = []
+    for t in result["trades"]:
+        option_rows.append({
+            "status": "filled", "symbol": t["symbol"], "tier": t["tier"],
+            "contract": _contract(t), "contracts": t["contracts"],
+            "signal_time": _iso(t["signal_epoch"]), "signal_ask": t["ask0"], "limit": t["limit"],
+            "entry_time": _iso(t["entry_epoch"]), "entry_price": t["fill"],
+            "exit_time": _iso(t["exit_epoch"]), "exit_price": t["exit"], "exit_reason": t["reason"],
+            "premium": round(t["fill"] * 100 * t["contracts"], 2),
+            "commission": round(t["commission"], 2), "net": round(t["net"], 2),
+            "ret": round(t["ret"], 4), "spot": t.get("spot"),
+        })
+    for t in result["missed"]:
+        option_rows.append({
+            "status": t["status"], "symbol": t["symbol"], "tier": t["tier"],
+            "contract": _contract(t), "contracts": 0,
+            "signal_time": _iso(t["signal_epoch"]), "signal_ask": t.get("ask0"),
+            "limit": t.get("limit"), "entry_time": None, "entry_price": None,
+            "exit_time": None, "exit_price": None, "exit_reason": None,
+            "premium": 0.0, "commission": 0.0, "net": 0.0, "ret": None, "spot": t.get("spot"),
+        })
+    option_rows.sort(key=lambda r: r["signal_time"] or "")
+    return {
+        "metrics": _metrics_response(metrics).model_dump(),
+        "trades": rows,
+        "option_rows": option_rows,
+        "zones": [],
+        "equity_curve": equity,
+        "strategy": "pi_options",
+        "options_summary": result["summary"],
+    }
+
+
+# ── PI options account (Robinhood) ──────────────────────────────────────────
+_pi_options_runner: Any = None
+
+
+def _options_runner():
+    global _pi_options_runner
+    if _pi_options_runner is None:
+        from backend.options.pi_options_account import PiOptionsAlertRunner
+        _pi_options_runner = PiOptionsAlertRunner()
+    return _pi_options_runner
+
+
+def _options_settings_provider():
+    from backend.options.pi_options_account import load_account, settings_from_json
+    return settings_from_json(load_account()["settings"])
+
+
+def start_options_alerts_if_enabled() -> bool:
+    """Called by the app lifespan: resume ALERT mode when it was left on."""
+    from backend.options.pi_options_account import load_account
+    account = load_account()
+    if account["enabled"] and account["mode"] == "alert":
+        _options_runner().start(_options_settings_provider)
+        return True
+    return False
+
+
+async def stop_options_alerts() -> None:
+    if _pi_options_runner is not None:
+        await _pi_options_runner.stop()
+
+
+class OptionsAccountRequest(BaseModel):
+    mode: str = "alert"
+    enabled: bool = False
+    settings: Dict[str, Any] = Field(default_factory=dict)
+
+
+def _options_account_payload() -> Dict[str, Any]:
+    from backend.options.pi_options import STRIKE_CHOICES
+    from backend.options.pi_options_account import BROKER_STATUS, MODES, load_account
+    return {"account": load_account(), "broker": dict(BROKER_STATUS),
+            "status": _options_runner().status(),
+            "modes": list(MODES), "strikes": list(STRIKE_CHOICES)}
+
+
+@router.get("/options/account")
+async def options_account():
+    """PI options account (Robinhood): saved settings, broker link, alerts."""
+    return _options_account_payload()
+
+
+@router.post("/options/account")
+async def options_account_save(req: OptionsAccountRequest):
+    from backend.options.pi_options_account import save_account
+    try:
+        account = save_account(req.mode, req.enabled, req.settings)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    runner = _options_runner()
+    if account["enabled"] and not runner.running:
+        runner.start(_options_settings_provider)
+    elif not account["enabled"] and runner.running:
+        await runner.stop()
+    return _options_account_payload()
 
 
 @router.post("/research/robustness")
@@ -4591,6 +4970,10 @@ class LiveStartRequest(BaseModel):
 @router.post("/live/start")
 async def live_start(req: LiveStartRequest):
     """Reserve the client and account for the entire asynchronous start sequence."""
+    if str(req.strategy or "").strip().lower() == "pi_options":
+        # Unknown names normalise to FACTOR; an options preset must never
+        # start a futures engine.
+        raise HTTPException(400, "PI OPTIONS runs in the options account, not the futures engine")
     if _normalize_strategy_name(req.strategy) == "optionwall":
         raise HTTPException(
             400,
@@ -4830,9 +5213,56 @@ async def _live_start_impl(req: LiveStartRequest, live_client: Any):
     return {"success": True, "message": "Live engine started", "account_id": req.account_id}
 
 
+class DailyStartRequest(BaseModel):
+    enabled: bool = False
+    time: str = "06:30"
+
+
+@router.get("/live/daily-start")
+async def daily_start_settings():
+    from backend import daily_start
+    from backend.terminal_live import _env_int, _load_default_preset
+    from backend.live.account_roles import load_roles
+    cfg = daily_start.settings()
+    account = _env_int("TOPSTEPX_ACCOUNT_ID", 0) or int(load_roles().get("main_account_id") or 0)
+    name, preset, _ = _load_default_preset(str(account))
+    return {k: v for k, v in {
+        **cfg, "default_account_id": account, "default_preset": name,
+        "default_strategy": preset.get("strategy"), "default_size": preset.get("contract_size"),
+        "terminals": daily_start.terminal_statuses(),
+    }.items() if k not in {"launch_token", "launch_revision"}}
+
+
+@router.post("/live/daily-start")
+async def daily_start_save(req: DailyStartRequest):
+    from backend import daily_start
+    current = await daily_start_settings()
+    try:
+        if req.enabled:
+            if current["default_strategy"] != "pi" or not current["default_account_id"]:
+                raise ValueError("Configure a fixed main account with a PI preset first")
+            # Persist OFF before registration; a failed install remains OFF.
+            daily_start.configure(enabled=False, wall_time=req.time,
+                                  account_id=current["default_account_id"], preset=current["default_preset"])
+            await asyncio.to_thread(daily_start.install_task, req.time)
+        daily_start.configure(enabled=req.enabled, wall_time=req.time,
+                              account_id=current["default_account_id"], preset=current["default_preset"])
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return await daily_start_settings()
+
+
 @router.post("/live/stop")
 async def live_stop(account_id: int = 0):
     """停止即時交易引擎(account_id 指定某 leader;0=primary)"""
+    from backend import daily_start
+    daily_start.request_stop(account_id)
+
+    async def terminal_ack():
+        try:
+            await daily_start.stop_terminal(account_id)
+        except TimeoutError as exc:
+            raise HTTPException(503, str(exc)) from exc
     eng = _resolve_live_engine(account_id or None)
     if not eng or not eng.is_running:
         if eng and callable(getattr(eng, "stop", None)):
@@ -4846,14 +5276,16 @@ async def live_stop(account_id: int = 0):
             # engine. Releasing the lease makes audit/chart capture recover.
             from backend.live.pi_recorder import resume_pi_recorder
             await resume_pi_recorder()
-        return {"success": True, "message": "Not running"}
+        await terminal_ack()
+        return {"success": True, "message": "Stopped; Daily start OFF"}
     try:
         await eng.stop()
     finally:
         if str(getattr(eng, "strategy_mode", "")).lower() == "pi":
             from backend.live.pi_recorder import resume_pi_recorder
             await resume_pi_recorder()
-    return {"success": True, "message": "Live engine stopped", "account_id": getattr(eng, "account_id", account_id)}
+    await terminal_ack()
+    return {"success": True, "message": "Live engine stopped; Daily start OFF", "account_id": getattr(eng, "account_id", account_id)}
 
 
 @router.post("/live/cancel-pending")
@@ -4880,8 +5312,13 @@ async def live_flatten(account_id: int = 0):
 async def live_status(account_id: int = 0):
     """取得即時交易狀態(account_id 指定某 leader;0=primary)"""
     eng = _resolve_live_engine(account_id or None)
-    if not eng:
-        return {"running": False}
+    if not eng or not eng.is_running:
+        from backend import daily_start
+        terminals = daily_start.terminal_statuses(account_id)
+        if terminals:
+            return terminals[0]["status"]
+        if not eng:
+            return {"running": False}
     return eng.get_status()
 
 
@@ -4895,7 +5332,33 @@ async def live_status_all():
         except Exception as e:
             st = {"running": False, "error": str(e)}
         out.append({"account_id": aid, "status": st})
+    from backend import daily_start
+    active_accounts = {row["account_id"] for row in out if row["status"].get("running")}
+    terminals = [row for row in daily_start.terminal_statuses() if row["account_id"] not in active_accounts]
+    terminal_accounts = {row["account_id"] for row in terminals}
+    out = [row for row in out if row["account_id"] not in terminal_accounts] + terminals
     return {"success": True, "engines": out, "count": len(out)}
+
+
+def _engine_state_snapshot(engine: Any) -> Optional[dict]:
+    """The engine block of ``/live/account-state`` (also served by the
+    separate live process, so both layouts show the same fields)."""
+    if not engine:
+        return None
+    return {
+        "running": engine._running,
+        "pending_order_id": engine._pending_order_id,
+        "pending_signal": {
+            "direction": engine._pending_signal.direction.value,
+            "entry": engine._pending_signal.entry_price,
+            "sl": engine._pending_signal.sl_price,
+            "tp": engine._pending_signal.tp_price,
+            "strategy": engine._pending_signal.strategy.value,
+        } if engine._pending_signal else None,
+        "open_position": engine._open_position,
+        "candles_processed": engine._candles_processed,
+        "log": engine._log[-30:],
+    }
 
 
 @router.get("/live/account-state")
@@ -4939,22 +5402,11 @@ async def live_account_state():
             })
 
         # Also include live engine state for comparison
-        engine_state = None
-        if _live_engine:
-            engine_state = {
-                "running": _live_engine._running,
-                "pending_order_id": _live_engine._pending_order_id,
-                "pending_signal": {
-                    "direction": _live_engine._pending_signal.direction.value,
-                    "entry": _live_engine._pending_signal.entry_price,
-                    "sl": _live_engine._pending_signal.sl_price,
-                    "tp": _live_engine._pending_signal.tp_price,
-                    "strategy": _live_engine._pending_signal.strategy.value,
-                } if _live_engine._pending_signal else None,
-                "open_position": _live_engine._open_position,
-                "candles_processed": _live_engine._candles_processed,
-                "log": _live_engine._log[-30:],
-            }
+        from backend import live_host_client
+        if live_host_client.enabled():
+            engine_state = await live_host_client.engine_state()
+        else:
+            engine_state = _engine_state_snapshot(_live_engine)
 
         return {
             "accounts": results,
@@ -5374,6 +5826,12 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
         if _prim is not None:
             filter_acc_id = getattr(_prim, "account_id", 0) or 0
     if not filter_acc_id:
+        from backend import live_host_client
+        if live_host_client.enabled():
+            _hosted = await live_host_client.engine_snapshots() or []
+            if _hosted:
+                filter_acc_id = int(_hosted[0].get("account_id") or 0)
+    if not filter_acc_id:
         from backend.live.account_roles import main_account_id as _main_id
         _m = _main_id()
         if _m:
@@ -5553,13 +6011,15 @@ def _ensure_builtin_presets(data: dict) -> tuple[dict, bool]:
             continue
         if _migrate_preset_market_clock(params):
             changed = True
-        strategy = str(params.get("strategy") or "").lower()
-        # 1.0.8: mlc2 已移除 — 舊存檔的 mlc2 preset 一律歸一化為 trend;+fade 放行
-        # 1.0.9: TREND 已移除,未知/舊值一律落到 factor
-        normalized_strategy = strategy if strategy in (
-            "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
-            "delta_absorption", "volume_profile",
-        ) else "factor"
+        raw_strategy = str(params.get("strategy") or "").strip()
+        # Renamed/retired names migrate (TREND/PMO/mlc2 -> factor).  A name this
+        # build does not know is left untouched: on 2026-09-15 a server still
+        # running an older build rewrote the new VOLUME PROFILE RESEARCH preset
+        # to "factor" on disk because it did not know "volume_profile" yet.
+        normalized_strategy = (
+            known_strategy_name(raw_strategy)
+            or (raw_strategy if raw_strategy else "factor")
+        )
         # 1.0.8: 舊存檔的到期合約自動改寫成目前前月季約
         _cid_new = normalize_contract_id_to_front(params.get("contract_id") or "")
         if _cid_new != params.get("contract_id"):

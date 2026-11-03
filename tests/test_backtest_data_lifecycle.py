@@ -34,6 +34,12 @@ def _bars(count: int, start: datetime | None = None) -> list[Candle]:
     ]
 
 
+
+def _json_body(response):
+    # /data/candles returns a JSONResponse (it skips FastAPI's generic encoder).
+    import json
+    return json.loads(response.body)
+
 class WorksetLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.original_candles = routes._historical_candles
@@ -161,9 +167,9 @@ class ChartHistoryPaginationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_before_returns_bounded_older_page_and_flags_more(self):
         cutoff = routes._historical_candles[12].timestamp
-        response = await routes.get_stored_candles(
+        response = _json_body(await routes.get_stored_candles(
             limit=5, before=cutoff.isoformat(),
-        )
+        ))
 
         returned = [row["time"] for row in response["candles"]]
         expected = [
@@ -185,10 +191,12 @@ class ChartHistoryPaginationTests(unittest.IsolatedAsyncioTestCase):
         routes._historical_candles = memory[-5:]
         cutoff = routes._historical_candles[0].timestamp
         snapshot = SimpleNamespace(bars=tuple(persistent))
-        with patch.object(routes, "_store_load_snapshot", return_value=snapshot):
-            response = await routes.get_stored_candles(
+        with patch.object(routes, "_store_load_view", return_value=snapshot), \
+                patch.object(routes, "_store_merge_pending",
+                             side_effect=AssertionError("a chart read must not merge/write the store")):
+            response = _json_body(await routes.get_stored_candles(
                 limit=3, before=cutoff.isoformat(),
-            )
+            ))
 
         returned = [row["time"] for row in response["candles"]]
         expected = [
@@ -208,8 +216,11 @@ class ChartHistoryPaginationTests(unittest.IsolatedAsyncioTestCase):
             ), patch.object(
                 routes, "_store_load_snapshot",
                 side_effect=AssertionError("initial chart must not load store"),
+            ), patch.object(
+                routes, "_store_load_view",
+                side_effect=AssertionError("initial chart must not load store"),
             ):
-                response = await routes.get_stored_candles(limit=60000)
+                response = _json_body(await routes.get_stored_candles(limit=60000))
         finally:
             routes._historical_candles = original
 

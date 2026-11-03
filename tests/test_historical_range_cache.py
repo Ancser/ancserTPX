@@ -46,24 +46,32 @@ class CandleSnapshotRangeTests(unittest.TestCase):
         cs.invalidate_cache()
         self.tmp.cleanup()
 
-    def test_cached_snapshot_is_immutable_and_range_selection_uses_bisect(self):
+    def test_cached_snapshot_is_immutable_and_range_selection_is_bounded(self):
+        from backend.data.columnar_store import CandleColumns
+
         bars = _bars(1000)
         cs.save(bars, "MNQ", 1)
 
         snapshot = cs.load_snapshot("MNQ", 1)
         self.assertIs(snapshot, cs.load_snapshot("MNQ", 1))
-        self.assertIsInstance(snapshot.bars, tuple)
+        # Read-only generation: no item assignment, and every access yields
+        # new Candle objects, so a caller can never mutate the cache.
+        with self.assertRaises(TypeError):
+            snapshot.bars[0] = bars[0]
+        self.assertIsNot(snapshot.bars[0], snapshot.bars[0])
 
         start = bars[400].timestamp
         end = bars[409].timestamp
-        with patch.object(cs, "bisect_left", wraps=cs.bisect_left) as left, \
-                patch.object(cs, "bisect_right", wraps=cs.bisect_right) as right:
+        with patch.object(CandleColumns, "candles", autospec=True,
+                          side_effect=CandleColumns.candles) as materialise:
             selected = cs.select_range(snapshot, start, end)
 
         self.assertEqual([c.timestamp for c in selected],
                          [c.timestamp for c in bars[400:410]])
-        self.assertEqual(left.call_count, 1)
-        self.assertEqual(right.call_count, 1)
+        # Only the ten requested rows became objects, not the store.
+        (_self, lo, hi), _ = materialise.call_args
+        self.assertEqual((lo, hi), (400, 410))
+        self.assertEqual(materialise.call_count, 1)
         selected.pop()
         self.assertEqual(len(snapshot.bars), 1000)
 

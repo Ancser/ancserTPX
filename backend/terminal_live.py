@@ -25,6 +25,7 @@ from backend.broker.topstepx import TopstepXClient
 from backend.db.models import (
     BarUnit, StrategyParams, _extract_symbol,
     current_quarterly_contract_id, normalize_contract_id_to_front,  # 1.0.8: 自動換月
+    SUPPORTED_STRATEGIES, known_strategy_name,
 )
 from backend.live.account_roles import load_roles  # 1.0.9: main account + 每帳號 preset
 from backend.live.engine import LiveTradingEngine
@@ -47,10 +48,6 @@ TRAIL_TICK_STEP = 5
 # Keep in sync with backend.api.routes.ML_TIMEFRAMES so terminal honours the
 # same area-timeframe / overlap selections the web UI saves into presets.
 ML_TIMEFRAMES = ("15m", "30m", "1h", "4h")
-SUPPORTED_STRATEGIES = (
-    "fade", "sigma", "factor", "momentum", "betafib", "pi", "optionwall",
-    "delta_absorption", "volume_profile",
-)
 PI_LONG_KINDS = frozenset(("青π", "深蓝圈", "淡蓝圈"))
 PI_SHORT_KINDS = frozenset(("粉π", "紫圈"))
 PI_SHORT_LEVELS = frozenset((1, 2))
@@ -287,8 +284,8 @@ def _load_presets_file() -> dict:
     for name, params in list(presets.items()):
         if not isinstance(params, dict):
             continue
-        strategy = str(params.get("strategy") or "").lower()
-        params["strategy"] = strategy if strategy in SUPPORTED_STRATEGIES else "factor"
+        # In memory only: the terminal must run a known model.
+        params["strategy"] = known_strategy_name(params.get("strategy")) or "factor"
         params["contract_id"] = normalize_contract_id_to_front(params.get("contract_id") or "")
         params["value_area_pct"] = _normalize_value_area_pct(params.get("value_area_pct"))
         # 1.0.9: HOLD 5m 系統已移除 — 一律 SL/TP-only
@@ -795,13 +792,56 @@ async def _fetch_warmup_candles(
     return best
 
 
-async def run_terminal_live() -> int:
+async def _monitor_terminal_control(run_id, engine_getter, account_getter, stop_event, control_state):
+    """Keep managing positions during status-store failures; block new entries."""
+    from backend import daily_start
+    failures = 0
+    while True:
+        engine = engine_getter()
+        try:
+            status = engine.get_status() if engine and engine.is_running else {
+                "running": True, "starting": True, "phase": "TERMINAL STARTING"}
+            status["restart_pause_ack"] = bool(control_state.get("restart_paused"))
+            # A blocked SQLite call must not leave a previously healthy entry
+            # gate open while the STOP state is unknowable.
+            control_state["healthy"] = False
+            if engine:
+                engine._terminal_control_healthy = False
+            control = await asyncio.to_thread(daily_start.publish, run_id, status, account_getter(), include_pause=True)
+            if control["stop"]:
+                control_state["healthy"] = False
+                if engine:
+                    engine._terminal_control_healthy = False
+                stop_event.set()
+                return
+            control_state["healthy"] = True
+            control_state["restart_paused"] = bool(control["pause"])
+            if engine:
+                engine._terminal_control_healthy = not control_state["restart_paused"]
+            if failures:
+                logger.info("Terminal control recovered after %d failures", failures)
+            failures = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            control_state["healthy"] = False
+            if engine:
+                engine._terminal_control_healthy = False
+            failures += 1
+            logger.exception("Terminal control unavailable; blocking entries and retrying")
+        await asyncio.sleep(min(5, max(1, failures)))
+
+
+async def run_terminal_live(scheduled_token: str = "") -> int:
+    from backend import daily_start
     username = os.getenv("TOPSTEPX_USERNAME", "").strip()
     api_key = os.getenv("TOPSTEPX_API_KEY", "").strip()
     use_demo = _env_bool("TOPSTEPX_USE_DEMO", False)
 
     if not username or not api_key:
         logger.error("Missing TOPSTEPX_USERNAME or TOPSTEPX_API_KEY in .env")
+        if scheduled_token:
+            daily_start.record_error("Terminal failed: missing TopstepX credentials", token=scheduled_token)
         return 2
 
     client = TopstepXClient(username=username, api_key=api_key, use_demo=use_demo)
@@ -809,9 +849,17 @@ async def run_terminal_live() -> int:
     owner_lease: Optional[LiveEngineLease] = None
     recorder_paused = False
     stop_event = asyncio.Event()
+    run_id = ""
+    account_id = 0
+    monitor = None
+    schedule_config = None
+    control_state = {"healthy": False}
 
     def _stop(*_: object) -> None:
-        stop_event.set()
+        try:
+            daily_start.request_stop(account_id)
+        finally:
+            stop_event.set()
 
     for sig_name in ("SIGINT", "SIGTERM"):
         sig = getattr(signal, sig_name, None)
@@ -822,6 +870,10 @@ async def run_terminal_live() -> int:
                 signal.signal(sig, lambda *_args: _stop())
 
     try:
+        run_id, schedule_config = daily_start.begin_terminal(scheduled_token)
+        monitor = asyncio.create_task(_monitor_terminal_control(
+            run_id, lambda: engine, lambda: account_id, stop_event, control_state),
+            name="terminal-control")
         logger.info("ancserTPX terminal starting")
         logger.info("API: %s | user=%s", "demo" if use_demo else "production", username)
 
@@ -837,6 +889,8 @@ async def run_terminal_live() -> int:
         if not account:
             raise RuntimeError("No active tradable account found")
         account_id = int(account["id"])
+        if scheduled_token and account_id != schedule_config["account_id"]:
+            raise RuntimeError("Default account changed; re-enable Daily start to confirm it")
         owner_lease = LiveEngineLease(account_id)
         if not owner_lease.acquire():
             raise RuntimeError(
@@ -847,6 +901,8 @@ async def run_terminal_live() -> int:
         # 1.0.9: 先選帳號,preset 才能按「每帳號指定」優先(account_roles.json),
         # 其次 last_used_live → last_used_bt → default。
         preset_name, preset, preset_source = _load_default_preset(str(account["id"]))
+        if scheduled_token and preset_name != schedule_config["preset"]:
+            raise RuntimeError("Default preset changed; re-enable Daily start to confirm it")
         logger.info("Preset: %s (%s)", preset_name, preset_source)
         _activate_preset_model(preset)
 
@@ -871,6 +927,9 @@ async def run_terminal_live() -> int:
         candles = await _fetch_warmup_candles(client, contract_id, params)
         if not candles:
             raise RuntimeError("No warmup candles returned from TopstepX")
+        if stop_event.is_set() or daily_start.stop_requested(run_id):
+            logger.info("Start cancelled by terminal control")
+            return 0
 
         account_name = account.get("name", "")
         value_area_pct = _normalize_value_area_pct(
@@ -909,7 +968,22 @@ async def run_terminal_live() -> int:
             strategy_params=params,
             owner_lease=owner_lease,
         )
-        await engine.start(candles)
+        engine._terminal_control_healthy = control_state["healthy"]
+        if scheduled_token and not daily_start.mark_engine_starting(run_id):
+            logger.info("Scheduled engine start cancelled by terminal control")
+            return 0
+        start_task = asyncio.create_task(engine.start(candles))
+        stop_task = asyncio.create_task(stop_event.wait())
+        try:
+            done, _ = await asyncio.wait((start_task, stop_task), return_when=asyncio.FIRST_COMPLETED)
+            if stop_task in done:
+                start_task.cancel()
+                await asyncio.gather(start_task, return_exceptions=True)
+                return 0
+            await start_task
+        finally:
+            stop_task.cancel()
+            await asyncio.gather(stop_task, return_exceptions=True)
         if str(getattr(params, "strategy", "")).lower() == "pi":
             recorder_paused = await pause_pi_recorder()
         _set_sleep_inhibit(True)
@@ -949,6 +1023,9 @@ async def run_terminal_live() -> int:
         return 0
     except Exception as exc:
         logger.error("Terminal live failed: %s", exc, exc_info=True)
+        if scheduled_token:
+            daily_start.record_error("Terminal failed (" + type(exc).__name__ + "); see terminal_daily.log",
+                                     run_id=run_id, token="" if run_id else scheduled_token)
         return 1
     finally:
         if recorder_paused:
@@ -969,12 +1046,30 @@ async def run_terminal_live() -> int:
             pass
         if owner_lease is not None:
             owner_lease.release()
+        if monitor is not None:
+            monitor.cancel()
+            await asyncio.gather(monitor, return_exceptions=True)
+        if run_id:
+            daily_start.publish(run_id, {"running": False, "terminal_stopped": True,
+                                        "phase": "TERMINAL STOPPED"}, account_id)
         logger.info("ancserTPX terminal stopped")
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="ancserTPX terminal live runner")
+    parser.add_argument("--scheduled-token", default="", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if args.scheduled_token:
+        from logging.handlers import RotatingFileHandler
+        from backend.data import market_data
+        log_path = market_data.runtime_path("logs", "terminal_daily.log")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(log_path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(handler)
     try:
-        code = asyncio.run(run_terminal_live())
+        code = asyncio.run(run_terminal_live(args.scheduled_token))
     except KeyboardInterrupt:
         code = 0
     sys.exit(code)

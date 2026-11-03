@@ -409,7 +409,7 @@ class MomentumContinuation(_ResearchBase):
     17/18/19/20 的通過率幾乎相同(28/26/27/28),不是因為它穩健,而是因為它
     大部分時候不起作用。
 
-    驗證結果見 docs/1.0.9_RESEARCH_FINDINGS.md:960 格密網格 × 雙商品交集
+    驗證結果見 docs/RESEARCH_REPORT.md 附錄 B:960 格密網格 × 雙商品交集
     22 組、鄰域 6/7 在門檻之上,是唯一在 MNQ 與 MES 上 MC+走查全通過的策略。
     """
     NAME = "MOMENTUM"

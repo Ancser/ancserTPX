@@ -116,9 +116,17 @@ class PiAuditRecorder:
 _recorder: Optional[PiAuditRecorder] = None
 
 
+def _recorder_disabled() -> bool:
+    """The separate live host sets this: its PI engine owns the listener, and
+    ``live_stop`` resuming a recorder there would start a second poller."""
+    return os.getenv("ANCSERTPX_PI_RECORDER", "").strip().lower() in {
+        "0", "false", "no", "off",
+    }
+
+
 def _get_recorder() -> PiAuditRecorder:
     global _recorder
-    token = os.getenv("DISCORD_TOKEN", "").strip()
+    token = "" if _recorder_disabled() else os.getenv("DISCORD_TOKEN", "").strip()
     if _recorder is None or _recorder._token != token:
         _recorder = PiAuditRecorder(token)
     return _recorder

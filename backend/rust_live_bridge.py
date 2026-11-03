@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import fields
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import json
 import logging
 import os
@@ -22,6 +22,7 @@ from typing import Any, Callable, Optional
 
 from dotenv import load_dotenv
 
+from backend.timebase import UTC, utc_now
 from backend.db.models import BarUnit, Direction, OrderRequest, StrategyParams
 from backend.live.engine_lease import LiveEngineLease
 from backend.strategy.exit_policy import (
@@ -56,7 +57,7 @@ _LAST_MARKET_TIMESTAMPS: dict[str, datetime] = {}
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return utc_now()
 
 
 def _emit(message: dict[str, Any]) -> None:
@@ -159,7 +160,7 @@ def _market_context(request: dict[str, Any]) -> dict[str, Any]:
         )
         if timestamp.tzinfo is None or timestamp.utcoffset() is None:
             raise ValueError("timezone_required")
-        timestamp = timestamp.astimezone(timezone.utc)
+        timestamp = timestamp.astimezone(UTC)
     except (KeyError, TypeError, ValueError):
         raise RuntimeError("market_context_timestamp_invalid") from None
     from backend.strategy.session_filter import market_session_code, rth_session_date
@@ -203,7 +204,7 @@ def _event_callback(
                 parsed_stamp = datetime.fromisoformat(str(stamp_text).replace("Z", "+00:00"))
                 if parsed_stamp.tzinfo is None or parsed_stamp.utcoffset() is None:
                     raise ValueError("timezone_required")
-                stamp = parsed_stamp.astimezone(timezone.utc)
+                stamp = parsed_stamp.astimezone(UTC)
             except (TypeError, ValueError):
                 _emit_event("market_ordering_error", {"reason": "market_timestamp_invalid"})
                 return
@@ -305,7 +306,7 @@ async def _start_topstepx(payload: dict[str, Any]) -> dict[str, Any]:
         seen = set()
         warmup = []
         for candle in bars:
-            stamp = candle.timestamp.astimezone(timezone.utc)
+            stamp = candle.timestamp.astimezone(UTC)
             if previous is not None and stamp < previous:
                 raise RuntimeError("historical_warmup_not_monotonic")
             if stamp in seen:

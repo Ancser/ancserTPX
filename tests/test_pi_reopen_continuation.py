@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from backend.backtest.engine import BacktestConfig, BacktestEngine
@@ -258,23 +259,9 @@ def test_live_ticket_persists_restores_and_cancels_on_original_stop_touch(tmp_pa
     assert not (tmp_path / "live-pi-reopen.json").exists()
 
 
-def test_live_reopen_routes_continuation_through_existing_market_order_path(
-    tmp_path, monkeypatch,
-):
-    engine = _live_engine(tmp_path)
-    engine._pi_reopen_ticket = {
-        "version": 1,
-        "account_id": 123,
-        "contract_id": CONTRACT,
-        "direction": "buy",
-        "source_entry": 100.0,
-        "original_sl": 90.0,
-        "original_tp": 120.0,
-        "flat_price": 100.0,
-        "flat_time": "2026-07-15T19:45:00+00:00",
-        "pi": {"kind": "深蓝圈", "level": 2, "message_id": "source-1"},
-        "source_reason": "PI Level 2 source",
-    }
+def _prime_reopen_tick(engine, monkeypatch):
+    """One live tick at 18:01 ET (DST) with broker I/O stubbed; entries are
+    captured at the existing market-order boundary."""
     engine.trend_follow._atr_blend = Mock(return_value=2.0)
     engine._today = "2026-07-15"
     engine._get_topstep_trade_date = Mock(return_value="2026-07-15")
@@ -300,10 +287,102 @@ def test_live_reopen_routes_continuation_through_existing_market_order_path(
         lambda: datetime(2026, 7, 15, 22, 1),
     )
 
+
+def test_live_reopen_routes_continuation_through_existing_market_order_path(
+    tmp_path, monkeypatch,
+):
+    engine = _live_engine(tmp_path)
+    engine._pi_reopen_ticket = {
+        "version": 1,
+        "account_id": 123,
+        "contract_id": CONTRACT,
+        "direction": "buy",
+        "source_entry": 100.0,
+        "original_sl": 90.0,
+        "original_tp": 120.0,
+        "flat_price": 100.0,
+        "flat_time": "2026-07-15T19:45:00+00:00",
+        "pi": {"kind": "深蓝圈", "level": 2, "message_id": "source-1"},
+        "source_reason": "PI Level 2 source",
+    }
+    _prime_reopen_tick(engine, monkeypatch)
+
     asyncio.run(engine._tick())
 
     engine._place_market_entry.assert_awaited_once()
     submitted = engine._place_market_entry.await_args.args[0]
     assert submitted.meta["pi_continuation"]["reentries_for_source"] == 1
     assert submitted.meta["pi"]["kind"] == "深蓝圈"
+    assert engine._pi_reopen_ticket is None
+
+
+# ── The shipped preset: PI STRICT MNQ REOPEN (RESEARCH_REPORT §3.1) ─────────
+
+REOPEN_PRESET = "PI STRICT MNQ REOPEN"
+
+
+def _shipped_presets() -> dict:
+    path = Path(__file__).resolve().parents[1] / "data" / "presets.json"
+    return json.loads(path.read_text(encoding="utf-8"))["presets"]
+
+
+def _web_live_params(preset: dict) -> StrategyParams:
+    """The preset as the LIVE panel posts it to /live/start."""
+    from backend.api.routes import LiveStartRequest, _build_strategy_params_from_request
+
+    fields = {k: v for k, v in preset.items() if k in LiveStartRequest.model_fields}
+    request = LiveStartRequest(account_id=123, **fields)
+    return _build_strategy_params_from_request(request, int(preset.get("contract_size") or 1))
+
+
+def test_reopen_preset_is_strict_plus_cyan_continuation_only():
+    presets = _shipped_presets()
+    strict, reopen = presets["PI STRICT MNQ"], presets[REOPEN_PRESET]
+    changed = {k for k in set(strict) | set(reopen) if strict.get(k) != reopen.get(k)}
+    assert changed == {"pi_continue_long_kinds"}
+    assert reopen["pi_continue_long_kinds"] == ["青π"]
+
+
+def test_reopen_preset_continues_only_cyan_on_both_live_paths():
+    from backend.terminal_live import _build_strategy_params
+
+    preset = _shipped_presets()[REOPEN_PRESET]
+    for params in (_web_live_params(preset), _build_strategy_params(preset, preset["contract_id"])):
+        strategy = PiSignalStrategy(params)
+        assert strategy.pi_long_kinds == ("青π",) and strategy.pi_short_kinds == ("粉π",)
+        assert strategy.continuation_enabled(_pi_trade_signal(kind="青π", level=3))      # positive
+        assert not strategy.continuation_enabled(
+            _pi_trade_signal(kind="粉π", level=3, direction=Direction.SELL))
+        assert not strategy.continuation_enabled(_pi_trade_signal(kind="深蓝圈", level=2))
+        assert (strategy.pi_long_hold, strategy.pi_short_hold) == (0, 60)
+        assert float(params.pi_reopen_max_gap_r) == 1.0
+
+
+def test_live_engine_arms_cyan_at_close_and_reenters_at_reopen_with_the_preset(
+    tmp_path, monkeypatch,
+):
+    engine = _live_engine(tmp_path, _web_live_params(_shipped_presets()[REOPEN_PRESET]))
+    engine._open_position = {"contractId": CONTRACT, "size": 1}
+    engine._active_signal = _pi_trade_signal(kind="青π", level=3)
+    engine._fill_price = 100.0
+    engine._active_signal.original_entry_price = 100.0
+    engine._active_signal.original_sl_price = 90.0
+    engine._active_signal.original_tp_price = 120.0
+    flat_time = datetime(2026, 7, 15, 19, 45, tzinfo=UTC)                  # 15:45 ET flatten
+
+    assert engine._arm_pi_reopen_ticket(
+        _candle(datetime(2026, 7, 15, 19, 44, tzinfo=UTC), price=101.0), flat_time)
+    saved = json.loads((tmp_path / "live-pi-reopen.json").read_text(encoding="utf-8"))
+    assert saved["pi"]["kind"] == "青π"
+
+    engine._open_position = None                                         # flattened at the close
+    engine._active_signal = None
+    _prime_reopen_tick(engine, monkeypatch)
+    asyncio.run(engine._tick())                                          # 18:01 ET reopen
+
+    engine._place_market_entry.assert_awaited_once()
+    submitted = engine._place_market_entry.await_args.args[0]
+    assert submitted.direction == Direction.BUY
+    assert submitted.meta["pi"]["kind"] == "青π"
+    assert submitted.meta["pi_continuation"]["reentries_for_source"] == 1
     assert engine._pi_reopen_ticket is None

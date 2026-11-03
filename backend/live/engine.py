@@ -224,7 +224,7 @@ class LiveTradingEngine:
         elif self.strategy_mode == "volume_profile":
             self.trend_follow = VolumeProfileStrategy(params=self.strategy_params)
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
-        # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
+        # docs/RESEARCH_REPORT.md 附錄 B)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
         elif self.strategy_mode == "momentum":
             from backend.strategy.research_lab import MomentumContinuation
@@ -237,7 +237,7 @@ class LiveTradingEngine:
         # 1.0.9: TREND(SessionTrendFollow)已移除 —— 288 個變體 0 通過
         # MC+WF+PF>2,每筆邊際最佳 +9.6t 低於實測 14t 往返滑價。
         # 舊 preset 若仍帶 strategy="trend",一律落到 FACTOR。
-        # 詳見 docs/1.0.9_DELETE_LIST.md。
+        # 詳見 docs/RESEARCH_REPORT.md 附錄 C。
         else:
             self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
         # 1.0.8: fade 前日 VP 計算器(僅 fade 模式使用)
@@ -294,7 +294,7 @@ class LiveTradingEngine:
         self._pending_conf_payload: Optional[Dict] = None
         self._active_conf_payload: Optional[Dict] = None
         # 1.0.9: confluence/ML live evaluator removed wholesale.
-        # See docs/1.0.9_DELETE_LIST.md.
+        # See docs/RESEARCH_REPORT.md appendix C.
         self.confluence = None
         # 1.0.8: 移除 ML Consolidation V2 (mlc2) live evaluator 與相關狀態
         self.strategies = [self.strategy_mode]
@@ -302,6 +302,9 @@ class LiveTradingEngine:
         # Live state
         self._running = False
         self._starting = False
+        # Terminal control uncertainty blocks new entries while the existing
+        # position management and broker-side protection continue operating.
+        self._terminal_control_healthy = True
         self._task: Optional[asyncio.Task] = None
         # Main-loop heartbeat.  Task.done() cannot distinguish a healthy task
         # from one alive but suspended indefinitely inside an awaited _tick().
@@ -2346,6 +2349,8 @@ class LiveTradingEngine:
         starting = bool(self._running and self._starting)
         health_reasons = []
         if self._running and not starting:
+            if not self._terminal_control_healthy:
+                health_reasons.append("terminal_control_unavailable")
             if not task_alive:
                 health_reasons.append("engine_task_not_running")
             if tick_overdue:
@@ -3066,10 +3071,13 @@ class LiveTradingEngine:
                     )
                     return accepted
 
+                # P1: 5s bounds the normal polling wait more tightly while the
+                # listener's existing 30/minute bucket and 429 handling remain
+                # in force.  Signals still enter through the normal bar/risk path.
                 self._pi_listener = PiListener.from_env(
-                    _on_pi, poll_seconds=30.0, rate_limit_per_min=30)
+                    _on_pi, poll_seconds=5.0, rate_limit_per_min=30)
                 self._pi_task = asyncio.create_task(self._pi_listener.run())
-                self._log_event("[PI] Discord 監聽已啟動(6:30–13:00 PT · 每 30 秒)")
+                self._log_event("[PI] Discord 監聽已啟動(6:30–13:00 PT · 每 5 秒)")
             except Exception as exc:
                 # 監聽起不來就不能假裝在跑 —— 明確報錯,否則使用者會以為
                 # 「今天沒訊號」,實際上是根本沒連上
@@ -4501,6 +4509,9 @@ class LiveTradingEngine:
 
         Returns True if order was placed, False if blocked.
         """
+        if not self._terminal_control_healthy:
+            self._log_event("[CONTROL BLOCK] Terminal control unavailable; new entry blocked", "error")
+            return False
         exit_policy = self._exit_policy_for_signal(signal)
         # Round all prices to valid tick size (0.25)
         signal.entry_price = self._round_to_tick(signal.entry_price)
@@ -4580,6 +4591,9 @@ class LiveTradingEngine:
             take_profit_bracket=take_profit_bracket,
         )
 
+        if not self._terminal_control_healthy:
+            self._log_event("[CONTROL BLOCK] Terminal control unavailable; new entry blocked", "error")
+            return False
         try:
             resp = await self.client.place_order(order)
             if resp.success:
@@ -4617,6 +4631,9 @@ class LiveTradingEngine:
 
     async def _place_market_entry(self, signal: TradeSignal) -> bool:
         """Place a market entry with atomic attached Auto OCO protection."""
+        if not self._terminal_control_healthy:
+            self._log_event("[CONTROL BLOCK] Terminal control unavailable; new entry blocked", "error")
+            return False
         exit_policy = self._exit_policy_for_signal(signal)
         signal.entry_price = self._round_to_tick(signal.entry_price)
         signal.sl_price = self._round_to_tick(signal.sl_price)
@@ -4671,6 +4688,9 @@ class LiveTradingEngine:
             take_profit_bracket=take_profit_bracket,
         )
 
+        if not self._terminal_control_healthy:
+            self._log_event("[CONTROL BLOCK] Terminal control unavailable; new entry blocked", "error")
+            return False
         try:
             resp = await self.client.place_order(order)
             if resp.success:

@@ -10,7 +10,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 STORE = ROOT / "data" / "store"
 SEED = STORE / "seed"
-SKIN = ROOT / "frontend" / "static" / "tpx-glass-skin.js"
 
 
 class TestStoreIsNotVersioned:
@@ -106,14 +105,12 @@ class TestLanguageSwitchRemoved:
         html = (ROOT / "frontend" / "static" / "ancserTPX.html").read_text(encoding="utf-8")
         js = (ROOT / "frontend" / "static" / "ancserTPX.js").read_text(encoding="utf-8")
         css = (ROOT / "frontend" / "static" / "ancserTPX.css").read_text(encoding="utf-8")
-        skin = SKIN.read_text(encoding="utf-8")
 
         assert '<html lang="en">' in html
         assert 'id="lang-toggle"' not in html
         assert "toggleLanguage" not in js
         assert "UI_LANG" not in js
         assert "tip.zh" not in js
-        assert "lang-toggle" not in skin
         assert ".lang-toggle" not in css
 
     def test_normal_preset_controls_are_not_removed_with_language_switch(self):

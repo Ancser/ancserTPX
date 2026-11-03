@@ -33,14 +33,14 @@ test("native design layer keeps hierarchy and controls usable", async ({ page })
   expect(scanlines).toBe("none");
 
   await page.locator("#chart-layer-btn").click();
-  const switches = page.locator("#chart-layer-pop .glass-switch");
-  await expect(switches).toHaveCount(11);
+  const switches = page.locator("#chart-layer-pop .ui-switch");
+  await expect(switches).toHaveCount(17);
   const rows = page.locator("#chart-layer-pop .layer-row");
   const boxes = await switches.evaluateAll((nodes) => nodes.map((node) => {
     const box = node.getBoundingClientRect();
     return { x: box.x, right: box.right, width: box.width };
   }));
-  expect(boxes).toHaveLength(11);
+  expect(boxes).toHaveLength(17);
   expect(Math.max(...boxes.map((box) => box.x)) - Math.min(...boxes.map((box) => box.x))).toBeLessThanOrEqual(1);
   expect(Math.max(...boxes.map((box) => box.width)) - Math.min(...boxes.map((box) => box.width))).toBeLessThanOrEqual(1);
 });
@@ -50,12 +50,10 @@ test("chart layer switches close, reopen, and toggle without proxy pixels", asyn
   await openNativeApp(page);
   await page.locator("#chart-layer-btn").click();
   const popup = page.locator("#chart-layer-pop");
-  const optionWall = popup.locator('.glass-switch[data-switch-proxy="lp-optionwall"]');
+  const optionWall = popup.locator('.ui-switch[data-switch-proxy="lp-optionwall"]');
   await expect(optionWall).toHaveAttribute("aria-checked", "false");
-  await expect(popup.locator(".glass-proxy-hidden")).toHaveCount(11);
-  await expect.poll(() => popup.locator(".glass-proxy-hidden").evaluateAll((nodes) => (
-    nodes.every((node) => getComputedStyle(node).display === "none")
-  ))).toBe(true);
+  // No forwarding proxies remain: each switch owns its own click.
+  await expect(popup.locator("[class*=proxy]")).toHaveCount(0);
 
   await optionWall.click();
   await expect(optionWall).toHaveAttribute("aria-checked", "true");
@@ -132,7 +130,15 @@ test("connection panel keeps credentials only and removes manual data controls",
 test("connection identity and provider latency rail expose the requested states", async ({ page }) => {
   await openNativeApp(page);
   await expect(page.locator("#connection-initial")).toHaveText("?");
+  // Without saved credentials the app opens the connection panel by itself
+  // ~0.5 s after its config loads.  Wait for that instead of racing it: a
+  // click that lands after the auto-open toggles the panel closed.
+  const panel = page.locator("#conn-panel");
+  await expect(panel).toHaveClass(/open/);
   await page.locator("#conn-trigger").click();
+  await expect(panel).not.toHaveClass(/open/);
+  await page.locator("#conn-trigger").click();
+  await expect(panel).toHaveClass(/open/);
   await page.locator("#username").fill("ancser");
   await expect(page.locator("#connection-initial")).toHaveText("a");
 
@@ -497,9 +503,8 @@ test("chart uses smooth-200 framing and keeps plot panning free", async ({ page 
   }));
   expect((initial.range.from + initial.range.to) / 2).toBeCloseTo(2899.5, 0);
   expect(initial.autoScale).toBe(true);
-  // Mouse inertia is owned by the sensitivity-aware controller so release
-  // cannot snap back to Lightweight Charts' uncorrected offset.
-  expect(initial.kineticMouse).toBe(false);
+  // The library owns the whole plot drag, including its release inertia.
+  expect(initial.kineticMouse).toBe(true);
 
   const box = await page.locator("#chart-container").boundingBox();
   const rightScaleWidth = await page.evaluate(() => chart.priceScale("right").width());
@@ -516,24 +521,165 @@ test("chart uses smooth-200 framing and keeps plot panning free", async ({ page 
   await page.mouse.down();
   await page.mouse.move(x, y + 100, { steps: 8 });
   const vertical = await page.evaluate(() => ({
-    autoScale: chart.priceScale("right").options().autoScale,
+    manual: _chartManualPriceRange,
     priceY: candleSeries.priceToCoordinate(window.__chartPanProbe),
   }));
-  expect(vertical.autoScale).toBe(false);
+  // A vertical drag takes the price window (manual) and price follows it.
+  expect(vertical.manual).not.toBeNull();
   expect(Math.abs(vertical.priceY - before.priceY)).toBeGreaterThan(10);
   await page.mouse.up();
 
-  await page.evaluate(() => chart.priceScale("right").applyOptions({ autoScale: true }));
+  await page.evaluate(() => _setChartPriceAutoScale(true));
   await page.mouse.move(x, y);
   await page.mouse.down();
-  await page.mouse.move(x + 100, y, { steps: 8 });
-  const horizontal = await page.evaluate(() => ({
+  await page.mouse.move(x + 100, y, { steps: 25 });
+  // The library applies pointer moves on the next animation frame.
+  const horizontal = await page.evaluate(() => new Promise((resolve) =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve({
+      scroll: chart.timeScale().scrollPosition(),
+      spacing: chart.timeScale().options().barSpacing,
+      manual: _chartManualPriceRange,
+    }))),
+  ));
+  expect(horizontal.manual).toBeNull();   // a horizontal pan keeps auto-fit
+  // Cursor-locked 1:1 like TradingView. The library records the move that
+  // crosses its 5px click threshold (the 2nd 4px step) as the scroll origin
+  // and pans from the next move, so ~12px of the 100px is not credited; the
+  // old 1.10x controller moved more than the cursor did.
+  const cursorPan = 100 / Number(before.spacing);
+  const moved = Math.abs(horizontal.scroll - before.scroll);
+  expect(moved).toBeGreaterThan(cursorPan * 0.85);
+  expect(moved).toBeLessThanOrEqual(cursorPan * 1.005);
+  await page.mouse.up();
+});
+
+// Trending bars: panning to older (lower) bars must refit the price window.
+async function openTrendChart(page) {
+  await openNativeApp(page);
+  await page.evaluate(() => {
+    const bars = Array.from({ length: 3000 }, (_, i) => {
+      const close = 100 + i * 0.05 + Math.sin(i / 13) * 0.5;
+      return {
+        time: new Date((1700000000 + i * 60) * 1000).toISOString(),
+        open: close - 0.1, high: close + 0.5, low: close - 0.5, close,
+      };
+    });
+    showCandleData(bars);
+  });
+  await page.waitForFunction(() => chart.timeScale().getVisibleLogicalRange());
+  const box = await page.locator("#chart-container").boundingBox();
+  const rightScaleWidth = await page.evaluate(() => chart.priceScale("right").width());
+  return { box, rightScaleWidth, x: box.x + (box.width - rightScaleWidth) * 0.35, y: box.y + box.height * 0.45 };
+}
+
+// Let the library apply pending moves and the 220ms auto-fit easing finish.
+const readScale = (page) => page.evaluate(async () => {
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  await new Promise((r) => setTimeout(r, 300));
+  return {
+    range: _chartPriceRangeFromCanvas(),
+    manual: _chartManualPriceRange,
     scroll: chart.timeScale().scrollPosition(),
     spacing: chart.timeScale().options().barSpacing,
-  }));
-  const expectedPan = (100 / Number(before.spacing)) * 1.10;
-  expect(Math.abs(horizontal.scroll - before.scroll)).toBeGreaterThan(expectedPan * 0.95);
+  };
+});
+
+test("a horizontal drag keeps auto-fit: the price window refits as bars change", async ({ page }) => {
+  const { x, y } = await openTrendChart(page);
+  const before = await readScale(page);
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 400, y + 6, { steps: 30 });   // right = older, lower bars
+  await page.waitForTimeout(250);                          // settle: no release inertia
   await page.mouse.up();
+  const after = await readScale(page);
+  const detail = JSON.stringify({ before, after });
+  expect(after.manual, detail).toBeNull();
+  expect(after.scroll, detail).toBeLessThan(before.scroll - 5);
+  // Auto-fit extended down to the older, lower bars instead of freezing the
+  // old window (the newest bars are still in view, so the top stays).
+  expect(after.range.minValue, detail).toBeLessThan(before.range.minValue - 5);
+});
+
+test("two-finger trackpad swipes pan price vertically and time horizontally", async ({ page }) => {
+  const { x, y } = await openTrendChart(page);
+  await page.mouse.move(x, y);
+  const before = await readScale(page);
+  for (let i = 0; i < 6; i++) await page.mouse.wheel(0, 8);       // small deltas = trackpad
+  const vertical = await readScale(page);
+  for (let i = 0; i < 6; i++) await page.mouse.wheel(12, 0);
+  const horizontal = await readScale(page);
+  const detail = JSON.stringify({ before, vertical, horizontal });
+  expect(vertical.manual, detail).not.toBeNull();
+  // Swipe up (deltaY > 0) moves content up: the window moves to lower prices.
+  expect(vertical.range.maxValue, detail).toBeLessThan(before.range.maxValue);
+  expect(vertical.spacing, detail).toBeCloseTo(before.spacing, 6);   // no zoom
+  expect(Math.abs(horizontal.scroll - vertical.scroll), detail).toBeGreaterThan(0.5);
+  expect(horizontal.spacing, detail).toBeCloseTo(before.spacing, 6);
+});
+
+test("a mouse-wheel notch still zooms and keeps auto-fit", async ({ page }) => {
+  const { x, y } = await openTrendChart(page);
+  await page.mouse.move(x, y);
+  const before = await readScale(page);
+  await page.mouse.wheel(0, -100);
+  const after = await readScale(page);
+  const detail = JSON.stringify({ before, after });
+  expect(after.manual, detail).toBeNull();
+  expect(after.spacing, detail).not.toBeCloseTo(before.spacing, 3);
+});
+
+test("double-clicking the price axis returns the price window to auto-fit", async ({ page }) => {
+  const { box, rightScaleWidth, x, y } = await openTrendChart(page);
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x, y + 80, { steps: 10 });
+  await page.mouse.up();
+  const manual = await readScale(page);
+  expect(manual.manual).not.toBeNull();
+  await page.mouse.dblclick(box.x + box.width - rightScaleWidth / 2, y);
+  const reset = await readScale(page);
+  expect(reset.manual, JSON.stringify({ manual, reset })).toBeNull();
+});
+
+test("a diagonal plot drag moves time and price in the same gesture", async ({ page }) => {
+  // The old controller locked each drag to one axis after 5px, so a diagonal
+  // drag could only move time OR price. Sample mid-gesture, mouse still down.
+  await openNativeApp(page);
+  await page.evaluate(() => {
+    const bars = Array.from({ length: 3000 }, (_, i) => {
+      const close = 100 + i * 0.01 + Math.sin(i / 13) * 0.5;
+      return {
+        time: new Date((1700000000 + i * 60) * 1000).toISOString(),
+        open: close - 0.1, high: close + 0.5, low: close - 0.5, close,
+      };
+    });
+    window.__chartPanProbe = bars[2700].close;
+    showCandleData(bars);
+  });
+  await page.waitForFunction(() => chart.timeScale().getVisibleLogicalRange());
+  const box = await page.locator("#chart-container").boundingBox();
+  const rightScaleWidth = await page.evaluate(() => chart.priceScale("right").width());
+  const x = box.x + Math.max(24, (box.width - rightScaleWidth) * 0.35);
+  const y = box.y + box.height * 0.45;
+  const read = () => page.evaluate(() => ({
+    scroll: chart.timeScale().scrollPosition(),
+    priceY: candleSeries.priceToCoordinate(window.__chartPanProbe),
+  }));
+  const before = await read();
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 60, y + 40, { steps: 6 });
+  const mid = await read();
+  await page.mouse.move(x + 120, y + 80, { steps: 6 });
+  const late = await read();
+  await page.mouse.up();
+
+  // Both axes moved during the drag, and kept moving as the drag continued.
+  expect(Math.abs(mid.scroll - before.scroll)).toBeGreaterThan(1);
+  expect(Math.abs(mid.priceY - before.priceY)).toBeGreaterThan(10);
+  expect(Math.abs(late.scroll - mid.scroll)).toBeGreaterThan(1);
+  expect(Math.abs(late.priceY - mid.priceY)).toBeGreaterThan(10);
 });
 
 test("holding the plot does not create a second horizontal drift", async ({ page }) => {
@@ -595,8 +741,12 @@ test("plot drag follows one monotonic horizontal position while held", async ({ 
   }
   await page.mouse.up();
 
-  const diffs = samples.slice(1).map((value, index) => value - samples[index]);
-  expect(diffs.every((diff) => diff < -0.01)).toBe(true);
+  // samples[0] is the move that crosses the library's 5px start threshold;
+  // scrolling begins there, and every later move must advance monotonically.
+  const detail = JSON.stringify(samples);
+  const diffs = samples.slice(2).map((value, index) => value - samples[index + 1]);
+  expect(diffs.every((diff) => diff < -0.01), detail).toBe(true);
+  expect(samples[1] - samples[0], detail).toBeLessThanOrEqual(0);
 });
 
 test("background candle refresh keeps the user's horizontal viewport", async ({ page }) => {
@@ -945,7 +1095,7 @@ test("uses clear icons and flat, darker controls for the parameter rail", async 
         return { background: css.backgroundColor, border: css.borderTopWidth, color: css.color };
       })(),
       switch: (() => {
-        const track = document.querySelector(".glass-switch.on");
+        const track = document.querySelector(".ui-switch.on");
         const thumb = track?.querySelector(".switch-thumb");
         return {
           trackRadius: track ? getComputedStyle(track).borderRadius : null,
@@ -978,4 +1128,183 @@ test("uses clear icons and flat, darker controls for the parameter rail", async 
   expect(surface.switch.trackRadius).toBe("999px");
   expect(surface.switch.trackBackground).toBe("rgba(0, 0, 0, 0)");
   expect(surface.switch.thumbRadius).toBe("50%");
+});
+
+test("chart layer choices survive a reload and the first click toggles from the restored state", async ({ page }) => {
+  // UI-022 (browser half; the old check lived in the removed glass-ui spec).
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem("layerTestSeeded")) {
+      localStorage.removeItem("ancserTPX.chartLayers");
+      sessionStorage.setItem("layerTestSeeded", "1");
+    }
+  });
+  await openNativeApp(page);
+  await page.locator("#chart-layer-btn").click();
+  const wall = page.locator('#chart-layer-pop .ui-switch[data-switch-proxy="lp-optionwall"]');
+  await expect(wall).toHaveAttribute("aria-checked", "false");
+  await wall.click();
+  await expect(wall).toHaveAttribute("aria-checked", "true");
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => typeof candleSeries !== "undefined" && !!candleSeries);
+  const restored = page.locator('#chart-layer-pop .ui-switch[data-switch-proxy="lp-optionwall"]');
+  await expect(restored).toHaveAttribute("aria-checked", "true");
+  expect(await page.evaluate(() => layerOn("optionwall"))).toBe(true);
+  await page.locator("#chart-layer-btn").click();
+  await restored.click();                       // first interaction after reload
+  await expect(restored).toHaveAttribute("aria-checked", "false");
+  expect(await page.evaluate(() => layerOn("optionwall"))).toBe(false);
+});
+
+test("contract out of sync shows the amber warning mark just above the date axis", async ({ page }) => {
+  await openNativeApp(page);
+  await page.waitForFunction(() => typeof candleSeries !== "undefined" && !!candleSeries);
+  let inSync = false;
+  const detail = "Chart live feed (Topstep): Z26 / History & backtests (calendar roll): H27";
+  await page.route("**/api/connection/status", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      providers: {},
+      startup: { backend: "connected", provider_count: 3 },
+      contract: {
+        in_sync: inSync,
+        codes: { chart: "Z26", calendar: inSync ? "Z26" : "H27", topstep: "Z26" },
+        detail: inSync ? "" : detail,
+      },
+    }),
+  }));
+  await page.evaluate(() => refreshConnectionStatus());
+  const mark = page.locator("#chart-contract-sync");
+  await expect(mark).toBeVisible();
+  await expect(mark.locator(".tpx-warn .tpx-alert-mark")).toHaveCount(1);   // the shared icon
+  await expect(mark).toHaveAttribute("title", detail);
+  await expect(page.locator("#chart-contract-sync-text")).toHaveText("CONTRACT Z26 / STORE H27");
+  const geometry = await page.evaluate(() => {
+    const box = document.getElementById("chart-contract-sync").getBoundingClientRect();
+    const container = document.getElementById("chart-container").getBoundingClientRect();
+    return { top: box.top, bottom: box.bottom, left: box.left, right: box.right,
+             cTop: container.top, cBottom: container.bottom, cLeft: container.left,
+             cRight: container.right, axis: _timeAxisHeight(),
+             color: getComputedStyle(document.querySelector("#chart-contract-sync .tpx-warn")).color };
+  });
+  // Inside the chart, above the date axis, within one axis-height of it.
+  expect(geometry.bottom).toBeLessThanOrEqual(geometry.cBottom - geometry.axis);
+  expect(geometry.bottom).toBeGreaterThan(geometry.cBottom - geometry.axis - 24);
+  expect(geometry.left).toBeGreaterThan(geometry.cLeft);
+  expect(geometry.right).toBeLessThan(geometry.cRight);
+  expect(geometry.color).toBe("rgb(251, 191, 36)");                        // same amber as elsewhere
+  // Never covers the chart tools / timeframe selector on the same row.
+  const buttons = await page.locator("#chart-quick-btns").boundingBox();
+  expect(geometry.right).toBeLessThanOrEqual(buttons.x);
+  expect(Math.abs(geometry.bottom - (buttons.y + buttons.height))).toBeLessThan(2);
+
+  inSync = true;
+  await page.evaluate(() => refreshConnectionStatus());
+  await expect(mark).toBeHidden();
+});
+
+test("PI OPTIONS model uses its own panel and endpoint; the options account arms ALERT mode", async ({ page }) => {
+  await openNativeApp(page);
+  await page.waitForFunction(() => typeof candleSeries !== "undefined" && !!candleSeries);
+  const posted = { backtest: null, account: null };
+  await page.route("**/api/backtest/pi-options", async (route) => {
+    posted.backtest = JSON.parse(route.request().postData() || "{}");
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      strategy: "pi_options", zones: [], equity_curve: [],
+      options_summary: { trades: 1, signals: 1, total: 495, max_dd: 0, pf: 999, without_best_2_dates: 0, data_window: {} },
+      metrics: { total_trades: 1, wins: 1, losses: 0, win_rate: 1, avg_win: 495, avg_loss: 0, avg_rr_ratio: 0,
+                 expectancy: 495, max_drawdown: 0, max_drawdown_pct: 0, profit_factor: 999,
+                 max_consecutive_losses: 0, total_pnl: 495, daily_pnl: {}, weekly_stats: {} },
+      trades: [{ trade_id: "PIOPT-1", strategy: "pi_options", asset: "option", symbol: "QQQ 603C 07/31", size: 5,
+                 direction: "buy", entry_price: 2.0, entry_time: "2026-07-30T19:00:00+00:00", exit_price: 3.0,
+                 exit_time: "2026-07-31T19:30:00+00:00", pnl: 493.5, commission: 6.5, fees: 0, exit_reason: "time" }],
+      option_rows: [
+        { status: "limit_not_filled", symbol: "SPY", tier: "LV2", contract: "SPY 667C 07/30", contracts: 0,
+          signal_time: "2026-07-29T18:00:00+00:00", signal_ask: 2.5, limit: 1.5, net: 0, ret: null },
+        { status: "filled", symbol: "QQQ", tier: "LV3", contract: "QQQ 603C 07/31", contracts: 5,
+          signal_time: "2026-07-30T19:00:00+00:00", signal_ask: 2.0, limit: 1.2,
+          entry_time: "2026-07-31T13:31:00+00:00", entry_price: 1.2, exit_time: "2026-07-31T19:30:00+00:00",
+          exit_price: 3.0, exit_reason: "time", net: 893.5, ret: 1.5 },
+      ],
+    }) });
+  });
+  await page.route("**/api/options/account", async (route) => {
+    if (route.request().method() === "POST") posted.account = JSON.parse(route.request().postData() || "{}");
+    const on = !!(posted.account && posted.account.enabled);
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      account: { mode: "alert", enabled: on, settings: (posted.account || {}).settings || {} },
+      broker: { connected: false, detail: "Not connected" },
+      status: { running: on, tickets: [] },
+    }) });
+  });
+
+  await page.selectOption("#strategy-bt", "pi_options");
+  await expect(page.locator("#pi-options-params-bt")).toBeVisible();
+  await expect(page.locator("#tr-params-bt")).toBeHidden();
+  await expect(page.locator("#piopt-strike-bt")).toHaveValue("otm_3");   // research defaults
+  await expect(page.locator("#piopt-entry-bt")).toHaveValue("0");
+  await expect(page.locator("#piopt-exit-bt")).toHaveValue("15:30");
+  await expect(page.locator("#piopt-size-bt")).toHaveValue("1");            // one contract per signal
+  await expect(page.locator("#piopt-budget-bt")).toBeDisabled();
+  await page.selectOption("#piopt-size-bt", "");                            // BY BUDGET
+  await expect(page.locator("#piopt-budget-bt")).toBeEnabled();
+  await page.selectOption("#piopt-size-bt", "1");
+  await expect(page.locator("#piopt-budget-bt")).toBeDisabled();
+
+  await page.evaluate(() => runBacktest());
+  await expect(page.locator("#trades-tbody")).toContainText("5 QQQ 603C 07/31");
+  // Every signal gets its own row, with option columns; unfilled limits stay listed.
+  const headers = () => page.locator("#btab-trades thead th").allTextContents();
+  expect(await headers()).toEqual(["CONTRACT", "TIME", "TIER", "SIGNAL ASK", "ENTRY", "EXIT", "RETURN", "NET P&L", "RESULT"]);
+  const rows = page.locator("#trades-tbody tr");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0)).toContainText("+150.0%");                    // newest first
+  await expect(rows.nth(0)).toContainText("$+893.50");
+  await expect(rows.nth(0)).toContainText("TIME");
+  // A limit filled the next morning: TIME starts at the signal, ENTRY carries the fill time.
+  await expect(rows.nth(0).locator("td").nth(1)).toHaveAttribute("class", /trade-time-cell/);
+  expect(await rows.nth(0).locator("td").nth(1).locator("[aria-label]").getAttribute("aria-label"))
+    .toMatch(/^07\/30\/2026 03:00PM → 07\/31\/2026 03:30PM$/);
+  await expect(rows.nth(0).locator("td").nth(4)).toHaveText("1.20 @ 07/31 09:31AM");
+  await expect(rows.nth(1)).toContainText("MISSED");
+  await expect(rows.nth(1)).toContainText("2.50 → LMT 1.50");
+  expect(await rows.nth(1).locator("td").count()).toBe(9);
+  expect(posted.backtest).toMatchObject({ strike: "otm_3", entry_discount: 0, exit_time: "15:30",
+                                          stop: null, target: null, tiers: ["LV2", "LV3"], contracts: 1 });
+
+  await page.evaluate(() => optionsAccountSave(true));
+  await expect(page.locator("#opt-status")).toHaveText("ALERTS ON");
+  expect(posted.account).toMatchObject({ mode: "alert", enabled: true });
+  expect(posted.account.settings.strike).toBe("otm_3");
+  expect(posted.account.settings.contracts).toBe(1);
+
+  await page.selectOption("#strategy-bt", "factor");
+  await expect(page.locator("#pi-options-params-bt")).toBeHidden();
+  await expect(page.locator("#tr-params-bt")).toBeVisible();
+  // A futures result restores the futures columns.
+  await page.evaluate(() => renderTrades([{ entry_time: "2026-09-09T17:30:00Z", exit_time: "2026-09-09T18:00:00Z",
+    entry_price: 29000, exit_price: 29010, direction: "buy", size: 1, symbol: "/MNQ", pnl: 20 }]));
+  expect(await headers()).toEqual(["CONTRACT", "TIME", "DURATION", "ENTRY", "EXIT", "P&L", "COMMISSION", "FEES", "DIR"]);
+});
+
+test("PI STRICT MNQ REOPEN loads into the LIVE panel with only the 青π continuation armed", async ({ page }) => {
+  await openNativeApp(page);
+  await page.waitForFunction(() => !!(_presetsCache.presets || {})["PI STRICT MNQ REOPEN"]);
+  const payload = await page.evaluate(() => {
+    applyStrategyParams("live", _presetsCache.presets["PI STRICT MNQ REOPEN"]);
+    return collectStrategyParams("live");
+  });
+  // The LIVE panel posts collectStrategyParams("live") to /live/start.
+  expect(payload.strategy).toBe("pi");
+  expect(payload.pi_continue_long_kinds).toEqual(["青π"]);
+  expect(payload.pi_continue_short_kinds).toEqual([]);
+  expect(payload.pi_long_kinds).toEqual(["青π"]);
+  expect(payload.pi_short_kinds).toEqual(["粉π"]);
+  expect(payload.pi_reopen_max_gap_r).toBe(1);
+  expect(payload.pi_short_hold_min).toBe(60);
+  expect(payload.contract_size).toBe(1);
+  await expect(page.locator("#pi-continue-live-long-pi")).toHaveAttribute("aria-checked", "true");
+  for (const id of ["long-level2", "long-level1", "short-pi", "short-level2", "short-level1"]) {
+    await expect(page.locator(`#pi-continue-live-${id}`)).toHaveAttribute("aria-checked", "false");
+  }
 });

@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from backend.data import market_data  # noqa: E402
 from backend.data.pi_history import (  # noqa: E402
+    HIST_PATH,
     load_rows,
     parse_ts,
     row_has_multiple_signals,
@@ -338,7 +339,7 @@ def _vp_summary(rows: list[dict[str, Any]], saved_report: dict[str, Any], checks
 
 def build_audit() -> dict[str, Any]:
     root = market_data.configured_market_data_root()
-    pi_path = market_data.pi_source_root(root) / "pi_signals.json"
+    pi_path = HIST_PATH
     option_root = market_data.option_wall_root(root)
     report_path = market_data.derived_path("research", VP_REPORT_NAME)
     vp_rows_path = report_path.with_suffix(".csv")

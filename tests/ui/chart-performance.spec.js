@@ -4,7 +4,7 @@ const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { test, expect } = require('@playwright/test');
-// DOM snapshots disproportionately burden Glass; timing runs must not trace.
+// Timing runs must not trace (DOM snapshots distort the measurement).
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 const enabled = process.env.CHART_PERFORMANCE === '1';
@@ -27,8 +27,7 @@ test('opt-in real-day chart performance', async ({ browser }, testInfo) => {
   const currentJs = fs.readFileSync('frontend/static/ancserTPX.js', 'utf8');
   expect(payload.meta.schema_version).toBeGreaterThanOrEqual(5);
   expect(payload.bars).toHaveLength(390);
-  const assets = ['ancserTPX.js', 'ancserTPX.css', 'ancserTPX.html',
-    'tpx-glass.js', 'tpx-glass.css', 'tpx-glass-skin.js', 'tpx-glass-tuner.js'];
+  const assets = ['ancserTPX.js', 'ancserTPX.css', 'ancserTPX-design.css', 'ancserTPX.html'];
   const assetHashes = () => Object.fromEntries(assets.map(name =>
     [name, sha(fs.readFileSync(path.resolve('frontend/static', name)))]));
   const report = { label: process.env.CHART_PERFORMANCE_LABEL || 'baseline',
@@ -44,11 +43,10 @@ test('opt-in real-day chart performance', async ({ browser }, testInfo) => {
   const checkpoint = () => fs.writeFileSync(destination, JSON.stringify(report, null, 2));
   checkpoint();
   console.log(`CHART_PERFORMANCE_REPORT=${destination}`);
-  const modes = ['glass-on', 'mirror-off', 'glass-off'];
+  // Liquid Glass was removed in 1.3.0; one native mode remains.
+  const mode = 'native';
   for (let repetition = 0; repetition < 3; repetition++) {
-    // Rotate order to reduce systematic warmup/thermal bias.
-    for (let index = 0; index < modes.length; index++) {
-      const mode = modes[(index + repetition) % modes.length];
+    {
       for (const variant of (repetition % 2 ? ['current', 'baseline'] : ['baseline', 'current'])) {
       const context = await browser.newContext({ viewport: report.viewport,
         deviceScaleFactor: 1, colorScheme: 'light', serviceWorkers: 'block' });
@@ -56,7 +54,6 @@ test('opt-in real-day chart performance', async ({ browser }, testInfo) => {
       page.setDefaultTimeout(15_000);
       let requests = 0;
       let releasedBars = 200;
-      const omitted = new Set();
       try {
         await page.addInitScript(() => localStorage.setItem('ancserTPXTheme', 'light'));
         await page.route('**/*', async route => {
@@ -67,10 +64,6 @@ test('opt-in real-day chart performance', async ({ browser }, testInfo) => {
           if (url.hostname !== '127.0.0.1') return route.abort();
           if (url.pathname === '/static/ancserTPX.js') return route.fulfill({
             body: variant === 'baseline' ? baselineJs : currentJs, contentType: 'application/javascript' });
-          if (mode === 'glass-off' && /\/tpx-glass(?:-skin|-tuner)?\.(js|css)$/.test(url.pathname)) {
-            omitted.add(url.pathname);
-            return route.fulfill({ body: '/* benchmark-only Glass omission */', contentType: url.pathname.endsWith('.css') ? 'text/css' : 'application/javascript' });
-          }
           if (url.pathname === '/api/data/orderflow/footprint') {
             requests++;
             const start = Date.parse(url.searchParams.get('start'));
@@ -88,15 +81,7 @@ test('opt-in real-day chart performance', async ({ browser }, testInfo) => {
         await page.goto(String(testInfo.project.use.baseURL), { waitUntil: 'load' });
         await page.bringToFront();
         await page.waitForFunction(() => typeof chart !== 'undefined' && chart && candleSeries);
-        if (mode === 'glass-off') {
-          expect(omitted.size).toBe(4);
-          expect(await page.evaluate(() => typeof window.TpxGlass)).toBe('undefined');
-          await page.addStyleTag({ content: '*,*::before,*::after {backdrop-filter:none!important;-webkit-backdrop-filter:none!important;}' });
-        } else {
-          await page.waitForFunction(() => window.TpxGlass?.diagnostics.surfaces > 0);
-          await page.evaluate(on => TpxGlass.setCanvasMirror(on), mode === 'glass-on');
-        }
-        // Equal canvas dimensions even though omitted skin changes surrounding layout.
+        // Fixed canvas dimensions so samples are comparable between runs.
         await page.addStyleTag({ content: '#chart-container {box-sizing:content-box!important;border:0!important;padding:0!important;width:1000px!important;height:500px!important;min-height:500px!important;max-height:500px!important;flex:none!important;}' });
         await page.evaluate(() => {
           for (const key of Object.keys(CHART_OVERLAYS)) CHART_OVERLAYS[key] = false;
@@ -145,8 +130,7 @@ test('opt-in real-day chart performance', async ({ browser }, testInfo) => {
           }, { bars: payload.bars, range });
           await page.evaluate(() => refreshOrderflowLayers(false));
           await page.waitForFunction(() => performance.now() > _orderflowInteractionUntil && !_orderflowDataPromise);
-          await page.evaluate(() => { drawFootprintLayer(); TpxGlassSafeSync();
-            function TpxGlassSafeSync() { window.TpxGlass?.resample(); } });
+          await page.evaluate(() => drawFootprintLayer());
           const ready = await page.evaluate(() => {
             const canvas = document.getElementById('footprint-overlay');
             const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
@@ -168,7 +152,7 @@ test('opt-in real-day chart performance', async ({ browser }, testInfo) => {
           const beforeRequests = requests;
           await page.evaluate(() => {
             Object.assign(__perf, { active: true, frames: [], draws: [], tasks: [], fills: 0, labels: 0, visibilityCalls: 0, previous: null,
-              started: performance.now(), mirrorBefore: window.TpxGlass?.diagnostics.mirror || null });
+              started: performance.now() });
           });
           const stable = await page.evaluate(() => {
             const before = __perf.visibilityCalls;
@@ -213,18 +197,12 @@ test('opt-in real-day chart performance', async ({ browser }, testInfo) => {
             __perf.tasks.push(...__perf.observer.takeRecords().map(e => ({ start: e.startTime, duration: e.duration })));
             __perf.active = false;
             return { frames: __perf.frames, draws: __perf.draws, tasks: __perf.tasks,
-              fills: __perf.fills, labels: __perf.labels, visibilityCalls: __perf.visibilityCalls, durationMs: performance.now() - __perf.started,
-              mirrorBefore: __perf.mirrorBefore, mirrorAfter: window.TpxGlass?.diagnostics.mirror || null };
+              fills: __perf.fills, labels: __perf.labels, visibilityCalls: __perf.visibilityCalls, durationMs: performance.now() - __perf.started };
           });
           expect(raw.frames.length).toBeGreaterThan(5);
           expect(raw.draws.length).toBeGreaterThan(0);
           expect(raw.fills).toBeGreaterThan(0);
           if (density === 'detail') expect(raw.labels).toBeGreaterThan(0);
-          if (mode === 'glass-on') expect(raw.mirrorAfter.blits - raw.mirrorBefore.blits).toBeGreaterThan(0);
-          if (mode === 'mirror-off') {
-            expect(raw.mirrorAfter.enabled).toBe(false);
-            expect(raw.mirrorAfter.blits).toBe(raw.mirrorBefore.blits);
-          }
           const sample = { variant, mode, density, repetition: repetition + 1, ready, stable,
             requests: requests - beforeRequests, frameMs: summarize(raw.frames), drawMs: summarize(raw.draws),
             longTasks: { count: raw.tasks.length, totalMs: raw.tasks.reduce((n, t) => n + t.duration, 0),
@@ -239,7 +217,7 @@ test('opt-in real-day chart performance', async ({ browser }, testInfo) => {
     }
   }
   report.assetsAtEnd = assetHashes();
-  expect(report.samples).toHaveLength(36);
+  expect(report.samples).toHaveLength(12);   // 3 reps x 2 variants x 2 densities
   report.status = 'complete';
   report.finishedAt = new Date().toISOString();
   // External generated research output survives all Playwright output cleanup.

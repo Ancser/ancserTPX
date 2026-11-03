@@ -1,15 +1,199 @@
 # ancserTPX — Current Handoff
 
-Updated 2026-09-19. Current HEAD + the uncommitted fixes listed below.
+Updated 2026-10-02. Current HEAD + the uncommitted work listed below.
+Research verdicts live in [`RESEARCH_REPORT.md`](RESEARCH_REPORT.md) (the old
+per-study reports were merged into it and deleted).
+
+Current work tickets, patch notes and handoff: [`VERSION_CONTROL.md`](VERSION_CONTROL.md).
+Verification records: [`VERIFICATION.md`](VERIFICATION.md). See O1, D1 and
+O2 for the 2026-10-27 operating and data changes and remaining live checks.
 
 ## State
 
 ```
-tests            759 pytest passing + 8 subtests; one known Volume Profile preset failure; 99 focused regressions and PI selector/preset browser smoke pass
-invariants       91 documented / 87 active / 4 explicitly retired
-strategies       factor · momentum · betafib · pi · optionwall · delta_absorption · volume_profile · fade · sigma  (+ confluence, live-only)
-presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI BEST · PI BEST 2MNQ · PI 2MNQ BOTH BEST · DELTA ABSORPTION BEST · VOLUME PROFILE RESEARCH
+tests            929 pass + 2 fail (Rust PI parity: whole-file presets.json hash pin; red since 09-28 03:12) + 8 subtests; 62 Playwright + 1 opt-in skip (all tests/ui specs, `npm run test:ui`) — 2026-10-02
+invariants       93 active / 18 retired / 2 UNPROTECTED (UI-028, UI-030 footprint paint)
+strategies       factor · momentum · betafib · pi · optionwall · delta_absorption · volume_profile · fade · sigma
+                 + pi_options (Backtest page only; Live side is the Robinhood options account, ALERT mode)
+presets          BEST · MOMENTUM BEST · BETAFIB BEST · PI 2MNQ BOTH BEST · PI 2MES BOTH BEST · DELTA ABSORPTION BEST · VOLUME PROFILE RESEARCH · PI STRICT MNQ · PI STRICT MNQ REOPEN
 ```
+
+### 2026-10-02 — PI signal × holding-horizon study on the latest data (Claude)
+
+`scripts/pi_signal_horizon_study.py` (about 10 minutes, three workers; output in
+`derived/research/pi_signal_horizon_study_YYYYMMDD.{json,csv,md}`). Production
+engine, one position at a time, one contract. It first reproduces the published
+2026-09-15 STRICT rows trade-for-trade on their snapshot and the production
+engine on the latest data, and stops if either differs. Horizons: 30m, 60m, hold
+to 15:45 ET, close + 18:00 ET (15:00 PT) reopen continuation, true overnight
+(counterfactual; Topstep must be flat by 16:10 ET), production exit. Also a
+daily synthetic-signal drift control and production-parameter candidates.
+Results: `RESEARCH_REPORT.md` §3.1.
+
+- **New preset `PI STRICT MNQ REOPEN`** = `PI STRICT MNQ` + `pi_continue_long_kinds:
+  ["青π"]` (the only difference; pinned by a test). Loaded by name through the
+  production backtest path it reproduces the study candidate exactly. MNQ $2,742 / PF 1.58 → $7,192 / PF 2.06,
+  14-tick 1.43 → 1.92, maxDD $1,040 → $1,149, all three WF segments > 1.8. It
+  beats the drift control ($247 vs −$23 per signal). Only 22 continuation legs.
+- **Live path verified** (`tests/test_pi_reopen_continuation.py`, last three tests;
+  `tests/ui/design-system.spec.js` "PI STRICT MNQ REOPEN loads into the LIVE panel"):
+  the preset through `/live/start` and through terminal live continues only 青π;
+  the live engine arms a 青π ticket at the 15:45 ET flatten and re-enters once
+  through the ordinary market-order path at the 18:00 ET reopen. Mutations
+  (preset without 青π, arming hard-coded to 深蓝圈, terminal dropping the
+  kinds, UI ignoring the field) each turn a test red. The engine must be
+  running across 15:45–18:05 ET; a ticket survives a restart in
+  `state/live_pi_reopen_<account>_<contract>.json`. `last_used_live` was not
+  changed: the user selects the preset and starts live.
+- Live preset `PI 2MES BOTH BEST` on the latest data: PF 1.06, 14-tick 0.63.
+- **MES store stops at 2026-09-25.** The accumulator tracks only MNQ until an MES
+  contract is used in the app (`backend/data/accumulator.py`, `activate_symbol`);
+  the broker keeps about 60 days, so open MES once, let it catch up, then rerun.
+- `scripts/pi_exit_engine_grid_study.py`: `GridPiSignalStrategy.research_exit_policy()`
+  extracted so continuation legs reuse the same exit contract (no behaviour change;
+  the published rows still reproduce).
+
+### 2026-09-28 — PI OPTIONS backtest model + Robinhood options account (Claude)
+
+**One execution definition.** `backend/options/pi_options.py` holds the fill and
+exit rules (`limit_price`, `limit_fill_index`, `exit_after`, PI-016). The two
+published option studies now call them, and the backend reproduces their numbers
+to the dollar on the real cache (`tests/test_pi_options.py`). Registered in
+`tests/test_single_definition.py`.
+
+**Backtest page → model `PI OPTIONS`.** Own panel (`#pi-options-params-bt`):
+tiers LV2/LV3, strike ATM / +$3 / +$5 / +$7 / +$10 OTM, entry MARKET or LIMIT
+−20/−40/−60 %, stop, target, exit next session 10:00 or 15:30, size (default
+**1 contract per signal**; 2/3/5/10, or BY BUDGET = whole contracts within the
+budget), date range. POST `/api/backtest/pi-options` returns the ordinary backtest
+shape plus `options_summary` (fill rate, skipped reasons, without-best-2-days,
+return range). Data = `derived/research/pi_option_paths_v1.json.gz` (56 signals,
+2026-03-05 … 2026-09-09; rebuild with `python scripts/pi_option_path_cache.py`).
+Futures `/backtest/run` and `/live/start` refuse `pi_options`.
+The BACKTEST TRADES table lists every considered signal as its own row
+(`option_rows`: contract, signal → exit time, tier, signal ask → limit, entry
+with the fill time when a limit filled later, exit, return %, net P&L, result;
+unfilled limits stay listed as MISSED). Futures results restore the futures columns.
+
+**Live → `ACCOUNT OPTIONS · ROBINHOOD`.** ALERT mode only (PI-017): watches the PI
+audit stream and writes one order ticket per symbol and day
+(`logs/pi_options_tickets.jsonl`, shown in the panel). Settings persist in
+`state/pi_options_account.json`; ALERT resumes on app start when it was left on.
+PAPER / LIVE are refused server-side. **No order is ever sent.**
+
+**Robinhood connection — not built, needs the user.** Robinhood has no official
+stock/options API; the only official route is the Agentic Trading MCP
+(`https://agent.robinhood.com/mcp/trading`, OAuth 2.1 + PKCE, dynamic client
+registration, no API key). It needs a separate Agentic account opened on
+desktop, options approval and funding, and the account owner signs in in the
+browser. Stage 2 (after the user confirms): connect button → OAuth → tool
+discovery → preview/paper → explicitly armed live. Unofficial `robin_stocks`
+was rejected (ToS risk, stores the password).
+
+**Caveats.** Discord receipt lags the source by ~70–90 s, so a live entry is
+later than the backtest's source-minute ask. LV2-first-of-day has 3 samples.
+
+**Restart required** for `/api/backtest/pi-options` and `/api/options/account`.
+
+### 2026-09-27 — Contracts, timeframes, gestures, Glass removal, one report (Claude)
+
+**Data: every bar now knows its contract.**
+- `Candle` gained `contract_id` and `price_adjustment`. The roll ledger lives in
+  the store sidecar (`meta["contract_rolls"]`) and `backend/data/contract_ledger.py`
+  decides which contract owns each minute. Every store write (journal append,
+  save, merge) goes through `candle_store.enforce_store_contract`, so a bar from
+  the wrong contract can no longer enter the continuous series.
+- Rolls use the calendar rule (third Friday − 8 days, the same rule live uses).
+  `accumulator._ensure_store_roll` measures the offset from both contracts'
+  real minutes (`contract_ledger.roll_offset`), back-adjusts history once
+  (`apply_contract_roll`, idempotent) and records it. Next roll: 2026-12-10
+  (Z26 → H27), automatic.
+- MNQ migrated (`scripts/futures_contract_ledger_migration.py`): 27 rolls, all
+  bars stamped, the 8/31 +295.00 seam repaired from measured prices, the 133
+  raw-U26 roll-week minutes removed earlier (nothing fabricated). MES migrated,
+  auto-rolled U26 → Z26 (+65.50 at 2026-09-10) and backfilled to 2026-09-25.
+  Backups: `ancserMarketData/archive/mnq_contract_ledger_20260927T103336Z`,
+  `mes_contract_ledger_20260927T103541Z`, `mes_before_autoroll_*`,
+  `mnq_roll_mix_repair_20260927T092620Z`.
+- `get_latest_candles` journals only minutes whose contract equals the
+  connected expiry (`tests/test_live_tail_contract_guard.py`).
+- **Decided (user, 2026-09-27): keep the calendar roll for the store.** Live
+  orders and the chart's live feed already prefer TopstepX's active flag. When
+  chart contract, calendar contract and Topstep's active flag disagree, the
+  chart shows the shared amber warning mark left of the timeframe buttons,
+  above the date axis (DATA-017; Topstep is asked at most every 10 minutes).
+
+**Chart.**
+- Timeframes 1m/5m/15m/30m/1h/4h/1D/1W (UI-033). One aggregation definition,
+  `backend/data/timeframes.py` (vectorised, registered in
+  `test_single_definition.py`); 4h anchors to the 18:00 NY open, 1D is the
+  Topstep trade date. `/data/candles?tf=` serves them; 1h+ use the full store,
+  cached once.
+- Gestures (UI-014): plot drag keeps auto-scale; a mostly-vertical drag or a
+  trackpad vertical swipe pans price (manual range via the autoscale provider);
+  double-click the price axis to return to auto.
+- Timezone formatter caching (60k candles 12.8 s → 0.28 s load).
+
+**Memory.** `Candle` is slotted (DATA-015). Loading the full MNQ store went
+from +4,075 MB RSS (~1.7 KB/bar, a per-instance `__dict__`) to +1,293 MB
+(~545 B/bar); load time 7.6 s → 8.1 s. The pickle format is unchanged, so an
+older build can still read the store (`tests/test_candle_memory_layout.py`).
+The loaded snapshot stays cached for the process lifetime, as before.
+
+**Separate live process (opt-in, LIVE-013).** `ANCSERTPX_SEPARATE_LIVE_PROCESS=true`
+in `.env` runs the engines in `backend/live_host.py` (127.0.0.1:8002, token,
+no browser Origin). The UI relays only start/stop/cancel/flatten/status after
+its own CSRF check (`backend/live_host_client.py`); the host reuses the routes
+handlers, keeps bars in memory (no store writes), runs with the PI recorder
+off, refuses DELTA ABSORPTION (second paid Databento stream), survives the UI
+closing, and exits only when idle with no engine running. Default is still
+in-process: nothing here has touched the real broker, so the user should try
+it on a practice account first. `tests/test_live_host.py` (14, incl. two real
+processes).
+
+**Columnar store (DATA-016).** A derived `<store>.columns.npz` beside the
+canonical pickle, stamped with the pickle generation. Real MNQ: cold chart
+1H/4H/1D/1W 1.2 s then instant, +175 MB RSS (was ~10 s and +1.3 GB). Chart
+reads use `candle_store.load_view` (pending bars overlaid, nothing written);
+backtest/store loads still merge (DATA-009 updated).
+
+**Option-wall diagonal (UI-023).** A wall segment clamped at the 16:00 close
+was joined to the next after-close snapshot with a diagonal. The path rule is
+now `_optionWallSeriesPath` (a time gap starts a new subpath) with a
+clock-independent browser test; the old full-chart test only failed when run
+a few minutes after 16:00 New York.
+
+**Order-flow research layers (UI-034).** `PASSIVE REJECT (RESEARCH)` and
+`MBO TURNOVER (RESEARCH)` replay the frozen refresh rows (arrow + saved net
+PnL; the log always prints the candidate's evaluation n / PF / 14-tick PF).
+DELTA ABSORPTION already had live wiring and its own evidence layers; its
+9/15-9/25 forward window is unevaluated (command in RESEARCH_REPORT §5.5).
+All order-flow work needs Databento MBO, which ends with the subscription.
+
+**Liquid Glass removed for good** (user decision). Engine, skin, tuner, CSS,
+optical clones and glass-named classes are gone; `.glass-switch` → `.ui-switch`.
+`test_ui_contracts.py::test_liquid_glass_is_fully_removed` keeps it out.
+Glass-only invariants retired; UI-022 (layer choices survive reload) regained a
+browser test in `tests/ui/design-system.spec.js`.
+
+**Presets.** `VOLUME PROFILE RESEARCH` had been rewritten to `factor` on disk by a
+server that did not know the strategy; the loader now keeps unknown strategy
+names (`known_strategy_name`, `tests/test_preset_strategy_normalization.py`).
+Added `PI STRICT MNQ` (1 MNQ, 青π long + 粉π short): PF 1.68, maxDD $1,040,
+walk-forward passes, ~6% chance of breaching a 50K MLL.
+
+**Research.** VP filter study (7 pre-declared causal filters, MNQ + MES,
+train/validation/2026): 7/7 rejected — `scripts/vp_filter_study.py`,
+`tests/test_vp_filter_study.py`, `RESEARCH_REPORT.md` §5.4. All research reports
+merged into `docs/RESEARCH_REPORT.md`; 36 old files deleted (recover with
+`git show 8985079:docs/<name>`).
+
+**Rust.** Backtests are Python; Rust is a research kernel only. Codex's PI
+slices pass parity; the next gate in `docs/RUST_LIVE_RUNTIME.md` is not started
+and the Rust runtime is not wired to any entrypoint.
+
+**Restart required.** Backend changes (contract guard, preset loader, timeframe
+endpoint) only take effect after fully closing and relaunching the app.
 
 ### 2026-09-21 — Opt-in Level-2 replacement for active long PI
 
@@ -221,9 +405,8 @@ memo produces the same canvas pixels but redundant lookups. The visibility
 regression was first run against the original implementation and failed
 (five writes instead of zero). The opt-in real-data benchmark and its limits
 are documented in `docs/chart-performance.md`; simulated completed-bar replay
-must not be described as a live Databento ingestion test. The measured glass
-cost led to removing Liquid Glass from the production page; its old assets are
-retained only as recoverable audit material. The native UI design layer and
+must not be described as a live Databento ingestion test. Liquid Glass was
+later deleted entirely (2026-09-27, user decision). The native UI design layer and
 the final deep-blue / Apple Light palette decision are documented in
 `docs/ui-design-system.md`; the standalone comparison demo is retired.
 
@@ -555,9 +738,8 @@ were removed. The UI is English-only and keeps `<html lang="en">`. Backtest
 metrics for all-zone TP/SL/TRAIL and session TP/SL/TRAIL breakdowns were also
 removed; the underlying exit mechanics remain unchanged.
 
-Liquid Glass still supplies backdrop sampling/refraction, but no longer adds a
-default frame, white edge/rim, specular pass, or edge stroke. The Live/Discord
-chart lens uses the same no-rim treatment.
+(Liquid Glass, mentioned here historically, was deleted on 2026-09-27; the
+Live/Discord caption no longer draws a lens.)
 
 ### R0.11 — Signal-attached unified exits (2026-09-06)
 
@@ -860,13 +1042,9 @@ preset behavior changed.
 
 ### R0.8 — Native lower navigation restored (2026-09-03)
 
-Liquid Glass remains on the upper Research/Backtest/Live workspace dock only.
-The lower BACKTEST TRADES/EXECUTE TRADES/SYSTEM LOG bar now
-uses the original `.bottom-tabs` / `.bottom-tab` flat underline styling. The
-skin no longer wraps those labels or inserts a segment lens/container, and a
-browser contract protects both halves of that decision: upper stays Glass,
-lower stays native. The skin asset cache key was advanced so a normal reload
-does not reuse the older lower-nav transformation.
+The lower BACKTEST TRADES/EXECUTE TRADES/SYSTEM LOG bar uses the original
+`.bottom-tabs` / `.bottom-tab` flat underline styling. (The upper Glass dock
+this section originally described was deleted with Liquid Glass on 2026-09-27.)
 
 The full realized PNL Curve was moved out of that lower bar into Research,
 replacing the month-only Backtest-vs-Live curve. It shares the same trade-by-
@@ -911,8 +1089,11 @@ are not validated.**
 - `BEST` / `MOMENTUM BEST` / `BETAFIB BEST` — the six-year re-validation put
   58 gate-passing variants through both symbols: **0/60 passed**. 2026 was 98%
   positive, out-of-sample 45% (coin flip). Treat these as known-overfit.
-- `PI BEST` / `PI BEST 2MNQ` — n=17 over two months (~8–9 trades/month).
-  PF 3.37 is not a reliable estimate at that sample size.
+- PI — the only live signal source with evidence. `PI STRICT MNQ` (1 MNQ,
+  青π + 粉π) is the forward candidate; the live `PI 2MES BOTH BEST` fails the
+  cost stress and `PI 2MNQ BOTH BEST` exceeds a 50K MLL. ~6 months of data only.
+- `VOLUME PROFILE RESEARCH` — PF < 1 over 2021–2026; no pre-declared filter
+  survives (RESEARCH_REPORT §5).
 
 278 tests prove the engine executes settings faithfully. They prove nothing
 about whether the settings make money.
@@ -937,8 +1118,9 @@ Provisional — re-derive from current evidence rather than following blindly.
 6. **LiveTradingEngine decomposition** — session clock → risk gates → order/
    protection → position/recovery → strategy runtime → thin coordinator.
    No strategy-math changes during extraction.
-7. **Glass/frontend** — UI-002..005. Keep the Playwright browser contracts in
-   `tests/ui/` running alongside structural Python assertions and `node --check`.
+7. **Frontend** — Liquid Glass is gone for good; do not rebuild it. Keep the
+   Playwright browser contracts in `tests/ui/` running alongside structural
+   Python assertions and `node --check`. UI-028/030 need a browser test again.
    The production JS remains large; prefer structural assertions over screenshots.
    Do not start this merely to raise a coverage number.
 

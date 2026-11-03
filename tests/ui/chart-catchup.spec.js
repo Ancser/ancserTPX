@@ -622,3 +622,92 @@ test("option-wall is continuous inside a session, breaks overnight, and keeps ov
       && Math.abs(g.y1 - r.y1) >= 2.5,
   ))).toBe(true);
 });
+
+test("option-wall paths never draw a diagonal across a gap such as the 16:00 close clamp", async ({ page }) => {
+  // Independent of the wall clock: the full-chart test above only straddles
+  // the close when it happens to run just after 16:00 New York time.
+  const now = Math.floor(Date.now() / MIN) * MIN;
+  await openWithStubbedCandles(page, {
+    storeFrom: now - 60 * MIN, storeCount: 61, liveFrom: now - 10 * MIN, liveCount: 10,
+  });
+  const paths = await page.evaluate(() => {
+    const point = (x1, x2, y, session = "2026-09-25") => ({ x1, x2, session, ys: { call: y } });
+    return {
+      // contiguous, level changes: vertical step at x=20
+      step: _optionWallSeriesPath([point(0, 20, 100), point(20, 40, 60)], "call"),
+      // first row clamped at the close (x=20), next row after it (x=30)
+      gap: _optionWallSeriesPath([point(0, 20, 100), point(30, 40, 60)], "call"),
+      // new session always restarts
+      session: _optionWallSeriesPath([point(0, 20, 100), point(20, 40, 60, "2026-09-26")], "call"),
+    };
+  });
+  const diagonal = (commands) => commands.some((command, index) => {
+    if (command[0] !== "L" || index === 0) return false;
+    const [, px, py] = commands[index - 1];
+    return Math.abs(command[1] - px) > 0.01 && Math.abs(command[2] - py) > 0.01;
+  });
+  expect(paths.step).toEqual([["M", 0, 100], ["L", 20, 100], ["L", 20, 60], ["L", 40, 60]]);
+  expect(paths.gap).toEqual([["M", 0, 100], ["L", 20, 100], ["M", 30, 60], ["L", 40, 60]]);
+  expect(paths.session[2]).toEqual(["M", 20, 60]);
+  for (const commands of Object.values(paths)) expect(diagonal(commands)).toBe(false);
+});
+
+test("order-flow research layers draw saved candidates with their outcome and log the statistics", async ({ page }) => {
+  const now = Math.floor(Date.now() / MIN) * MIN;
+  const storeFrom = now - 120 * MIN;
+  await page.addInitScript(() => {
+    localStorage.removeItem("ancserTPX.chartLayers");
+    window.__researchTexts = [];
+    const fillText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function(text, ...args) {
+      if (this.canvas && this.canvas.id === "indicator-signal-overlay") {
+        window.__researchTexts.push(String(text));
+      }
+      return fillText.call(this, text, ...args);
+    };
+  });
+  await openWithStubbedCandles(page, {
+    storeFrom, storeCount: 121, liveFrom: now - 60 * MIN, liveCount: 60,
+  });
+  await page.route("**/api/research/orderflow-events", (route) => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({
+      available: true,
+      events: [
+        { type: "of_passive", time: new Date(storeFrom + 40 * MIN).toISOString(), direction: "long",
+          entry: 100.5, sl: 99, tp: 103, exit: 101, exit_reason: "time", net_pnl: 42.4, phase: "evaluation" },
+        { type: "of_turnover", time: new Date(storeFrom + 70 * MIN).toISOString(), direction: "short",
+          entry: 100.5, sl: 102, tp: 98, exit: 102, exit_reason: "sl", net_pnl: -35.2, phase: "evaluation" },
+      ],
+      summary: {
+        of_passive: { name: "PASSIVE REJECT x VALUE REVERSION", first_date: "2026-08-10",
+                      last_date: "2026-09-22", evaluation: { n: 195, pf: 1.2173, stress_pf: 1.0428 } },
+      },
+    }),
+  }));
+  await page.evaluate((initial) => window.showCandleData(initial), bars(storeFrom, 121));
+
+  // Off by default: nothing research-related is drawn.
+  expect(await page.evaluate(() => layerOn("of_passive") || layerOn("of_turnover"))).toBe(false);
+  await page.evaluate(() => { window.__researchTexts = []; drawIndicatorSignalOverlay(); });
+  expect(await page.evaluate(() => window.__researchTexts)).toEqual([]);
+
+  await page.evaluate(() => toggleChartLayer("of_passive", true));
+  await expect.poll(() => page.evaluate(() => window.__researchTexts.includes("+$42"))).toBe(true);
+  const texts = await page.evaluate(() => window.__researchTexts);
+  expect(texts).not.toContain("-$35");                     // turnover layer still off
+  // The layer never shows arrows without the candidate's numbers.
+  expect(await page.evaluate(() => document.getElementById("log-container").textContent))
+    .toContain("evaluation 195 trades, PF 1.22, 14-tick PF 1.04");
+
+  await page.evaluate(() => toggleChartLayer("of_turnover", true));
+  await expect.poll(() => page.evaluate(() => window.__researchTexts.includes("-$35"))).toBe(true);
+
+  await page.evaluate(() => {
+    toggleChartLayer("of_passive", false);
+    toggleChartLayer("of_turnover", false);
+    window.__researchTexts = [];
+    drawIndicatorSignalOverlay();
+  });
+  expect(await page.evaluate(() => window.__researchTexts)).toEqual([]);
+});

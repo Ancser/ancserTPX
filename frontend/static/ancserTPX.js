@@ -284,19 +284,31 @@ const CONNECT_WARMUP_DAYS = 14;
 // hundreds of thousands of bars; rendering them all blocks the main thread and
 // freezes the tab. Backtest / ML use the complete backend dataset regardless.
 const CHART_MAX_CANDLES = 60000;
+const CHART_TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
+const CHART_TF_LABELS = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1H', '4h': '4H', '1d': 'D', '1w': 'W' };
+// Nominal bucket length in chart (New York wall-clock) seconds.
+const CHART_TF_SECONDS = { '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800 };
+const CHART_TF_INITIAL_LIMIT = 20000;
+const CHART_TF_DEFAULT_VISIBLE_BARS = 150;
+const CHART_TF_STORAGE_KEY = 'ancserTPXChartTimeframe';
+let _chartTimeframe = (() => {
+    try {
+        const saved = localStorage.getItem(CHART_TF_STORAGE_KEY);
+        return CHART_TIMEFRAMES.includes(saved) ? saved : '1m';
+    } catch (_) {
+        return '1m';
+    }
+})();
+let _chartTfRequestSerial = 0;
 // Default framing keeps the latest 200-bar smooth window around the middle of
 // the viewport instead of anchoring the view to the newest candle.
 const CHART_DEFAULT_SMOOTH_BARS = 200;
 const CHART_DEFAULT_VISIBLE_HOURS = 18;
-const CHART_PAN_SENSITIVITY = 1.10;
-const CHART_PAN_DIRECTION_THRESHOLD_PX = 5;
-// Lightweight Charts' native mouse inertia is driven by the uncorrected
-// horizontal drag.  Once the 10% sensitivity correction is applied, that
-// native animation can briefly snap back to its old offset at mouse-up.  Keep
-// vertical dragging native, but run a small horizontal inertia from the
-// corrected position instead.
-const CHART_PAN_INERTIA_DECAY_MS = 220;
-const CHART_PAN_INERTIA_MIN_SPEED = 0.00075;
+// A plot drag / two-finger swipe takes over the price window only when it is
+// clearly vertical; mostly-horizontal pans keep the auto-fit (top and bottom
+// keep adjusting).
+const CHART_PRICE_PAN_START_PX = 12;
+const CHART_PRICE_PAN_VERTICAL_RATIO = 0.5;
 // Keep risk/reward fill intensity stable across zoom and repaint cycles.
 const CHART_RISK_REWARD_GREEN_ALPHA = 0.105;
 const CHART_RISK_REWARD_RED_ALPHA = 0.115;
@@ -317,11 +329,6 @@ let _chartHistorySuppressUntil = 0;
 let _chartOverlayRafId = null;
 let _chartResizeRafId = null;
 let _chartLastSize = '';
-let _chartPanCorrectionRafId = null;
-let _chartPanLastX = null;
-let _chartPanInertiaRafId = null;
-let _chartPanInertiaPosition = null;
-let _chartPanInertiaVelocity = 0;
 let _chartAutoscaleRafId = null;
 let _chartAutoscaleReleaseTimer = null;
 let _chartAutoscaleHoldUntil = 0;
@@ -336,6 +343,7 @@ let _chartAutoscalePresentedRange = null;
 let _chartAutoscaleInitialised = false;
 let _chartAutoscaleAnimateNext = false;
 let _chartPanGesture = null;
+let _chartManualPriceRange = null;   // {minValue,maxValue} while the user owns the price window
 let backtestData = null;
 let currentAccount = null;
 let allAccounts = [];
@@ -871,6 +879,8 @@ function normalizeStrategyName(value) {
     if (v === 'optionwall' || v === 'option_wall') return 'optionwall';
     if (v === 'delta' || v === 'delta_va' || v === 'delta+va' || v === 'delta_absorb' || v === 'delta_absorption') return 'delta_absorption';
     if (v === 'vp' || v === 'volumeprofile' || v === 'volume_profile') return 'volume_profile';
+    // Options model: its own identity, never folded into a futures strategy.
+    if (v === 'pi_options' || v === 'pioptions') return 'pi_options';
     if (v === 'sigma') return 'sigma';
     if (v === 'fade') return 'fade';   // 1.0.8: DAY ZONE 前日VA回歸
     if (v === 'factor') return 'factor';
@@ -917,6 +927,10 @@ const STRATEGY_PRESENTATION = Object.freeze({
     delta_absorption: {
         displayName: 'DELTA ABSORPTION',
         description: 'Completed MBO Delta change at the previous RTH 70% value area.',
+    },
+    pi_options: {
+        displayName: 'PI OPTIONS',
+        description: 'PI LV2/LV3 long signal -> next-session QQQ/SPY call, replayed on saved Theta quotes.',
     },
     volume_profile: {
         displayName: 'VOLUME PROFILE',
@@ -1022,13 +1036,15 @@ function updateStrategyParamVisibility(mode) {
     const isFactor = strategy === 'factor';
     const isDelta = strategy === 'delta_absorption';
     const isVp = strategy === 'volume_profile';
+    const isPiOptions = strategy === 'pi_options';
     const show = (id, on) => {
         const el = document.getElementById(id);
         if (el) el.style.display = on ? '' : 'none';
     };
     const showControl = (id, on) => _showParamControl(id + '-' + mode, on);
     // trend-only controls — hidden in ML mode.
-    show('tr-params-' + mode, !isML);
+    show('tr-params-' + mode, !isML && !isPiOptions);
+    show('pi-options-params-' + mode, isPiOptions);
     show('overlap-tf-row-' + mode, !isML && isTrend);
     show('tr-overlap-trade-row-' + mode, !isML && isTrend);
     showControl('area-pct', !isML && (isTrend || isFade));
@@ -2379,11 +2395,8 @@ function _piMatrixWriteState(mode, state) {
             const el = document.getElementById(_piMatrixSwitchId(mode, side, level));
             if (!el) return;
             const on = Boolean(state?.[side]?.[level]);
-            if (el.tpxSetState) el.tpxSetState(on);
-            else {
-                el.classList.toggle('on', on);
-                el.setAttribute('aria-checked', String(on));
-            }
+            el.classList.toggle('on', on);
+            el.setAttribute('aria-checked', String(on));
         });
     });
 }
@@ -2463,11 +2476,8 @@ function _piContinueMatrixWriteState(mode, state) {
             const el = document.getElementById(_piContinueMatrixSwitchId(mode, side, level));
             if (!el) return;
             const on = Boolean(state?.[side]?.[level]);
-            if (el.tpxSetState) el.tpxSetState(on);
-            else {
-                el.classList.toggle('on', on);
-                el.setAttribute('aria-checked', String(on));
-            }
+            el.classList.toggle('on', on);
+            el.setAttribute('aria-checked', String(on));
         });
     });
 }
@@ -2502,11 +2512,8 @@ function _piLv2ReplaceEnabled(mode) {
 function _setPiLv2ReplaceEnabled(mode, enabled) {
     const el = document.getElementById('pi-lv2-replace-' + mode);
     if (!el) return;
-    if (el.tpxSetState) el.tpxSetState(Boolean(enabled));
-    else {
-        el.classList.toggle('on', Boolean(enabled));
-        el.setAttribute('aria-checked', String(Boolean(enabled)));
-    }
+    el.classList.toggle('on', Boolean(enabled));
+    el.setAttribute('aria-checked', String(Boolean(enabled)));
 }
 
 function onPiLv2ReplaceProxy(mode) {
@@ -3040,7 +3047,7 @@ function _fmtModelLabel(m) {
 // 1.0.9: confluence/ML 已整批移除(後端模組、路由、模型檔都刪了),
 // 這裡保留空殼是為了讓其餘啟動流程不必改動 —— 呼叫端仍會叫它,但不再
 // 打已不存在的 /confluence/models(否則每次載入都會噴 404)。
-// 見 docs/1.0.9_DELETE_LIST.md。
+// 見 docs/RESEARCH_REPORT.md 附錄 C。
 async function loadModelRegistry() {
     _modelRegistry = [];
     _activeModelName = '';
@@ -3538,7 +3545,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 revealNewestExecuteTrade();
                 refreshVisibleExecuteTrades(true);
             }
-            glassResample();   // 1.0.10 #1:面板剛換,取樣還是舊分頁的內容
         };
     });
     document.addEventListener('visibilitychange', () => {
@@ -4006,8 +4012,10 @@ async function stopLive() {
         _liveStatusPollState.lastGood = null;
         _liveStatusPollState.lastGoodAccountId = null;
         log('Trading engine stopped', 'info');
+        loadDailyStart();
     } catch(e) {
         log('Stop error: ' + e.message, 'error');
+        loadDailyStart();
         _cancelLivePoll(_liveStatusPollState);
         const statusAccount = _focusMainLiveAccount() || liveAccount;
         const accountId = statusAccount && statusAccount.id ? String(statusAccount.id) : '';
@@ -4835,6 +4843,10 @@ async function pollLiveCandle() {
         const now = Date.now();
         if (now - _chartClosedCheckAt < _CHART_CLOSED_CHECK_MS) return;
         _chartClosedCheckAt = now;
+        if (_chartTimeframe !== '1m') {
+            await _refreshTimeframeTail();
+            return;
+        }
         try {
             const resp = await fetch(API + '/data/latest-candles');
             if (!resp.ok) return;
@@ -4865,6 +4877,15 @@ async function pollLiveCandle() {
             const tb = new Date(b.time || b.timestamp).getTime();
             return ta - tb;
         });
+
+        if (_chartTimeframe !== '1m') {
+            // The 1m poll above keeps the backend live tail/journal fresh; the
+            // displayed higher-timeframe bars come from the backend aggregate.
+            const newestTf = sorted[sorted.length - 1];
+            _lastLiveCandleTime = newestTf.time || newestTf.timestamp || '';
+            await _refreshTimeframeTail();
+            return;
+        }
 
         // The response is the evidence, not the clock: if its oldest bar is
         // already past ours, the missing stretch is wider than the 60-bar
@@ -4976,12 +4997,14 @@ async function loadOlderChartHistory() {
     _chartHistoryLoading = true;
     try {
         const before = new Date(beforeMs).toISOString();
+        const pageTf = _chartTimeframe;
         const response = await fetch(
             API + '/data/candles?before=' + encodeURIComponent(before)
-                + '&limit=' + CHART_HISTORY_PAGE_SIZE,
+                + '&' + _chartTfQuery(CHART_HISTORY_PAGE_SIZE),
         );
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const data = await response.json();
+        if (pageTf !== _chartTimeframe) return false;   // switched while loading
         const incoming = (data.candles || []).map(_chartHistoryCandleData).filter(Boolean);
         const oldRange = chart.timeScale().getVisibleLogicalRange();
         // `before` is exclusive, so only the incoming page needs deduping and
@@ -5131,7 +5154,6 @@ function _releaseChartAutoscaleHold() {
 
 function _holdChartAutoscaleDuringScroll() {
     if (!chart) return;
-    _cancelChartPanInertia();
     const now = _chartNow();
     if (!_chartAutoscaleHoldRange) {
         _chartAutoscaleHoldRange = _copyChartPriceRange(_chartAutoscalePresentedRange)
@@ -5178,6 +5200,14 @@ function _smoothChartAutoscale(baseImplementation) {
     if (!info || !info.priceRange) {
         _chartAutoscaleEase = null;
         return info;
+    }
+    // The user has taken vertical control (vertical drag / two-finger
+    // swipe): the price window is theirs until an explicit auto reset.
+    const manual = _copyChartPriceRange(_chartManualPriceRange);
+    if (manual) {
+        _chartAutoscaleEase = null;
+        _chartAutoscalePresentedRange = manual;
+        return { ...info, priceRange: manual };
     }
 
     const target = {
@@ -5263,11 +5293,24 @@ function _scheduleChartResize(container) {
     });
 }
 
+// Auto (fit the visible bars top to bottom) vs manual (the user's own price
+// window).  Lightweight Charts 4.1 has no public price-range setter and
+// ignores pane drags while autoScale is on, so the library's autoScale stays
+// on and the manual window is served through the autoscale provider above.
+// enabled=true returns to auto; enabled=false freezes the current window.
 function _setChartPriceAutoScale(enabled) {
     if (!chart) return;
     if (!enabled) {
-        const current = _copyChartPriceRange(_chartPriceRangeFromCanvas());
-        if (current) _chartAutoscalePresentedRange = current;
+        // Freeze the range the provider last handed the library (before its
+        // scale margins), so the switch to manual never zooms the view.
+        const current = _copyChartPriceRange(_chartAutoscalePresentedRange)
+            || _chartInnerRangeFromDisplayed(_chartPriceRangeFromCanvas());
+        if (current) {
+            _chartAutoscalePresentedRange = current;
+            _chartManualPriceRange = current;
+        }
+    } else {
+        _chartManualPriceRange = null;
     }
     _chartAutoscaleEase = null;
     _chartAutoscaleHoldUntil = 0;
@@ -5282,8 +5325,57 @@ function _setChartPriceAutoScale(enabled) {
         _chartAutoscaleAnimateNext = _chartAutoscaleInitialised;
     }
     try {
-        chart.priceScale('right').applyOptions({ autoScale: Boolean(enabled) });
+        chart.priceScale('right').applyOptions({ autoScale: true });
     } catch (_) {}
+    _invalidateChartAutoscale();
+}
+
+// A price-axis drag makes the library switch autoScale off (its own manual
+// mode).  Fold that into the one manual window above so every later gesture
+// is handled the same way.
+function _adoptLibraryManualPriceScale() {
+    if (!chart) return;
+    let autoScale = true;
+    try { autoScale = chart.priceScale('right').options().autoScale === true; } catch (_) {}
+    if (autoScale) return;
+    const current = _chartInnerRangeFromDisplayed(_chartPriceRangeFromCanvas());
+    if (current) _chartManualPriceRange = current;
+    try { chart.priceScale('right').applyOptions({ autoScale: true }); } catch (_) {}
+    _invalidateChartAutoscale();
+}
+
+// The provider's range is drawn inside the price scale's top/bottom margins;
+// invert that to keep the on-screen window when adopting a displayed range.
+function _chartInnerRangeFromDisplayed(displayed) {
+    const range = _copyChartPriceRange(displayed);
+    if (!range || !chart) return range;
+    let top = 0.2, bottom = 0.1;
+    try {
+        const margins = chart.priceScale('right').options().scaleMargins || {};
+        if (Number.isFinite(margins.top)) top = margins.top;
+        if (Number.isFinite(margins.bottom)) bottom = margins.bottom;
+    } catch (_) {}
+    const span = range.maxValue - range.minValue;
+    const inner = {
+        minValue: range.minValue + span * bottom,
+        maxValue: range.maxValue - span * top,
+    };
+    return inner.maxValue > inner.minValue ? inner : range;
+}
+
+// Shift the manual window by a screen-pixel delta; content follows the
+// finger/cursor (dragging down reveals higher prices).
+function _shiftChartManualPrice(anchor, pixelDelta) {
+    const base = _copyChartPriceRange(anchor);
+    const shown = _chartPriceRangeFromCanvas();
+    if (!base || !shown || !Number.isFinite(pixelDelta)) return;
+    const container = document.getElementById('chart-container');
+    const paneHeight = Math.max(1, (container ? container.clientHeight : 1) - _timeAxisHeight());
+    // Price per screen pixel as drawn right now, so content tracks 1:1.
+    const shift = pixelDelta * (shown.maxValue - shown.minValue) / paneHeight;
+    _chartManualPriceRange = { minValue: base.minValue + shift, maxValue: base.maxValue + shift };
+    _invalidateChartAutoscale();
+    scheduleChartOverlayRedraw();
 }
 
 function _isChartControlTarget(target) {
@@ -5293,203 +5385,111 @@ function _isChartControlTarget(target) {
     ));
 }
 
-function _cancelChartPanInertia() {
-    if (_chartPanInertiaRafId !== null) {
-        cancelAnimationFrame(_chartPanInertiaRafId);
-        _chartPanInertiaRafId = null;
-    }
-    _chartPanInertiaPosition = null;
-    _chartPanInertiaVelocity = 0;
+function _chartPointInPriceAxis(clientX, container) {
+    const rect = container.getBoundingClientRect();
+    let rightScaleWidth = 0;
+    try { rightScaleWidth = chart.priceScale('right').width(); } catch (_) {}
+    return rightScaleWidth > 0 && clientX >= rect.right - rightScaleWidth;
 }
 
-// A data replacement must not leave an old correction frame or inertia loop
-// writing to the time scale after the new viewport has been restored.  This is
-// a motion-cancellation helper only; it never chooses a new horizontal range.
+// Plot drag, TradingView-style.  Time: Lightweight Charts' own pan (1:1,
+// native kinetic release).  Price: auto-fit while the drag is horizontal, so
+// the top and bottom keep adjusting; a clearly vertical movement hands the
+// price window to the user and it then follows the cursor for the rest of the
+// gesture (the old controller locked each drag to one axis after 5px).
 function _cancelChartPanInteraction() {
-    _cancelChartPanInertia();
-    if (_chartPanCorrectionRafId !== null) {
-        cancelAnimationFrame(_chartPanCorrectionRafId);
-        _chartPanCorrectionRafId = null;
-    }
-    _chartPanLastX = null;
     _chartPanGesture = null;
-}
-
-function _startChartPanInertia(position, velocity) {
-    _cancelChartPanInertia();
-    if (!chart || !Number.isFinite(position) || !Number.isFinite(velocity)
-        || Math.abs(velocity) < CHART_PAN_INERTIA_MIN_SPEED) return;
-
-    let current = position;
-    let speed = velocity;
-    let previousAt = _chartNow();
-    _chartPanInertiaPosition = current;
-    _chartPanInertiaVelocity = speed;
-
-    const tick = () => {
-        _chartPanInertiaRafId = null;
-        if (!chart) {
-            _cancelChartPanInertia();
-            return;
-        }
-        const now = _chartNow();
-        const elapsed = Math.max(1, Math.min(48, now - previousAt));
-        previousAt = now;
-        current += speed * elapsed;
-        try {
-            chart.timeScale().scrollToPosition(current, false);
-        } catch (_) {
-            _cancelChartPanInertia();
-            return;
-        }
-        _chartPanInertiaPosition = current;
-        speed *= Math.exp(-elapsed / CHART_PAN_INERTIA_DECAY_MS);
-        _chartPanInertiaVelocity = speed;
-        scheduleChartOverlayRedraw();
-        if (Math.abs(speed) < CHART_PAN_INERTIA_MIN_SPEED) {
-            _cancelChartPanInertia();
-            return;
-        }
-        _chartPanInertiaRafId = requestAnimationFrame(tick);
-    };
-
-    _chartPanInertiaRafId = requestAnimationFrame(tick);
 }
 
 function _beginChartPan(event, container) {
     _cancelChartPanInteraction();
     if (!chart || !container || event.button !== 0 || _isChartControlTarget(event.target)) return;
-
-    // Keep price-axis gestures dedicated to vertical scale control.  The
-    // plot area is the only place where the horizontal sensitivity correction
-    // should run.
-    const rect = container.getBoundingClientRect();
-    let rightScaleWidth = 0;
-    try { rightScaleWidth = chart.priceScale('right').width(); } catch (_) {}
-    if (rightScaleWidth > 0 && event.clientX >= rect.right - rightScaleWidth) return;
-
-    let barSpacing = 6;
-    try {
-        const value = Number(chart.timeScale().options().barSpacing);
-        if (Number.isFinite(value) && value > 0) barSpacing = value;
-    } catch (_) {}
-
+    // Price-axis drags stay the library's vertical scale control.
+    if (_chartPointInPriceAxis(event.clientX, container)) return;
+    _adoptLibraryManualPriceScale();
     _chartPanGesture = {
         startX: event.clientX,
         startY: event.clientY,
-        startScroll: chart.timeScale().scrollPosition(),
-        barSpacing,
-        lastAppliedX: event.clientX,
-        lastAppliedPosition: chart.timeScale().scrollPosition(),
-        lastSampleAt: _chartNow(),
-        velocity: 0,
-        direction: 'pending',
-        started: false,
+        // Manual already: price follows from the first pixel.
+        priceAnchor: _copyChartPriceRange(_chartManualPriceRange),
+        priceAnchorY: event.clientY,
     };
-}
-
-function _applyChartPanSensitivity(event) {
-    const gesture = _chartPanGesture;
-    if (!gesture || gesture.direction !== 'horizontal'
-        || !(event.buttons & 1) || !chart) return;
-    _chartPanLastX = event.clientX;
-    if (_chartPanCorrectionRafId !== null) return;
-    _chartPanCorrectionRafId = requestAnimationFrame(() => {
-        _chartPanCorrectionRafId = null;
-        const active = _chartPanGesture;
-        const clientX = _chartPanLastX;
-        if (!active || clientX === null || !chart) return;
-        _applyChartPanSensitivityAt(clientX, active);
-    });
 }
 
 function _routeChartPanMove(event) {
     const gesture = _chartPanGesture;
     if (!gesture || !(event.buttons & 1) || !chart) return;
-
-    const deltaX = event.clientX - gesture.startX;
-    const deltaY = event.clientY - gesture.startY;
-    const distance = Math.hypot(deltaX, deltaY);
-    if (gesture.direction === 'pending' && distance < CHART_PAN_DIRECTION_THRESHOLD_PX) {
-        // Do not let the native handler start on a tiny diagonal jitter.  Once
-        // a direction is clear, the event is either released to the native
-        // vertical path or kept by the single horizontal controller below.
-        event.preventDefault();
-        event.stopPropagation();
-        return;
+    const dx = event.clientX - gesture.startX;
+    const dy = event.clientY - gesture.startY;
+    if (!gesture.priceAnchor) {
+        if (Math.abs(dy) < CHART_PRICE_PAN_START_PX
+            || Math.abs(dy) < Math.abs(dx) * CHART_PRICE_PAN_VERTICAL_RATIO) return;
+        // Vertical intent: freeze the window the user is looking at and pan
+        // from here, so the switch itself never jumps.
+        _setChartPriceAutoScale(false);
+        gesture.priceAnchor = _copyChartPriceRange(_chartManualPriceRange);
+        gesture.priceAnchorY = event.clientY;
+        if (!gesture.priceAnchor) return;
     }
+    _shiftChartManualPrice(gesture.priceAnchor, event.clientY - gesture.priceAnchorY);
+}
 
-    if (gesture.direction === 'pending') {
-        gesture.direction = Math.abs(deltaX) > Math.abs(deltaY)
-            ? 'horizontal'
-            : 'vertical';
-        // Lightweight Charts cannot price-drag while autoScale is enabled.
-        // Only turn it off after a real drag has been identified, so a simple
-        // click never changes the chart's vertical range.
-        if (!gesture.started) {
-            gesture.started = true;
-            _setChartPriceAutoScale(false);
-        }
+function _endChartPan() {
+    _chartPanGesture = null;
+    _adoptLibraryManualPriceScale();
+}
+
+// Two-finger trackpad swipes arrive as wheel events.  A mouse wheel keeps its
+// library meaning (zoom time), and so does a pinch (ctrl+wheel).  A trackpad
+// swipe scrolls time horizontally (library, auto-fit kept) and pans price
+// vertically, like the plot drag.
+let _chartTrackpadUntil = 0;
+function _wheelLooksLikeTrackpad(event) {
+    if (event.deltaMode !== 0) return false;
+    // One swipe keeps one classification; fast flings can emit big deltas.
+    if (_chartNow() < _chartTrackpadUntil) return true;
+    return event.deltaX !== 0
+        || !Number.isInteger(event.deltaY)
+        || Math.abs(event.deltaY) < 50;
+}
+
+function _routeChartWheel(event) {
+    if (!chart || event.__tpxRerouted) return;
+    const container = document.getElementById('chart-container');
+    if (!container || _isChartControlTarget(event.target)) return;
+    if (event.ctrlKey || !_wheelLooksLikeTrackpad(event)) {
+        _holdChartAutoscaleDuringScroll();
+        return;                                            // library zoom
     }
-
-    if (gesture.direction !== 'horizontal') return;
-
-    // The native pressedMouseMove listener is still available for vertical
-    // dragging, but it must not see horizontal events or it will compete with
-    // the corrected 1.10x position below.  Capture at window before the chart
-    // document listener and let this controller be the only horizontal writer.
+    _chartTrackpadUntil = _chartNow() + 250;
+    _adoptLibraryManualPriceScale();
+    const vertical = Math.abs(event.deltaY) >= 0.5
+        && Math.abs(event.deltaY) >= Math.abs(event.deltaX) * CHART_PRICE_PAN_VERTICAL_RATIO;
+    if (!vertical && Math.abs(event.deltaY) < 0.5) return;   // pure horizontal: library
     event.preventDefault();
     event.stopPropagation();
-    _applyChartPanSensitivity(event);
+    if (vertical && !_chartPointInPriceAxis(event.clientX, container)) {
+        if (!_chartManualPriceRange) _setChartPriceAutoScale(false);
+        _shiftChartManualPrice(_chartManualPriceRange, -event.deltaY);
+    }
+    if (event.deltaX !== 0) {
+        // Give the library only the horizontal part so it scrolls time
+        // without also zooming on the vertical part.
+        const copy = new WheelEvent('wheel', {
+            deltaX: event.deltaX, deltaY: 0, deltaMode: event.deltaMode,
+            clientX: event.clientX, clientY: event.clientY,
+            screenX: event.screenX, screenY: event.screenY,
+            bubbles: true, cancelable: true,
+        });
+        copy.__tpxRerouted = true;
+        event.target.dispatchEvent(copy);
+    }
 }
 
-function _applyChartPanSensitivityAt(clientX, gesture) {
-    const deltaX = clientX - gesture.startX;
-    if (!Number.isFinite(deltaX)) return;
-    const now = _chartNow();
-    const targetPosition = gesture.startScroll
-        - (deltaX / gesture.barSpacing) * CHART_PAN_SENSITIVITY;
-    const previousPosition = Number.isFinite(gesture.lastAppliedPosition)
-        ? gesture.lastAppliedPosition
-        : targetPosition;
-    const elapsed = Math.max(1, now - (gesture.lastSampleAt || now));
-    const sampledVelocity = (targetPosition - previousPosition) / elapsed;
-    // A short EMA removes event-rate noise without adding a second animation
-    // source.  Every frame still resolves to the one deterministic target
-    // derived from the original pointer position.
-    gesture.velocity = gesture.velocity * 0.72 + sampledVelocity * 0.28;
-    gesture.lastSampleAt = now;
-    gesture.lastAppliedX = clientX;
-    gesture.lastAppliedPosition = targetPosition;
-    try {
-        const currentPosition = chart.timeScale().scrollPosition();
-        if (!Number.isFinite(currentPosition)
-            || Math.abs(currentPosition - targetPosition) > 0.001) {
-            chart.timeScale().scrollToPosition(targetPosition, false);
-        }
-    } catch (_) {}
-}
-
-function _endChartPan(cancelMotion = false) {
-    const gesture = _chartPanGesture;
-    if (_chartPanCorrectionRafId !== null) {
-        cancelAnimationFrame(_chartPanCorrectionRafId);
-        _chartPanCorrectionRafId = null;
-    }
-    if (gesture && Number.isFinite(_chartPanLastX)
-        && gesture.lastAppliedX !== _chartPanLastX) {
-        _applyChartPanSensitivityAt(_chartPanLastX, gesture);
-    }
-    _chartPanLastX = null;
-    _chartPanGesture = null;
-    if (cancelMotion) {
-        _cancelChartPanInertia();
-        return;
-    }
-    if (gesture && gesture.direction === 'horizontal'
-        && Number.isFinite(gesture.lastAppliedPosition)) {
-        _startChartPanInertia(gesture.lastAppliedPosition, gesture.velocity);
-    }
+function _resetChartPriceOnAxisDoubleClick(event) {
+    const container = document.getElementById('chart-container');
+    if (!chart || !container || !_chartPointInPriceAxis(event.clientX, container)) return;
+    _setChartPriceAutoScale(true);
 }
 
 function initChart() {
@@ -5542,10 +5542,9 @@ function initChart() {
             tickMarkFormatter: _chartTickMark,
         },
         kineticScroll: {
-            // Horizontal mouse inertia is applied after the sensitivity
-            // correction, so Lightweight Charts cannot snap back to the
-            // uncorrected offset when the pointer is released.
-            mouse: false,
+            // The library owns the whole plot drag, so its own release
+            // inertia continues from exactly where the drag let go.
+            mouse: true,
             touch: true,
         },
         localization: {
@@ -5579,25 +5578,23 @@ function initChart() {
     chart.timeScale().subscribeVisibleLogicalRangeChange(_redrawOverlays);
     // Vertical zoom (wheel on price scale or chart body)
     container.addEventListener('wheel', _redrawOverlays, { passive: true });
-    // A wheel event can change the visible bar range several times before the
-    // browser paints the next frame. Hold the current price window during that
-    // burst; the final stable target is eased only after the gesture settles.
-    container.addEventListener('wheel', _holdChartAutoscaleDuringScroll, {
-        passive: true,
+    // Mouse wheel / pinch zoom keeps the library behaviour (and holds the
+    // price window during the burst); a two-finger trackpad swipe pans time
+    // and price (see _routeChartWheel).
+    container.addEventListener('wheel', _routeChartWheel, {
+        passive: false,
         capture: true,
     });
-    // Free the vertical price range after a real plot drag direction is known.
-    // Lightweight Charts keeps ownership of vertical movement; horizontal
-    // movement is routed to the single sensitivity controller below.
+    // Plot drag: library time pan + auto/manual price (see _routeChartPanMove).
     container.addEventListener('mousedown', (event) => _beginChartPan(event, container), true);
+    // Double-click the price axis to return to auto-fit.
+    container.addEventListener('dblclick', _resetChartPriceOnAxisDoubleClick);
     // Continuous drag redraw
     container.addEventListener('mousemove', (e) => {
         if (!e.buttons) return;
         _redrawOverlays();
     }, { passive: true });
-    // Route before Lightweight Charts' document listener.  Horizontal drags
-    // are fully owned by the sensitivity controller; vertical drags continue
-    // through to the native price-scroll implementation.
+    // Window-level so a drag that leaves the chart keeps panning price.
     window.addEventListener('mousemove', _routeChartPanMove, {
         passive: false,
         capture: true,
@@ -5820,6 +5817,13 @@ function _chartStampFull(time) {
         const D = String(time.day).padStart(2, '0');
         return time.year + '.' + M + '.' + D;
     }
+    if (_chartTfIsDaily()) {
+        // D/W bars start at the 18:00 New York session open of the previous
+        // calendar day; label them with their trade date.
+        const t = new Date((time + 6 * 3600) * 1000);
+        return t.getUTCFullYear() + '.' + String(t.getUTCMonth() + 1).padStart(2, '0')
+            + '.' + String(t.getUTCDate()).padStart(2, '0');
+    }
     const d = new Date(time * 1000);
     const M = String(d.getUTCMonth() + 1).padStart(2, '0');
     const D = String(d.getUTCDate()).padStart(2, '0');
@@ -5833,8 +5837,8 @@ function _chartTickMark(time, tickMarkType) {
     if (time && typeof time === 'object' && time.year != null) {
         return String(time.month).padStart(2, '0') + '.' + String(time.day).padStart(2, '0');
     }
-    const d = new Date(time * 1000);
-    if (tickMarkType <= 2) {   // Year / Month / DayOfMonth
+    const d = new Date((time + (_chartTfIsDaily() ? 6 * 3600 : 0)) * 1000);
+    if (tickMarkType <= 2 || _chartTfIsDaily()) {   // Year / Month / DayOfMonth
         return String(d.getUTCMonth() + 1).padStart(2, '0') + '.' + String(d.getUTCDate()).padStart(2, '0');
     }
     return String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0');
@@ -5891,6 +5895,9 @@ const CHART_LAYERS = [
     { key: 'optionwall', label: 'QQQ OPTION WALL',       on: false },
     { key: 'footprint', label: 'FOOTPRINT',              on: false },
     { key: 'cvd',      label: 'CVD',                      on: false },
+    // Frozen MNQ order-flow research candidates (saved rows, MBO days only).
+    { key: 'of_passive', label: 'PASSIVE REJECT (RESEARCH)', on: false },
+    { key: 'of_turnover', label: 'MBO TURNOVER (RESEARCH)', on: false },
     // Delta Absorption is intentionally split into evidence layers.  The
     // master switch turns the three model components on/off together; each
     // child can then be hidden independently to keep the chart readable.
@@ -5935,9 +5942,8 @@ function _persistChartLayerPreferences() {
 }
 
 function _seedChartLayerMarkup() {
-    document.querySelectorAll('.glass-switch').forEach(track => {
-        if (track.closest('.optical-stage-copy')) return;
-        if (!track.tpxSetState && !track.dataset.nativeSwitchBound) {
+    document.querySelectorAll('.ui-switch').forEach(track => {
+        if (!track.dataset.nativeSwitchBound) {
             track.dataset.nativeSwitchBound = '1';
             track.addEventListener('click', () => {
                 const key = String(track.dataset.switchProxy || '').replace(/^lp-/, '');
@@ -5960,8 +5966,7 @@ function _seedChartLayerMarkup() {
 }
 
 // The static markup is already present because this bundle loads at the end
-// of <body>. Seed it before tpx-glass.js boots so its internal committed value
-// starts from the restored choice, including the first click after a reload.
+// of <body>; seed the switches from the restored layer choices.
 _seedChartLayerMarkup();
 
 function _clearCanvas(id) {
@@ -5978,8 +5983,6 @@ function _mirrorChartLayerState(key, on) {
     document.querySelectorAll(
         '#chart-layer-pop [data-switch-proxy="lp-' + key + '"]'
     ).forEach(track => {
-        if (track.closest('.optical-stage-copy')) return;
-        if (track.tpxSetState && track.clientWidth > 0) track.tpxSetState(!!on);
         track.classList.toggle('on', !!on);
         track.setAttribute('aria-checked', String(!!on));
     });
@@ -5991,7 +5994,8 @@ function _syncFootprintCandleVisibility() {
     // but remove its visual body once the footprint has actual cells to show.
     // If the cache is unavailable, keep the normal candles visible instead of
     // leaving the chart blank.
-    const hideCandles = layerOn('footprint') && _footprintBars.length > 0;
+    const hideCandles = layerOn('footprint') && _footprintBars.length > 0
+        && _chartTimeframe === '1m';
     // applyOptions invalidates the chart even for an unchanged value. Read
     // the current series rather than memoizing a previous series instance.
     try {
@@ -6008,6 +6012,8 @@ const _SIGNAL_TYPE_LAYER = {
     momentum_reversion: 'mrev',
     icefishball: 'kdjma',
     intramom: 'intramom',
+    of_passive: 'of_passive',
+    of_turnover: 'of_turnover',
 };
 
 function toggleChartLayer(key, on) {
@@ -6025,16 +6031,14 @@ function toggleChartLayer(key, on) {
         _mirrorChartLayerState('delta_absorption', CHART_OVERLAYS.delta_absorption);
     }
     const next = CHART_OVERLAYS[key];
-    // Native mode has no Glass controller to commit the visual state.  Keep
-    // the real switch in sync here so a close/reopen cycle never leaves the
-    // track and aria state stuck on the previous value.  A Glass controller,
-    // when present, still owns its spring; this only mirrors the committed
-    // semantic state.
+    // Keep the switch in sync so a close/reopen cycle never leaves the track
+    // and aria state on the previous value.
     _mirrorChartLayerState(key, next);
     _persistChartLayerPreferences();
     if (key === 'footprint') _syncFootprintCandleVisibility();
     if (key === 'pi' && on && !_piSignalRows.length) { refreshPiSignalMarkers(); return; }
     if (key === 'optionwall' && on && !_optionWallSnapshots.length) { refreshOptionWallLayer(); return; }
+    if ((key === 'of_passive' || key === 'of_turnover') && on) { refreshResearchSignalRows(key); return; }
     if (key === 'prevday70' && on) { refreshPreviousDayValueAreas(true); return; }
     if (key === 'footprint' || key === 'cvd') {
         if (on) refreshOrderflowLayers(true);
@@ -6086,48 +6090,21 @@ function scheduleChartOverlayRedraw() {
         try { drawPreviousDayValueAreas(); } catch (e) {}
         try { drawFootprintLayer(); } catch (e) {}
         try { drawCvdLayer(); } catch (e) {}
-        window.TpxGlass?.sync?.();
     });
 }
 
-// 開關是靜態 HTML(玻璃引擎的 liveAll() 只掃一次,動態產生的抓不到),
-// 所以這裡只做「把 DOM 狀態同步回 CHART_OVERLAYS」,不再生成 markup。
+// 開關是靜態 HTML;這裡只做「把 DOM 狀態同步回 CHART_OVERLAYS」。
 function buildChartLayerMenu() {
-    document.querySelectorAll('#chart-layer-pop .glass-switch').forEach(tr => {
-        if (tr.closest('.optical-stage-copy')) return;
+    document.querySelectorAll('#chart-layer-pop .ui-switch').forEach(tr => {
         const key = String(tr.dataset.switchProxy || '').replace(/^lp-/, '');
         if (!(key in CHART_OVERLAYS)) return;
         const on = CHART_OVERLAYS[key];
-        // 只翻 `on` class 沒有用 —— 拇指位置活在彈簧裡,class 和位置會各說各話
-        // (軌道變綠但拇指還停在左邊)。tpxSetState 才會把彈簧一起推過去。
-        //
-        // 但 tpxSetState 的行程是從 track.clientWidth 算的,面板還 display:none
-        // 時那是 0 → 行程被夾成 1px,拇指就卡在最左邊不動了。所以有版面才推。
-        // Opening the hidden panel already has the correct state in aria and
-        // in the switch controller's committed value.  Re-committing that
-        // same value would restart the long glass spring and leave the thumb
-        // in the dark interacting material for ~2 seconds.  Only drive the
-        // spring when the source state actually changed while the panel was
-        // closed.
+        // Only touch a switch whose state changed while the panel was closed.
         const current = tr.getAttribute('aria-checked') === 'true';
         if (current === on) return;
-        if (tr.tpxSetState && tr.clientWidth > 0) tr.tpxSetState(on);
-        else {
-            tr.classList.toggle('on', on);
-            tr.setAttribute('aria-checked', String(on));
-        }
+        tr.classList.toggle('on', on);
+        tr.setAttribute('aria-checked', String(on));
     });
-}
-
-// tpx-glass.js 的 switch onChange 走 `byId(proxy).click()`,不帶新狀態進來。
-// commit() 在呼叫 onChange **之前**就寫好 aria-checked,但 `on` class 要等
-// 下一幀彈簧 apply() 才更新 —— 所以讀 aria-checked,不要讀 class。
-function onLayerProxy(key) {
-    const tr = [...document.querySelectorAll(
-        '#chart-layer-pop [data-switch-proxy="lp-' + key + '"]'
-    )].find((node) => !node.closest('.optical-stage-copy'));
-    if (!tr) return;
-    toggleChartLayer(key, tr.getAttribute('aria-checked') === 'true');
 }
 
 function toggleChartLayerMenu(force) {
@@ -6137,15 +6114,15 @@ function toggleChartLayerMenu(force) {
     pop.classList.toggle('hidden', !show);
     if (show) {
         buildChartLayerMenu();
-        // Popup switch surfaces are mounted at boot while this panel is
-        // hidden; resync once it has a measurable box so their local optical
-        // layers are not left display:none.
-        window.TpxGlass?.sync?.(false);
     }
 }
 
 document.addEventListener('DOMContentLoaded', () => setTimeout(() => {
     buildChartLayerMenu();   // 面板還隱藏著,只對齊 class
+    initPiOptionsUi();
+    _syncChartTimeframeButtons();
+    // A research layer restored as "on" needs its saved rows loaded once.
+    if (layerOn('of_passive') || layerOn('of_turnover')) refreshResearchSignalRows();
 }, 0));
 // 點圖層選單以外的地方就收起來
 document.addEventListener('click', (e) => {
@@ -6167,6 +6144,9 @@ function drawSessionDividers() {
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
+
+    // Session lines and hatching only mean something up to 1h bars.
+    if (['4h', '1d', '1w'].includes(_chartTimeframe)) return;
 
     // Get visible time range
     const range = chart.timeScale().getVisibleRange();
@@ -6214,7 +6194,7 @@ function drawSessionDividers() {
 
             // Convert to lightweight-charts time in the configured market zone.
             const chartTime = utcMsToChartTime(bMs);
-            const x = chart.timeScale().timeToCoordinate(chartTime);
+            const x = _chartTimeToCoordinate(chartTime);
             if (x === null || x < 0 || x > W) return;
 
             ctx.beginPath();
@@ -6256,8 +6236,8 @@ function drawNYOpenZoneBackgrounds(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
             const endChartMs = utcMsToChartTime(endUtcMs) * 1000;
             if (endChartMs < fromMs || startChartMs > toMs) return;
 
-            const x1 = chart.timeScale().timeToCoordinate(utcMsToChartTime(startUtcMs));
-            const x2 = chart.timeScale().timeToCoordinate(utcMsToChartTime(endUtcMs));
+            const x1 = _chartTimeToCoordinate(utcMsToChartTime(startUtcMs));
+            const x2 = _chartTimeToCoordinate(utcMsToChartTime(endUtcMs));
             if (x1 === null || x2 === null) return;
             const left = Math.max(0, Math.min(x1, x2));
             const right = Math.min(W, Math.max(x1, x2));
@@ -6297,8 +6277,8 @@ function drawNoTradeHatching(ctx, W, H, startDayMs, endMs, fromMs, toMs) {
             const startMs = nyLocalToUtcMs(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.startH, w.startM);
             const endWindowMs = nyLocalToUtcMs(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), w.endH, w.endM);
             if (endWindowMs < fromMs || startMs > toMs) return;
-            const x1 = chart.timeScale().timeToCoordinate(utcMsToChartTime(startMs));
-            const x2 = chart.timeScale().timeToCoordinate(utcMsToChartTime(endWindowMs));
+            const x1 = _chartTimeToCoordinate(utcMsToChartTime(startMs));
+            const x2 = _chartTimeToCoordinate(utcMsToChartTime(endWindowMs));
             if (x1 === null || x2 === null) return;
             const left = Math.max(0, Math.min(x1, x2));
             const right = Math.min(W, Math.max(x1, x2));
@@ -6355,7 +6335,7 @@ function drawFadeDailyLevels(zones) {
     const timeToX = (sec) => {
         if (sec == null || !Number.isFinite(sec)) return null;
         let x = null;
-        try { x = chart.timeScale().timeToCoordinate(sec); } catch (_) {}
+        try { x = _chartTimeToCoordinate(sec); } catch (_) {}
         if (x !== null && x !== undefined) return x;
         try {
             const vr = chart.timeScale().getVisibleRange();
@@ -6530,7 +6510,7 @@ function drawPreviousDayValueAreas() {
     const timeToX = (sec) => {
         if (sec == null || !Number.isFinite(sec)) return null;
         try {
-            const x = chart.timeScale().timeToCoordinate(sec);
+            const x = _chartTimeToCoordinate(sec);
             if (x !== null && x !== undefined) return x;
         } catch (_) {}
         if (vFrom === null || vTo === null || vTo <= vFrom) return null;
@@ -6923,7 +6903,7 @@ async function refreshDeltaAbsorptionOverlay(force = false) {
 }
 
 async function refreshOrderflowLayers(force) {
-    if (!layerOn('footprint') && !layerOn('cvd')) {
+    if ((!layerOn('footprint') && !layerOn('cvd')) || _chartTimeframe !== '1m') {
         drawFootprintLayer();
         drawCvdLayer();
         return;
@@ -6944,7 +6924,8 @@ async function refreshCvdLayer(force) {
 function drawFootprintLayer() {
     const canvas = footprintCanvas || document.getElementById('footprint-overlay');
     _syncFootprintCandleVisibility();
-    if (!layerOn('footprint') || !_footprintBars.length) {
+    // Footprint cells are per 1m bar; higher timeframes show plain candles.
+    if (!layerOn('footprint') || !_footprintBars.length || _chartTimeframe !== '1m') {
         if (canvas) {
             const context = canvas.getContext('2d');
             context.setTransform(1, 0, 0, 1, 0, 0);
@@ -7163,7 +7144,7 @@ function _cvdSessionDate(bar) {
 
 function drawCvdLayer() {
     const canvas = cvdCanvas || document.getElementById('cvd-overlay');
-    if (!layerOn('cvd') || !_footprintBars.length) {
+    if (!layerOn('cvd') || !_footprintBars.length || _chartTimeframe !== '1m') {
         if (canvas) {
             const context = canvas.getContext('2d');
             context.setTransform(1, 0, 0, 1, 0, 0);
@@ -7270,7 +7251,7 @@ function _nearestBarIndex(sec) {
 function _timeToXViaBars(sec) {
     if (sec == null || !Number.isFinite(sec)) return null;
     let x = null;
-    try { x = chart.timeScale().timeToCoordinate(sec); } catch (_) {}
+    try { x = _chartTimeToCoordinate(sec); } catch (_) {}
     if (x !== null && x !== undefined) return x;
     const idx = _nearestBarIndex(sec);
     if (idx === null) return null;
@@ -7840,7 +7821,38 @@ function _renderTopstepProviderFromUi() {
     _renderProviderStatus('topstep', { state, configured, detail });
 }
 
+// Contract sync hint (see /connection/status "contract"): amber warning mark
+// above the date axis when the chart's Topstep contract, Topstep's active
+// contract and the calendar-rolled store disagree.  Hover shows the detail.
+function _renderContractSync(sync) {
+    const box = document.getElementById('chart-contract-sync');
+    if (!box) return;
+    const outOfSync = !!(sync && sync.in_sync === false);
+    box.classList.toggle('hidden', !outOfSync);
+    if (!outOfSync) {
+        box.removeAttribute('title');
+        return;
+    }
+    const codes = sync.codes || {};
+    const chartCode = codes.topstep || codes.chart || '--';
+    const text = document.getElementById('chart-contract-sync-text');
+    if (text) text.textContent = 'CONTRACT ' + chartCode + ' / STORE ' + (codes.calendar || '--');
+    box.title = String(sync.detail || 'Contracts out of sync');
+    // Same row as the chart tool buttons (already just above the date axis),
+    // immediately to their left so it never covers the timeframe selector.
+    const buttons = document.getElementById('chart-quick-btns');
+    const container = document.getElementById('chart-container');
+    if (buttons && container && buttons.offsetWidth) {
+        const c = container.getBoundingClientRect();
+        const b = buttons.getBoundingClientRect();
+        box.style.right = Math.max(0, c.right - b.left + 8) + 'px';
+        box.style.bottom = Math.max(0, c.bottom - b.bottom) + 'px';
+        box.style.height = b.height + 'px';
+    }
+}
+
 function _renderConnectionStatus(data) {
+    _renderContractSync(data && data.contract);
     const providers = (data && data.providers) || {};
     const localTopstep = _topstepCredentialsPresent();
     const topstep = Object.assign({}, providers.topstep || {});
@@ -8030,21 +8042,145 @@ async function connectAPI() {
 }
 
 async function fetchAndShowChart(interval, preserveViewport = false) {
+    // The chart always shows the selected timeframe; `interval` is kept only
+    // for existing callers.
+    const tf = _chartTimeframe;
+    const serial = ++_chartTfRequestSerial;
     try {
         // Only fetch the most recent slice for charting — the full range can be
         // hundreds of thousands of 1m bars and rendering them all freezes the tab.
         // Backtest / machine learning still use the full backend dataset.
-        const resp = await fetch(API + '/data/candles?limit=' + CHART_MAX_CANDLES);
+        const resp = await fetch(API + '/data/candles?' + _chartTfQuery(
+            tf === '1m' ? CHART_MAX_CANDLES : CHART_TF_INITIAL_LIMIT));
         const data = await resp.json();
+        if (serial !== _chartTfRequestSerial || tf !== _chartTimeframe) return;
         if (data.candles && data.candles.length > 0) {
             showCandleData(data.candles, preserveViewport);
             const shown = data.shown != null ? data.shown : data.candles.length;
-            log('Chart showing ' + shown + ' / ' + data.count + ' candles (recent slice)', 'info');
+            log('Chart showing ' + shown + ' / ' + data.count + ' ' + tf + ' candles (recent slice)', 'info');
             return;
         }
     } catch(e) {}
 
-    log('No candle data available -- click CONNECT to fetch historical data', 'info');
+    if (tf === '1m') {
+        log('No candle data available -- click CONNECT to fetch historical data', 'info');
+    } else {
+        log('No ' + tf + ' candles available yet', 'info');
+    }
+}
+
+// -- Chart timeframe ------------------------------------------
+// Higher timeframes are aggregated by the backend from the 1m store with the
+// one shared definition (backend/data/timeframes.py: 4h anchored to the 18:00
+// New York session open, 1d = Topstep trade date).  1m keeps the original
+// live-append path.
+
+function _chartTfQuery(limit) {
+    return 'limit=' + limit + (_chartTimeframe === '1m' ? '' : '&tf=' + _chartTimeframe);
+}
+
+function _chartTfIsDaily() {
+    return _chartTimeframe === '1d' || _chartTimeframe === '1w';
+}
+
+function _syncChartTimeframeButtons() {
+    document.querySelectorAll('#chart-tf-group .chart-tf-btn').forEach(btn => {
+        const on = btn.dataset.tf === _chartTimeframe;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-pressed', String(on));
+    });
+}
+
+async function setChartTimeframe(tf) {
+    if (!CHART_TIMEFRAMES.includes(tf) || tf === _chartTimeframe) return;
+    _chartTimeframe = tf;
+    try { localStorage.setItem(CHART_TF_STORAGE_KEY, tf); } catch (_) {}
+    _syncChartTimeframeButtons();
+    _lastLiveCandleTime = '';
+    _chartHistoryExhausted = false;
+    _syncFootprintCandleVisibility();
+    await fetchAndShowChart(tf);
+}
+
+// The bar that contains chart time `sec` (last bar starting at or before it),
+// or null when `sec` is outside the loaded bars or inside a data gap.
+function _chartBucketAt(sec) {
+    const cd = window._lastChartData;
+    if (!cd || !cd.length || sec == null || !Number.isFinite(sec)) return null;
+    if (sec < cd[0].time) return null;
+    let lo = 0, hi = cd.length - 1;
+    while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (cd[mid].time <= sec) lo = mid; else hi = mid - 1;
+    }
+    const span = CHART_TF_SECONDS[_chartTimeframe] || 60;
+    // Daily buckets can be 23/25h on DST days.
+    return (sec - cd[lo].time) < span * 1.05 ? cd[lo] : null;
+}
+
+function _chartSnapTime(sec) {
+    if (_chartTimeframe === '1m') return sec;
+    const bar = _chartBucketAt(sec);
+    return bar ? bar.time : null;
+}
+
+// Every overlay maps time -> x through here.  On 1m this is exactly the
+// library call; on higher timeframes a time is placed inside the bar that
+// contains it (bucket start = left edge of the bar).
+function _chartTimeToCoordinate(sec) {
+    if (!chart || sec == null || !Number.isFinite(sec)) return null;
+    const timeScale = chart.timeScale();
+    if (_chartTimeframe === '1m') return timeScale.timeToCoordinate(sec);
+    const bar = _chartBucketAt(sec);
+    if (!bar) return null;
+    const x = timeScale.timeToCoordinate(bar.time);
+    if (x === null || x === undefined) return null;
+    let spacing = 6;
+    try { spacing = Number(timeScale.options().barSpacing) || 6; } catch (_) {}
+    const span = CHART_TF_SECONDS[_chartTimeframe] || 60;
+    const fraction = Math.max(0, Math.min(1, (sec - bar.time) / span));
+    return x - spacing / 2 + fraction * spacing;
+}
+
+// Live update for higher timeframes: the backend re-aggregates its newest
+// buckets (store + in-memory live tail); the chart replaces/appends them.
+async function _refreshTimeframeTail() {
+    const tf = _chartTimeframe;
+    if (tf === '1m' || !candleSeries) return;
+    try {
+        const resp = await fetch(API + '/data/candles?tf=' + tf + '&limit=3');
+        if (!resp.ok || tf !== _chartTimeframe) return;
+        const data = await resp.json();
+        if (tf !== _chartTimeframe) return;
+        const rows = (data.candles || []).map(_chartHistoryCandleData).filter(Boolean);
+        if (!rows.length) return;
+        const cd = window._lastChartData || (window._lastChartData = []);
+        const lastT = cd.length ? cd[cd.length - 1].time : -Infinity;
+        const span = CHART_TF_SECONDS[tf] || 60;
+        if (cd.length && rows[0].time > lastT + span * 8) {
+            await fetchAndShowChart(tf, true);          // too far behind: reload
+            return;
+        }
+        let updated = 0;
+        for (const row of rows) {
+            if (row.time < lastT) continue;             // update() accepts last bar or newer
+            const bar = { time: row.time, open: row.open, high: row.high, low: row.low, close: row.close };
+            try { candleSeries.update(bar); } catch (_) { continue; }
+            if (cd.length && cd[cd.length - 1].time === row.time) {
+                cd[cd.length - 1] = bar;
+                if (_rawCandleBuffer.length) _rawCandleBuffer[_rawCandleBuffer.length - 1] = row;
+            } else {
+                cd.push(bar);
+                _rawCandleBuffer.push(row);
+            }
+            updated++;
+        }
+        if (updated) {
+            refreshPiSignalMarkers();
+            _refreshAllMarkers();
+            scheduleChartOverlayRedraw();
+        }
+    } catch (_) { /* next poll retries */ }
 }
 
 function _captureChartViewport() {
@@ -8124,6 +8260,15 @@ function applyDefaultChartView(chartData, zones) {
     if (!chartData || chartData.length === 0) {
         _setChartPriceAutoScale(true);
         chart.timeScale().fitContent();
+        return;
+    }
+
+    if (_chartTimeframe !== '1m') {
+        // Higher timeframes: the latest ~150 bars with a little right space.
+        const total = chartData.length;
+        const visible = Math.min(total, CHART_TF_DEFAULT_VISIBLE_BARS);
+        _setChartPriceAutoScale(true);
+        chart.timeScale().setVisibleLogicalRange({ from: total - visible, to: total + visible * 0.08 });
         return;
     }
 
@@ -8373,6 +8518,9 @@ async function runBacktest() {
     const btn = document.getElementById('btn-backtest');
     if (!btn) return;
     if (_backtestInProgress) return;
+    if (normalizeStrategyName(_mlSelectValue('strategy-bt', 'factor')) === 'pi_options') {
+        return runPiOptionsBacktest(btn);
+    }
     _backtestInProgress = true;
     btn.disabled = true;
     let succeeded = false;
@@ -8448,6 +8596,230 @@ async function runBacktest() {
     }
 }
 
+// -- PI OPTIONS (QQQ/SPY next-session calls) ----------
+// One control set, rendered into the Backtest model panel ('bt') and the
+// Live options account ('opt'); defaults are the RESEARCH_REPORT §4.5-4.6
+// conclusion (market entry, $3 OTM, no target, hold to next-day 15:30).
+const PI_OPTION_DEFAULTS = Object.freeze({
+    tiers: ['LV2', 'LV3'], strike: 'otm_3', entry_discount: 0,
+    stop: null, target: null, exit_time: '15:30', contracts: 1, budget: 1000,
+});
+const PI_OPTION_CHOICES = Object.freeze({
+    strike: [['atm', 'ATM'], ['otm_3', '$3 OTM'], ['otm_5', '$5 OTM'], ['otm_7', '$7 OTM'], ['otm_10', '$10 OTM']],
+    entry: [['0', 'MARKET'], ['0.2', 'LIMIT -20%'], ['0.4', 'LIMIT -40%'], ['0.6', 'LIMIT -60%']],
+    stop: [['', 'OFF'], ['0.2', '-20%'], ['0.3', '-30%'], ['0.4', '-40%'], ['0.5', '-50%'], ['0.6', '-60%']],
+    target: [['', 'OFF'], ['0.5', '+50%'], ['1', '+100%'], ['2', '+200%'], ['3', '+300%']],
+    exit: [['15:30', 'NEXT DAY 15:30 ET'], ['10:00', 'NEXT DAY 10:00 ET']],
+    size: [['1', '1 CONTRACT'], ['2', '2 CONTRACTS'], ['3', '3 CONTRACTS'], ['5', '5 CONTRACTS'],
+           ['10', '10 CONTRACTS'], ['', 'BY BUDGET']],
+});
+const PI_OPTION_BT_STORAGE_KEY = 'ancserTPX.piOptionsBt';
+
+function _piOptSelect(id, choices, label) {
+    return '<div class="form-group fx1"><label>' + label + '</label><select id="' + id + '">'
+        + choices.map(([v, t]) => '<option value="' + v + '">' + t + '</option>').join('')
+        + '</select></div>';
+}
+
+function renderPiOptionControls(suffix) {
+    const box = document.getElementById(suffix === 'bt' ? 'pi-options-params-bt' : 'piopt-controls-opt');
+    if (!box || box.dataset.rendered) return;
+    const id = (name) => 'piopt-' + name + '-' + suffix;
+    box.innerHTML = (suffix === 'bt' ? '<div class="panel-title" style="margin-top:0;">PI OPTIONS</div>' : '')
+        + '<div class="form-group"><label>SIGNALS</label></div><div class="piopt-tiers">'
+        + '<label class="tf-chk"><input type="checkbox" id="' + id('lv2') + '" checked> LV2 深藍圈</label>'
+        + '<label class="tf-chk"><input type="checkbox" id="' + id('lv3') + '" checked> LV3 青π</label>'
+        + '</div>'
+        + '<div class="form-row">' + _piOptSelect(id('strike'), PI_OPTION_CHOICES.strike, 'STRIKE')
+        + _piOptSelect(id('entry'), PI_OPTION_CHOICES.entry, 'ENTRY') + '</div>'
+        + '<div class="form-row">' + _piOptSelect(id('stop'), PI_OPTION_CHOICES.stop, 'STOP (PREMIUM)')
+        + _piOptSelect(id('target'), PI_OPTION_CHOICES.target, 'TARGET (PREMIUM)') + '</div>'
+        + '<div class="form-row">' + _piOptSelect(id('exit'), PI_OPTION_CHOICES.exit, 'EXIT')
+        + _piOptSelect(id('size'), PI_OPTION_CHOICES.size, 'SIZE / SIGNAL') + '</div>'
+        + '<div class="form-group"><label>BUDGET $ / SIGNAL (BY BUDGET)</label><input type="number" id="' + id('budget')
+        + '" min="50" step="50" value="1000"></div>'
+        + (suffix === 'bt'
+            ? '<div class="lbl-hint piopt-note">QQQ/SPY next-session calls on saved Theta quotes'
+              + ' (research window only); first LV2/LV3 long per symbol and day.</div>'
+            : '');
+    box.dataset.rendered = '1';
+    const size = document.getElementById(id('size'));
+    if (size) size.addEventListener('change', () => _syncPiOptionBudget(suffix));
+    applyPiOptionControls(suffix, PI_OPTION_DEFAULTS);
+}
+
+// The budget only sizes trades in BY BUDGET mode.
+function _syncPiOptionBudget(suffix) {
+    const size = document.getElementById('piopt-size-' + suffix);
+    const budget = document.getElementById('piopt-budget-' + suffix);
+    if (size && budget) budget.disabled = size.value !== '';
+}
+
+function applyPiOptionControls(suffix, settings) {
+    const s = Object.assign({}, PI_OPTION_DEFAULTS, settings || {});
+    const set = (name, value) => {
+        const el = document.getElementById('piopt-' + name + '-' + suffix);
+        if (el) el.value = value;
+    };
+    const tiers = Array.isArray(s.tiers) ? s.tiers : PI_OPTION_DEFAULTS.tiers;
+    const lv2 = document.getElementById('piopt-lv2-' + suffix);
+    const lv3 = document.getElementById('piopt-lv3-' + suffix);
+    if (lv2) lv2.checked = tiers.includes('LV2');
+    if (lv3) lv3.checked = tiers.includes('LV3');
+    set('strike', s.strike);
+    set('entry', String(Number(s.entry_discount || 0)));
+    set('stop', s.stop ? String(Number(s.stop)) : '');
+    set('target', s.target ? String(Number(s.target)) : '');
+    set('exit', s.exit_time);
+    set('size', s.contracts ? String(Number(s.contracts)) : '');
+    set('budget', String(Number(s.budget || 1000)));
+    _syncPiOptionBudget(suffix);
+}
+
+function readPiOptionControls(suffix) {
+    const val = (name) => (document.getElementById('piopt-' + name + '-' + suffix) || {}).value;
+    const tiers = [];
+    if ((document.getElementById('piopt-lv2-' + suffix) || {}).checked) tiers.push('LV2');
+    if ((document.getElementById('piopt-lv3-' + suffix) || {}).checked) tiers.push('LV3');
+    const num = (v) => (v === '' || v == null ? null : Number(v));
+    return {
+        tiers: tiers.length ? tiers : PI_OPTION_DEFAULTS.tiers.slice(),
+        strike: val('strike') || PI_OPTION_DEFAULTS.strike,
+        entry_discount: Number(val('entry') || 0),
+        stop: num(val('stop')),
+        target: num(val('target')),
+        exit_time: val('exit') || '15:30',
+        contracts: num(val('size')),
+        budget: Math.max(50, Number(val('budget') || 1000)),
+    };
+}
+
+async function runPiOptionsBacktest(btn) {
+    _backtestInProgress = true;
+    btn.disabled = true;
+    try {
+        const settings = readPiOptionControls('bt');
+        try { localStorage.setItem(PI_OPTION_BT_STORAGE_KEY, JSON.stringify(settings)); } catch (e) {}
+        const body = Object.assign({}, settings, {
+            start_date: (document.getElementById('start-date') || {}).value || null,
+            end_date: (document.getElementById('end-date') || {}).value || null,
+        });
+        log('PI OPTIONS backtest -> ' + settings.strike + ' / entry '
+            + (settings.entry_discount ? '-' + Math.round(settings.entry_discount * 100) + '% limit' : 'market')
+            + ' / stop ' + (settings.stop ? '-' + Math.round(settings.stop * 100) + '%' : 'off')
+            + ' / target ' + (settings.target ? '+' + Math.round(settings.target * 100) + '%' : 'off')
+            + ' / exit next ' + settings.exit_time + ' ET'
+            + ' / ' + (settings.contracts ? settings.contracts + ' contract(s)' : 'budget $' + settings.budget), 'info');
+        const resp = await fetch(API + '/backtest/pi-options', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || resp.statusText);
+        // Option premiums are not MNQ prices: keep them off the futures chart.
+        _backtestMarkers = [];
+        try { clearPositionOverlay(); } catch (e) {}
+        _refreshAllMarkers();
+        renderMetrics(data.metrics, data.trades);
+        // Every considered signal, filled or not; a server started before
+        // option_rows existed still returns the plain fills.
+        if (Array.isArray(data.option_rows)) renderOptionTrades(data.option_rows);
+        else renderTrades(data.trades);
+        const s = data.options_summary || {};
+        log('PI OPTIONS: ' + s.trades + '/' + s.signals + ' filled, total $' + Number(s.total || 0).toFixed(0)
+            + ', max DD $' + Number(s.max_dd || 0).toFixed(0) + ', PF ' + Number(s.pf || 0).toFixed(2)
+            + ', without best 2 days $' + Number(s.without_best_2_dates || 0).toFixed(0)
+            + ' (data ' + ((s.data_window || {}).start || '?') + '..' + ((s.data_window || {}).end || '?') + ')',
+            'success');
+    } catch (e) {
+        log('PI OPTIONS backtest failed: ' + e.message, 'error');
+    } finally {
+        _backtestInProgress = false;
+        btn.disabled = false;
+        btn.textContent = 'EXECUTE BACKTEST';
+    }
+}
+
+// -- Options account (Robinhood) -----------------------
+let _optionsAccountTimer = null;
+let _optionsTicketCount = 0;
+
+function _renderOptionsAccount(data) {
+    if (!data) return;
+    const account = data.account || {};
+    const status = data.status || {};
+    const broker = data.broker || {};
+    const brokerEl = document.getElementById('opt-broker-status');
+    if (brokerEl) {
+        brokerEl.textContent = broker.connected ? 'ROBINHOOD CONNECTED' : 'NOT CONNECTED';
+        brokerEl.title = broker.detail || '';
+    }
+    const modeEl = document.getElementById('opt-mode');
+    if (modeEl && document.activeElement !== modeEl) modeEl.value = account.mode || 'alert';
+    const statusEl = document.getElementById('opt-status');
+    const dot = document.getElementById('opt-dot');
+    const running = !!status.running;
+    if (statusEl) {
+        statusEl.textContent = running ? 'ALERTS ON' : 'OFF';
+        statusEl.style.color = running ? 'var(--green)' : 'var(--text3)';
+        statusEl.title = status.last_error || (status.last_poll ? 'last check ' + status.last_poll : '');
+    }
+    if (dot) dot.style.background = running ? 'var(--green)' : '';
+    const list = document.getElementById('opt-tickets');
+    if (list) {
+        const tickets = status.tickets || [];
+        list.innerHTML = tickets.length
+            ? tickets.slice(0, 6).map(t => '<div class="opt-ticket" title="' + _attr(t.text || '') + '">'
+                + _acctEsc(String(t.symbol) + ' ' + String(t.tier) + ' · ' + String(t.expiration).slice(5)
+                    + ' CALL · ' + String(t.strike_rule)) + '</div>').join('')
+            : '<div class="slot-line c-t3">NO TICKETS YET</div>';
+    }
+}
+
+async function refreshOptionsAccount(applySettings) {
+    try {
+        const resp = await fetch(API + '/options/account', { cache: 'no-store' });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (applySettings) applyPiOptionControls('opt', (data.account || {}).settings);
+        const tickets = (data.status || {}).tickets || [];
+        if (!applySettings && tickets.length > _optionsTicketCount && tickets[0]) {
+            log('OPTIONS TICKET: ' + tickets[0].text, 'warn');
+        }
+        _optionsTicketCount = tickets.length;
+        _renderOptionsAccount(data);
+    } catch (e) {}
+}
+
+async function optionsAccountSave(enabled) {
+    const body = {
+        mode: (document.getElementById('opt-mode') || {}).value || 'alert',
+        enabled: !!enabled,
+        settings: readPiOptionControls('opt'),
+    };
+    try {
+        const resp = await fetch(API + '/options/account', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.detail || resp.statusText);
+        log('Options account: ' + (enabled ? 'ALERT mode on (tickets only, no orders)' : 'stopped'), 'info');
+        _renderOptionsAccount(data);
+    } catch (e) {
+        log('Options account: ' + e.message, 'error');
+    }
+}
+
+function initPiOptionsUi() {
+    renderPiOptionControls('bt');
+    renderPiOptionControls('opt');
+    try {
+        const saved = JSON.parse(localStorage.getItem(PI_OPTION_BT_STORAGE_KEY) || 'null');
+        if (saved && typeof saved === 'object') applyPiOptionControls('bt', saved);
+    } catch (e) {}
+    refreshOptionsAccount(true);
+    if (!_optionsAccountTimer) _optionsAccountTimer = setInterval(() => refreshOptionsAccount(false), 10000);
+}
+
 // -- Machine Learning -----------------------------------
 
 
@@ -8521,6 +8893,9 @@ const INDICATOR_SIGNAL_TYPES = {
     // 1.0.9: INTRAMOM —— 白色上下箭頭,與三個因子的顏色明確區隔。
     // 進場時刻絕大多數是 22:30 UTC(交易日開始後 30 分鐘)。
     intramom: { kind: 'arrow', radius: 7, rgb: '255, 255, 255' },
+    // Research candidates: same arrow, own colour, plus the saved outcome.
+    of_passive: { kind: 'arrow', radius: 7, rgb: '249, 115, 22', outcome: true },
+    of_turnover: { kind: 'arrow', radius: 7, rgb: '45, 212, 191', outcome: true },
 };
 const INDICATOR_LONG_RGB = '56, 189, 248';
 const INDICATOR_SHORT_RGB = '168, 85, 247';
@@ -8529,8 +8904,11 @@ const INDICATOR_KDJMA_SHORT_RGB = '244, 63, 94';
 
 function _refreshAllMarkers() {
     if (!candleSeries) return;
-    let persistent = [..._backtestMarkers, ..._liveMarkers];
-    let realtime = [..._liveRealtimeMarkers];
+    const snap = (list) => _chartTimeframe === '1m' ? list : list
+        .map(m => ({ ...m, time: _chartSnapTime(m.time) }))
+        .filter(m => m.time != null);
+    let persistent = snap([..._backtestMarkers, ..._liveMarkers]);
+    let realtime = snap([..._liveRealtimeMarkers]);
     // Drop markers whose time is before the first chart bar.
     // Lightweight Charts snaps older markers to the first bar → visual stacking.
     const cd = window._lastChartData;
@@ -8966,9 +9344,13 @@ function drawIndicatorSignalOverlay() {
     // EMAPMO/PI/MREV stream out of a Delta chart is the default presentation
     // of this preset; the independent Delta switches below still control
     // exactly which evidence types are visible.
-    if (_deltaChartModelActive()) return;
-
-    if (!_indicatorSignalRows || _indicatorSignalRows.length === 0) { drawPiSignalOverlay(); return; }
+    const researchRows = _researchSignalRowsForDraw();
+    const deltaModel = _deltaChartModelActive();
+    const rows = deltaModel ? researchRows : (_indicatorSignalRows || []).concat(researchRows);
+    if (rows.length === 0) {
+        if (!deltaModel) drawPiSignalOverlay();
+        return;
+    }
 
     // 1.0.9: 夾在價格窗格內 — 信號不再蓋住底部時間軸
     ctx.beginPath();
@@ -8978,7 +9360,7 @@ function drawIndicatorSignalOverlay() {
     let visibleRange = null;
     try { visibleRange = chart.timeScale().getVisibleRange(); } catch (_) {}
 
-    for (const row of _indicatorSignalRows) {
+    for (const row of rows) {
         const spec = INDICATOR_SIGNAL_TYPES[row.type];
         if (!spec) continue;
         if (!layerOn(_SIGNAL_TYPE_LAYER[row.type] || row.type)) continue;
@@ -9020,6 +9402,7 @@ function drawIndicatorSignalOverlay() {
             try { yRef = candleSeries.priceToCoordinate(Number(refPrice)); } catch (_) {}
             if (yRef === null || yRef === undefined || yRef < -80 || yRef > H + 80) continue;
             _drawIndicatorArrow(ctx, x, yRef, dir, rgb);
+            if (spec.outcome) _drawResearchOutcome(ctx, x, yRef, dir, row);
             continue;
         }
 
@@ -9036,7 +9419,72 @@ function drawIndicatorSignalOverlay() {
             _drawKdjmaDot(ctx, x, y, spec.radius, dotRgb);
         }
     }
-    drawPiSignalOverlay();
+    if (!deltaModel) drawPiSignalOverlay();
+}
+
+
+// ── Order-flow research layers ──────────────────────────────────────────
+// Saved rows of the two frozen MNQ MBO candidates (RESEARCH_REPORT §5.5):
+// where each fired, direction, and how it ended.  Research only; the layer
+// log line always carries the candidate's aggregate statistics so a pretty
+// cluster of arrows is never read without its numbers.
+let _researchEvents = null;
+let _researchSummary = {};
+let _researchRows = [];
+let _researchRowsKey = null;
+let _researchLoading = null;
+
+async function refreshResearchSignalRows(key) {
+    if (!_researchEvents) {
+        if (!_researchLoading) {
+            _researchLoading = fetch(API + '/research/orderflow-events', { cache: 'no-store' })
+                .then(resp => (resp.ok ? resp.json() : null))
+                .catch(() => null);
+        }
+        const data = await _researchLoading;
+        _researchLoading = null;
+        if (!data || !data.available) {
+            log('Order-flow research events unavailable' + (data && data.note ? ': ' + data.note : ''), 'warn');
+            return;
+        }
+        _researchEvents = data.events || [];
+        _researchSummary = data.summary || {};
+        _researchRowsKey = null;
+    }
+    const summary = key && _researchSummary[key];
+    if (summary) {
+        const ev = summary.evaluation || {};
+        log(summary.name + ' (research, MBO ' + summary.first_date + '..' + summary.last_date + '): '
+            + 'evaluation ' + (ev.n || 0) + ' trades, PF ' + Number(ev.pf || 0).toFixed(2)
+            + ', 14-tick PF ' + Number(ev.stress_pf || 0).toFixed(2)
+            + ' - saved research rows, not a live signal', 'info');
+    }
+    try { redrawAllOverlays(); } catch (e) {}
+}
+
+function _researchSignalRowsForDraw() {
+    if (!_researchEvents || !_researchEvents.length) return [];
+    if (!layerOn('of_passive') && !layerOn('of_turnover')) return [];
+    // Remap when the display timezone changes (chart time is display-local).
+    const key = utcMsToChartTime(Date.parse(_researchEvents[0].time));
+    if (key !== _researchRowsKey) {
+        _researchRows = _researchEvents.map(_signalRowFromApi).filter(Boolean);
+        _researchRowsKey = key;
+    }
+    return _researchRows;
+}
+
+function _drawResearchOutcome(ctx, x, yRef, dir, row) {
+    const pnl = Number(row.net_pnl);
+    if (!Number.isFinite(pnl)) return;
+    const text = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
+    ctx.save();
+    ctx.font = '500 9px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = dir === 'short' ? 'bottom' : 'top';
+    ctx.fillStyle = pnl >= 0 ? 'rgba(40, 209, 124, 0.95)' : 'rgba(255, 93, 115, 0.95)';
+    ctx.fillText(text, x, dir === 'short' ? yRef - 22 : yRef + 22);
+    ctx.restore();
 }
 
 
@@ -9523,6 +9971,37 @@ function _optionWallVisibleWindow(visibleRange) {
     return { start, end };
 }
 
+// Path commands for one wall series.  A changed level inside a session is a
+// vertical step at the snapshot time.  A session change or a time gap (a row
+// clamped at the 16:00 close whose next snapshot arrives after it) starts a
+// new subpath: joining across the gap drew a diagonal connector.
+function _optionWallSeriesPath(points, key) {
+    const commands = [];
+    let drawing = false;
+    let currentSession = null;
+    let lastX = null;
+    let lastY = null;
+    for (const point of points) {
+        const { x1, x2, session } = point;
+        const y = point.ys[key];
+        if (x1 === null || x2 === null || y === null || y === undefined) {
+            drawing = false;
+            continue;
+        }
+        if (!drawing || session !== currentSession || Math.abs(lastX - x1) > 0.01) {
+            commands.push(['M', x1, y]);
+        } else if (Math.abs(lastY - y) > 0.01) {
+            commands.push(['L', x1, y]);
+        }
+        commands.push(['L', x2, y]);
+        drawing = true;
+        currentSession = session;
+        lastX = x2;
+        lastY = y;
+    }
+    return commands;
+}
+
 function drawOptionWallOverlay() {
     const canvas = _createOptionWallCanvas();
     if (!canvas || !chart || !candleSeries) return;
@@ -9585,29 +10064,9 @@ function drawOptionWallOverlay() {
         ctx.lineWidth = spec.key === 'gamma_flip_mnq' ? 1.2 : 1.7;
         ctx.setLineDash(spec.dash);
         ctx.beginPath();
-        let drawing = false;
-        let currentSession = null;
-        let lastX = null;
-        let lastY = null;
-        for (const point of visiblePoints) {
-            const { x1, x2, session } = point;
-            const y = point.ys[spec.key];
-            if (x1 === null || x2 === null || y === null || y === undefined) {
-                drawing = false;
-                continue;
-            }
-            if (!drawing || session !== currentSession) {
-                ctx.moveTo(x1, y);
-            } else if (Math.abs(lastX - x1) > 0.01 || Math.abs(lastY - y) > 0.01) {
-                // A changed level remains a continuous step inside the RTH
-                // session. Stable levels skip this redundant path command.
-                ctx.lineTo(x1, y);
-            }
-            ctx.lineTo(x2, y);
-            drawing = true;
-            currentSession = session;
-            lastX = x2;
-            lastY = y;
+        for (const [op, x, y] of _optionWallSeriesPath(visiblePoints, spec.key)) {
+            if (op === 'M') ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
         }
         ctx.stroke();
     }
@@ -10203,9 +10662,6 @@ function renderCapUi(mode) {
     usd = Math.max(0, Math.min(2000, usd));
     if (sl) {
         sl.value = String(usd);
-        // glass skin 把 range 換成 proxy div,只有拖曳會單向寫回真的 input。
-        // 程式改 .value 它不會重畫,所以要主動通知(見 tpx-glass.js 的 glass-sync)。
-        try { sl.dispatchEvent(new Event('glass-sync', { bubbles: false })); } catch (e) {}
     }
     if (out) {
         out.textContent = usd > 0 ? ('$' + usd.toLocaleString()) : 'OFF';
@@ -10708,8 +11164,85 @@ function _animateBottomPane(panel) {
     });
 }
 
+// The BACKTEST TRADES table shows futures fills or PI OPTIONS signals; each
+// renderer owns its header, so switching models never leaves stale columns.
+const TRADE_TABLE_COLUMNS = ['CONTRACT', 'TIME', 'DURATION', 'ENTRY', 'EXIT', 'P&L', 'COMMISSION', 'FEES', 'DIR'];
+const OPTION_TRADE_COLUMNS = ['CONTRACT', 'TIME', 'TIER', 'SIGNAL ASK', 'ENTRY', 'EXIT', 'RETURN', 'NET P&L', 'RESULT'];
+
+function _setTradeTableHead(tbody, columns) {
+    const table = tbody && tbody.closest('table');
+    const row = table && table.querySelector('thead tr');
+    if (!row) return;
+    const current = Array.from(row.children).map(th => th.textContent.trim());
+    if (current.join('|') === columns.join('|')) return;
+    row.innerHTML = columns.map((label, i) =>
+        '<th' + (i === 0 ? ' style="width:82px;"' : '') + '>' + _attr(label) + '</th>').join('');
+}
+
+const OPTION_RESULT_LABELS = {
+    time: 'TIME', sl: 'STOP', tp: 'TARGET',
+    limit_not_filled: 'MISSED', premium_above_budget: 'OVER BUDGET',
+    no_buyable_entry_ask: 'NO ASK', no_exit_mark: 'NO EXIT QUOTE', no_strike_path: 'NO STRIKE DATA',
+};
+
+function renderOptionTrades(rows) {
+    const tbody = document.getElementById('trades-tbody');
+    if (!tbody) return;
+    _setTradeTableHead(tbody, OPTION_TRADE_COLUMNS);
+    if (!rows || rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
+        _animateTradeTableRows(tbody, []);
+        return;
+    }
+    const price = v => (v != null ? Number(v).toFixed(2) : '--');
+    // Newest first, like the futures journal.
+    const sorted = [...rows].sort((a, b) =>
+        new Date(b.signal_time || 0).getTime() - new Date(a.signal_time || 0).getTime());
+    const keyed = sorted.map((r, i) => Object.assign({
+        trade_id: 'PIOPT-ROW-' + i, pnl: r.net, direction: 'buy',
+    }, r));
+    tbody.innerHTML = keyed.map(r => {
+        const filled = r.status === 'filled';
+        const contract = (filled ? String(r.contracts) + ' ' : '') + String(r.contract || '');
+        // Signal -> exit, so a limit that fills the next morning still shows
+        // the day the signal fired; the fill time goes with the entry price.
+        const time = formatTradeTimeRangeMarkup(r.signal_time, filled ? r.exit_time : null);
+        const signalAsk = price(r.signal_ask) + (r.limit != null ? ' → LMT ' + price(r.limit) : '');
+        const fillAt = filled && r.entry_time !== r.signal_time ? _tradeDisplayTime(r.entry_time) : null;
+        const entry = price(r.entry_price) + (fillAt
+            ? ' <span class="c-t3">@ ' + _attr(fillAt.date.slice(0, 5) + ' ' + fillAt.time) + '</span>' : '');
+        const result = (OPTION_RESULT_LABELS[filled ? r.exit_reason : r.status] || String(r.exit_reason || r.status || '--'));
+        if (!filled) {
+            return '<tr class="c-t3">' +
+                '<td class="trade-contract-cell">' + _attr(contract) + '</td>' +
+                '<td class="trade-time-cell" style="font-family:\'IBM Plex Mono\',monospace;">' + time + '</td>' +
+                '<td>' + _attr(r.tier || '--') + '</td>' +
+                '<td>' + signalAsk + '</td>' +
+                '<td>--</td><td>--</td><td>--</td><td>$0.00</td>' +
+                '<td>' + _attr(result) + '</td>' +
+            '</tr>';
+        }
+        const net = Number(r.net || 0);
+        const ret = Number(r.ret || 0);
+        const cls = net >= 0 ? 'pnl-pos' : 'pnl-neg';
+        return '<tr>' +
+            '<td class="trade-contract-cell">' + _attr(contract) + '</td>' +
+            '<td class="trade-time-cell" style="font-family:\'IBM Plex Mono\',monospace;">' + time + '</td>' +
+            '<td>' + _attr(r.tier || '--') + '</td>' +
+            '<td>' + signalAsk + '</td>' +
+            '<td>' + entry + '</td>' +
+            '<td>' + price(r.exit_price) + '</td>' +
+            '<td class="' + cls + '">' + (ret >= 0 ? '+' : '') + (ret * 100).toFixed(1) + '%</td>' +
+            '<td class="' + cls + '">$' + (net >= 0 ? '+' : '-') + Math.abs(net).toFixed(2) + '</td>' +
+            '<td>' + _attr(result) + '</td>' +
+        '</tr>';
+    }).join('');
+    _animateTradeTableRows(tbody, keyed);
+}
+
 function renderTrades(trades) {
     const tbody = document.getElementById('trades-tbody');
+    _setTradeTableHead(tbody, TRADE_TABLE_COLUMNS);
     if (!trades || trades.length === 0) {
         tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text2);padding:20px;">NO TRADE DATA</td></tr>';
         _animateTradeTableRows(tbody, []);
@@ -10741,7 +11274,7 @@ function renderTrades(trades) {
             '<td class="trade-time-cell" style="font-family:\'IBM Plex Mono\',monospace;">' + formatTradeTimeRangeMarkup(t.entry_time, t.exit_time, timeLabel) + '</td>' +
             '<td>' + formatTradeDuration(t.entry_time, t.exit_time) + '</td>' +
             '<td>' + t.entry_price.toFixed(2) + '</td>' +
-            '<td>' + (t.exit_price ? t.exit_price.toFixed(2) : '--') + '</td>' +
+            '<td>' + (t.exit_price != null ? Number(t.exit_price).toFixed(2) : '--') + '</td>' +
             '<td class="' + pnlClass + '">' + grossStr + '</td>' +
             '<td class="pnl-neg">$-' + commission.toFixed(2) + '</td>' +
             '<td class="pnl-neg">$-' + fees.toFixed(2) + '</td>' +
@@ -10959,18 +11492,6 @@ function _fmtTs(s) {
 // settled PnL sets a new equity high ("increase as income settles every day"),
 // then LOCKS at break-even (0) once it has climbed from -2000 to 0 — i.e. once
 // cumulative profit reaches +$2000. Mirrors Topstep's EOD trailing drawdown.
-// 1.0.10 #1:內容畫好之後才叫 glass 重新取樣。
-// glass 的折射是 DOM 快照,MutationObserver 那條路有 320ms 防抖 +
-// requestIdleCallback + 每次只重建一個 stage,最壞超過一秒 —— 期間取樣停在
-// 「內容還沒生成」的狀態,PNL 曲線連座標軸都還沒畫就被拷走,看起來就是全黑。
-// 在真正畫完的那一刻主動通知,黑畫面與過時取樣都會消失。
-// rAF 包一層是因為 canvas/表格常常在同一個 tick 才剛寫進 DOM。
-function glassResample(target) {
-    if (!window.TpxGlass || typeof TpxGlass.resample !== 'function') return;
-    requestAnimationFrame(() => {
-        try { TpxGlass.resample(target); } catch (e) {}
-    });
-}
 
 function renderPnlCurve() {
     const host = document.getElementById('pnl-curve-body');
@@ -11148,7 +11669,6 @@ function renderPnlCurve() {
         status.textContent = (baseIsLive ? 'Live realized equity' : 'Backtest realized equity') + liveText;
     }
     // 1.0.9: 標題列統計 hint 已移除(final/peak/maxDD 文字)
-    glassResample();   // 1.0.10 #1:曲線與座標軸畫完才取樣
 }
 
 function updateClock() {
@@ -12061,7 +12581,6 @@ async function renderResearchDataCatalog(_force) {
 
         footnote.textContent = String(catalog.ranking_basis || 'Priority reflects evidence quality, cost stress, cross-period checks, date-cluster uncertainty, and prospective coverage.')
             + ' P&L totals belong to each candidate’s stated sample; all candidates remain research-only.';
-        if (typeof glassResample === 'function') glassResample('#research-data-panel');
     } catch (error) {
         status.textContent = 'Research catalog unavailable · ' + String(error && error.message || error);
         summary.innerHTML = '';
@@ -12302,13 +12821,11 @@ async function renderResearchRobustness(force) {
         + topstepHtml
         + '</div>';
     content.querySelectorAll('.help-dot').forEach(_configureHelpDot);
-    if (typeof glassResample === 'function') glassResample('#institution-panel');
 }
 
 function calShiftMonth(delta) {
     _calMonth = new Date(_calMonth.getFullYear(), _calMonth.getMonth() + delta, 1);
     renderCalendar();
-    glassResample('#calendar-view');   // 1.0.10 #1:日曆重畫後才取樣
 }
 function calGoToday() {
     const key = topstepTradeDateKey(new Date());
@@ -12320,7 +12837,6 @@ function calGoToday() {
         _calMonth = new Date(d.getFullYear(), d.getMonth(), 1);
     }
     renderCalendar();
-    glassResample('#calendar-view');   // 1.0.10 #1:日曆重畫後才取樣
 }
 async function renderCalendar(force) {
     await _calFetchLive(force);
@@ -12444,7 +12960,6 @@ async function renderCalendar(force) {
     // the devtools console, so route failures into the app log instead.
     renderResearchRobustness().catch(
         e => log('Robustness panel failed: ' + e.message, 'error'));
-    glassResample('#calendar-view');   // 1.0.10 #1
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -12532,6 +13047,7 @@ function _defaultSlotAccount(slot, accts) {
 }
 
 async function initLiveSlots() {
+    loadDailyStart();
     // presets 需在快取(供 preset 下拉);若空則抓一次
     if (!_presetsCache || !Object.keys(_presetsCache.presets || {}).length) {
         try { const pr = await fetch(API + '/presets'); if (pr.ok) { const pd = await pr.json(); if (pd && pd.presets) _presetsCache = pd; } } catch (e) {}
@@ -12635,10 +13151,54 @@ async function liveSlotGoLive(slot) {
 async function liveSlotStop(slot) {
     const accId = parseInt((document.getElementById('live-acct-select-' + slot) || {}).value);
     slot = 'MAIN';
-    if (!accId) return;
-    try { const r = await fetch(API + '/live/stop?account_id=' + accId, { method: 'POST' }); const d = await r.json(); log('ACCOUNT ' + slot + ' STOP:' + _acctEsc(d.message || ''), 'info'); }
+    try {
+        const r = await fetch(API + '/live/stop?account_id=' + (accId || 0), { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+        log('ACCOUNT ' + slot + ' STOP: ' + (d.message || '') + ' · Daily start OFF', 'info');
+    }
     catch (e) { log('ACCOUNT ' + slot + ' STOP failed: ' + e.message, 'warn'); }
+    loadDailyStart();
     setTimeout(() => pollLiveSlots({ restart: true }), 300);
+}
+
+async function loadDailyStart() {
+    const description = document.getElementById('daily-start-description');
+    if (!description) return;
+    try {
+        const response = await fetch(API + '/live/daily-start');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
+        document.getElementById('daily-start-enabled').checked = !!data.enabled;
+        document.getElementById('daily-start-time').value = data.time;
+        description.textContent = (data.enabled ? 'ON · ' + data.preset : 'OFF · Default: ' + data.default_preset)
+            + ' · ' + (data.default_size || '?') + ' contracts · Cash-session weekdays'
+            + (data.enabled && data.attempt_state && data.attempt_state !== 'idle' ? ' · ' + data.attempt_state : '')
+            + (data.enabled && data.replacement_state && data.replacement_state !== 'idle' ? ' · restart: ' + data.replacement_state : '')
+            + (data.last_error ? ' · ' + data.last_error : '');
+    } catch (error) {
+        description.textContent = 'Setting unavailable: ' + error.message;
+    }
+}
+
+async function saveDailyStart() {
+    const button = document.getElementById('daily-start-save');
+    button.disabled = true;
+    try {
+        const response = await fetch(API + '/live/daily-start', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled: document.getElementById('daily-start-enabled').checked,
+                                  time: document.getElementById('daily-start-time').value})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
+        log('Daily terminal start ' + (data.enabled ? 'ON at ' + data.time + ' Pacific Time' : 'OFF'), 'info');
+    } catch (error) {
+        log('Daily start: ' + error.message, 'error');
+    } finally {
+        button.disabled = false;
+        await loadDailyStart();
+    }
 }
 
 async function liveSlotFlatten(slot) {

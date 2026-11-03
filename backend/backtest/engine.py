@@ -40,6 +40,7 @@ from backend.strategy.volume_profile import (  # 1.0.8: fade 前日 VP
     VolumeProfileStrategy,
 )
 from backend.backtest.intrabar import resolve_same_bar_exit
+from backend.data.timeframes import aggregate_candles
 from backend.strategy.exit_policy import (
     ExitAction,
     ExitDecision,
@@ -141,7 +142,7 @@ class BacktestEngine:
         elif self.strategy_mode == "volume_profile":
             self.trend_follow = VolumeProfileStrategy(params=self.strategy_params)
         # 1.0.9: INTRAMOM —— 研究驗證通過的外部策略(見
-        # docs/1.0.9_RESEARCH_FINDINGS.md)。實作在 research_lab.py,
+        # docs/RESEARCH_REPORT.md 附錄 B)。實作在 research_lab.py,
         # 介面與 fade/factor 相同,直接插進同一個策略插槽。
         elif self.strategy_mode == "momentum":
             from backend.strategy.research_lab import MomentumContinuation
@@ -154,7 +155,7 @@ class BacktestEngine:
         # 1.0.9: TREND(SessionTrendFollow)已移除 —— 288 個變體 0 通過
         # MC+WF+PF>2,每筆邊際最佳 +9.6t 低於實測 14t 往返滑價。
         # 舊 preset 若仍帶 strategy="trend",一律落到 FACTOR。
-        # 詳見 docs/1.0.9_DELETE_LIST.md。
+        # 詳見 docs/RESEARCH_REPORT.md 附錄 C。
         else:
             self.trend_follow = FactorSignalStrategy(params=self.strategy_params)
         # 1.0.8: fade 模式 — 前日 VP 水位計算狀態
@@ -1183,32 +1184,7 @@ class BacktestEngine:
 
     @staticmethod
     def aggregate_1m_to_5m(candles_1m: List[Candle]) -> List[Candle]:
-        if not candles_1m:
-            return []
-        buckets: Dict[datetime, List[Candle]] = {}
-        for c in candles_1m:
-            minute = c.timestamp.minute
-            aligned_minute = (minute // 5) * 5
-            bucket_time = c.timestamp.replace(
-                minute=aligned_minute, second=0, microsecond=0
-            )
-            if bucket_time not in buckets:
-                buckets[bucket_time] = []
-            buckets[bucket_time].append(c)
-
-        candles_5m = []
-        for ts in sorted(buckets.keys()):
-            group = buckets[ts]
-            candles_5m.append(Candle(
-                timestamp=ts,
-                open=group[0].open,
-                high=max(c.high for c in group),
-                low=min(c.low for c in group),
-                close=group[-1].close,
-                volume=sum(c.volume for c in group),
-                symbol=group[0].symbol,
-                interval="5m",
-            ))
-        return candles_5m
+        # One bar-aggregation definition: backend/data/timeframes.py.
+        return aggregate_candles(candles_1m, "5m")
 
 
