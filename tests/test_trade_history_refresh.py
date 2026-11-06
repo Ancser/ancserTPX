@@ -102,3 +102,35 @@ def test_stale_trade_history_cache_refreshes_from_broker(monkeypatch, tmp_path):
     assert result["trades"][0]["entry_time"] == "2026-08-20T18:11:03.104848+00:00"
     assert client.history_calls == 1
 
+
+
+def test_locked_main_account_history_is_still_read(monkeypatch, tmp_path):
+    """1.5.1: after the Daily Loss Limit Topstep reports canTrade=false until
+    the next trade date. Viewing history is not trading: the viewed account's
+    fills must still load, while other non-tradable accounts stay skipped."""
+    other_locked = 11111111
+
+    class _LockedClient(_TradeHistoryClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requested: list[int] = []
+
+        async def get_accounts(self):
+            return [
+                {"id": ACCOUNT_ID, "name": "EXPRESS-DLL", "canTrade": False},
+                {"id": other_locked, "name": "OLD-COMBINE", "canTrade": False},
+            ]
+
+        async def get_trade_history(self, account_id: int):
+            self.requested.append(account_id)
+            return await super().get_trade_history(account_id)
+
+    client = _LockedClient()
+    _install_cache(monkeypatch, tmp_path, age_seconds=3600)
+    monkeypatch.setattr(routes, "_topstepx_client", client)
+
+    result = asyncio.run(routes.live_trade_history(refresh=True, account_id=ACCOUNT_ID))
+
+    assert client.requested == [ACCOUNT_ID]          # viewed account only
+    assert result["count"] == 1                      # positive: its fills became a trade
+    assert result["trades"][0]["trade_id"] == "3010999438_3011352573"

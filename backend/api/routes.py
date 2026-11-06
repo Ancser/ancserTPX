@@ -2370,7 +2370,9 @@ def _chart_row_dict(candle: Candle) -> Dict[str, Any]:
 # definition (backend/data/timeframes.py).  Hourly and slower frames cover the
 # whole store and are cached per store generation; faster frames aggregate only
 # the requested window (a full 5m history would be ~0.5M objects).
-_CHART_TF_FULL_HISTORY = ("1h", "4h", "1d", "1w")
+# 1.5.1: 30m joins the cached set (~85k bars over the 6-year store, 1/6 of 5m);
+# windowed it re-aggregated ~2 years of 1m bars per switch (3.4 s measured).
+_CHART_TF_FULL_HISTORY = ("30m", "1h", "4h", "1d", "1w")
 _chart_tf_cache: Dict[Tuple[str, str], Tuple[Any, List[Candle]]] = {}
 
 
@@ -5849,7 +5851,15 @@ async def live_trade_history(refresh: bool = False, account_id: int = 0):
 
     try:
         accounts = await _topstepx_client.get_accounts()
-        active_accounts = [a for a in accounts if a.get("canTrade", False)]
+        # 1.5.1: reading history is not trading. After the Daily Loss Limit
+        # Topstep sets canTrade=false until the next trade date; filtering on
+        # it alone hid the locked main account's own fills (0/21 active →
+        # empty EXECUTE TRADES). Its history API still answers, so the account
+        # being viewed is always included; other locked/dead accounts are not.
+        active_accounts = [
+            a for a in accounts
+            if a.get("canTrade", False) or (filter_acc_id and a.get("id") == filter_acc_id)
+        ]
         logger.info(
             f"[TRADE HISTORY] {len(active_accounts)}/{len(accounts)} active accounts"
         )

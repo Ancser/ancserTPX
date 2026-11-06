@@ -289,6 +289,10 @@ const CHART_TF_LABELS = { '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m', '1
 // Nominal bucket length in chart (New York wall-clock) seconds.
 const CHART_TF_SECONDS = { '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800 };
 const CHART_TF_INITIAL_LIMIT = 20000;
+// 1.5.1: 5m/15m are aggregated per request over a window proportional to
+// tf x limit; 20000 bars cost 0.5 s / 1.2 s per switch. 5000 bars is weeks of
+// history (150 are visible) and older pages load on left-pan.
+const CHART_TF_WINDOWED_INITIAL_LIMIT = { '5m': 5000, '15m': 5000 };
 const CHART_TF_DEFAULT_VISIBLE_BARS = 150;
 const CHART_TF_STORAGE_KEY = 'ancserTPXChartTimeframe';
 let _chartTimeframe = (() => {
@@ -8098,7 +8102,8 @@ async function fetchAndShowChart(interval, preserveViewport = false) {
         // hundreds of thousands of 1m bars and rendering them all freezes the tab.
         // Backtest / machine learning still use the full backend dataset.
         const resp = await fetch(API + '/data/candles?' + _chartTfQuery(
-            tf === '1m' ? CHART_MAX_CANDLES : CHART_TF_INITIAL_LIMIT));
+            tf === '1m' ? CHART_MAX_CANDLES
+                : (CHART_TF_WINDOWED_INITIAL_LIMIT[tf] || CHART_TF_INITIAL_LIMIT)));
         const data = await resp.json();
         if (serial !== _chartTfRequestSerial || tf !== _chartTimeframe) return;
         if (data.candles && data.candles.length > 0) {
