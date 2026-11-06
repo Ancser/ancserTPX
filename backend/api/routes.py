@@ -563,6 +563,7 @@ def _build_strategy_params_from_request(req, contract_size: int) -> StrategyPara
         conf_use_scorer=bool(getattr(req, "conf_use_scorer", True)),
         conf_enable_breakout=bool(getattr(req, "conf_enable_breakout", False)),
         conf_max_risk_ticks=getattr(req, "conf_max_risk_ticks", None),
+        downsize_risk_dollars=getattr(req, "downsize_risk_dollars", None),
         max_profit_ticks=getattr(req, "max_profit_ticks", None),
         conf_sl_reference_tf=_normalize_conf_sl_reference_tf(
             getattr(req, "conf_sl_reference_tf", "largest")
@@ -1796,6 +1797,7 @@ class BacktestRequest(BaseModel):
     conf_use_scorer: bool = True          # True=trained JSON, False=heuristic prior
     conf_enable_breakout: bool = False    # include breakout-retrace candidate (False=momentum+reversion only)
     conf_max_risk_ticks: Optional[int] = None  # drop signals with SL > N ticks (None=no cap)
+    downsize_risk_dollars: Optional[float] = None  # 1.5.1: risk>$N at full size -> 1 lot
     max_profit_ticks: Optional[int] = None     # 1.0.9: TP width cap (prop-firm consistency rule)
     conf_sl_reference_tf: str = "largest" # "largest"=original, "smallest"=lowest contributing TF anchors SL/TP
     conf_allowed_sessions: Optional[List[str]] = Field(
@@ -4956,6 +4958,7 @@ class LiveStartRequest(BaseModel):
     conf_use_scorer: bool = True
     conf_enable_breakout: bool = False
     conf_max_risk_ticks: Optional[int] = None
+    downsize_risk_dollars: Optional[float] = None  # 1.5.1: risk>$N at full size -> 1 lot
     max_profit_ticks: Optional[int] = None
     conf_sl_reference_tf: str = "largest"
     conf_allowed_sessions: Optional[List[str]] = Field(

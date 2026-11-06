@@ -621,6 +621,10 @@ class StrategyParams:
     conf_use_scorer: bool = True           # True=trained JSON, False=heuristic prior
     conf_enable_breakout: bool = False     # include breakout-retrace candidate (False=momentum+reversion only)
     conf_max_risk_ticks: Optional[int] = None  # optional risk-width cap; None/0 = off
+    # 1.5.1: planned SL risk above this many dollars at full contract_size ->
+    # enter with 1 contract (never skipped, SL unchanged). None = off.
+    # One definition: backend/strategy/position_size.py::entry_contracts.
+    downsize_risk_dollars: Optional[float] = None
     # 1.0.9: 全策略通用的單筆風險寬度上限(ticks)。None/0 = 不限(既有行為)。
     # confluence 仍優先用 conf_max_risk_ticks;其餘策略吃這個。
     # 1.0.9: TP 寬度上限(ticks,單口)—— prop firm 的 consistency rule:

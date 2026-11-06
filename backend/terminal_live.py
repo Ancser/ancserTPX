@@ -718,6 +718,7 @@ def _build_strategy_params(preset: Dict[str, Any], contract_id: str) -> Strategy
         conf_use_scorer=bool(preset.get("conf_use_scorer", True)),
         conf_enable_breakout=bool(preset.get("conf_enable_breakout", False)),
         conf_max_risk_ticks=_conf_optional_int("conf_max_risk_ticks"),
+        downsize_risk_dollars=_conf_optional_float("downsize_risk_dollars"),
         conf_sl_reference_tf=(
             "smallest" if str(preset.get("conf_sl_reference_tf") or "").lower() == "smallest"
             else "largest"

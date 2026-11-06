@@ -39,6 +39,7 @@ from backend.strategy.session_filter import (
     market_reopen_elapsed_minutes,
 )
 from backend.strategy.sigma import RollingSigmaFade
+from backend.strategy.position_size import entry_contracts, planned_risk_dollars
 from backend.strategy.factor import FactorSignalStrategy
 from backend.strategy.fade import PrevDayFade, OpeningRangeFade  # 1.0.8 FADE / 1.0.9 OR15 假突破
 from backend.strategy.volume_profile import (  # 1.0.8: fade 前日 VP
@@ -145,6 +146,13 @@ class LiveTradingEngine:
             1,
             int(getattr(self.strategy_params, "contract_size", contract_size) or contract_size or 1),
         )
+        # 1.5.1: contracts of the engine's current/last entry. Equals
+        # contract_size unless downsize_risk_dollars reduced that entry to 1
+        # (backend/strategy/position_size.py). Everything that touches the
+        # live position (protection orders, size safety check, records) must
+        # use this, not contract_size — a 1-lot position checked against 2
+        # would trip the size-mismatch emergency flatten.
+        self._position_size = self.contract_size
         # Per-contract market specs (NQ=$20/pt, MNQ=$2/pt; both 0.25 tick).
         self.point_value = get_point_value(contract_id)
         self.tick_size = get_tick_size(contract_id)
@@ -876,7 +884,7 @@ class LiveTradingEngine:
                 continue
 
             size = self._order_int(order, "size", "quantity", "qty", "remainingSize", "openSize")
-            if size is not None and abs(size) != self.contract_size:
+            if size is not None and abs(size) != self._position_size:
                 continue
 
             order_type = self._order_type(order)
@@ -960,7 +968,7 @@ class LiveTradingEngine:
             sl_resp = await self.client.modify_order(
                 self.account_id,
                 self._sl_order_id,
-                size=self.contract_size,
+                size=self._position_size,
                 stop_price=sl_price,
             )
             if sl_resp.success:
@@ -977,7 +985,7 @@ class LiveTradingEngine:
             tp_resp = await self.client.modify_order(
                 self.account_id,
                 self._tp_order_id,
-                size=self.contract_size,
+                size=self._position_size,
                 limit_price=tp_price,
             )
             if tp_resp.success:
@@ -1212,7 +1220,7 @@ class LiveTradingEngine:
                 "labels": conf_payload.get("labels") if conf_payload else [],
                 "primary_zone": conf_payload.get("primary_zone") if conf_payload else None,
                 "trail_triggered": trail_triggered,
-                "size": self.contract_size,
+                "size": self._position_size,
             })
             # Keep file bounded — last 5k rows is far more than any practice run will produce.
             if len(existing) > 5000:
@@ -1316,7 +1324,7 @@ class LiveTradingEngine:
                         float(entry_fill) - float(intended_entry)
                     ) * direction_mult
                     slip_ticks = slip_points / self.tick_size
-                    slip_dollars = slip_points * self.point_value * self.contract_size
+                    slip_dollars = slip_points * self.point_value * self._position_size
             except Exception:
                 slip_ticks = slip_points = slip_dollars = None
 
@@ -1339,7 +1347,7 @@ class LiveTradingEngine:
                 "direction": signal.direction.value if signal else None,
                 "managed_by_engine": bool(signal is not None),
                 "lock_eligible": bool(signal is not None),
-                "size": self.contract_size,
+                "size": self._position_size,
                 "order_id": order_plan.get("order_id"),
                 "sl_order_id": order_plan.get("sl_order_id", self._sl_order_id),
                 "tp_order_id": order_plan.get("tp_order_id", self._tp_order_id),
@@ -3201,7 +3209,7 @@ class LiveTradingEngine:
                 contract_id=self.contract_id,
                 order_type=2,  # Market
                 side=side,
-                size=self.contract_size,
+                size=self._position_size,
             )
             resp = await self.client.place_order(mkt_order)
             if resp.success:
@@ -4411,6 +4419,22 @@ class LiveTradingEngine:
             {"ticks": tp_ticks, "type": 1},  # Limit
         )
 
+    def _entry_size_for_signal(self, signal: TradeSignal) -> int:
+        """Contracts for this entry via the shared rule (same call as backtest)."""
+        size = entry_contracts(
+            self.strategy_params, self.contract_size,
+            signal.entry_price, signal.sl_price, self.point_value,
+        )
+        if size != self.contract_size:
+            risk = planned_risk_dollars(
+                signal.entry_price, signal.sl_price, self.point_value, self.contract_size)
+            self._log_event(
+                f"[SIZE] planned risk ${risk:,.0f} at {self.contract_size} lots > "
+                f"${float(self.strategy_params.downsize_risk_dollars):,.0f}; entering {size} lot",
+                "warn",
+            )
+        return size
+
     def _market_risk_limit_ticks(self, signal: TradeSignal) -> Optional[float]:
         """Runtime max-risk cap for market-entry strategies."""
         zone_source = str(getattr(signal, "zone_source", "") or "").lower()
@@ -4580,12 +4604,13 @@ class LiveTradingEngine:
             )
 
         stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
+        self._position_size = self._entry_size_for_signal(signal)
         order = OrderRequest(
             account_id=self.account_id,
             contract_id=self.contract_id,
             order_type=1,  # Limit
             side=side,
-            size=self.contract_size,
+            size=self._position_size,
             limit_price=signal.entry_price,
             stop_loss_bracket=stop_loss_bracket,
             take_profit_bracket=take_profit_bracket,
@@ -4678,12 +4703,13 @@ class LiveTradingEngine:
         dir_label = "BUY" if signal.direction == Direction.BUY else "SELL"
 
         stop_loss_bracket, take_profit_bracket = self._entry_brackets_for_signal(signal)
+        self._position_size = self._entry_size_for_signal(signal)
         order = OrderRequest(
             account_id=self.account_id,
             contract_id=self.contract_id,
             order_type=2,   # Market
             side=side,
-            size=self.contract_size,
+            size=self._position_size,
             stop_loss_bracket=stop_loss_bracket,
             take_profit_bracket=take_profit_bracket,
         )
@@ -4769,7 +4795,7 @@ class LiveTradingEngine:
             resp = await self.client.modify_order(
                 self.account_id,
                 self._sl_order_id,
-                size=self.contract_size,
+                size=self._position_size,
                 stop_price=decision.stop_price,
             )
             if resp.success:
@@ -5096,8 +5122,8 @@ class LiveTradingEngine:
                     adverse_slippage = diff if self._pending_signal.direction == Direction.BUY else -diff
                     price_improvement = max(0.0, -adverse_slippage)
                     adverse_slippage = max(0.0, adverse_slippage)
-                    adverse_dollars = adverse_slippage * self.point_value * self.contract_size
-                    improvement_dollars = price_improvement * self.point_value * self.contract_size
+                    adverse_dollars = adverse_slippage * self.point_value * self._position_size
+                    improvement_dollars = price_improvement * self.point_value * self._position_size
                     if adverse_slippage > 5.0:
                         self._log_event(
                             f"[FILL MISMATCH] entry={entry:.2f} fill={self._fill_price:.2f} "
@@ -5436,7 +5462,7 @@ class LiveTradingEngine:
                 if grace_ok and now_ts - self._last_safety_check >= 300:
                     self._last_safety_check = now_ts
                     actual_size = abs(positions[0].get('size', 0) or positions[0].get('qty', 0) or 0)
-                    expected = self.contract_size
+                    expected = self._position_size
                     if actual_size > 0 and actual_size != expected:
                         pos_side = positions[0].get('side', 0)
                         self._log_event(

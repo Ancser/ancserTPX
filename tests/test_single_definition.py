@@ -65,6 +65,12 @@ SINGLE_DEFINITION = {
         "Duplicated time/trail/ladder decisions let live and backtest drift "
         "even when they receive the same TradeSignal.",
     ),
+    "entry contract sizing (downsize_risk_dollars)": (
+        r"def entry_contracts\b|def planned_risk_dollars\b",
+        {"backend/strategy/position_size.py"},
+        "Backtest and live must size the same signal the same way; a second "
+        "rule lets the backtest report 2-lot results for 1-lot live trades.",
+    ),
     "price rounding to the exchange tick": (
         r"(?:def|fn)\s+_?(?:round_to_tick|round_tick|round_price|_round)\b",
         # KNOWN UNMERGED (2026-11-06): 11 copies in 10 files with at least

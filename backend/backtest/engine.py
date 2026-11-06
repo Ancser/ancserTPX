@@ -41,6 +41,7 @@ from backend.strategy.volume_profile import (  # 1.0.8: fade 前日 VP
 )
 from backend.backtest.intrabar import resolve_same_bar_exit
 from backend.data.timeframes import aggregate_candles
+from backend.strategy.position_size import entry_contracts
 from backend.strategy.exit_policy import (
     ExitAction,
     ExitDecision,
@@ -891,7 +892,11 @@ class BacktestEngine:
             original_tp_price=signal.tp_price,
             zone_id=signal.zone_id,
             zone_source=getattr(signal, 'zone_source', None),
-            contracts=self.contract_size,
+            # 1.5.1: shared sizing rule (downsize_risk_dollars); live uses the same call.
+            contracts=entry_contracts(
+                self.strategy_params, self.contract_size,
+                fill_price, signal.sl_price, self.POINT_VALUE,
+            ),
             point_value=self.POINT_VALUE,
             contract_id=self.contract_id,
             vol_ratio=signal.vol_ratio,

@@ -32,6 +32,7 @@
 | EXEC-006 | 沒有市價參考時**必須拒絕下單**(return),不是只記 WARN | `test_exec_protection_invariants.py` |
 | EXEC-007 | `/api/Order/search` 必須帶 bounded UTC `startTimestamp`(及 `endTimestamp`);查單 HTTP 400 不得令已成交 entry 永遠卡在 pending、跳過保護同步 | `test_broker_order_mapping.py` |
 | EXEC-008 | `EXECUTE TRADES` 以 broker `Trade/search` 為真相；磁碟 cache 不得無限過期。打開分頁必須立即強制刷新，保持可見時要以有界頻率補抓，錯過 open→flat transition 也不得永久漏掉真實成交 | `test_trade_history_refresh.py` |
+| EXEC-009 | 單筆口數只由 `backend/strategy/position_size.py::entry_contracts` 決定(`downsize_risk_dollars`:滿口規劃風險超過上限 → 1 口,不跳單、不改 SL);回測與 live 對同一訊號口數相同。live 一切觸及持倉的路徑(Auto OCO 子單辨識、改價、緊急平倉、5 分鐘口數安全檢查、紀錄)用 `_position_size`,不可用設定值 `contract_size`,否則 1 口持倉會被誤判而緊急平倉 | `test_position_size_downsize.py` |
 
 ## EXIT — 共用出場契約
 
