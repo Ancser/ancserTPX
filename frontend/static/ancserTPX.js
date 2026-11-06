@@ -16,7 +16,7 @@ const SYSTEM_CONTRACT_SPECS = SYSTEM_RUNTIME.contractSpecs;
 const APP_THEME_STORAGE_KEY = 'ancserTPXTheme';
 const APP_THEME_GRAPHITE = 'graphite';
 const APP_THEME_APPLE_LIGHT = 'apple-light';
-const APP_THEME_TRANSITION_MS = 500;
+const APP_THEME_TRANSITION_MS = 150;  // 1.5.1: was 500; keep equal to --ui-theme-duration
 let _themeTransitionTimer = null;
 let _chartThemeCoverTimer = null;
 let _pnlThemeCopyTimer = null;
@@ -99,7 +99,7 @@ function _startChartThemeCover() {
 
     // Lightweight Charts repaints its opaque canvas synchronously.  Freeze the
     // old chart color for one frame, repaint underneath it, then reveal the new
-    // chart over the same half-second theme phase as the surrounding UI.
+    // chart over the same theme phase as the surrounding UI.
     cover.style.setProperty('--chart-theme-cover-color', _appThemeColor('--surface-chart', '#08090d'));
     cover.classList.remove('is-fading');
     cover.classList.add('is-active');
@@ -129,7 +129,7 @@ function _startResearchPnlThemeCrossfade() {
 
     // Canvas pixels do not participate in CSS color transitions. Keep the old
     // curve above the host while the new theme redraws underneath, then fade
-    // that bitmap out over the same half-second phase as the other surfaces.
+    // that bitmap out over the same theme phase as the other surfaces.
     const copy = document.createElement('canvas');
     copy.className = 'pnl-curve-theme-copy';
     copy.width = canvas.width;

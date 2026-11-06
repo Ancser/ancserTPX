@@ -22,6 +22,7 @@
     --s-sunken: rgba(0, 0, 0, 0.28);
     --hl-top: inset 0 1px 0 rgba(255, 255, 255, 0.08);
     --div: rgba(255, 255, 255, 0.05);
+    --row-alt: rgba(255, 255, 255, 0.045);  /* 1.5.1 zebra rows */
     --drop: 0 8px 24px rgba(0, 0, 0, 0.35);
     --overlay: #171a20;
     --long: #3fcf8e;
@@ -122,6 +123,7 @@
     --s-sunken: rgba(15, 30, 60, 0.06);
     --hl-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
     --div: rgba(15, 30, 60, 0.08);
+    --row-alt: rgba(15, 30, 60, 0.045);
     --drop: 0 8px 24px rgba(15, 30, 60, 0.12);
     --overlay: #ffffff;
     --long: #0b8a63;
@@ -258,18 +260,6 @@ textarea { font-family: inherit; font-variant-numeric: tabular-nums lining-nums;
     isolation: isolate;
     overflow: visible;
 }
-.app-rail-brand {
-    height: 48px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-bottom: 1px solid var(--line-strong);
-    color: var(--accent);
-    font-family: var(--font-sans);
-    font-size: 1rem;
-    letter-spacing: 1px;
-}
-.app-rail-brand span { color: var(--ink-muted); font-size: 0.48em; margin-left: 2px; }
 .app-rail .header-tabs {
     position: static;
     transform: none;
@@ -685,7 +675,7 @@ button:focus-visible {
     width: 68px;
     height: 28px;
     border: 0;
-    border-radius: 999px;
+    border-radius: 0;
     background: var(--switch-off);
 }
 .ui-switch.on { background: transparent; border-color: var(--positive); }
@@ -695,7 +685,7 @@ button:focus-visible {
     left: 2px;
     top: 2px;
     border: 0;
-    border-radius: 50%;
+    border-radius: 0;
     background: var(--ink-primary);
     transition: transform 120ms ease;
 }
@@ -922,15 +912,17 @@ select,
 textarea {
     border-radius: 0 !important;
 }
+/* 1.5.1: switches follow the straight-edge rule (RELAYOUT_SPEC §3) — square
+   track and square thumb, one shared contract for every instance. */
 .ui-switch {
-    border-radius: 999px !important;
+    border-radius: 0 !important;
     border: 1px solid var(--line-strong) !important;
 }
 .ui-switch.on {
     background: transparent !important;
     border-color: var(--positive) !important;
 }
-.ui-switch .switch-thumb { border-radius: 50% !important; }
+.ui-switch .switch-thumb { border-radius: 0 !important; }
 
 /* Utility surface: fixed rail, single scrolling body, no wrapped headers. */
 .bottom-panel { background: var(--surface-rail); border-top-color: var(--line-strong); }
@@ -988,6 +980,13 @@ tr:hover { background: var(--s1); }
 .trade-table-wrap th:nth-child(n + 4):nth-child(-n + 8),
 .trade-table-wrap td:nth-child(n + 4):nth-child(-n + 8) { text-align: right; }
 .log { background: var(--surface-chart); }
+/* 1.5.1: zebra rows for every trade table and every log list, so adjacent
+   lines separate at a glance. Hover stays one step brighter than a stripe. */
+.trade-table-wrap tbody tr:nth-child(even),
+.log-entry:nth-child(even) { background: var(--row-alt); }
+.trade-table-wrap tbody tr:hover,
+.log-entry:hover { background: var(--s-hover); }
+.log-entry { padding-left: 6px; padding-right: 6px; }
 
 /* The trade journal is data-driven: renderTrades() replaces tbody contents
    when a backtest or history refresh completes.  Give the table surfaces and
@@ -1211,13 +1210,6 @@ body[data-ui-density="compact"] .panel-title { margin-bottom: var(--ui-space-2);
         border-right: 0;
         border-bottom: 1px solid var(--line-strong);
     }
-    .app-rail-brand {
-        width: 72px;
-        height: 58px;
-        flex: 0 0 72px;
-        border-bottom: 0;
-        border-right: 1px solid var(--line-strong);
-    }
     .app-rail .header-tabs {
         width: auto;
         height: 58px;
@@ -1257,11 +1249,11 @@ body[data-ui-density="compact"] .panel-title { margin-bottom: var(--ui-space-2);
 }
 
 /* Unified motion layer. Layout changes use one compact interaction duration;
-   palette changes use the requested half-second crossfade. */
+   palette changes use a short crossfade (--ui-theme-duration). */
 :root {
     --ui-motion-duration: 180ms;
     --ui-motion-ease: cubic-bezier(0.32, 0.72, 0, 1);
-    --ui-theme-duration: 500ms;
+    --ui-theme-duration: 150ms;  /* 1.5.1: was 500ms; felt sluggish (user) */
     --ui-theme-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
     --ui-chart-refresh-duration: 180ms;
 }
@@ -1404,7 +1396,7 @@ html.theme-transitioning .app-rail .tab {
 }
 
 /* Theme changes affect the chart host and the information panel too.  They
-   use the same half-second phase as the switch; normal interactions remain
+   use the same theme phase as the switch; normal interactions remain
    on the shorter motion duration above. */
 html.theme-transitioning .app-rail,
 html.theme-transitioning .app-rail-brand,
@@ -1484,7 +1476,7 @@ html.theme-transitioning .ui-switch .switch-thumb {
 }
 
 /* Lightweight Charts paints its own opaque canvas. Keep the host fade in the
-   same half-second phase as the surrounding chart and info surfaces so its
+   same theme phase as the surrounding chart and info surfaces so its
    synchronous repaint is not perceived as a separate flash. */
 #chart-container {
     transition:

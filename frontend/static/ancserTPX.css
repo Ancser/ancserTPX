@@ -2080,7 +2080,7 @@
     height: 1.1667rem;
     padding: 0;
     border: 1px solid var(--border, #334155);
-    border-radius: 999px;
+    border-radius: 0;
     background: var(--panel2, #273244);
     cursor: pointer;
     vertical-align: middle;
@@ -2094,7 +2094,7 @@
     height: .9167rem;
     left: .0833rem;
     top: .0833rem;
-    border-radius: 999px;
+    border-radius: 0;
     background: var(--text, #f5f8fc);
     transition: transform 120ms ease;
 }
@@ -2219,7 +2219,7 @@
     z-index: 5;
     box-sizing: border-box;
     border: 1px solid transparent;
-    border-radius: 999px;
+    border-radius: 0;
     overflow: hidden;
     contain: paint;
     transform-origin: center;

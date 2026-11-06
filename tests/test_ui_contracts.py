@@ -276,7 +276,7 @@ def test_single_account_chart_shell_removes_minor_and_chart_legend():
 def test_motion_tokens_cover_fast_ui_and_one_second_theme_surfaces():
     design = (ROOT / "frontend" / "static" / "ancserTPX-design.css").read_text(encoding="utf-8")
     assert "--ui-motion-duration: 180ms;" in design
-    assert "--ui-theme-duration: 500ms;" in design
+    assert "--ui-theme-duration: 150ms;" in design
     assert "html.theme-transitioning .bottom-panel" in design
     assert "html.theme-transitioning #chart-container" in design
     assert "html.theme-transitioning #calendar-view" in design
@@ -286,7 +286,7 @@ def test_motion_tokens_cover_fast_ui_and_one_second_theme_surfaces():
     assert ".is-fading" in design
     assert ".chart-provider-status {" in design
     assert "flex-direction: column;" in design[design.index(".chart-provider-status {"):design.index(".chart-latency-row {")]
-    assert "const APP_THEME_TRANSITION_MS = 500;" in JS
+    assert "const APP_THEME_TRANSITION_MS = 150;" in JS
     assert "typeof renderPnlCurve === 'function'" in JS
 
 

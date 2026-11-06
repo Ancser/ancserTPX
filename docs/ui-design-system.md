@@ -15,7 +15,7 @@ execution semantics.
    and one scrolling utility panel. Account connection controls sit at the
    bottom of the workspace rail; account status and market time sit in the
    chart's upper-right status cluster. There is no separate empty title strip;
-   the compact rail brand carries the product identity. The configuration rail
+   the rail has no brand mark (removed 1.5.1 at the user's request). The configuration rail
    is 10% wider than the prior design, while `min-width: 0` and horizontal
    clipping keep expanded content from creating left/right scrollbars.
 3. **Tokens** — page, rail, panel, raised, control, and chart surfaces are

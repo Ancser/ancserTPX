@@ -410,7 +410,7 @@ test("legacy deep-blue and Apple Light palettes switch and persist", async ({ pa
     })(),
   }));
   expect(baseMotion.motion).toBe("180ms");
-  expect(baseMotion.theme).toBe("500ms");
+  expect(baseMotion.theme).toBe("150ms");
   expect(baseMotion.chart).toContain("0.18s");
   expect(baseMotion.info).toContain("0.18s");
   expect(baseMotion.research).toContain("0.18s");
@@ -427,10 +427,10 @@ test("legacy deep-blue and Apple Light palettes switch and persist", async ({ pa
     pnl: getComputedStyle(document.querySelector("#pnl-curve-canvas")).transitionDuration,
   }));
   expect(themeMotion.transitioning).toBe(true);
-  expect(themeMotion.chart).toContain("0.5s");
-  expect(themeMotion.info).toContain("0.5s");
-  expect(themeMotion.research).toContain("0.5s");
-  expect(themeMotion.pnl).toContain("0.5s");
+  expect(themeMotion.chart).toContain("0.15s");
+  expect(themeMotion.info).toContain("0.15s");
+  expect(themeMotion.research).toContain("0.15s");
+  expect(themeMotion.pnl).toContain("0.15s");
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.body).backgroundColor))
     .toBe("rgb(245, 247, 251)");
   const light = await page.evaluate(() => ({
@@ -1125,9 +1125,9 @@ test("uses clear icons and flat, darker controls for the parameter rail", async 
   expect(surface.inputSurface).toBe("#080c14");
   expect(surface.performanceSource).toBeNull();
   expect(surface.backtestButton).toEqual({ background: "rgba(0, 0, 0, 0)", border: "1px", color: "rgb(0, 229, 160)" });
-  expect(surface.switch.trackRadius).toBe("999px");
+  expect(surface.switch.trackRadius).toBe("0px");
   expect(surface.switch.trackBackground).toBe("rgba(0, 0, 0, 0)");
-  expect(surface.switch.thumbRadius).toBe("50%");
+  expect(surface.switch.thumbRadius).toBe("0px");
 });
 
 test("chart layer choices survive a reload and the first click toggles from the restored state", async ({ page }) => {
