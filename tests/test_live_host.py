@@ -30,6 +30,22 @@ ROOT = Path(__file__).resolve().parents[1]
 TOKEN = "t" * 43
 
 
+@pytest.fixture(autouse=True)
+def _isolated_runtime(tmp_path, monkeypatch):
+    """Keep every test (and every host subprocess) off the machine's runtime.
+
+    1.5.1: live status falls back to daily_start.terminal_statuses(), which
+    reads runtime/state/daily_start.sqlite3. Unisolated, these tests reported
+    the user's real running terminal ({"running": True, account 22373660...})
+    and went red whenever one was trading. runtime_path() resolves the data
+    root from the environment at call time, and the subprocess tests copy
+    os.environ, so one variable covers both.
+    """
+    from backend.data import market_data
+
+    monkeypatch.setenv(market_data.MARKET_DATA_ROOT_ENV, str(tmp_path / "market_data"))
+
+
 @pytest.fixture
 def host_app():
     return live_host.create_live_host_app(TOKEN)
@@ -70,6 +86,24 @@ def test_host_answers_status_with_the_real_route_handlers(host_app):
         body = client.get("/api/live/status-all", headers=_auth()).json()
         assert body == {"success": True, "engines": [], "count": 0}
         assert client.get("/api/live/engine-state", headers=_auth()).json() == {"engine": None}
+
+
+def test_status_reads_terminals_from_the_isolated_runtime(host_app):
+    """Positive control for _isolated_runtime: a terminal heartbeat written to
+    the redirected state is what the host reports, so the {"running": False}
+    assertions above are about isolation, not about a reader that sees nothing.
+    """
+    from backend import daily_start
+    from backend.data import market_data
+
+    assert str(daily_start.state_path()).startswith(
+        os.environ[market_data.MARKET_DATA_ROOT_ENV])
+    run_id, _cfg = daily_start.begin_terminal()      # this (live) pytest process
+    with TestClient(host_app) as client:
+        status = client.get("/api/live/status", headers=_auth()).json()
+        assert status["running"] is True and status["phase"] == "TERMINAL STARTING"
+        engines = client.get("/api/live/status-all", headers=_auth()).json()["engines"]
+        assert [row["run_id"] for row in engines] == [run_id]
 
 
 def test_host_start_refuses_delta_absorption_and_connects_before_starting(host_app, monkeypatch):
@@ -161,6 +195,11 @@ def test_missing_host_answers_like_no_engine_and_never_spawns_for_reads(monkeypa
     monkeypatch.setattr(live_host_client, "spawn_host", lambda: spawned.append(1))
 
     class _Req:
+        # forward() reads account_id from the query string; same fake shape
+        # as test_ui_spawns_a_detached_host_and_relays_to_it.
+        query_params = type("Q", (), {"get": staticmethod(lambda *_a: None),
+                                      "multi_items": staticmethod(lambda: [])})()
+
         def __init__(self, method, path):
             self.method = method
             self.url = type("U", (), {"path": path})()

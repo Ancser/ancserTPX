@@ -13,14 +13,18 @@ from backend.db.models import Candle, Direction, get_tick_size
 from backend.live.pi_listener import PiSignal
 from backend.strategy.exit_policy import resolve_exit_policy
 from backend.strategy.pi_signal import PiSignalStrategy, _signal_level
-from backend.terminal_live import _build_strategy_params, _load_default_preset
+from backend.terminal_live import _build_strategy_params
 from backend.timebase import as_utc, topstep_trade_date, topstep_trade_date_bounds
+from rust_parity_inputs import (
+    EXPECTED_PARITY_PRESET_SHA256,
+    PARITY_PRESET,
+    load_parity_preset,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RUST_WORKSPACE = ROOT / "research" / "rust_engine"
 CONTRACT_ID = "CON.F.US.MES.Z26"
-EXPECTED_PRESET_SHA256 = "46cdccdb0bbbd00160df56713536e4be5df74731243686bb53c1c0a4588bca49"
 EXPECTED_PI_HISTORY_SHA256 = "0da002d25405144eb285f84c64f3320513574c12ba3efa26a79e32eba2c2ea38"
 
 
@@ -202,11 +206,11 @@ def _run_native(fixture_path):
 
 
 def test_native_rust_pi_matches_python_on_canonical_mes_data(tmp_path):
-    preset_name, preset, preset_source = _load_default_preset()
-    assert preset_name == "PI 2MES BOTH BEST"
-    preset_sha256 = _sha256(ROOT / "data" / "presets.json")
+    preset_name, preset = load_parity_preset()
+    assert preset_name == PARITY_PRESET
+    preset_source = "named:" + PARITY_PRESET
+    preset_sha256 = EXPECTED_PARITY_PRESET_SHA256
     history_sha256 = _sha256(pi_history.HIST_PATH)
-    assert preset_sha256 == EXPECTED_PRESET_SHA256
     assert history_sha256 == EXPECTED_PI_HISTORY_SHA256
     params = _build_strategy_params(preset, CONTRACT_ID)
     assert params.contract_id == CONTRACT_ID
@@ -426,7 +430,7 @@ def test_native_rust_pi_matches_python_on_canonical_mes_data(tmp_path):
 
 
 def test_native_rust_pi_daily_signal_cap_matches_python(tmp_path):
-    _, preset, _ = _load_default_preset()
+    _, preset = load_parity_preset()
     params = _build_strategy_params(preset, CONTRACT_ID)
     python_strategy = _RecordingPiStrategy(params)
 
@@ -519,7 +523,7 @@ def test_native_rust_pi_daily_signal_cap_matches_python(tmp_path):
 
 
 def test_native_rust_pi_atr_trace_matches_across_utc_day_and_long_gap(tmp_path):
-    _, preset, _ = _load_default_preset()
+    _, preset = load_parity_preset()
     params = _build_strategy_params(preset, CONTRACT_ID)
     python_strategy = _RecordingPiStrategy(params)
     python_strategy._hist = []

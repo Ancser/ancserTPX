@@ -34,6 +34,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCES = sorted(
     [p for p in ROOT.glob("backend/**/*.py") if "__pycache__" not in p.parts]
     + list(ROOT.glob("frontend/static/*.js"))
+    # 1.5.1: Rust is scanned too. Before this, a Rust port of a registered
+    # Python concept (e.g. exit.rs::resolve_pi_exit) was invisible here.
+    + [p for p in ROOT.glob("research/rust_engine/**/*.rs") if "target" not in p.parts]
 )
 
 
@@ -48,8 +51,11 @@ def _strip_comments(text: str, py: bool) -> str:
 # concept -> (regex matching a DEFINITION, allowed files, what a second copy breaks)
 SINGLE_DEFINITION = {
     "model exit-policy resolution": (
-        r"def resolve_exit_policy\b",
-        {"backend/strategy/exit_policy.py"},
+        r"def resolve_exit_policy\b|fn resolve_pi_exit\b",
+        {"backend/strategy/exit_policy.py",
+         # KNOWN UNMERGED: line-by-line Rust port of the PI branch. Merge is
+         # stage 3 of docs/RUST_CORE_STANDARD.md (one definition via PyO3).
+         "research/rust_engine/crates/live-runtime/src/exit.rs"},
         "A second resolver lets the same model select different time/trail "
         "semantics in live and backtest.",
     ),
@@ -58,6 +64,26 @@ SINGLE_DEFINITION = {
         {"backend/strategy/exit_policy.py"},
         "Duplicated time/trail/ladder decisions let live and backtest drift "
         "even when they receive the same TradeSignal.",
+    ),
+    "price rounding to the exchange tick": (
+        r"(?:def|fn)\s+_?(?:round_to_tick|round_tick|round_price|_round)\b",
+        # KNOWN UNMERGED (2026-11-06): 11 copies in 10 files with at least
+        # three behaviours (round to 4 vs 10 decimals; tick_size <= 0 returns
+        # the price vs divides by zero; live/engine.py ignores its contract's
+        # tick). Listing them stops a 12th; merging them is stage 1 of
+        # docs/RUST_CORE_STANDARD.md and each removal shrinks this set.
+        {"backend/backtest/prop_intraday_research.py",
+         "backend/live/engine.py",
+         "backend/strategy/exit_policy.py",
+         "backend/strategy/factor.py",
+         "backend/strategy/research_lab.py",
+         "backend/strategy/sigma.py",
+         "backend/strategy/volume_profile.py",
+         "research/rust_engine/crates/live-runtime/src/pi.rs",
+         "research/rust_engine/crates/vp-replay/src/profile.rs",
+         "research/rust_engine/crates/vp-replay/src/strategy.rs"},
+        "Two roundings of the same price can put a bracket one tick apart in "
+        "live and backtest; ties at .5 tick already round differently.",
     ),
     "monthly normalisation (30.44 days)": (
         r"(DAYS_PER_MONTH|_ROB_DAYS_PER_MONTH)\s*=\s*30\.44|=\s*30\.44\b",
@@ -183,6 +209,31 @@ def test_the_detector_would_actually_catch_a_duplicate(tmp_path):
     finally:
         SOURCES = original
         planted.unlink()
+
+
+def test_a_rust_duplicate_is_caught_and_rust_comments_do_not_count():
+    """Guard the Rust half: a planted `fn` is reported, a `//` note is not."""
+    global SOURCES
+    pattern = r"fn _probe_duplicate\b"
+    planted = ROOT / "research" / "rust_engine" / "_probe_duplicate_tmp.rs"
+    planted.write_text(
+        "// fn _probe_duplicate() was removed\n"
+        "/* fn _probe_duplicate() */\n"
+        "fn _probe_duplicate() -> i32 { 1 }\n",
+        encoding="utf-8",
+    )
+    original = SOURCES
+    try:
+        SOURCES = original + [planted]
+        assert _definition_sites(pattern) == {
+            "research/rust_engine/_probe_duplicate_tmp.rs": [3]}
+    finally:
+        SOURCES = original
+        planted.unlink()
+    # Positive: the real tree is scanned, not just the plant.
+    assert any(p.suffix == ".rs" for p in SOURCES)
+    assert "research/rust_engine/crates/live-runtime/src/exit.rs" in _definition_sites(
+        r"fn resolve_pi_exit\b")
 
 
 def test_comments_naming_a_removed_definition_do_not_count():

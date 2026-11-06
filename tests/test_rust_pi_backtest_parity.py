@@ -23,15 +23,19 @@ from backend.db.models import (
     get_point_value,
 )
 from backend.strategy.session_filter import MARKET_PHASE_FLATTEN, market_close_phase
-from backend.terminal_live import _build_strategy_params, _load_default_preset
+from backend.terminal_live import _build_strategy_params
 from backend.timebase import as_utc
+from rust_parity_inputs import (
+    EXPECTED_PARITY_PRESET_SHA256,
+    PARITY_PRESET,
+    load_parity_preset,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 RUST_WORKSPACE = ROOT / "research" / "rust_engine"
 CONTRACT_MES = "CON.F.US.MES.Z26"
 CONTRACT_MNQ = "CON.F.US.MNQ.Z26"
-EXPECTED_PRESET_SHA256 = "46cdccdb0bbbd00160df56713536e4be5df74731243686bb53c1c0a4588bca49"
 EXPECTED_PI_HISTORY_SHA256 = "0da002d25405144eb285f84c64f3320513574c12ba3efa26a79e32eba2c2ea38"
 
 
@@ -493,9 +497,8 @@ def _compare_scenario(actual, expected, scenario):
 
 
 def test_rust_pi_backtest_matches_python_engine_on_mes_and_synthetic_edges(tmp_path):
-    preset_name, preset, _preset_source = _load_default_preset()
-    assert preset_name == "PI 2MES BOTH BEST"
-    assert _hash(ROOT / "data" / "presets.json") == EXPECTED_PRESET_SHA256
+    preset_name, preset = load_parity_preset()
+    assert preset_name == PARITY_PRESET
     assert _hash(pi_history.HIST_PATH) == EXPECTED_PI_HISTORY_SHA256
 
     params = deepcopy(_build_strategy_params(preset, CONTRACT_MES))
@@ -639,7 +642,7 @@ def test_rust_pi_backtest_matches_python_engine_on_mes_and_synthetic_edges(tmp_p
 
     output = {
         "preset": preset_name,
-        "preset_sha256": EXPECTED_PRESET_SHA256,
+        "preset_sha256": EXPECTED_PARITY_PRESET_SHA256,
         "pi_history_sha256": EXPECTED_PI_HISTORY_SHA256,
         "mes_candle_store": str(snapshot.source_path),
         "mes_store_version": snapshot.version,

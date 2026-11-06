@@ -477,7 +477,16 @@ def test_pi_dispatch_rejects_multi_mark_message_before_callback(monkeypatch):
     assert listener.get_health()["messages_multi_signal_skipped"] == 1
 
 
-def test_pi_run_recovers_after_an_unexpected_poll_cycle_exception():
+def test_pi_run_recovers_after_an_unexpected_poll_cycle_exception(monkeypatch):
+    # 1.5.1: run() writes listener_started / loop_error status rows. Unpatched,
+    # every run of this test appended fake loop_ValueError rows (tagged with
+    # the real channel id) to the live runtime audit file, and the I/O on that
+    # shared 47 MB file made the old 1 s wait_for race under suite load.
+    status_events = []
+    monkeypatch.setattr(
+        "backend.live.pi_listener.append_status_event",
+        lambda event, **fields: status_events.append((event, fields)) or True,
+    )
     listener = PiListener("token", lambda _sig: None)
     listener._poll = 0.0  # deterministic test only; production constructor clamps to >= 1s
     calls = 0
@@ -501,8 +510,12 @@ def test_pi_run_recovers_after_an_unexpected_poll_cycle_exception():
 
     async def exercise():
         with patch("httpx.AsyncClient", return_value=_ClientContext()):
-            await asyncio.wait_for(listener.run(), timeout=1)
+            # Safety valve only: the second cycle calls stop(), so this returns
+            # as soon as recovery has happened; 10 s trips only if it hangs.
+            await asyncio.wait_for(listener.run(), timeout=10)
 
     asyncio.run(exercise())
-    assert calls == 2
+    assert calls == 2  # the loop survived the exception and ran again
     assert listener.get_health()["last_error"] == "loop_ValueError"
+    assert [e for e, _ in status_events] == ["listener_started", "loop_error"]
+    assert status_events[1][1]["reason"] == "loop_ValueError"

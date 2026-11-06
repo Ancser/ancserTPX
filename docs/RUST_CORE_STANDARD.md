@@ -1,7 +1,17 @@
 # Rust 核心標準 —— 一個計算只有一份定義
 
-狀態:**規劃,尚未動工**(2026-11-05)。本文件是標準與路線圖;每一步實作
-前仍須使用者確認,live 下單路徑的切換另有閘門(§6)。
+狀態:**階段 0 完成(2026-11-06),階段 1 起尚未動工**。本文件是標準與
+路線圖;每一步實作前仍須使用者確認,live 下單路徑的切換另有閘門(§6)。
+
+階段 0 做了什麼:
+- Rust parity 測試改用 `tests/rust_parity_inputs.py`:依名稱載入
+  `PI 2MES BOTH BEST`(仍走 production 的 `_load_default_preset` 合併),
+  只釘該 preset 內容的 hash。之前釘整份 `presets.json` 並跟著
+  `last_used_live` 走,UI 換 preset 就紅(1.4 起紅到 1.5)。已核對該 preset
+  內容從 1.2.3 到 1.5 逐位元未變。
+- `tests/test_single_definition.py` 掃描 `research/rust_engine/**/*.rs`(R6)。
+  登記「tick 取整」11 份為已知未合併、`resolve_pi_exit` 為 exit 解析的 Rust
+  副本;現有副本不紅,**新增第 12 份會紅**。兩者都已把 bug 放回確認會紅。
 
 ## 0. 為什麼要有這份標準
 
@@ -11,9 +21,12 @@
   production 入口;`backend/rust_live_bridge.py` 是 Rust → Python 方向的
   JSONL 橋,Python 不呼叫 Rust。
 - 同一個計算已經有兩份以上:
-  - `round_to_tick`:Python 3 份(`live/engine.py`、`strategy/exit_policy.py`、
-    `strategy/volume_profile.py`),Rust 3 份(`pi.rs`、`vp-replay/profile.rs`、
-    `vp-replay/strategy.rs`)。**而且已經不一致**:`exit_policy.py` 最後
+  - tick 取整:2026-11-06 完整盤點為 **11 份**。Python 8 份
+    (`live/engine.py`、`strategy/exit_policy.py`、`strategy/volume_profile.py`、
+    `strategy/factor.py` ×2、`strategy/research_lab.py::_round`、
+    `strategy/sigma.py`、`backtest/prop_intraday_research.py`),Rust 3 份
+    (`pi.rs`、`vp-replay/profile.rs`、`vp-replay/strategy.rs`)。下面的行為
+    差異是最初看的 6 份;其餘 5 份尚未逐一比對。**而且已經不一致**:`exit_policy.py` 最後
     `round(..., 10)`、`volume_profile.py` 是 `round(..., 4)`;`tick_size <= 0`
     時 `exit_policy.py` / `pi.rs` 回傳原價,其他幾份會除以零;`live/engine.py`
     固定用全域 `TICK_SIZE` 不收參數。六份「同一個概念」,至少三種行為。
@@ -150,8 +163,8 @@ preset 回測,PnL/筆數必須與搬遷前完全相同(R7)。
 
 | 階段 | 模組 | 現有 Rust 可沿用 | 為什麼排這裡 |
 |---|---|---|---|
-| 0 | 修 parity 測試(§0)+ R6 擴充單一定義檢查 | — | 先讓尺量得準 |
-| 1 | `ticks`(round_to_tick 6 份 → 1) | `pi.rs` | 純函式,最小練習 |
+| 0 ✅ | 修 parity 測試(§0)+ R6 擴充單一定義檢查 | — | 先讓尺量得準 |
+| 1 | `ticks`(tick 取整 11 份 → 1) | `pi.rs` | 純函式,最小練習 |
 | 2 | `ledger`(點值、手續費、淨損益) | `pi_backtest.rs` 帳本 | 純函式,影響所有報表 |
 | 3 | `exit`(resolve_exit_policy / evaluate_exit_operation) | `exit.rs`(需補齊非 PI 模型) | 已在單一定義清單;live 與回測共用 |
 | 4 | `bracket`(PI 括號建構) | `pi_signal_builders.rs` | 直接決定下單價,§6 閘門 |
