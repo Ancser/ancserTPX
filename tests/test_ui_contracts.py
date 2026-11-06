@@ -267,7 +267,7 @@ def test_single_account_chart_shell_removes_minor_and_chart_legend():
     assert "chart-signal-legend" not in CSS
     assert 'id="chart-watermark"' in HTML
     design = (ROOT / "frontend" / "static" / "ancserTPX-design.css").read_text(encoding="utf-8")
-    assert "font-family: 'Orbitron', sans-serif;" in design
+    assert "Orbitron" not in _code(design) and '--font-sans: "Inter"' in design
     assert "left: 12px;" in design
     assert "bottom: 34px;" in design
     assert "font-size: clamp(0.45rem, 1.2vw, 1.2rem);" in design
@@ -290,10 +290,11 @@ def test_motion_tokens_cover_fast_ui_and_one_second_theme_surfaces():
     assert "typeof renderPnlCurve === 'function'" in JS
 
 
-def test_final_workspace_shell_uses_deep_blue_and_straight_edges():
+def test_final_workspace_shell_uses_v2_palette_and_straight_edges():
     design = (ROOT / "frontend" / "static" / "ancserTPX-design.css").read_text(encoding="utf-8")
-    assert "--surface-page: #08090d;" in design
-    assert "--surface-chart: #08090d;" in design
+    assert "--surface-page: #0e1116;" in design
+    assert "--surface-chart: #15181d;" in design
+    assert "border-left: 3px solid var(--accent)" not in _code(design)
     assert "--accent: #64dcff;" in design
     assert "--ui-radius: 0;" in design
     assert ".panel-title::before { content: none !important; display: none !important; }" in design

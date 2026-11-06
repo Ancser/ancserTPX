@@ -361,3 +361,31 @@ def test_daily_replacement_with_real_monitor_and_sqlite_handshake(monkeypatch, t
     asyncio.run(run())
     assert calls == [42, 42]
     assert daily_start.settings()["replacement_state"] == "stopped"
+
+
+@pytest.mark.skipif(daily_start.os.name != "nt", reason="Windows Task Scheduler installer")
+def test_installed_daily_trigger_is_wall_time_so_it_follows_dst():
+    """1.4.1: an offset StartBoundary pinned the task to one UTC instant.
+
+    After the 2026-11-01 DST change the 06:30 trigger fired at 05:30 PST, the
+    due check (correctly) refused it, and no terminal started for four days.
+    Runs the real installer script in -DryRun mode.
+    """
+    import re
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(daily_start.ROOT / "scripts" / "install_daily_start.ps1"),
+         "-Python", str(Path(sys.executable).with_name("python.exe")),
+         "-ProjectRoot", str(daily_start.ROOT), "-StartTime", "06:30", "-DryRun"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if "Pacific" in result.stderr and result.returncode:
+        pytest.skip("installer requires the Pacific time zone")
+    assert result.returncode == 0, result.stderr
+    boundary = result.stdout.strip()
+    # Positive: the installer produced the 06:30 trigger at all.
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T06:30:00", boundary), boundary

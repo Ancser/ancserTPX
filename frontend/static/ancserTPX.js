@@ -607,12 +607,59 @@ function fmtSigned(n, suffix) {
     return '0' + suffix;
 }
 
+// Relayout v2 number formats: the one definition for every surface (tables,
+// stat strip, chart labels, calendar).  Sign before "$", U+2212 minus,
+// thousands separators, zero never signed and styled neutral (moneyClass).
+// Costs pass { signed: false }.
+const MINUS_SIGN = '−';
+
+function _roundsToZero(n, decimals) {
+    return Number(Math.abs(n).toFixed(decimals)) === 0;
+}
+
+function formatMoney(value, options) {
+    const opts = options || {};
+    const decimals = Number.isInteger(opts.decimals) ? opts.decimals : 2;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '--';
+    const text = Math.abs(n).toLocaleString('en-US', {
+        minimumFractionDigits: decimals, maximumFractionDigits: decimals,
+    });
+    if (opts.signed === false || _roundsToZero(n, decimals)) return '$' + text;
+    return (n > 0 ? '+' : MINUS_SIGN) + '$' + text;
+}
+
+function moneyClass(value, decimals) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || _roundsToZero(n, Number.isInteger(decimals) ? decimals : 2)) return 'pnl-zero';
+    return n > 0 ? 'pnl-pos' : 'pnl-neg';
+}
+
+function formatSignedNumber(value, decimals, suffix) {
+    const n = Number(value);
+    const d = Number.isInteger(decimals) ? decimals : 0;
+    if (!Number.isFinite(n)) return '--';
+    const text = Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+    const sign = _roundsToZero(n, d) ? '' : (n > 0 ? '+' : MINUS_SIGN);
+    return sign + text + (suffix || '');
+}
+
+function formatPrice(value, decimals) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '--';
+    const d = Number.isInteger(decimals) ? decimals : 2;
+    return n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+function sideMarkup(direction) {
+    const long = ['buy', 'long'].includes(String(direction || '').toLowerCase());
+    return '<span class="' + (long ? 'side-long' : 'side-short') + '">'
+        + (long ? '▲ LONG' : '▼ SHORT') + '</span>';
+}
+
 function fmtMoney(n) {
-    const abs = Math.abs(n);
-    const text = abs >= 10 ? abs.toFixed(0) : abs.toFixed(2);
-    if (n > 0) return '+$' + text;
-    if (n < 0) return '-$' + text;
-    return '$0';
+    // Compact tick-value labels: whole dollars from $10 up.
+    return formatMoney(n, { decimals: Math.abs(n) >= 10 ? 0 : 2 });
 }
 
 function normalizeAreaPctValue(value) {
@@ -4377,12 +4424,12 @@ function _renderLiveStatus(st) {
             const pnl = pnlInfo.pnl || 0;
             const pnlEl = document.getElementById('live-pnl-text');
             if (pnlEl) {
-                pnlEl.textContent = '$' + (pnl >= 0 ? '+' : '-') + Math.abs(pnl).toFixed(0);
+                pnlEl.textContent = formatMoney(pnl);
                 pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
             }
             const capEl = document.getElementById('lv-capital');
             if (capEl && st.capital !== undefined && st.capital !== null) {
-                const pnlStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
+                const pnlStr = formatMoney(pnl);
                 const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
                 capEl.innerHTML =
                     '$' + Number(st.capital).toLocaleString(undefined, {maximumFractionDigits: 0}) +
@@ -4512,7 +4559,7 @@ function _renderLiveStatus(st) {
         if (st.capital) {
             const pnlInfo = liveDisplayedDailyPnl(st);
             const pnl = pnlInfo.pnl || 0;
-            const pnlStr = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
+            const pnlStr = formatMoney(pnl);
             const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
             const counts = st.full_tp_counts || {};
             const locks = st.full_tp_locks || {};
@@ -4648,7 +4695,7 @@ function _renderLiveStatus(st) {
         const pnlEl = document.getElementById('live-pnl-text');
         const pnlInfo = liveDisplayedDailyPnl(st);
         const pnl = pnlInfo.pnl || 0;
-        pnlEl.textContent = '$' + (pnl >= 0 ? '+' : '-') + Math.abs(pnl).toFixed(0);
+        pnlEl.textContent = formatMoney(pnl);
         pnlEl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
         pnlEl.title = 'Daily PnL source: ' + pnlInfo.source
             + ' / Topstep day ' + (pnlInfo.day || '')
@@ -5501,7 +5548,7 @@ function initChart() {
             background: { type: 'solid', color: _appThemeColor('--surface-chart', '#08090d') },
             textColor: _appThemeColor('--ink-muted', '#556178'),
             fontSize: 11,
-            fontFamily: 'IBM Plex Mono, monospace',
+            fontFamily: _appThemeColor('--font-mono', 'IBM Plex Mono, monospace'),
         },
         grid: {
             vertLines: { color: _appThemeColor('--chart-grid', 'rgba(100, 220, 255, 0.03)') },
@@ -9477,7 +9524,7 @@ function _researchSignalRowsForDraw() {
 function _drawResearchOutcome(ctx, x, yRef, dir, row) {
     const pnl = Number(row.net_pnl);
     if (!Number.isFinite(pnl)) return;
-    const text = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
+    const text = formatMoney(pnl, { decimals: 0 });
     ctx.save();
     ctx.font = '500 9px "IBM Plex Mono", monospace';
     ctx.textAlign = 'center';
@@ -10292,7 +10339,7 @@ function _tradeIsBuy(t) {
 
 function _tradePnlText(t) {
     const pnl = Number((t && t.pnl) || 0);
-    return (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0);
+    return formatMoney(pnl, { decimals: 0 });
 }
 
 function _tradeDecisionPhrase(t) {
@@ -11194,7 +11241,7 @@ function renderOptionTrades(rows) {
         _animateTradeTableRows(tbody, []);
         return;
     }
-    const price = v => (v != null ? Number(v).toFixed(2) : '--');
+    const price = v => (v != null ? formatPrice(v) : '--');
     // Newest first, like the futures journal.
     const sorted = [...rows].sort((a, b) =>
         new Date(b.signal_time || 0).getTime() - new Date(a.signal_time || 0).getTime());
@@ -11215,7 +11262,7 @@ function renderOptionTrades(rows) {
         if (!filled) {
             return '<tr class="c-t3">' +
                 '<td class="trade-contract-cell">' + _attr(contract) + '</td>' +
-                '<td class="trade-time-cell" style="font-family:\'IBM Plex Mono\',monospace;">' + time + '</td>' +
+                '<td class="trade-time-cell" style="font-family:var(--font-mono);">' + time + '</td>' +
                 '<td>' + _attr(r.tier || '--') + '</td>' +
                 '<td>' + signalAsk + '</td>' +
                 '<td>--</td><td>--</td><td>--</td><td>$0.00</td>' +
@@ -11224,16 +11271,16 @@ function renderOptionTrades(rows) {
         }
         const net = Number(r.net || 0);
         const ret = Number(r.ret || 0);
-        const cls = net >= 0 ? 'pnl-pos' : 'pnl-neg';
+        const cls = moneyClass(net);
         return '<tr>' +
             '<td class="trade-contract-cell">' + _attr(contract) + '</td>' +
-            '<td class="trade-time-cell" style="font-family:\'IBM Plex Mono\',monospace;">' + time + '</td>' +
+            '<td class="trade-time-cell" style="font-family:var(--font-mono);">' + time + '</td>' +
             '<td>' + _attr(r.tier || '--') + '</td>' +
             '<td>' + signalAsk + '</td>' +
             '<td>' + entry + '</td>' +
             '<td>' + price(r.exit_price) + '</td>' +
-            '<td class="' + cls + '">' + (ret >= 0 ? '+' : '') + (ret * 100).toFixed(1) + '%</td>' +
-            '<td class="' + cls + '">$' + (net >= 0 ? '+' : '-') + Math.abs(net).toFixed(2) + '</td>' +
+            '<td class="' + cls + '">' + formatSignedNumber(ret * 100, 1, '%') + '</td>' +
+            '<td class="' + cls + '">' + formatMoney(net) + '</td>' +
             '<td>' + _attr(result) + '</td>' +
         '</tr>';
     }).join('');
@@ -11261,24 +11308,22 @@ function renderTrades(trades) {
         const fees = (t.fees != null) ? t.fees : 2.80;
         // Gross P&L (matches TopstepX P&L column — before costs)
         const grossPnl = netPnl + commission + fees;
-        const pnlClass = grossPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
-        const dirLabel = t.direction === 'buy' ? 'Long' : 'Short';
-        const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
+        const pnlClass = moneyClass(grossPnl);
         const symbol = displaySymbolFromTrade(t);
         const size = t.size || t.contracts || 1;
         const contract = String(size) + ' ' + String(symbol).replace(/^\/+/, '');
-        const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
+        const grossStr = formatMoney(grossPnl);
         const timeLabel = formatTradeTimeRange(t.entry_time, t.exit_time);
         return '<tr>' +
             '<td class="trade-contract-cell" style="width:82px;">' + contract + '</td>' +
-            '<td class="trade-time-cell" style="font-family:\'IBM Plex Mono\',monospace;">' + formatTradeTimeRangeMarkup(t.entry_time, t.exit_time, timeLabel) + '</td>' +
+            '<td class="trade-time-cell" style="font-family:var(--font-mono);">' + formatTradeTimeRangeMarkup(t.entry_time, t.exit_time, timeLabel) + '</td>' +
             '<td>' + formatTradeDuration(t.entry_time, t.exit_time) + '</td>' +
-            '<td>' + t.entry_price.toFixed(2) + '</td>' +
-            '<td>' + (t.exit_price != null ? Number(t.exit_price).toFixed(2) : '--') + '</td>' +
+            '<td>' + formatPrice(t.entry_price) + '</td>' +
+            '<td>' + (t.exit_price != null ? formatPrice(t.exit_price) : '--') + '</td>' +
             '<td class="' + pnlClass + '">' + grossStr + '</td>' +
-            '<td class="pnl-neg">$-' + commission.toFixed(2) + '</td>' +
-            '<td class="pnl-neg">$-' + fees.toFixed(2) + '</td>' +
-            '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
+            '<td class="cost-cell">' + formatMoney(commission, { signed: false }) + '</td>' +
+            '<td class="cost-cell">' + formatMoney(fees, { signed: false }) + '</td>' +
+            '<td>' + sideMarkup(t.direction) + '</td>' +
         '</tr>';
     }).join('');
     _animateTradeTableRows(tbody, sorted);
@@ -11311,24 +11356,22 @@ function renderExecuteTrades(trades) {
             : Number(t.pnl || 0) + Number(t.commission || 0) + Number(t.fees || 0);
         const commission = (t.commission != null) ? t.commission : 1.0;
         const fees = (t.fees != null) ? t.fees : 2.80;
-        const pnlClass = grossPnl >= 0 ? 'pnl-pos' : 'pnl-neg';
-        const dirLabel = t.direction === 'buy' ? 'Long' : 'Short';
-        const dirColor = t.direction === 'buy' ? 'var(--green)' : 'var(--red)';
+        const pnlClass = moneyClass(grossPnl);
         const symbol = displaySymbolFromTrade(t);
         const size = t.size || 1;
         const contract = String(size) + ' ' + String(symbol).replace(/^\/+/, '');
-        const grossStr = '$' + (grossPnl >= 0 ? '+' : '-') + Math.abs(grossPnl).toFixed(2);
+        const grossStr = formatMoney(grossPnl);
         const timeLabel = formatTradeTimeRange(t.entry_time, t.exit_time);
         return '<tr>' +
             '<td class="trade-contract-cell" style="width:82px;">' + contract + '</td>' +
-            '<td class="trade-time-cell" style="font-family:\'IBM Plex Mono\',monospace;">' + formatTradeTimeRangeMarkup(t.entry_time, t.exit_time, timeLabel) + '</td>' +
+            '<td class="trade-time-cell" style="font-family:var(--font-mono);">' + formatTradeTimeRangeMarkup(t.entry_time, t.exit_time, timeLabel) + '</td>' +
             '<td>' + formatTradeDuration(t.entry_time, t.exit_time) + '</td>' +
-            '<td>' + (t.entry_price != null ? Number(t.entry_price).toFixed(2) : '--') + '</td>' +
-            '<td>' + (t.exit_price != null ? Number(t.exit_price).toFixed(2) : '--') + '</td>' +
+            '<td>' + (t.entry_price != null ? formatPrice(t.entry_price) : '--') + '</td>' +
+            '<td>' + (t.exit_price != null ? formatPrice(t.exit_price) : '--') + '</td>' +
             '<td class="' + pnlClass + '">' + grossStr + '</td>' +
-            '<td class="pnl-neg">$-' + commission.toFixed(2) + '</td>' +
-            '<td class="pnl-neg">$-' + fees.toFixed(2) + '</td>' +
-            '<td style="color:' + dirColor + ';">' + dirLabel + '</td>' +
+            '<td class="cost-cell">' + formatMoney(commission, { signed: false }) + '</td>' +
+            '<td class="cost-cell">' + formatMoney(fees, { signed: false }) + '</td>' +
+            '<td>' + sideMarkup(t.direction) + '</td>' +
         '</tr>';
     }).join('');
     _animateTradeTableRows(tbody, sorted);
@@ -11701,7 +11744,7 @@ function _calKeyFromTrade(t) {
     return tradeRealizedDayKey(t);
 }
 function _calFmtMoney(v) {
-    return (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return formatMoney(v);
 }
 function _calAgg(trades) {
     const map = {};
@@ -13281,7 +13324,7 @@ function _liveSlotRenderStatus(slot, statusMap, sess, pollStale) {
             set('live-slot-mbo', 'N/A', 'var(--text3)');
         }
         const pnl = st.daily_pnl || 0;
-        set('live-slot-pnl', (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(0), pnl >= 0 ? 'var(--green)' : 'var(--red)');
+        set('live-slot-pnl', formatMoney(pnl), pnl > 0 ? 'var(--green)' : (pnl < 0 ? 'var(--red)' : 'var(--t1)'));
         const g = st.risk_gates || {}, dl = g.daily_loss || {}, rv = g.prev_rv || {};
         set('live-slot-dl', dl.limit ? (dl.resting ? ('LOCKED ' + (dl.count || 0) + '/' + dl.limit) : ((dl.count || 0) + '/' + dl.limit)) : 'OFF', dl.resting ? 'var(--red)' : 'var(--text2)');
         set('live-slot-rv', rv.lookback ? (rv.blocking ? 'BLOCKED' : rv.lookback + 'D PASS') : 'OFF', rv.blocking ? 'var(--red)' : 'var(--text2)');

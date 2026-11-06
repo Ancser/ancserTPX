@@ -782,9 +782,7 @@
       "pi_short_kinds": [
         "粉π"
       ],
-      "pi_continue_long_kinds": [
-        "青π"
-      ],
+      "pi_continue_long_kinds": [],
       "pi_continue_short_kinds": [],
       "pi_continue_short_levels": [],
       "pi_reopen_max_gap_r": 1.0,
@@ -809,7 +807,7 @@
       "market_clock_version": "america-new-york-v1"
     }
   },
-  "last_used_bt": "PI STRICT MNQ",
+  "last_used_bt": "PI STRICT MNQ REOPEN",
   "last_used_live": "PI 2MNQ LV3 REOPEN BEST",
   "fixed_presets": [],
   "latest_sweep_presets": [

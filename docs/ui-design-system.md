@@ -24,8 +24,8 @@ execution semantics.
 4. **Components** — fields, buttons, switches, tabs, tables, and focus rings
    share one geometry and one interaction language. Production surfaces use
    straight edges; buttons and inputs are borderless, buttons use a lighter
-   semantic surface, inputs use a darker one, section titles retain only their
-   left accent bar, and horizontal overflow belongs to the table container.
+   semantic surface, inputs use a darker one, section titles are numbered micro
+   labels with no bar, and horizontal overflow belongs to the table container.
    Long trade-limit controls are stacked vertically so their labels remain
    readable.
 5. **Density** — the existing footprint renderer remains responsible for
@@ -61,3 +61,23 @@ only the two approved palettes so the app has one clear visual language.
 - Does every control expose hover, focus, disabled, loading, and error states?
 - Does zooming from overview to detail reveal more information without adding
   a second competing panel?
+
+## Relayout v2 progress (2026-11-05)
+
+Source: `F:/ancserEntertatinment/ancserAssets/ancserTPX/UI_Relayout_v2/`
+(the grok bot only read the repo before it stopped). Excluded by the user:
+all light/glow effects, REVEAL_LIGHT_SPEC, blurred backdrop. The v2 palette
+replaces the deep-blue legacy theme.
+
+- [x] Phase 1: v2 tokens, Inter + JetBrains Mono, no left bars / cut
+  corners / glow, `.btn-primary` (one per screen) and `.btn-danger`, shared
+  `formatMoney` / `formatPrice` / `sideMarkup`, long/short candles.
+- [ ] Phase 1 tests: Playwright design-system.spec.js still pins the old
+  palette, Orbitron watermark, title left border and #btn-backtest outline.
+- [ ] Phase 2 Live layout (top bar, stat strip, control column).
+- [ ] Phase 3 Backtest (result strip, numbered sections, equity).
+- [ ] Phase 4 Research (Mon-Fri + WEEK calendar, ranking).
+- [ ] Phase 5 Settings page (no light options).
+- [ ] Phase 6 motion, result odometer, signal card, canvas fonts.
+
+Screenshots: `TPX_UI_SHOTS=1` + `tests/ui/ui-relayout-shots.spec.js`.

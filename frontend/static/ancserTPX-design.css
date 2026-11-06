@@ -7,35 +7,79 @@
     color-scheme: dark;
     --nav-rail-width: 72px;
     --chart-plot-right: 72px;
-    /* Final dark palette: the legacy deep-blue workstation theme. */
-    --surface-page: #08090d;
-    --surface-rail: #0d1017;
-    --surface-panel: #131620;
-    --surface-raised: #1a1e2a;
-    --surface-control: #0d1017;
-    --surface-button: #1b2535;
-    --surface-button-hover: #26364b;
-    --surface-input: #080c14;
-    --surface-chart: #08090d;
-    --line-subtle: rgba(100, 220, 255, 0.08);
-    --line-strong: rgba(100, 220, 255, 0.20);
-    --ink-primary: #c8d0e0;
-    --ink-secondary: #556178;
-    --ink-muted: #3a4560;
+    /* Relayout v2 "quiet workstation" (docs/ui-design-system.md): depth by
+       white luminance on one neutral base, one accent, long/short as a data
+       channel only.  No glow, no blurred backdrop, no cyan hairlines. */
+    --t1: rgba(255, 255, 255, 0.92);
+    --t2: rgba(255, 255, 255, 0.62);
+    --t3: rgba(255, 255, 255, 0.52);
+    --s1: rgba(255, 255, 255, 0.05);
+    --s2: rgba(255, 255, 255, 0.09);
+    --s-hover: rgba(255, 255, 255, 0.12);
+    --s-selected: rgba(255, 255, 255, 0.14);
+    --s-selected-line: rgba(255, 255, 255, 0.40);
+    --s-pressed: rgba(255, 255, 255, 0.07);
+    --s-sunken: rgba(0, 0, 0, 0.28);
+    --hl-top: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    --div: rgba(255, 255, 255, 0.05);
+    --drop: 0 8px 24px rgba(0, 0, 0, 0.35);
+    --overlay: #171a20;
+    --long: #3fcf8e;
+    --short: #ff707a;
+    --warn: #e0b060;
+    --on-accent: #0e1116;
+    --focus-ring: rgba(255, 255, 255, 0.25);
+    /* Opaque equivalents of the luminance layers for the legacy names: sticky
+       headers, popovers and the chart canvas must not show what is beneath. */
+    --surface-page: #0e1116;
+    --surface-rail: #0b0d11;
+    --surface-panel: #1a1d22;
+    --surface-raised: #24262b;
+    --surface-control: #131518;
+    --surface-button: #2f3136;
+    --surface-button-hover: #36383d;
+    --surface-input: #131518;
+    --surface-chart: #15181d;
+    --line-subtle: rgba(255, 255, 255, 0.06);
+    --line-strong: rgba(255, 255, 255, 0.12);
+    --ink-primary: rgba(255, 255, 255, 0.92);
+    --ink-secondary: rgba(255, 255, 255, 0.62);
+    --ink-muted: rgba(255, 255, 255, 0.52);
     --accent: #64dcff;
-    --positive: #00e5a0;
-    --negative: #ff4060;
-    --warning: #ffa726;
-    --chart-grid: rgba(100, 220, 255, 0.03);
-    --chart-crosshair: rgba(100, 220, 255, 0.20);
-    --candle-up: #888888;
-    --candle-down: #555555;
-    --switch-off: #26364b;
-    --cyan2: rgba(100, 220, 255, 0.15);
-    --cyan3: rgba(100, 220, 255, 0.05);
-    --green2: rgba(0, 229, 160, 0.12);
-    --red2: rgba(255, 64, 96, 0.12);
-    --amber2: rgba(255, 167, 38, 0.12);
+    --positive: var(--long);
+    --negative: var(--short);
+    --warning: var(--warn);
+    --chart-grid: rgba(255, 255, 255, 0.04);
+    --chart-crosshair: rgba(255, 255, 255, 0.35);
+    --candle-up: rgba(63, 207, 142, 0.85);
+    --candle-down: rgba(255, 112, 122, 0.85);
+    --switch-off: rgba(255, 255, 255, 0.18);
+    --cyan2: rgba(255, 255, 255, 0.10);
+    --cyan3: rgba(255, 255, 255, 0.04);
+    --green2: rgba(255, 255, 255, 0.06);
+    --red2: rgba(255, 255, 255, 0.06);
+    --amber2: rgba(255, 255, 255, 0.06);
+    /* Two families: Inter for words, a mono with tabular figures for numbers. */
+    --font-sans: "Inter", "Noto Sans TC", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
+    /* 4px spacing grid. */
+    --sp-1: 4px;
+    --sp-2: 8px;
+    --sp-3: 12px;
+    --sp-4: 16px;
+    --sp-5: 24px;
+    --sp-6: 32px;
+    --sp-7: 48px;
+    /* Motion (MOTION_SPEC v2): exit is ~0.7 x enter. */
+    --d-1: 80ms;
+    --d-2: 120ms;
+    --d-3: 200ms;
+    --d-4: 320ms;
+    --d-5: 480ms;
+    --d-6: 800ms;
+    --e-enter: cubic-bezier(0.05, 0.7, 0.1, 1);
+    --e-exit: cubic-bezier(0.3, 0, 0.8, 0.15);
+    --e-std: cubic-bezier(0.2, 0, 0, 1);
     --ui-radius: 0;
     --ui-radius-small: 0;
     --ui-space-1: 4px;
@@ -43,7 +87,7 @@
     --ui-space-3: 12px;
     --ui-space-4: 16px;
     --ui-space-5: 20px;
-    --ui-control-height: 34px;
+    --ui-control-height: 40px;
 
     /* Keep the legacy variable names as one source for existing markup. */
     --bg: var(--surface-page);
@@ -66,6 +110,25 @@
    stylesheet paints and is persisted by ancserTPX.js. */
 :root[data-tpx-theme="apple-light"] {
     color-scheme: light;
+    --t1: #172235;
+    --t2: #4a5a70;
+    --t3: #56657a;
+    --s1: #ffffff;
+    --s2: rgba(15, 30, 60, 0.05);
+    --s-hover: rgba(15, 30, 60, 0.08);
+    --s-selected: rgba(15, 30, 60, 0.10);
+    --s-selected-line: rgba(15, 30, 60, 0.38);
+    --s-pressed: rgba(15, 30, 60, 0.06);
+    --s-sunken: rgba(15, 30, 60, 0.06);
+    --hl-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    --div: rgba(15, 30, 60, 0.08);
+    --drop: 0 8px 24px rgba(15, 30, 60, 0.12);
+    --overlay: #ffffff;
+    --long: #0b8a63;
+    --short: #c8344d;
+    --warn: #9a6400;
+    --on-accent: #ffffff;
+    --focus-ring: rgba(15, 30, 60, 0.35);
     --surface-page: #f5f7fb;
     --surface-rail: #e9eef6;
     --surface-panel: #ffffff;
@@ -81,13 +144,13 @@
     --ink-secondary: #53647b;
     --ink-muted: #718096;
     --accent: #147ef5;
-    --positive: #0b9f72;
-    --negative: #d93652;
-    --warning: #b57600;
+    --positive: var(--long);
+    --negative: var(--short);
+    --warning: var(--warn);
     --chart-grid: rgba(71, 91, 117, 0.12);
     --chart-crosshair: rgba(20, 126, 245, 0.42);
-    --candle-up: #159a70;
-    --candle-down: #d14d65;
+    --candle-up: rgba(11, 138, 99, 0.85);
+    --candle-down: rgba(200, 52, 77, 0.85);
     --switch-off: #d4dde9;
     --cyan2: rgba(20, 126, 245, 0.12);
     --cyan3: rgba(20, 126, 245, 0.05);
@@ -118,6 +181,16 @@ body {
     text-rendering: geometricPrecision;
     overflow-x: hidden;
 }
+/* Every number uses tabular lining figures so columns and live values never
+   change width (Relayout v2 §5). */
+body {
+    font-family: var(--font-sans);
+    font-variant-numeric: tabular-nums lining-nums;
+}
+button,
+input,
+select,
+textarea { font-family: inherit; font-variant-numeric: tabular-nums lining-nums; }
 
 .sr-only {
     position: absolute;
@@ -192,7 +265,7 @@ body {
     justify-content: center;
     border-bottom: 1px solid var(--line-strong);
     color: var(--accent);
-    font-family: 'Orbitron', sans-serif;
+    font-family: var(--font-sans);
     font-size: 1rem;
     letter-spacing: 1px;
 }
@@ -217,7 +290,6 @@ body {
     justify-content: center;
     padding: 0;
     border: 0;
-    border-left: 3px solid transparent;
     border-radius: 0;
     background: transparent;
     color: var(--ink-muted);
@@ -228,9 +300,9 @@ body {
 }
 .app-rail .tab:hover { color: var(--ink-primary); background: rgba(214, 226, 237, 0.07); }
 .app-rail .tab.active {
-    color: var(--accent);
-    border-left-color: var(--accent);
-    background: rgba(214, 226, 237, 0.10);
+    color: var(--t1);
+    background: var(--s-selected);
+    box-shadow: inset 0 0 0 1px var(--s-selected-line);
 }
 .app-rail .tab::after { display: none; }
 .app-rail .tab:hover::after {
@@ -246,7 +318,7 @@ body {
     border-radius: var(--ui-radius-small);
     background: var(--surface-panel);
     color: var(--ink-primary);
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 0.5rem;
     letter-spacing: 0.05em;
     white-space: nowrap;
@@ -313,7 +385,7 @@ body {
     stroke-linejoin: round;
 }
 .connection-initial {
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 1rem;
     font-weight: 600;
     line-height: 1;
@@ -357,7 +429,7 @@ body {
     align-items: flex-start;
     gap: 10px;
     pointer-events: none;
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
 }
 .chart-status-cluster .account-switcher,
 .chart-status-cluster #clock,
@@ -494,20 +566,23 @@ body.sidebar-collapsed .content {
 }
 .panel::before,
 .panel::after { display: none; }
+/* Section titles are micro labels (Relayout v2 §5): no fill, no bar. */
 .panel-title {
-    width: calc(100% + (2 * var(--ui-space-4)));
-    margin-left: calc(-1 * var(--ui-space-4));
-    padding: 7px var(--ui-space-4);
-    min-height: 31px;
+    width: 100%;
+    margin-left: 0;
+    padding: 0;
+    min-height: 28px;
     display: flex;
     align-items: center;
+    gap: var(--sp-2);
     box-sizing: border-box;
-    background: var(--surface-raised);
-    color: var(--ink-primary);
-    letter-spacing: 2px;
-    margin-bottom: var(--ui-space-3);
+    background: transparent;
+    color: var(--t3);
+    font: 600 11px/1.2 var(--font-sans);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: var(--sp-3);
     border: 0;
-    border-left: 3px solid var(--accent);
 }
 .panel-title::before { content: none !important; display: none !important; }
 .sidebar .form-row,
@@ -545,9 +620,10 @@ body.sidebar-collapsed .content {
 
 /* 3–4. Shared controls: one geometry and one focus treatment. */
 .form-group label {
-    color: var(--ink-secondary);
-    font-weight: 600;
-    letter-spacing: 0.08em;
+    color: var(--t3);
+    font: 600 11px/1.3 var(--font-sans);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
 }
 .form-group input,
 .form-group select,
@@ -557,9 +633,12 @@ select,
 .slot-input {
     min-height: var(--ui-control-height);
     background: var(--surface-input);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
     border: 0;
     border-radius: var(--ui-radius-small);
-    color: var(--ink-primary);
+    color: var(--t1);
+    font-family: var(--font-mono);
+    font-weight: 500;
 }
 .form-group input:hover,
 .form-group select:hover,
@@ -572,35 +651,27 @@ input[type="number"]:focus,
 input[type="text"]:focus,
 select:focus,
 button:focus-visible {
-    outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+    /* Focus is white luminance, never the accent (MOTION 4.4). */
+    outline: 2px solid var(--focus-ring);
     outline-offset: 1px;
     border-color: transparent;
-    box-shadow: none;
+    box-shadow: inset 0 0 0 1px var(--s-selected-line);
 }
 .btn {
     min-height: var(--ui-control-height);
     border: 0;
     background: var(--surface-button);
-    color: var(--ink-primary);
+    color: var(--t1);
     border-radius: var(--ui-radius);
-    transition: background-color 120ms ease, border-color 120ms ease,
-        color 120ms ease, transform 120ms ease;
+    transition: background-color var(--d-2) var(--e-std), color var(--d-2) var(--e-std),
+        transform var(--d-1) var(--e-std);
 }
 .btn:hover:not(:disabled) { background: var(--surface-button-hover); }
-.btn:hover:not(:disabled) { transform: translateY(-1px); }
-.btn:active:not(:disabled) { transform: translateY(0); }
-.btn-primary,
-.btn-green { background: var(--positive); color: #07151a; }
-.btn-primary:hover:not(:disabled),
-.btn-green:hover:not(:disabled) { background: color-mix(in srgb, var(--positive) 84%, white); }
-#btn-backtest,
-#btn-backtest.btn-green {
-    background: transparent;
-    border: 1px solid var(--positive);
-    color: var(--positive);
-}
-#btn-backtest:hover:not(:disabled) { background: var(--green2); }
-#btn-backtest:disabled { background: transparent; color: var(--positive); }
+.btn:active:not(:disabled) { transform: scale(0.98); }
+.btn-primary { background: var(--accent); color: var(--on-accent); }
+.btn-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, white); }
+.btn-danger,
+.btn-danger:hover:not(:disabled) { color: var(--short); }
 .btn-outline { color: var(--ink-secondary); }
 .toggle-field {
     background: var(--surface-button);
@@ -667,7 +738,7 @@ button:focus-visible {
     pointer-events: none;
     user-select: none;
     white-space: nowrap;
-    font-family: 'Orbitron', sans-serif;
+    font-family: var(--font-sans);
     font-size: clamp(0.45rem, 1.2vw, 1.2rem);
     font-weight: 400;
     letter-spacing: 0.18em;
@@ -696,7 +767,7 @@ button:focus-visible {
     padding: 2px 6px;
     border-radius: 3px;
     background: rgba(8, 12, 18, 0.72);
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     letter-spacing: 0.3px;
     color: #fbbf24;
@@ -711,7 +782,7 @@ button:focus-visible {
 .piopt-note { display: block; margin-top: 6px; line-height: 1.4; }
 .opt-tickets { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
 .opt-ticket {
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     font-size: 10px;
     color: var(--amber, #fbbf24);
     white-space: nowrap;
@@ -733,7 +804,7 @@ button:focus-visible {
     border: 0;
     background: transparent;
     color: var(--ink-secondary);
-    font: 600 11px/1 'IBM Plex Mono', monospace;
+    font: 600 11px/1 var(--font-mono);
     letter-spacing: 0.02em;
     cursor: pointer;
     transition: background-color var(--ui-motion-duration) var(--ui-motion-ease),
@@ -868,8 +939,16 @@ textarea {
     padding-inline: var(--ui-space-3);
     border-bottom-color: var(--line-subtle);
 }
-.bottom-tab { border-radius: var(--ui-radius-small) var(--ui-radius-small) 0 0; }
-.bottom-tab.active { color: var(--ink-primary); border-bottom-color: var(--accent); }
+/* Tabs are text only: micro label, active = t1 + 2px white underline. */
+.bottom-tab {
+    border-radius: 0;
+    color: var(--t3);
+    font: 600 11px/1 var(--font-sans);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+.bottom-tab:hover { color: var(--t2); }
+.bottom-tab.active { color: var(--t1); border-bottom-color: var(--t1); }
 .bottom-tab.active::after { display: none; }
 .bottom-content {
     min-width: 0;
@@ -889,13 +968,25 @@ th {
     top: 0;
     z-index: 10;
     background: var(--surface-panel);
-    color: var(--ink-secondary);
-    border-bottom-color: var(--line-strong);
+    color: var(--t3);
+    font: 600 11px/1 var(--font-sans);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    border-bottom-color: var(--div);
     white-space: nowrap;
 }
 .trade-table-wrap td,
-td { border-bottom-color: var(--line-subtle); white-space: nowrap; }
-tr:hover { background: rgba(98, 216, 255, 0.06); }
+td {
+    border-bottom-color: var(--div);
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums lining-nums;
+}
+tr:hover { background: var(--s1); }
+/* Price and money columns read right-aligned in every trade table layout
+   (futures journal, executed trades, PI options rows). */
+.trade-table-wrap th:nth-child(n + 4):nth-child(-n + 8),
+.trade-table-wrap td:nth-child(n + 4):nth-child(-n + 8) { text-align: right; }
 .log { background: var(--surface-chart); }
 
 /* The trade journal is data-driven: renderTrades() replaces tbody contents
@@ -972,7 +1063,7 @@ html.theme-transitioning .trade-table-wrap td {
     align-items: baseline;
     column-gap: 0;
     white-space: nowrap;
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
     line-height: 1.25;
 }
@@ -1415,15 +1506,9 @@ html.theme-transitioning #chart-container {
         opacity var(--ui-theme-duration) var(--ui-theme-ease);
 }
 
-/* Live entry is an action, not a filled status badge. */
-.slot-btnrow button[onclick^="liveSlotGoLive"] {
-    background: transparent !important;
-    border: 1px solid var(--positive) !important;
-    color: var(--positive) !important;
-}
-.slot-btnrow button[onclick^="liveSlotGoLive"]:hover:not(:disabled) {
-    background: var(--green2) !important;
-}
+/* Relayout v2: GO LIVE is the screen's .btn-primary; the former
+   onclick-attribute override for this one button was removed so it follows
+   the shared button contract. */
 
 @media (prefers-reduced-motion: reduce) {
     :root {
@@ -1432,3 +1517,15 @@ html.theme-transitioning #chart-container {
         --ui-chart-refresh-duration: 1ms;
     }
 }
+
+/* ── Relayout v2: data channel ──
+   Long/short colour lives only on signed numbers and side glyphs; zero is
+   neutral; costs are secondary text, never red (ISSUES E1/E2, WCAG 1.4.1). */
+.pnl-pos { color: var(--long); }
+.pnl-neg { color: var(--short); }
+.pnl-zero { color: var(--t1); }
+.cost-cell { color: var(--t2); }
+.side-long,
+.side-short { white-space: nowrap; letter-spacing: 0.04em; }
+.side-long { color: var(--long); }
+.side-short { color: var(--short); }
