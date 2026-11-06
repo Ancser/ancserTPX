@@ -61,6 +61,7 @@
 | LIVE-014 | O1：Daily start 必須回報啟動狀態和錯誤；引擎啟動前的失敗限時最多三次，已進入引擎啟動或結果未知時不自動重試；STOP 與設定 revision 使舊啟動無效 | `test_daily_start_reliability.py` |
 | LIVE-015 | O2：terminal 控制狀態無法確認時暫停新進場並保留既有引擎與持倉管理，持續重試控制連線，確認 STOP 後停止；已送出的待成交單仍需以 broker 狀態確認 | `test_daily_start_reliability.py` |
 | LIVE-016 | O3：每日自動更換 terminal 前，舊引擎須確認暫停進場及完成當前 tick；broker 持倉和委託查詢成功且為空才能停止，停止後再核對 broker；STOP、帳號歧義、逾時及狀態未知必須阻止新程序 | `test_daily_start_reliability.py` |
+| LIVE-017 | 打開 App/Web 不得停掉 live terminal:`stop_legacy_instances.ps1` 只有帶 `-IncludeTerminal` 才比對 `backend.terminal_live`,且只有 `windows terminal.bat` 帶;`macOS web.command` 不 pkill terminal。(1.5.1:11-05 01:38、11-06 00:34 兩次被 App 啟動器強殺,無平倉、無停止狀態) | `test_windows_launchers.py`(含 `-DryRun` 對真實程序的測試) |
 
 ## CLOCK — 市場時鐘
 

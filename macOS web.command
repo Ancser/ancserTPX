@@ -16,10 +16,10 @@ else
     exit 1
 fi
 
-echo "  Stopping old Web/Terminal instances..."
+echo "  Stopping old Web instances..."
 pkill -f "uvicorn backend.main:app" 2>/dev/null || true
-pkill -f "backend.terminal_live" 2>/dev/null || true
-pkill -f "terminal_live.py" 2>/dev/null || true
+# 1.5.1: the live trading terminal is left running. Opening Web/App must not
+# kill it (no flatten, no clean stop); only `macOS terminal.command` replaces it.
 for PORT_TO_KILL in $(seq 8000 8010); do
     PIDS=$(lsof -tiTCP:$PORT_TO_KILL -sTCP:LISTEN 2>/dev/null || true)
     if [ -n "$PIDS" ]; then

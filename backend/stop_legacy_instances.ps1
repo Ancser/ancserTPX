@@ -2,6 +2,17 @@
 # starts.  This script deliberately does not scan or kill TCP ports: 8001 is
 # owned by the native pythonw App and an unrelated local service must not be
 # terminated by a project launcher.
+#
+# 1.5.1: the live trading terminal is NOT stopped unless the caller passes
+# -IncludeTerminal. Since Daily start (October) the terminal is the production
+# live path; opening the App force-killed it twice (2026-11-05 01:38,
+# 2026-11-06 00:34) with no flatten and no clean stop. Only `windows
+# terminal.bat`, which replaces the terminal on purpose, opts in.
+# -DryRun prints the PIDs that would be stopped and stops nothing (tests).
+param(
+    [switch]$IncludeTerminal,
+    [switch]$DryRun
+)
 $terminalPattern = '(?i)backend\.terminal_live|terminal_live\.py'
 $webPattern = '(?i)backend\.main:app|(?:-m\s+)?backend\.main\b|backend[\\/]main\.py\b|uvicorn(?:\.exe)?\s+(?:backend\.)?main:app'
 $launcherPattern = '(?i)(?:ancserTPX[\\/ ]+(?:terminal|web) win\.bat|windows[\\/ ]+(?:terminal|web)\.bat)'
@@ -22,7 +33,7 @@ $targets = @(
         Where-Object {
             $_.Name -in @('python.exe', 'pythonw.exe') -and
             (
-                [string]$_.CommandLine -match $terminalPattern -or
+                ($IncludeTerminal -and [string]$_.CommandLine -match $terminalPattern) -or
                 (
                     [string]$_.CommandLine -match $webPattern -and
                     (
@@ -36,6 +47,10 @@ $targets = @(
 $parentIds = @($targets | Select-Object -ExpandProperty ParentProcessId -Unique)
 
 foreach ($process in $targets) {
+    if ($DryRun) {
+        Write-Output "WOULD-STOP $($process.ProcessId)"
+        continue
+    }
     Write-Host "  Stopping legacy ancserTPX PID $($process.ProcessId)"
     Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
     $stopped++
@@ -49,6 +64,10 @@ foreach ($process in $processes) {
         $parentIds -contains [int]$process.ProcessId -and
         [string]$process.CommandLine -match $launcherPattern
     ) {
+        if ($DryRun) {
+            Write-Output "WOULD-CLOSE $($process.ProcessId)"
+            continue
+        }
         Write-Host "  Closing legacy ancserTPX CMD PID $($process.ProcessId)"
         Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
         $stopped++

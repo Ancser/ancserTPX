@@ -57,7 +57,9 @@ Unchecking Daily start and saving disables future starts; use STOP to also stop
 the current terminal. Stop retains the existing engine's position/order cleanup
 semantics. It is not an additional flatten operation.
 
-The normal `windows terminal.bat` still starts immediately. Scheduled launches
+Opening the App or Web never stops a running terminal (1.5.1, LIVE-017).
+The normal `windows terminal.bat` still starts immediately and replaces an
+existing terminal (it passes `-IncludeTerminal` to the cleanup script). Scheduled launches
 invoke the Python module directly, so they avoid the batch launcher's legacy
 process termination and cache-reset operations. Previously running terminals
 need to be restarted by the user to load the new control code.

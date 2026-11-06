@@ -19,7 +19,9 @@ if errorlevel 1 (
 
 :: Stop known legacy Web/Terminal workers. Never touch the desktop App or 8001.
 echo  Stopping existing ancserTPX Web/Terminal workers...
-powershell -ExecutionPolicy Bypass -File "%~dp0backend\stop_legacy_instances.ps1"
+:: -IncludeTerminal: this launcher replaces a running terminal on purpose
+:: (1.5.1: the App launcher no longer stops the terminal).
+powershell -ExecutionPolicy Bypass -File "%~dp0backend\stop_legacy_instances.ps1" -IncludeTerminal
 timeout /t 2 /nobreak >nul
 
 :: Clear cache
