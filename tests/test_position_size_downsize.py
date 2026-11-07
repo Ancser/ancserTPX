@@ -137,3 +137,15 @@ def test_position_bound_live_paths_never_use_the_configured_size():
         body = src[start:end]
         assert "self.contract_size" not in body, fn
         assert "self._position_size" in body, fn                   # positive: it uses the entry size
+
+
+def test_ui_round_trips_the_setting_for_backtest_live_and_presets():
+    """Without a UI field, saving the preset from the UI dropped the key and UI
+    backtests ignored it (both build their request from collectStrategyParams)."""
+    html = (ROOT / "frontend" / "static" / "ancserTPX.html").read_text(encoding="utf-8")
+    js = (ROOT / "frontend" / "static" / "ancserTPX.js").read_text(encoding="utf-8")
+    for mode in ("bt", "live"):
+        assert f'id="downsize-risk-{mode}"' in html
+    assert "downsize_risk_dollars: _int('downsize-risk-' + mode, 0)" in js      # collect
+    assert "_set('downsize-risk-' + mode," in js                                  # apply
+    assert "downsize_risk_dollars: null," in js                                   # default OFF

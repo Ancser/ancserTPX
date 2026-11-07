@@ -441,6 +441,7 @@ const DEFAULT_STRATEGY_PARAMS = {
     conf_use_scorer: true,
     conf_enable_breakout: false,
     conf_max_risk_ticks: null,
+    downsize_risk_dollars: null,
     conf_sl_reference_tf: 'largest',
     conf_allowed_sessions: ['ASIA'],
     conf_trail_trigger_pct: 0.50,
@@ -1791,6 +1792,8 @@ function collectStrategyParams(mode) {
         // 1.0.8: 出場模式(tp | ladder)+ 日虧斷路器(0=OFF)
         tr_exit_mode: (_mlSelectValue('tr-exit-mode-' + mode, 'tp') === 'ladder') ? 'ladder' : 'tp',
         tr_daily_loss_stop: Math.max(0, Math.min(6, _int('tr-daily-stop-' + mode, 0))),
+        // 1.5.1: wide-stop entries take 1 contract (backend/strategy/position_size.py); 0 = OFF
+        downsize_risk_dollars: _int('downsize-risk-' + mode, 0) > 0 ? _int('downsize-risk-' + mode, 0) : null,
         tr_daily_win_stop: Math.max(0, Math.min(6, _int('tr-daily-win-stop-' + mode, 0))),  // 1.0.9: FULL WIN LOCK
         // 1.0.9: prevRV 波動閘 + fade 進場模式
         fade_entry_mode: (function (m) { return (m === 'rejection' || m === 'or15') ? m : 'limit'; })(_mlSelectValue('fade-entry-mode-' + mode, 'limit')),  // 1.0.9: +or15
@@ -1992,6 +1995,7 @@ function applyStrategyParams(mode, params) {
     // 1.0.8: 出場模式 + 日虧斷路器
     _set('tr-exit-mode-' + mode, String(p.tr_exit_mode || 'tp') === 'ladder' ? 'ladder' : 'tp');
     _set('tr-daily-stop-' + mode, String(Math.max(0, Math.min(6, parseInt(p.tr_daily_loss_stop != null ? p.tr_daily_loss_stop : 0, 10) || 0))));
+    _set('downsize-risk-' + mode, String(Math.max(0, Math.round(Number(p.downsize_risk_dollars) || 0))));
     _set('tr-daily-win-stop-' + mode, String(Math.max(0, Math.min(6, parseInt(p.tr_daily_win_stop != null ? p.tr_daily_win_stop : 0, 10) || 0))));  // 1.0.9: FULL WIN LOCK
     // 1.0.9: prevRV 波動閘 + fade 進場模式
     _set('fade-entry-mode-' + mode, (function (m) { return (m === 'rejection' || m === 'or15') ? m : 'limit'; })(String(p.fade_entry_mode || 'limit')));  // 1.0.9: +or15

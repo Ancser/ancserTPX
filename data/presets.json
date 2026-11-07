@@ -804,7 +804,8 @@
       "factor_max_hold_bars": 0,
       "factor_max_trades_per_day": 3,
       "factor_warmup_bars": 320,
-      "market_clock_version": "america-new-york-v1"
+      "market_clock_version": "america-new-york-v1",
+      "downsize_risk_dollars": 1000
     }
   },
   "last_used_bt": "PI STRICT MNQ REOPEN",
