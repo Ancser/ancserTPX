@@ -11,6 +11,8 @@ exact failure mode this repository keeps hitting.
 3. `docs/HANDOFF.md` — current baseline, open questions, next research
 4. `docs/RESEARCH_REPORT.md` — the single research report: verdicts, closed
    directions, and what is left to test
+5. `docs/QA.md` — CI failures, UI screenshots, and the first-trading-day live
+   checklist after any live-affecting change
 
 Then:
 
