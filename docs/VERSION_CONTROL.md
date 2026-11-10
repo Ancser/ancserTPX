@@ -18,6 +18,16 @@
 
 | 版本／提交訊息 | commit | 日期 | 內容依據 |
 |---|---|---|---|
+| 1.5.1h Grok webhook forwarder | `79c4994` | 2026-11-09 | PI 事件轉發給 Grok Bot（只轉發、不過濾、不下單）；payload 標 received_at／catch_up／listener_role；測試無法打到真的 Bot |
+| 1.5.1g UI renewal | `280578f` | 2026-11-09 | 大按鈕＋角記號；Live 主角損益、日虧損剩餘量表、異常才顯示；Backtest ADVANCED 收合；Research 候選卡片；動畫 |
+| 1.5.1f live preset wide-stop 1 lot | `aa801c4` | 2026-11-06 | live preset `downsize_risk_dollars: 1000`；UI 欄位 |
+| 1.5.1e UI polish | `5463bf2` | 2026-11-06 | 方形開關、主題 150ms、斑馬紋、移除 rail 品牌 |
+| 1.5.1d downsize_risk_dollars | `2619296` | 2026-11-06 | 寬停損改 1 口（回測與 live 共用 `entry_contracts`，EXEC-009） |
+| 1.5.1c trade history + chart speed | `976015e` | 2026-11-06 | DLL 鎖住的帳戶仍讀成交；30m 快取、5m/15m 初始 5000 根 |
+| 1.5.1b test isolation + Rust stage 0 | `928f1f6` | 2026-11-06 | 測試不再碰真實 runtime；Rust parity 只釘 preset 內容；單一定義掃 .rs |
+| 1.5.1a launcher keeps terminal | `3676a8b` | 2026-11-06 | 開 App 不再強殺 live terminal（LIVE-017） |
+| 1.5 | `62eb95a` | 2026-11-05 | Git 提交訊息 |
+| 1.4 | `7ab2829` | 2026-11-03 | Git 提交訊息 |
 | 1.3.0 redo | `8985079` | 2026-09-27 | 本次審查的 Git HEAD；具體內容以提交為準 |
 | 1.2.3 PI options and research engine checkpoint | `07aaeac` | 2026-09-25 | Git 提交訊息 |
 | 1.3.1 something | `f63de66` | 2026-09-15 | Git 提交訊息；依實際提交順序列出 |
@@ -120,6 +130,20 @@
 **Phase 2–6（1.5.1h，工作區）**：使用者要求「do all fix」並採用公認設計方法（NN/g 漸進揭露、Few 儀表板例外凸顯、Tufte 小倍數、dataviz skill）。Live：FUTURES／OPTIONS 分頁、主角當日損益、日虧損上限剩餘量表（`dailyLossLimit` 單一定義於 topstep-eval.js）、異常才顯示的狀態標籤、Daily start 狀態標籤、狀態點去光。Backtest：ADVANCED 收合（計算隱藏數與相對 preset 的變更數）、`?` 懸停才顯示、PERFORMANCE 主角＋4 關鍵＋MORE METRICS。Research：候選卡片（判定標籤、3 關鍵數字、共用刻度的淨利／壓力長條）、Topstep 表中性化並標亮目前口數。動畫：分頁滑動選中塊、數字逐位滾動、工作區面板錯開淡入，皆遵守 reduced motion。
 
 **未完成**：Phase 2b 頁面／彈窗四角、頁面標題（微標＋標題＋麵包屑）；Phase 5 Settings；訊號卡片。
+
+### G1 — Grok Bot 訊號轉發（2026-11-09，`79c4994` 1.5.1h）
+
+**使用者需求**：ancserTPX「只負責順便擔任數據轉發功能」，Grok Bot 自己決定怎麼用。官方唯一的程式觸發方式是 Grok Bot 例行任務的 webhook（回 200 只代表已排入，無法讀回結果）。
+
+**行為**：新 PI 事件（含被拒的多標記訊息）POST 到 `GROK_PI_WEBHOOK_URL`；URL 空白即不動作。在 listener 迴圈外的執行緒送出，不影響輪詢與下單。每筆附 `received_at`、`catch_up`（啟動回補，可能是數小時前）、`listener_role`（`recorder`=App、`trader`=terminal，兩者同時開會送同一個 `message_id`）。
+
+**修正的缺陷**：URL 一旦填入，跑一次 listener 測試就會送出 5 筆假訊號（4 筆 QQQ 青π 多單）。`tests/conftest.py` 讓三個變數在測試中存在但為空，`load_dotenv(override=False)` 無法回填。
+
+**驗證**：5 個新測試（各自放回 bug 會紅）；本機假 webhook 探測 5→0；全套 986 passed。
+
+**啟用**：把 Grok Bot 例行任務面板的 URL 與 Authorization 填進 `.env`，下次 terminal 啟動（每日 06:30 自動）生效；App 的 recorder 要重啟 App。
+
+**未做（使用者決定不需要）**：轉發健康度上 Live 監控、伺服器端去重或過濾。
 
 ## 已完成與 patch 紀錄
 
