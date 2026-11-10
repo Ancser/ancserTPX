@@ -7,7 +7,9 @@
     紫色系 紫圈 / 粉π            → 做空
 
 標的對應:QQQ → MNQ、SPY → MES。
-
+
+
+
 ⚠️ 速率:使用者指定上限 30 次/分。內建 token bucket,預設輪詢 **30 秒**
 (= 2 次/分),並完整處理 429 的 retry_after。
 
@@ -36,6 +38,7 @@ from backend.data.pi_live_audit import (
     load_message_ids,
     load_message_timestamps,
 )
+from backend.live.pi_grok_webhook import notify_pi_webhook
 from backend.timebase import LOS_ANGELES, NEW_YORK, PI_SOURCE_TIMEZONE_NAME, UTC, utc_now
 
 logger = logging.getLogger(__name__)
@@ -311,6 +314,11 @@ class PiListener:
         self._channel = channel_id
         self._last_id: Optional[str] = None
         self._seen: set[str] = set()
+        # Grok webhook forwarding is fire-and-forget; keep the task objects so
+        # the event loop cannot garbage-collect one mid-flight (asyncio docs).
+        self._webhook_tasks: set[asyncio.Task] = set()
+        # True only while backfill_recent() dispatches catch-up messages.
+        self._catching_up = False
         self._stop = asyncio.Event()
         # 1.0.10: 只在正常交易時段輪詢。實測 259 則歷史訊號有 257 則(99.2%)
         # 落在 6:00–13:00 PT,且 6:00–6:30 之間 0 則 —— 6:30 起點不漏訊號。
@@ -355,6 +363,39 @@ class PiListener:
         fields.setdefault("channel_id", self._channel)
         if not append_status_event(event, **fields):
             self._audit_write_errors += 1
+
+    def _schedule_grok_webhook(self, payload: dict) -> None:
+        """Best-effort notify only. Never block polling or the trade callback.
+
+        ancserTPX is only a forwarder: nothing is filtered here. Every payload
+        carries the metadata a receiver needs to decide for itself —
+        ``received_at`` (local dispatch time), ``catch_up`` (true for messages
+        replayed by the startup backfill, possibly hours old) and
+        ``listener_role`` ("recorder" for the record-only App poller, "trader"
+        for the terminal's live listener; both may forward the same
+        ``message_id`` when the App and a terminal run together).
+        """
+        if not payload:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        payload = {
+            **payload,
+            "received_at": utc_now().isoformat(),
+            "catch_up": bool(self._catching_up),
+            "listener_role": "recorder" if self._record_only else "trader",
+        }
+        task = loop.create_task(self._grok_webhook_task(payload), name="pi_grok_webhook")
+        self._webhook_tasks.add(task)
+        task.add_done_callback(self._webhook_tasks.discard)
+
+    async def _grok_webhook_task(self, payload: dict) -> None:
+        try:
+            await asyncio.to_thread(notify_pi_webhook, payload)
+        except Exception as exc:
+            logger.warning("[PI] grok webhook notify failed: %s", type(exc).__name__)
 
     def in_window(self, now: Optional[datetime] = None) -> bool:
         t = (now or utc_now()).astimezone(self._tz)
@@ -594,7 +635,11 @@ class PiListener:
                         pending.append(msg)
 
                     if pending:
-                        await self._dispatch_messages(pending)
+                        self._catching_up = True
+                        try:
+                            await self._dispatch_messages(pending)
+                        finally:
+                            self._catching_up = False
                         new_messages += len(pending)
                         known_ids.update(
                             msg_id for msg_id in (self._message_id(m) for m in pending)
@@ -816,6 +861,28 @@ class PiListener:
                     msg_id,
                     len(sigs),
                 )
+                self._schedule_grok_webhook(
+                    {
+                        "source": "ancserTPX-pi_listener",
+                        "event": "multi_signal_skip",
+                        "message_id": msg_id,
+                        "channel_id": self._channel,
+                        "raw": msg.get("content") or "",
+                        "error": f"{len(sigs)} supported marks in one message",
+                        "marks": [
+                            {
+                                "equity": item.equity,
+                                "future": item.future,
+                                "kind": item.kind,
+                                "level": item.level,
+                                "side": item.side,
+                                "size": item.size,
+                                "ts": item.ts.isoformat() if item.ts else None,
+                            }
+                            for item in sigs
+                        ],
+                    }
+                )
                 continue
             for sig in sigs:
                 received_at = utc_now()
@@ -830,6 +897,23 @@ class PiListener:
                     channel_id=self._channel,
                 ):
                     self._signals_audited += 1
+                    self._schedule_grok_webhook(
+                        {
+                            "source": "ancserTPX-pi_listener",
+                            "event": audit_event,
+                            "message_id": sig.message_id,
+                            "channel_id": self._channel,
+                            "equity": sig.equity,
+                            "future": sig.future,
+                            "kind": sig.kind,
+                            "level": sig.level,
+                            "side": sig.side,
+                            "size": sig.size,
+                            "direction": sig.direction,
+                            "ts": sig.ts.isoformat() if sig.ts else None,
+                            "raw": sig.raw or (msg.get("content") or ""),
+                        }
+                    )
                 else:
                     self._audit_write_errors += 1
                 logger.info("[PI] 訊號 %s %s %s %s(%s)",
