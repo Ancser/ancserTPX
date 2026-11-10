@@ -55,7 +55,12 @@ async function openStubbed(page, state) {
 
 test("switching to 1H requests tf bars, snaps markers and overlays into the bar", async ({ page }) => {
   test.setTimeout(90000);
-  const hourStart = Math.floor(Date.now() / HOUR) * HOUR - 400 * HOUR;
+  // 1.5.1j: a fixed window, not "now - 400h". Chart time is New York wall
+  // clock, so a window crossing the fall-back night holds two 01:00 bars and
+  // one is merged (399, not 400): this test was red from Nov 1 until ~Nov 17
+  // and would turn red again every March/November. 2026-07-01 + 400h has no
+  // DST change; nothing below depends on the current time.
+  const hourStart = Date.UTC(2026, 6, 1, 0, 0, 0);
   const state = {
     requests: [],
     rows: {

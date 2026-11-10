@@ -695,13 +695,14 @@ test("order-flow research layers draw saved candidates with their outcome and lo
   await page.evaluate(() => toggleChartLayer("of_passive", true));
   await expect.poll(() => page.evaluate(() => window.__researchTexts.includes("+$42"))).toBe(true);
   const texts = await page.evaluate(() => window.__researchTexts);
-  expect(texts).not.toContain("-$35");                     // turnover layer still off
+  expect(texts).not.toContain("−$35");                // turnover layer still off
   // The layer never shows arrows without the candidate's numbers.
   expect(await page.evaluate(() => document.getElementById("log-container").textContent))
     .toContain("evaluation 195 trades, PF 1.22, 14-tick PF 1.04");
 
   await page.evaluate(() => toggleChartLayer("of_turnover", true));
-  await expect.poll(() => page.evaluate(() => window.__researchTexts.includes("-$35"))).toBe(true);
+  // 1.5 formatMoney: losses use U+2212 MINUS SIGN ("−$35"), not a hyphen.
+  await expect.poll(() => page.evaluate(() => window.__researchTexts.includes("−$35"))).toBe(true);
 
   await page.evaluate(() => {
     toggleChartLayer("of_passive", false);
