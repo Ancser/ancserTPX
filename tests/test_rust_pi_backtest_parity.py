@@ -29,6 +29,7 @@ from rust_parity_inputs import (
     EXPECTED_PARITY_PRESET_SHA256,
     PARITY_PRESET,
     load_parity_preset,
+    require_local_parity_data,
 )
 
 
@@ -497,6 +498,7 @@ def _compare_scenario(actual, expected, scenario):
 
 
 def test_rust_pi_backtest_matches_python_engine_on_mes_and_synthetic_edges(tmp_path):
+    require_local_parity_data()
     preset_name, preset = load_parity_preset()
     assert preset_name == PARITY_PRESET
     assert _hash(pi_history.HIST_PATH) == EXPECTED_PI_HISTORY_SHA256

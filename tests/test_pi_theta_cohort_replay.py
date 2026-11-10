@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from backend.data import pi_history
+
 from scripts.pi_theta_cohort_replay import (
     DEFAULT_DATA_ROOT,
     EXIT_TIMES,
@@ -288,7 +290,9 @@ def test_saved_march_replay_actual_files():
     required = [
         DEFAULT_DATA_ROOT / "theta_pi_cohort_manifest.json",
         DEFAULT_DATA_ROOT / "coverage_manifest.jsonl",
-        Path(r"F:\ancserQuant\ancserMarketData\source\discord\pi\pi_signals.json"),
+        # Follow the configured data root (ANCSER_MARKET_DATA_ROOT), not a
+        # hard-coded drive letter.
+        Path(pi_history.HIST_PATH),
     ]
     if any(not path.is_file() for path in required):
         pytest.skip("saved Theta cohort files are unavailable")

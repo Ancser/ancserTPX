@@ -19,6 +19,7 @@ from rust_parity_inputs import (
     EXPECTED_PARITY_PRESET_SHA256,
     PARITY_PRESET,
     load_parity_preset,
+    require_local_parity_data,
 )
 
 
@@ -206,6 +207,7 @@ def _run_native(fixture_path):
 
 
 def test_native_rust_pi_matches_python_on_canonical_mes_data(tmp_path):
+    require_local_parity_data()
     preset_name, preset = load_parity_preset()
     assert preset_name == PARITY_PRESET
     preset_source = "named:" + PARITY_PRESET
@@ -430,6 +432,7 @@ def test_native_rust_pi_matches_python_on_canonical_mes_data(tmp_path):
 
 
 def test_native_rust_pi_daily_signal_cap_matches_python(tmp_path):
+    require_local_parity_data()
     _, preset = load_parity_preset()
     params = _build_strategy_params(preset, CONTRACT_ID)
     python_strategy = _RecordingPiStrategy(params)

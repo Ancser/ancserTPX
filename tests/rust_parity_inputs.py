@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+
+import pytest
 
 from backend import terminal_live
 
@@ -49,3 +52,20 @@ def load_parity_preset() -> tuple[str, dict[str, Any]]:
         name, preset, source = terminal_live._load_default_preset()
     assert (name, source) == (PARITY_PRESET, "last_used_live")
     return name, preset
+
+
+def require_local_parity_data() -> None:
+    """Skip (not fail) where the private market data is absent, e.g. GitHub CI.
+
+    The parity cohorts replay the real PI history and the full MES 1m store;
+    neither is in git (CLAUDE.md: the 210 MB stores live in ancserMarketData).
+    Without this, CI failed on FileNotFoundError / the tiny boot seed (0 bars)
+    and the red run trained everyone to ignore CI. On the dev machine both
+    files exist, so the tests still run there.
+    """
+    from backend.data import candle_store, pi_history
+
+    if not Path(pi_history.HIST_PATH).is_file():
+        pytest.skip("PI signal history (pi_signals.json) is not on this machine")
+    if not candle_store._store_path("MES", 1).exists():
+        pytest.skip("full MES 1m candle store is not on this machine (only the boot seed)")
