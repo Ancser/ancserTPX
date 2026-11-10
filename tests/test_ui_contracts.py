@@ -368,7 +368,13 @@ def test_parameter_source_is_english_and_pi_payload_values_are_unchanged():
         HTML[sidebar_start:sidebar_end],
         flags=re.DOTALL,
     )
-    assert not re.search(r"[\u3400-\u9fff]", sidebar)
+    # UI-026 exception (user decision 2026-11-08): a hero button may carry its
+    # Chinese name as a decorative watermark, only as the data-wm of an
+    # aria-hidden .wm-clip. Every other piece of copy stays English.
+    watermark = re.compile(r'<span class="wm-clip" data-wm="([^"]*)" aria-hidden="true"></span>')
+    marks = watermark.findall(sidebar)
+    assert marks == ["\u56de\u6e2c", "\u5be6\u76e4"]                     # positive: the exception is in use
+    assert not re.search(r"[\u3400-\u9fff]", watermark.sub("", sidebar))
 
     expected_pi_signal_set = [
         ("long_pi_only", "LONG ONLY · π LEVELS (RECOMMENDED)"),

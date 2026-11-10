@@ -106,6 +106,21 @@
 
 **涉及檔案（候選，開工前確認 allowlist）**：`backend/terminal_live.py`、`backend/daily_start.py`、必要的既有風控介面及隔離測試。**行為變更：是。**
 
+### U1 — UI renewal：Age of Dev v2 線條語言（2026-11-08，工作區）
+
+**來源**：Age of Dev session 交接 `docs/UI_RENEWAL_FROM_AGEOFDEV.md`（使用者要求「除了光之外」的線條與版面語言）。
+
+**使用者決定**：介面維持全英文（UI-026）；大按鈕灰底、中文名稱只當背景浮水印（約 20% 被底邊切掉）；主色維持青色；rail 維持圖示列。
+
+**已完成（Phase 2a）**：共用契約 `.micro`／`.ticks`／`.hero-btn` 套到 EXECUTE BACKTEST 與 GO LIVE；狀態只寫在 `.hero-sub`（`setHeroButtonState`）；移除回測進度條發光；Phase 1 的 Playwright 舊斷言改為 v2；主題轉場檢查改為同步取樣。UI-026 加入浮水印例外並由 `test_ui_contracts.py` 限定範圍。
+
+**驗證**：Playwright 截圖（深色／淺色、hover、角記號未被裁切）；design-system.spec.js 35/35；`overflow:hidden` 放回時斷言變紅。
+既有紅燈（1.5 起即紅，非本項造成）：`chart-catchup` order-flow research layers、`chart-timeframe` switching to 1H。
+
+**Phase 2–6（1.5.1h，工作區）**：使用者要求「do all fix」並採用公認設計方法（NN/g 漸進揭露、Few 儀表板例外凸顯、Tufte 小倍數、dataviz skill）。Live：FUTURES／OPTIONS 分頁、主角當日損益、日虧損上限剩餘量表（`dailyLossLimit` 單一定義於 topstep-eval.js）、異常才顯示的狀態標籤、Daily start 狀態標籤、狀態點去光。Backtest：ADVANCED 收合（計算隱藏數與相對 preset 的變更數）、`?` 懸停才顯示、PERFORMANCE 主角＋4 關鍵＋MORE METRICS。Research：候選卡片（判定標籤、3 關鍵數字、共用刻度的淨利／壓力長條）、Topstep 表中性化並標亮目前口數。動畫：分頁滑動選中塊、數字逐位滾動、工作區面板錯開淡入，皆遵守 reduced motion。
+
+**未完成**：Phase 2b 頁面／彈窗四角、頁面標題（微標＋標題＋麵包屑）；Phase 5 Settings；訊號卡片。
+
 ## 已完成與 patch 紀錄
 
 | 日期 | 編號 | 內容 | 驗證／版本 |

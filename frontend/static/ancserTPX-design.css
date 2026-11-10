@@ -23,6 +23,11 @@
     --hl-top: inset 0 1px 0 rgba(255, 255, 255, 0.08);
     --div: rgba(255, 255, 255, 0.05);
     --row-alt: rgba(255, 255, 255, 0.045);  /* 1.5.1 zebra rows */
+    /* 1.5.1g line language (docs/UI_RENEWAL_FROM_AGEOFDEV.md): corner ticks,
+       English micro labels, hero-button watermark. Lines only, never light. */
+    --tick: rgba(255, 255, 255, 0.35);
+    --micro-ink: rgba(255, 255, 255, 0.40);
+    --wm-ink: rgba(255, 255, 255, 0.045);
     --drop: 0 8px 24px rgba(0, 0, 0, 0.35);
     --overlay: #171a20;
     --long: #3fcf8e;
@@ -124,6 +129,9 @@
     --hl-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
     --div: rgba(15, 30, 60, 0.08);
     --row-alt: rgba(15, 30, 60, 0.045);
+    --tick: rgba(15, 30, 60, 0.35);
+    --micro-ink: rgba(15, 30, 60, 0.50);
+    --wm-ink: rgba(15, 30, 60, 0.05);
     --drop: 0 8px 24px rgba(15, 30, 60, 0.12);
     --overlay: #ffffff;
     --long: #0b8a63;
@@ -1521,3 +1529,413 @@ html.theme-transitioning #chart-container {
 .side-short { white-space: nowrap; letter-spacing: 0.04em; }
 .side-long { color: var(--long); }
 .side-short { color: var(--short); }
+
+/* ── 1.5.1g Relayout v2 Phase 2a: line language from Age of Dev v2 ──
+   docs/UI_RENEWAL_FROM_AGEOFDEV.md §3–§5. One contract per component, used
+   by every instance; no per-button selectors (CLAUDE.md, 1.0.10o). No light:
+   no glow, ripple, shimmer, gradient bar or blur — status is text colour. */
+
+/* Micro label (§3): the small upper line of a two-line label. */
+.micro {
+    font: 400 10px/1.2 var(--font-mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--micro-ink);
+}
+
+/* 「」 corner ticks: top-left + bottom-right, 8px x 1px, drawn OUTSIDE the
+   box (§4). Hover moves each corner out 2px; press returns them. */
+.ticks { position: relative; }
+.ticks::before,
+.ticks::after {
+    content: "";
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border: 0 solid var(--tick);
+    pointer-events: none;
+    transition: transform var(--d-2) var(--e-std);
+}
+.ticks::before { left: -6px; top: -6px; border-width: 1px 0 0 1px; }
+.ticks::after { right: -6px; bottom: -6px; border-width: 0 1px 1px 0; }
+.ticks:hover:not(:disabled)::before { transform: translate(-2px, -2px); }
+.ticks:hover:not(:disabled)::after { transform: translate(2px, 2px); }
+.ticks:active::before,
+.ticks:active::after { transform: none; }
+
+/* Hero button (§5, user decision 2026-11-08): English micro label + English
+   name + one status line on a GRAY surface (not the accent fill), with the
+   Chinese name as a decorative watermark, ~20% cut by the bottom edge.
+   The watermark is the only Chinese in the product UI (UI-026 exception):
+   aria-hidden, in data-wm. The button itself must not clip, or its corner
+   ticks disappear; the inner .wm-clip clips. */
+.btn.hero-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: 2px;
+    width: 100%;
+    height: auto;
+    min-height: 92px;
+    padding: 12px 20px;
+    /* Room outside the box for the 「」 ticks (6px + 2px hover travel). */
+    margin-block: 10px 12px;
+    overflow: visible;
+    isolation: isolate;
+    text-align: left;
+    text-transform: none;
+    letter-spacing: 0;
+    background: var(--surface-button);
+    color: var(--t1);
+    box-shadow: var(--hl-top);
+}
+.btn.hero-btn:hover:not(:disabled) { background: var(--surface-button-hover); }
+.btn.hero-btn .wm-clip {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    z-index: -1;
+    pointer-events: none;
+}
+.btn.hero-btn .wm-clip::after {
+    content: attr(data-wm);
+    position: absolute;
+    right: 14px;
+    bottom: -18px;                        /* ~20% of the glyph below the edge (user, 2026-11-08) */
+    font: 800 92px/1 var(--font-sans);    /* glyph height ~ button height */
+    letter-spacing: 0;
+    white-space: nowrap;
+    color: var(--wm-ink);
+}
+.btn.hero-btn .micro { color: var(--micro-ink); }
+.hero-name {
+    font: 700 26px/1.1 var(--font-sans);
+    letter-spacing: 0.04em;
+}
+.hero-sub {
+    font: 400 13px/1.3 var(--font-sans);
+    opacity: 0.78;
+    min-height: 1.3em;
+}
+.btn.hero-btn:active:not(:disabled) { transform: scale(0.96); }
+
+/* ── 1.5.1h Live: glanceable account surface ──
+   Method: Few (Information Dashboard Design) — the numbers that change the next
+   action are big; everything normal is quiet; abnormal states appear on demand.
+   dataviz stat-tile contract: micro label + value (+ meter); one hero per view. */
+
+/* Segmented switch (FUTURES / OPTIONS). Selected = white luminance block. */
+.seg-switch {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    gap: 2px;
+    padding: 2px;
+    margin-bottom: var(--sp-3);
+    background: var(--s-sunken);
+}
+.seg-btn {
+    min-height: 32px;
+    border: 0;
+    background: transparent;
+    color: var(--t2);
+    font: 600 11px/1 var(--font-sans);
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: background-color var(--d-2) var(--e-std), color var(--d-2) var(--e-std);
+}
+.seg-btn:hover { color: var(--t1); background: var(--s1); }
+.seg-btn.active { color: var(--t1); background: var(--s-selected); }
+
+[data-live-pane-panel][hidden],
+.exc-chip[hidden],
+.daily-start-detail[hidden] { display: none !important; }
+
+/* Status head: dot + state words + market session at the right. */
+.live-head {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+    font: 600 13px/1.2 var(--font-sans);
+    letter-spacing: 0.06em;
+    color: var(--t2);
+}
+.live-head .slot-dot { flex: 0 0 auto; }
+.live-head-mkt { margin-left: auto; font-family: var(--font-mono); white-space: nowrap; }
+
+/* Stat tiles: one hero (DAY NET P&L), then 2-up tiles. */
+.stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--sp-2);
+    margin-bottom: var(--sp-3);
+}
+.stat-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    padding: 10px 12px;
+    background: var(--s1);
+    box-shadow: var(--hl-top);
+}
+.stat-hero,
+.stat-wide { grid-column: 1 / -1; }
+.stat-value {
+    /* Big standalone figures use proportional sans figures (dataviz); only
+       table columns use tabular mono. */
+    font: 600 18px/1.15 var(--font-sans);
+    font-variant-numeric: lining-nums proportional-nums;
+    color: var(--t1);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.stat-hero .stat-value { font-size: 44px; letter-spacing: -0.01em; }
+.stat-value.stat-text { font: 500 14px/1.3 var(--font-sans); white-space: normal; }
+
+/* Meter: the fill carries severity, the track is a lighter step of the same
+   neutral; ok stays neutral (colour only for exceptions). */
+.meter {
+    display: block;
+    height: 4px;
+    margin-top: 2px;
+    background: var(--s2);
+    overflow: hidden;
+}
+.meter-fill {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--t2);
+    transition: width var(--d-4, 320ms) var(--e-std), background-color var(--d-2) var(--e-std);
+}
+.meter-fill[data-level="warn"] { background: var(--warn); }
+.meter-fill[data-level="bad"] { background: var(--short); }
+
+/* Exception chips: only rendered while abnormal. */
+.exc-chips { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.exc-chips:not(:has(.exc-chip:not([hidden]))) { display: none; }
+.exc-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--s2);
+    font: 600 12px/1.2 var(--font-mono);
+}
+
+/* Daily start: one row of controls + one state chip; detail only on failure. */
+.daily-start { margin-top: var(--sp-4); padding-top: var(--sp-3); box-shadow: inset 0 1px 0 var(--div); }
+.daily-start-row { display: flex; align-items: center; gap: var(--sp-2); }
+.daily-start-row label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.daily-start-row .btn-mini { width: auto; min-height: 28px; margin-left: auto; padding: 0 12px; }
+.daily-start-state { display: flex; align-items: baseline; gap: var(--sp-2); margin-top: var(--sp-2); min-width: 0; }
+.state-chip {
+    flex: 0 0 auto;
+    padding: 3px 8px;
+    background: var(--s2);
+    color: var(--t2);
+    font: 600 11px/1.2 var(--font-mono);
+    letter-spacing: 0.06em;
+}
+.state-chip[data-level="ok"] { color: var(--t1); }
+.state-chip[data-level="bad"] { color: var(--short); }
+.daily-start-detail {
+    min-width: 0;
+    color: var(--t2);
+    font: 400 12px/1.35 var(--font-sans);
+    overflow-wrap: anywhere;
+}
+.daily-start-row input[type="time"] {
+    min-height: 28px;
+    padding: 0 6px;
+    border: 0;
+    background: var(--s-sunken);
+    color: var(--t1);
+    font: 500 13px/1 var(--font-mono);
+}
+
+/* ── 1.5.1h Backtest: progressive disclosure ──
+   Rare parameters (.adv) collapse behind one toggle per parameter panel; the
+   toggle names how many are hidden and how many differ from the preset. */
+.sidebar .panel:not(.adv-open) .adv { display: none !important; }
+.adv-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    width: 100%;
+    min-height: 32px;
+    margin: var(--sp-1) 0 var(--sp-3);
+    padding: 0 10px;
+    border: 0;
+    background: var(--s1);
+    color: var(--t2);
+    font: 600 11px/1 var(--font-mono);
+    letter-spacing: 0.06em;
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--d-2) var(--e-std), color var(--d-2) var(--e-std);
+}
+.adv-toggle:hover { background: var(--s2); color: var(--t1); }
+.adv-toggle .micro { color: var(--micro-ink); }
+.adv-toggle .adv-changed { color: var(--warn); }
+.adv-toggle .adv-caret { margin-left: auto; }
+
+/* Help "?" glyphs: progressive disclosure — hidden at rest, shown when the
+   field is hovered or the glyph has keyboard focus (still a real button). */
+.form-group .help-dot { opacity: 0; transition: opacity var(--d-2) var(--e-std); }
+.form-group:hover .help-dot,
+.form-group:focus-within .help-dot,
+.form-group .help-dot:focus-visible,
+.form-group .help-dot[aria-expanded="true"] { opacity: 1; }
+
+/* Backtest PERFORMANCE: one hero, four key tiles, the rest on demand. */
+.metric-card.metric-hero .value {
+    font: 600 40px/1.1 var(--font-sans);
+    font-variant-numeric: lining-nums proportional-nums;
+    letter-spacing: -0.01em;
+}
+.metrics-more > summary {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-height: 32px;
+    padding: 0 10px;
+    list-style: none;
+    background: var(--s1);
+    color: var(--t2);
+    font: 600 11px/1 var(--font-mono);
+    letter-spacing: 0.06em;
+    cursor: pointer;
+}
+.metrics-more > summary::-webkit-details-marker { display: none; }
+.metrics-more > summary::after { content: "▸"; margin-left: auto; }
+.metrics-more[open] > summary::after { content: "▾"; }
+.metrics-more > summary .micro { color: var(--micro-ink); }
+.metrics-more > summary .adv-changed { color: var(--warn); }
+.metrics-more[open] > summary { margin-bottom: var(--sp-2); }
+
+/* ── 1.5.1h Research candidate cards (Tufte small multiples) ──
+   verdict + three key numbers + a diverging net/+14t bar pair on one shared
+   scale; the chip wall and prose move into DETAILS. No borders: luminance. */
+.research-data-strategy.rc-card {
+    grid-template-columns: 48px minmax(220px, 1.3fr) auto minmax(220px, 1fr);
+    align-items: center;
+    gap: var(--sp-4);
+    padding: 12px 16px;
+    border: 0;
+    background: var(--s1);
+    box-shadow: var(--hl-top);
+}
+.rc-card .research-data-rank { color: var(--t3); font: 700 22px/1 var(--font-sans); }
+.rc-card .research-data-strategy-title { color: var(--t1); font: 600 15px/1.3 var(--font-sans); }
+.rc-meta { display: flex; align-items: center; gap: var(--sp-2); margin-top: 6px; min-width: 0; }
+.rc-meta .research-data-strategy-scope { margin: 0; text-transform: uppercase; letter-spacing: 0.06em; }
+.rc-kpis { display: flex; gap: 20px; }
+.rc-kpi { display: flex; flex-direction: column; gap: 4px; min-width: 84px; }
+.rc-kpi-value {
+    color: var(--t1);
+    font: 600 18px/1.1 var(--font-sans);
+    font-variant-numeric: lining-nums proportional-nums;
+    white-space: nowrap;
+}
+.rc-bars { display: grid; gap: 6px; min-width: 0; }
+.rc-bar-row { display: grid; grid-template-columns: 40px minmax(80px, 1fr) 96px; align-items: center; gap: var(--sp-2); }
+.rc-bar-label { color: var(--micro-ink); font: 600 10px/1 var(--font-mono); letter-spacing: 0.08em; }
+.rc-bar-track { position: relative; height: 10px; }
+.rc-bar { position: absolute; top: 0; bottom: 0; width: var(--w); }
+.rc-bar-pos { left: 50%; background: var(--long); border-radius: 0 2px 2px 0; }
+.rc-bar-neg { right: 50%; background: var(--short); border-radius: 2px 0 0 2px; }
+.rc-bar-zero { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--line-strong); }
+.rc-bar-value { color: var(--t2); font: 500 12px/1 var(--font-mono); text-align: right; white-space: nowrap; }
+.rc-details { grid-column: 1 / -1; }
+.rc-details > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    list-style: none;
+    cursor: pointer;
+    color: var(--t2);
+}
+.rc-details > summary::-webkit-details-marker { display: none; }
+.rc-details > summary::after { content: "▸"; font-size: 10px; }
+.rc-details[open] > summary::after { content: "▾"; }
+.rc-details[open] > summary { margin-bottom: var(--sp-2); }
+@media (max-width: 1100px) {
+    .research-data-strategy.rc-card { grid-template-columns: 40px minmax(0, 1fr); }
+    .rc-card .rc-kpis,
+    .rc-card .rc-bars { grid-column: 2; }
+}
+
+/* Robustness · Topstep: neutral verdict, inline pass bar, current-size row. */
+.rob-topstep-verdict {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-3);
+    border: 0 !important;
+    background: var(--s1) !important;
+    box-shadow: var(--hl-top);
+}
+.rob-topstep-verdict strong { color: var(--t1) !important; }
+.rob-topstep-verdict > .micro { flex: 0 0 auto; color: var(--micro-ink); }
+.institution-table td.pct-cell { position: relative; color: var(--t1); }
+.pct-bar {
+    display: inline-block;
+    width: 48px;
+    height: 4px;
+    margin-right: 8px;
+    vertical-align: middle;
+    background: linear-gradient(var(--t2), var(--t2)) 0 0 / var(--w) 100% no-repeat, var(--s2);
+}
+.institution-table tr.is-current td { background: var(--s-selected); color: var(--t1); }
+
+/* ── 1.5.1h Motion (MOTION_SPEC; no light) ── */
+.has-slider { position: relative; isolation: isolate; }
+.has-slider > :not(.tab-slider) { position: relative; z-index: 1; }
+.tab-slider {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 0;
+    background: var(--s-selected);
+    pointer-events: none;
+    transition: transform var(--d-3) var(--e-std), width var(--d-3) var(--e-std), opacity var(--d-2) var(--e-std);
+}
+.has-slider > .seg-btn.active,
+.has-slider > .bottom-tab.active { background: transparent; border-bottom-color: transparent; }
+.odo { display: inline-block; animation: tpx-odo-up 400ms var(--e-enter) both; }
+.odo-down { animation-name: tpx-odo-down; }
+@keyframes tpx-odo-up { from { transform: translateY(0.55em); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes tpx-odo-down { from { transform: translateY(-0.55em); opacity: 0; } to { transform: none; opacity: 1; } }
+.motion-enter {
+    animation: tpx-motion-enter var(--d-4) var(--e-enter) both;
+    animation-delay: calc(var(--motion-i, 0) * 40ms);
+}
+@keyframes tpx-motion-enter { from { transform: translateY(12px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+    .odo, .motion-enter { animation: none !important; }
+    .tab-slider { transition: none !important; }
+}
+
+/* PERFORMANCE tiles: no side colour bar and no radial glow (legacy
+   .metric-card::before/::after, incl. the :has(.value.pos/.neg) variants);
+   micro labels; standalone figures in proportional sans (dataviz). */
+.metric-card::before,
+.metric-card::after { display: none !important; }
+.metric-card .label {
+    font: 600 11px/1.2 var(--font-sans);
+    letter-spacing: 0.12em;
+    color: var(--micro-ink);
+}
+.metric-card .value {
+    font: 600 20px/1.2 var(--font-sans);
+    font-variant-numeric: lining-nums proportional-nums;
+}
+.rc-meta .research-data-strategy-scope {
+    font: 600 10px/1.3 var(--font-mono);
+    letter-spacing: 0.08em;
+    color: var(--micro-ink);
+}

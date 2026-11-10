@@ -23,6 +23,9 @@
         accountSize: 50000,
         baseTarget: 3000,
         maxLossLimit: 2000,
+        // 1.5.1h: 50K Express Funded daily loss limit; the Live LOSS LIMIT LEFT
+        // meter reads it from here (one definition next to the MLL).
+        dailyLossLimit: 1000,
         iterations: 10000,
         horizonDays: 60,
         minimumDays: 2,

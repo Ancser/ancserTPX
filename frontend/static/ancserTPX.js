@@ -1892,6 +1892,66 @@ function collectStrategyParams(mode) {
     return params;
 }
 
+
+// 1.5.1h: progressive disclosure (NN/g). Rarely-changed parameters carry
+// class "adv" and collapse behind one ADVANCED toggle per parameter panel.
+// The toggle counts how many of them differ from the last applied preset, so a
+// hidden change is never invisible.
+function _advControlValue(el) {
+    if (el.matches('.ui-switch')) return el.getAttribute('aria-checked') || (el.classList.contains('on') ? 'true' : 'false');
+    if (el.type === 'checkbox' || el.type === 'radio') return String(el.checked);
+    return String(el.value);
+}
+function _advControls(panel) {
+    return [...panel.querySelectorAll('.adv')]
+        .filter(row => {
+            for (let n = row; n && n !== panel; n = n.parentElement) {
+                if (n.style && n.style.display === 'none') return false;   // model not in use
+            }
+            return true;
+        })
+        .flatMap(row => [...row.querySelectorAll('input:not([type="hidden"]), select, .ui-switch')]
+            .filter(el => !el.closest('.pi-legacy-controls')));
+}
+function _advPanelFor(mode) {
+    return document.getElementById(mode === 'live' ? 'live-settings-panel' : 'backtest-config-panel');
+}
+function advSnapshot(mode) {
+    const panel = _advPanelFor(mode);
+    if (!panel) return;
+    _advControls(panel).forEach(el => { el.dataset.advBase = _advControlValue(el); });
+    advRefresh(panel);
+}
+function advRefresh(panel) {
+    if (!panel) return;
+    let toggle = panel.querySelector(':scope .adv-toggle');
+    const rows = [...panel.querySelectorAll('.adv')];
+    if (!rows.length) return;
+    if (!toggle) {
+        toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'adv-toggle';
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.addEventListener('click', () => {
+            const open = panel.classList.toggle('adv-open');
+            toggle.setAttribute('aria-expanded', String(open));
+            advRefresh(panel);
+        });
+        rows[0].parentElement.insertBefore(toggle, rows[0]);
+        panel.addEventListener('change', () => advRefresh(panel));
+        panel.addEventListener('click', (event) => {
+            if (event.target.closest && event.target.closest('.adv .ui-switch')) setTimeout(() => advRefresh(panel), 0);
+        });
+    }
+    const controls = _advControls(panel);
+    const changed = controls.filter(el => el.dataset.advBase !== undefined && el.dataset.advBase !== _advControlValue(el)).length;
+    const open = panel.classList.contains('adv-open');
+    toggle.innerHTML = '<span class="micro">ADVANCED</span><span class="adv-count">'
+        + (open ? 'HIDE' : controls.length + ' HIDDEN') + '</span>'
+        + (changed ? '<span class="adv-changed">' + changed + ' CHANGED</span>' : '')
+        + '<span class="adv-caret" aria-hidden="true">' + (open ? '▾' : '▸') + '</span>';
+}
+
 function applyStrategyParams(mode, params) {
     const p = Object.assign({}, DEFAULT_STRATEGY_PARAMS, params);
     const _set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
@@ -2206,6 +2266,7 @@ function applyStrategyParams(mode, params) {
     updateStrategyParamVisibility(mode);
     updateMlParamSummary(mode);
     if (mode === 'bt') _syncDeltaChartModel(p.strategy);
+    advSnapshot(mode);   // 1.5.1h: baseline for the ADVANCED "n CHANGED" count
 }
 
 // Kept for older event hooks; trigger OFF now controls the disabled state.
@@ -4022,7 +4083,7 @@ async function goLive() {
         statusEl.style.color = 'var(--amber)';
         statusEl.textContent = 'STARTING...';
         const dot = document.getElementById('live-status-dot');
-        if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
+        if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = 'none'; }
         const stopBtn = document.getElementById('btn-stop-live');
         if (stopBtn) stopBtn.disabled = true;
         const flattenBtn = document.getElementById('btn-flatten');
@@ -4030,7 +4091,7 @@ async function goLive() {
         log('Trading engine started successfully ✓', 'success');
     } else {
         const dot = document.getElementById('live-status-dot');
-        if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
+        if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = 'none'; }
         goBtn.disabled = false;
         const stopBtn = document.getElementById('btn-stop-live');
         if (stopBtn) stopBtn.disabled = true;
@@ -4303,7 +4364,7 @@ function _markLiveStatusStale(accountId) {
     }
     if (dot) {
         dot.style.background = 'var(--amber)';
-        dot.style.boxShadow = '0 0 6px var(--amber)';
+        dot.style.boxShadow = 'none';
     }
 }
 
@@ -4381,7 +4442,7 @@ function _renderLiveStatus(st) {
                 const dot = document.getElementById('live-status-dot');
                 if (dot) {
                     dot.style.background = 'var(--amber)';
-                    dot.style.boxShadow = '0 0 6px var(--amber)';
+                    dot.style.boxShadow = 'none';
                 }
                 const phaseText = st.phase || 'BUILDING ZONES...';
                 const panelPhase = document.getElementById('live-position-text');
@@ -4477,9 +4538,7 @@ function _renderLiveStatus(st) {
         const dot = document.getElementById('live-status-dot');
         if (dot) {
             dot.style.background = (isStarting || isDegraded) ? 'var(--amber)' : 'var(--green)';
-            dot.style.boxShadow = (isStarting || isDegraded)
-                ? '0 0 6px var(--amber)'
-                : '0 0 6px var(--green)';
+            dot.style.boxShadow = 'none';  // no glow (UI renewal)
         }
         const stopBtn = document.getElementById('btn-stop-live');
         if (stopBtn) stopBtn.disabled = isStarting;
@@ -8408,7 +8467,7 @@ async function _ensureBacktestData(btn, overrideStart, overrideEnd, force) {
         appendFetch = true;
     }
 
-    btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data...';
+    setHeroButtonState(btn, '<span class="think-dots"><span></span><span></span><span></span><span></span></span> loading data');
     log((appendFetch ? 'Syncing new backtest data' : 'Fetching backtest data') + ' (' + fetchLabel + ' -> ' + endDate + ')...', 'info');
 
     const body = { unit: 2, unit_number: 1, load_scope: 'backtest',   // always 1m bars for backtest / machine learning
@@ -8570,6 +8629,16 @@ function _showBottomTab(name) {
     }
 }
 
+// 1.5.1g: hero buttons (.hero-btn: micro label, Chinese name, watermark) keep
+// their structure; a state is one line under the name (UI_RENEWAL §5), never
+// a rewrite of the button. A plain button keeps the old innerHTML behaviour.
+function setHeroButtonState(btn, html) {
+    if (!btn) return;
+    const sub = btn.querySelector('.hero-sub');
+    if (sub) { sub.innerHTML = html || ''; return; }
+    if (html) btn.innerHTML = html;
+}
+
 async function runBacktest() {
     const btn = document.getElementById('btn-backtest');
     if (!btn) return;
@@ -8588,7 +8657,7 @@ async function runBacktest() {
         const dataOk = await _ensureBacktestData(btn);
         if (!dataOk) return;
 
-        btn.innerHTML = '<span class="think-dots"><span></span><span></span><span></span><span></span></span> thinking...';
+        setHeroButtonState(btn, '<span class="think-dots"><span></span><span></span><span></span><span></span></span> running');
         const btBody = buildBacktestBody();
         const _sess = btBody.tr_allowed_sessions || btBody.conf_allowed_sessions || 'ALL';
         const _sessLabel = Array.isArray(_sess) ? _sess.join('+') : String(_sess);
@@ -8648,7 +8717,7 @@ async function runBacktest() {
         if (progressStarted) _stopBacktestProgress(succeeded);
         _backtestInProgress = false;
         btn.disabled = false;
-        btn.textContent = 'EXECUTE BACKTEST';
+        setHeroButtonState(btn, '');
     }
 }
 
@@ -8791,7 +8860,7 @@ async function runPiOptionsBacktest(btn) {
     } finally {
         _backtestInProgress = false;
         btn.disabled = false;
-        btn.textContent = 'EXECUTE BACKTEST';
+        setHeroButtonState(btn, '');
     }
 }
 
@@ -10947,9 +11016,9 @@ function renderMetrics(m, backtestTrades, options) {
         //   MAX DD | WEEKLY VAR   ← 風險/穩定度提前,在看品質指標之前先看風險
         //   PF | CALMAR           ·  TRADES | RR             ·  LONG | SHORT WIN
         { label: totalPnlLabel,
-          value: '$' + total_pnl.toFixed(0) + paren(liveStats ? '$' + num(liveStats.total_pnl).toFixed(0) : ''),
-          cls: total_pnl >= 0 ? 'pos' : 'neg' },
-        { label: 'MONTHLY PNL',
+          value: formatMoney(total_pnl, { decimals: 0 }) + paren(liveStats ? '$' + num(liveStats.total_pnl).toFixed(0) : ''),
+          cls: total_pnl >= 0 ? 'pos' : 'neg', tier: 'hero' },
+        { label: 'MONTHLY PNL', tier: 'key',
           value: (monthlyAvg != null ? '$' + monthlyAvg.toFixed(0) : '--')
                  + paren(liveMonthlyAvg != null ? '$' + liveMonthlyAvg.toFixed(0) : ''),
           cls: (monthlyAvg != null && monthlyAvg >= 0) ? 'pos' : 'neg' },
@@ -10997,13 +11066,13 @@ function renderMetrics(m, backtestTrades, options) {
                     ? '$' + (num(liveStats.max_dd) > 0 ? '-' + num(liveStats.max_dd).toFixed(0)
                                                        : num(liveStats.max_dd).toFixed(0))
                     : ''),
-          cls: max_dd > 0 ? 'neg' : '' },
+          cls: max_dd > 0 ? 'neg' : '', tier: 'key' },
         weeklyVarItem,
         { label: 'PROFIT FACTOR'
                  + (_pfWarn ? _warn('PF below 1.2 — after slippage and commission this is effectively break-even. '
                                     + 'Treat it as no edge, not a small edge.') : ''),
           value: fmtPF(pfPrimary) + paren(pfLive != null ? fmtPF(pfLive) : ''),
-          cls: '' },
+          cls: '', tier: 'key' },
         { label: 'CALMAR'
                  + (_calWarn ? _warn('Calmar below 1 — annualised return does not cover the max drawdown. '
                                      + 'The equity curve is paying more in pain than it returns.') : ''),
@@ -11013,7 +11082,7 @@ function renderMetrics(m, backtestTrades, options) {
                  + (_cntWarn ? _warn('Fewer than 20 trades — the sample is too small for PF, RR, Calmar or win '
                                      + 'rate to mean anything. Widen the window before drawing conclusions.') : ''),
           value: String(total_trades || 0) + paren(liveStats ? String(liveStats.trades || 0) : ''),
-          cls: '' },
+          cls: '', tier: 'key' },
         { label: 'RR RATIO'
                  + (_rrWarn ? _warn('RR below 1 — average win is smaller than average loss, so the strategy '
                                     + 'depends entirely on win rate holding up.') : ''),
@@ -11042,13 +11111,26 @@ function renderMetrics(m, backtestTrades, options) {
         })(),
     ];
 
-    grid.innerHTML = items.map(i => `
-        <div class="metric-card"${i.full ? ' style="grid-column:1 / -1;"' : ''}>
+    // 1.5.1h: one hero (net P&L), four key tiles, the rest behind MORE
+    // METRICS (progressive disclosure). A warning inside the collapsed group
+    // is still surfaced on its summary line (exception-based, Few).
+    const card = (i) => `
+        <div class="metric-card${i.tier === 'hero' ? ' metric-hero' : ''}"${i.full || i.tier === 'hero' ? ' style="grid-column:1 / -1;"' : ''}>
             <div class="label">${i.label}</div>
             <div class="value ${i.cls}">${i.value}</div>
-        </div>
-    `).join('');
+        </div>`;
+    const primary = items.filter(i => i && i.tier);
+    const rest = items.filter(i => i && !i.tier);
+    const restWarnings = rest.filter(i => /tpx-(warn|danger)/.test(String(i.label) + String(i.value))).length;
+    grid.innerHTML = primary.map(card).join('')
+        + '<details class="metrics-more"' + (_metricsMoreOpen ? ' open' : '') + ' style="grid-column:1 / -1;">'
+        + '<summary><span class="micro">MORE METRICS</span><span class="adv-count">' + rest.length + '</span>'
+        + (restWarnings ? '<span class="adv-changed">' + _alertMark + ' ' + restWarnings + '</span>' : '')
+        + '</summary><div class="metrics-grid metrics-more-grid">' + rest.map(card).join('') + '</div></details>';
+    const more = grid.querySelector('.metrics-more');
+    if (more) more.addEventListener('toggle', () => { _metricsMoreOpen = more.open; });
 }
+let _metricsMoreOpen = false;
 
 const TRADE_DISPLAY_TIME_ZONE = SYSTEM_TIME_ZONES.market;
 
@@ -12302,12 +12384,23 @@ function _robTopstepHtml(analysis, slipTicks) {
         topstepHead('MIN PAYOUT BAL P50', 'Median required balance/target among eligible replays.'),
     ].join('');
 
+    // 1.5.1h: exception-based colour (Few). The pass share is a neutral inline
+    // bar, MLL FAIL turns negative only when failing is likelier than passing,
+    // and the size the backtest is using now is the selected row.
+    let currentSize = 0;
+    try { currentSize = Number(collectStrategyParams('bt').contract_size) || 0; } catch (_) {}
+    const rowOpen = row => '<tr' + (row.contracts === currentSize ? ' class="is-current" aria-current="true"' : '') + '>';
+    const passCell = row => '<td class="pct-cell"><span class="pct-bar" style="--w:'
+        + Math.max(0, Math.min(100, (Number(row.passRate) || 0) * 100)).toFixed(1) + '%"></span>'
+        + _robPct(row.passRate, 2) + '</td>';
+    const failCell = row => '<td class="' + (row.failRate > row.passRate ? 'institution-neg' : '') + '">'
+        + _robPct(row.failRate, 2) + '</td>';
     const combineRow = row => {
         if (!row) return '';
-        return '<tr>'
+        return rowOpen(row)
             + '<td>' + row.contracts + ' MNQ</td>'
-            + '<td class="institution-pos">' + _robPct(row.passRate, 2) + '</td>'
-            + '<td class="' + (row.failRate > 0.02 ? 'institution-neg' : '') + '">' + _robPct(row.failRate, 2) + '</td>'
+            + passCell(row)
+            + failCell(row)
             + '<td>' + _robPct(row.openRate, 2) + '</td>'
             + '<td>' + daysText(row) + '</td>'
             + '<td>' + _robPct(row.targetRaisedAmongPassRate, 1) + '</td>'
@@ -12316,10 +12409,10 @@ function _robTopstepHtml(analysis, slipTicks) {
     };
     const xfaRow = row => {
         if (!row) return '';
-        return '<tr>'
+        return rowOpen(row)
             + '<td>' + row.contracts + ' MNQ</td>'
-            + '<td class="institution-pos">' + _robPct(row.passRate, 2) + '</td>'
-            + '<td class="' + (row.failRate > 0.02 ? 'institution-neg' : '') + '">' + _robPct(row.failRate, 2) + '</td>'
+            + passCell(row)
+            + failCell(row)
             + '<td>' + _robPct(row.openRate, 2) + '</td>'
             + '<td>' + daysText(row) + '</td>'
             + '<td>' + _robUsd(row.medianPassTarget) + '</td>'
@@ -12339,7 +12432,7 @@ function _robTopstepHtml(analysis, slipTicks) {
         + sourceDays + ' active days.';
     return '<div class="institution-card institution-wide rob-topstep-card">'
         + '<h3>TOPSTEP 50K' + _robHelpDot(topstepHelp) + '</h3>'
-        + '<div class="rob-topstep-verdict"><strong>COMBINE · ' + winner + ' MNQ</strong></div>'
+        + '<div class="rob-topstep-verdict"><span class="micro">BEST COMBINE SIZE</span><strong>' + winner + ' MNQ</strong></div>'
         + '<div class="rob-topstep-rules">'
         + '<section class="rob-topstep-rule"><h4>TRADING COMBINE · 50%'
         + _robHelpDot('Trading Combine: simulated pass rate within 60 active days. '
@@ -12497,6 +12590,38 @@ function _researchDataMetrics(entry) {
     return items.map((item) => '<span class="research-data-metric">' + _attr(item) + '</span>').join('');
 }
 
+
+// 1.5.1h: research candidate cards. Tufte: show the comparison, not a wall of
+// chips — three key numbers, a verdict, and one diverging bar pair (net vs
+// +14-tick stress) on a scale SHARED by every card (small multiples), so the
+// cards compare at a glance. Everything else is one click away.
+function _researchHeadline(entry) {
+    const e = entry.evaluation || {};
+    const pick = (...keys) => {
+        for (const k of keys) { const v = Number(e[k]); if (e[k] != null && Number.isFinite(v)) return v; }
+        return null;
+    };
+    const net = pick('net_usd', 'mnq_net_usd');
+    const stress = pick('stress_14_tick_net_usd', 'mnq_stress_14_tick_net_usd');
+    const pf = pick('pf');
+    const failedGate = e.walk_forward_pass === false || e.monte_carlo_pass === false;
+    const verdict = stress != null && stress < 0 ? 'NEGATIVE'
+        : (failedGate ? 'FAILED GATE' : (stress != null ? 'PASSING' : 'NO STRESS TEST'));
+    return { net, stress, pf, verdict };
+}
+function _researchBars(head, scale) {
+    const bar = (label, value) => {
+        if (value == null) return '';
+        const share = scale > 0 ? Math.min(1, Math.abs(value) / scale) : 0;
+        const side = value < 0 ? 'neg' : 'pos';
+        return '<div class="rc-bar-row"><span class="rc-bar-label">' + label + '</span>'
+            + '<span class="rc-bar-track"><span class="rc-bar rc-bar-' + side + '" style="--w:'
+            + (share * 50).toFixed(2) + '%"></span><span class="rc-bar-zero"></span></span>'
+            + '<span class="rc-bar-value">' + _attr(formatMoney(value)) + '</span></div>';
+    };
+    return bar('NET', head.net) + bar('+14T', head.stress);
+}
+
 async function renderResearchDataCatalog(_force) {
     const status = document.getElementById('research-data-status');
     const summary = document.getElementById('research-data-summary');
@@ -12613,22 +12738,35 @@ async function renderResearchDataCatalog(_force) {
             + '<th>RESEARCH USE</th><th>TIMESTAMP / QUALITY LIMITS</th>'
             + '</tr></thead><tbody>' + sourceRows + '</tbody></table>';
 
-        strategiesHost.innerHTML = strategies.map((entry) => {
+        const heads = strategies.map(_researchHeadline);
+        const scale = Math.max(1, ...heads.flatMap(h => [h.net, h.stress])
+            .filter(v => v != null).map(v => Math.abs(v)));
+        strategiesHost.innerHTML = strategies.map((entry, index) => {
             const copy = strategyCopy[entry.id] || {};
             const label = entry.label || copy.label || String(entry.id || 'Research candidate').replace(/_/g, ' ');
             const scope = entry.scope || copy.scope || 'See the linked study record for its sample window.';
             const reason = entry.reason_for_rank || copy.reason
                 || 'Evidence remains research-only pending the shared stability gates.';
-            return '<article class="research-data-strategy">'
+            const head = heads[index];
+            const level = head.verdict === 'PASSING' ? 'ok' : (head.verdict === 'NO STRESS TEST' ? 'off' : 'bad');
+            const tile = (name, value) => '<div class="rc-kpi"><span class="micro">' + name + '</span><span class="rc-kpi-value">'
+                + value + '</span></div>';
+            return '<article class="research-data-strategy rc-card">'
                 + '<div class="research-data-rank">#' + _attr(entry.rank) + '</div>'
-                + '<div><div class="research-data-strategy-title">' + _attr(label)
-                + '</div><div class="research-data-strategy-scope">'
-                + _attr(String(entry.status || '').replace(/_/g, ' ')) + ' · '
-                + _attr(scope) + '</div></div>'
-                + '<div class="research-data-strategy-evidence"><div class="research-data-metrics">'
-                + _researchDataMetrics(entry) + '</div></div>'
-                + '<div class="research-data-strategy-reason">' + _attr(reason)
-                + '</div></article>'
+                + '<div class="rc-main"><div class="research-data-strategy-title">' + _attr(label) + '</div>'
+                + '<div class="rc-meta"><span class="state-chip" data-level="' + level + '">' + head.verdict + '</span>'
+                + '<span class="research-data-strategy-scope">' + _attr(String(entry.status || '').replace(/_/g, ' ')) + '</span></div></div>'
+                + '<div class="rc-kpis">'
+                + tile('NET', head.net == null ? '—' : _attr(formatMoney(head.net)))
+                + tile('PF', head.pf == null ? '—' : head.pf.toFixed(2))
+                + tile('+14T STRESS', head.stress == null ? '—' : _attr(formatMoney(head.stress)))
+                + '</div>'
+                + '<div class="rc-bars">' + _researchBars(head, scale) + '</div>'
+                + '<details class="rc-details"><summary><span class="micro">DETAILS</span></summary>'
+                + '<div class="research-data-strategy-scope">' + _attr(scope) + '</div>'
+                + '<div class="research-data-metrics">' + _researchDataMetrics(entry) + '</div>'
+                + '<div class="research-data-strategy-reason">' + _attr(reason) + '</div></details>'
+                + '</article>';
         }).join('');
 
         footnote.textContent = String(catalog.ranking_basis || 'Priority reflects evidence quality, cost stress, cross-period checks, date-cluster uncertainty, and prospective coverage.')
@@ -13214,6 +13352,14 @@ async function liveSlotStop(slot) {
     setTimeout(() => pollLiveSlots({ restart: true }), 300);
 }
 
+function _setDailyStartChip(text, level, title) {
+    const chip = document.getElementById('daily-start-chip');
+    if (!chip) return;
+    chip.textContent = text;
+    chip.dataset.level = level;
+    chip.title = title || '';
+}
+
 async function loadDailyStart() {
     const description = document.getElementById('daily-start-description');
     if (!description) return;
@@ -13223,13 +13369,23 @@ async function loadDailyStart() {
         if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
         document.getElementById('daily-start-enabled').checked = !!data.enabled;
         document.getElementById('daily-start-time').value = data.time;
-        description.textContent = (data.enabled ? 'ON · ' + data.preset : 'OFF · Default: ' + data.default_preset)
+        const full = (data.enabled ? 'ON · ' + data.preset : 'OFF · Default: ' + (data.default_preset || 'none'))
             + ' · ' + (data.default_size || '?') + ' contracts · Cash-session weekdays'
             + (data.enabled && data.attempt_state && data.attempt_state !== 'idle' ? ' · ' + data.attempt_state : '')
             + (data.enabled && data.replacement_state && data.replacement_state !== 'idle' ? ' · restart: ' + data.replacement_state : '')
             + (data.last_error ? ' · ' + data.last_error : '');
+        // 1.5.1h: one state chip; the full sentence moves to its tooltip and
+        // only a failure shows a detail line (exception-based).
+        const failed = !!data.enabled && (['failed', 'unknown', 'runtime_failed'].includes(data.attempt_state)
+            || !!data.last_error);
+        _setDailyStartChip(data.enabled ? (failed ? 'FAILED' : 'ON · ' + data.time) : 'OFF',
+            failed ? 'bad' : (data.enabled ? 'ok' : 'off'), full);
+        description.textContent = failed ? (data.last_error || data.attempt_state) : '';
+        description.hidden = !failed;
     } catch (error) {
+        _setDailyStartChip('UNAVAILABLE', 'bad', error.message);
         description.textContent = 'Setting unavailable: ' + error.message;
+        description.hidden = false;
     }
 }
 
@@ -13284,11 +13440,24 @@ function _liveSlotRenderStatus(slot, statusMap, sess, pollStale) {
     const st = statusMap[accId];
     const dot = document.getElementById('live-slot-dot-' + slot);
     const set = (base, txt, color) => { const el = document.getElementById(base + '-' + slot); if (el) { el.textContent = txt; if (color) el.style.color = color; } };
+    // 1.5.1h: exception-based chips — visible only while abnormal (Few).
+    const exc = (base, txt, color, abnormal) => {
+        set(base, txt, color);
+        const chip = (document.getElementById(base + '-' + slot) || {}).parentElement;
+        if (chip && chip.classList.contains('exc-chip')) chip.hidden = !abnormal;
+    };
+    const idle = () => {
+        ['live-slot-phase', 'live-slot-pnl', 'live-slot-pos'].forEach(b => set(b, '--', 'var(--text3)'));
+        ['live-slot-mode', 'live-slot-mbo', 'live-slot-dl', 'live-slot-rv'].forEach(b => exc(b, '--', 'var(--text3)', false));
+        _liveSlotLossMeter(slot, null);
+    };
     set('live-slot-mkt', sess.label, sess.color);
+    // Status dots carry state by colour only; no glow (UI renewal: no light).
+    if (dot) dot.style.boxShadow = 'none';
     if (!accId) {
         set('live-slot-status', '—', 'var(--text3)');
-        if (dot) { dot.style.background = 'var(--text3)'; dot.style.boxShadow = 'none'; }
-        ['live-slot-phase', 'live-slot-mode', 'live-slot-mbo', 'live-slot-dl', 'live-slot-rv', 'live-slot-pnl'].forEach(b => set(b, '--', 'var(--text3)'));
+        if (dot) dot.style.background = 'var(--text3)';
+        idle();
         return;
     }
     if (st && st.running) {
@@ -13306,18 +13475,13 @@ function _liveSlotRenderStatus(slot, statusMap, sess, pollStale) {
             ? 'RUNNING · STATUS STALE'
             : (starting ? 'STARTING' : (degraded ? 'RUNNING · DEGRADED' : 'RUNNING')),
             uncertain ? 'var(--amber)' : 'var(--green)');
-        if (dot) {
-            dot.style.background = uncertain ? 'var(--amber)' : 'var(--green)';
-            dot.style.boxShadow = uncertain
-                ? '0 0 6px var(--amber)'
-                : '0 0 6px var(--green)';
-        }
+        if (dot) dot.style.background = uncertain ? 'var(--amber)' : 'var(--green)';
         set('live-slot-phase', st.phase || '--', 'var(--text2)');
         const activeModeName = st.active_mode ? strategyDisplayName(st.active_mode) : '';
         const strategyModeName = st.strategy_mode ? strategyDisplayName(st.strategy_mode) : 'FACTOR';
         const mode = st.confluence_shadow ? 'SHADOW (NO ORDERS)'
             : ((activeModeName && activeModeName !== strategyModeName) ? activeModeName : 'LIVE');
-        set('live-slot-mode', mode, 'var(--green)');
+        exc('live-slot-mode', mode, mode === 'LIVE' ? 'var(--text2)' : 'var(--amber)', mode !== 'LIVE');
         if (deltaMode) {
             const mboState = String((mbo && mbo.state) || '').toLowerCase();
             const mboText = mbo && mbo.connected
@@ -13328,24 +13492,169 @@ function _liveSlotRenderStatus(slot, statusMap, sess, pollStale) {
             const mboColor = mbo && mbo.connected
                 ? (mbo.ready ? 'var(--green)' : 'var(--amber)')
                 : 'var(--red)';
-            set('live-slot-mbo', mboText, mboColor);
+            exc('live-slot-mbo', mboText, mboColor, !(mbo && mbo.connected && mbo.ready));
         } else {
-            set('live-slot-mbo', 'N/A', 'var(--text3)');
+            exc('live-slot-mbo', 'N/A', 'var(--text3)', false);
         }
         const pnl = st.daily_pnl || 0;
-        set('live-slot-pnl', formatMoney(pnl), pnl > 0 ? 'var(--green)' : (pnl < 0 ? 'var(--red)' : 'var(--t1)'));
+        const pnlEl = document.getElementById('live-slot-pnl-' + slot);
+        if (pnlEl) {
+            pnlEl.style.color = pnl > 0 ? 'var(--green)' : (pnl < 0 ? 'var(--red)' : 'var(--t1)');
+            setRollingText(pnlEl, formatMoney(pnl));
+        }
+        _liveSlotLossMeter(slot, pnl);
+        _liveSlotPosition(slot, st);
         const g = st.risk_gates || {}, dl = g.daily_loss || {}, rv = g.prev_rv || {};
-        set('live-slot-dl', dl.limit ? (dl.resting ? ('LOCKED ' + (dl.count || 0) + '/' + dl.limit) : ((dl.count || 0) + '/' + dl.limit)) : 'OFF', dl.resting ? 'var(--red)' : 'var(--text2)');
-        set('live-slot-rv', rv.lookback ? (rv.blocking ? 'BLOCKED' : rv.lookback + 'D PASS') : 'OFF', rv.blocking ? 'var(--red)' : 'var(--text2)');
+        exc('live-slot-dl', dl.limit ? (dl.resting ? ('LOCKED ' + (dl.count || 0) + '/' + dl.limit) : ((dl.count || 0) + '/' + dl.limit)) : 'OFF', dl.resting ? 'var(--red)' : 'var(--text2)', !!dl.resting);
+        exc('live-slot-rv', rv.lookback ? (rv.blocking ? 'BLOCKED' : rv.lookback + 'D PASS') : 'OFF', rv.blocking ? 'var(--red)' : 'var(--text2)', !!rv.blocking);
     } else if (pollStale) {
         set('live-slot-status', 'STATUS STALE', 'var(--amber)');
-        if (dot) { dot.style.background = 'var(--amber)'; dot.style.boxShadow = '0 0 6px var(--amber)'; }
+        if (dot) dot.style.background = 'var(--amber)';
     } else {
         set('live-slot-status', st ? 'STOPPED' : 'NOT STARTED', 'var(--text3)');
-        if (dot) { dot.style.background = 'var(--text3)'; dot.style.boxShadow = 'none'; }
-        ['live-slot-phase', 'live-slot-mode', 'live-slot-mbo', 'live-slot-dl', 'live-slot-rv', 'live-slot-pnl'].forEach(b => set(b, '--', 'var(--text3)'));
+        if (dot) dot.style.background = 'var(--text3)';
+        idle();
     }
 }
+
+// 1.5.1h: LOSS LIMIT LEFT meter. The Topstep daily loss limit is defined once
+// in topstep-eval.js (DEFAULTS.dailyLossLimit, next to the MLL). The fill is
+// the share still available; it turns warning at 50% used and negative at 75%.
+function _liveSlotLossMeter(slot, dayPnl) {
+    const value = document.getElementById('live-slot-dll-' + slot);
+    const fill = document.getElementById('live-slot-dll-meter-' + slot);
+    const limit = Number(((window.TPXTopstepEval || {}).DEFAULTS || {}).dailyLossLimit) || 0;
+    if (!value || !fill) return;
+    if (dayPnl == null || !Number.isFinite(Number(dayPnl)) || !limit) {
+        value.textContent = '--';
+        value.style.color = 'var(--text3)';
+        fill.style.width = '0%';
+        delete fill.dataset.level;
+        return;
+    }
+    const left = Math.max(0, limit + Math.min(0, Number(dayPnl)));
+    const share = left / limit;
+    const level = share <= 0.25 ? 'bad' : (share <= 0.5 ? 'warn' : 'ok');
+    setRollingText(value, '$' + Math.round(left).toLocaleString('en-US') + ' / $' + Math.round(limit).toLocaleString('en-US'));
+    value.style.color = level === 'bad' ? 'var(--short)' : (level === 'warn' ? 'var(--warn)' : 'var(--t1)');
+    fill.style.width = (share * 100).toFixed(1) + '%';
+    fill.dataset.level = level;
+}
+
+// Position tile: the same helpers the Live top bar uses (one definition).
+function _liveSlotPosition(slot, st) {
+    const el = document.getElementById('live-slot-pos-' + slot);
+    if (!el) return;
+    if (st && st.position) {
+        const side = positionSideMeta(st.position);
+        const avg = positionAvgText(st.position);
+        el.textContent = side.label + ' ' + positionQty(st.position) + (avg !== '?' ? ' @ ' + avg : '');
+        el.style.color = side.isLong ? 'var(--long)' : 'var(--short)';
+    } else if (st && st.pending_order_id) {
+        el.textContent = 'PENDING';
+        el.style.color = 'var(--warn)';
+    } else {
+        el.textContent = 'FLAT';
+        el.style.color = 'var(--t2)';
+    }
+}
+
+
+// ── 1.5.1h Motion (MOTION_SPEC, no light) ───────────────────────────────────
+// Every effect respects prefers-reduced-motion and never delays input.
+function _motionReduced() {
+    try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (_) { return false; }
+}
+
+// Odometer: only the digits that changed roll (400 ms, emphasized decelerate);
+// up rolls in from below, down from above. textContent stays the plain value.
+function setRollingText(el, text) {
+    if (!el) return;
+    const next = String(text);
+    const prev = el.textContent;
+    if (prev === next) return;
+    const parse = (v) => Number(String(v).replace(/[^0-9.\-−]/g, '').replace('−', '-'));
+    const a = parse(prev), b = parse(next);
+    if (_motionReduced() || !prev || prev === '--' || !Number.isFinite(a) || !Number.isFinite(b)) {
+        el.textContent = next;
+        return;
+    }
+    const dir = b >= a ? 'up' : 'down';
+    const pad = Math.max(0, prev.length - next.length);
+    const old = prev.length > next.length ? prev.slice(pad) : ' '.repeat(next.length - prev.length) + prev;
+    const esc = (c) => c.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    el.innerHTML = [...next].map((c, i) => (/[0-9]/.test(c) && c !== old[i])
+        ? '<span class="odo odo-' + dir + '">' + c + '</span>' : esc(c)).join('');
+}
+
+// Selection block that slides between tabs (200 ms standard) — not an
+// underline and not a side bar. Follows .active however it is set.
+function initTabSliders() {
+    document.querySelectorAll('.bottom-tabs, .seg-switch').forEach((host) => {
+        if (host.querySelector(':scope > .tab-slider')) return;
+        const slider = document.createElement('span');
+        slider.className = 'tab-slider';
+        slider.setAttribute('aria-hidden', 'true');
+        host.prepend(slider);
+        host.classList.add('has-slider');
+        const place = (instant) => {
+            const active = host.querySelector(':scope > .active');
+            if (!active || !active.offsetWidth) { slider.style.opacity = '0'; return; }
+            if (instant) slider.style.transition = 'none';
+            slider.style.opacity = '1';
+            slider.style.width = active.offsetWidth + 'px';
+            slider.style.height = active.offsetHeight + 'px';
+            slider.style.transform = 'translate(' + active.offsetLeft + 'px,' + active.offsetTop + 'px)';
+            if (instant) { void slider.offsetWidth; slider.style.transition = ''; }
+        };
+        new MutationObserver(() => place(false)).observe(host, { subtree: true, attributes: true, attributeFilter: ['class'] });
+        if (window.ResizeObserver) new ResizeObserver(() => place(true)).observe(host);
+        place(true);
+    });
+}
+
+// Workspace switch: visible panels enter 12 px up + fade, 40 ms apart, max 8.
+function staggerEnter(nodes) {
+    if (_motionReduced()) return;
+    nodes.filter(n => n && n.offsetParent !== null).slice(0, 8).forEach((node, i) => {
+        node.classList.remove('motion-enter');
+        void node.offsetWidth;
+        node.style.setProperty('--motion-i', i);
+        node.classList.add('motion-enter');
+        node.addEventListener('animationend', () => node.classList.remove('motion-enter'), { once: true });
+    });
+}
+function _workspaceEnterTargets(tab) {
+    if (tab === 'calendar') return [...document.querySelectorAll('#calendar-view > *')];
+    if (tab === 'live') return [...document.querySelectorAll('#live-panel > .seg-switch, #live-panel > .panel')];
+    return [document.getElementById('backtest-config-panel'), document.getElementById('metrics-panel')];
+}
+document.addEventListener('DOMContentLoaded', () => {
+    initTabSliders();
+    document.querySelectorAll('.app-rail .tab').forEach((t) => {
+        t.addEventListener('click', () => requestAnimationFrame(() => staggerEnter(_workspaceEnterTargets(t.dataset.tab))));
+    });
+});
+
+// 1.5.1h: FUTURES / OPTIONS live panes — one account surface at a time.
+const LIVE_PANE_STORAGE_KEY = 'ancserTPXLivePane';
+function setLivePane(name) {
+    const pane = name === 'options' ? 'options' : 'futures';
+    document.querySelectorAll('[data-live-pane]').forEach(btn => {
+        const on = btn.dataset.livePane === pane;
+        btn.classList.toggle('active', on);
+        btn.setAttribute('aria-selected', String(on));
+    });
+    document.querySelectorAll('[data-live-pane-panel]').forEach(panel => {
+        panel.hidden = panel.dataset.livePanePanel !== pane;
+    });
+    try { localStorage.setItem(LIVE_PANE_STORAGE_KEY, pane); } catch (_) {}
+}
+document.addEventListener('DOMContentLoaded', () => {
+    let saved = 'futures';
+    try { saved = localStorage.getItem(LIVE_PANE_STORAGE_KEY) || 'futures'; } catch (_) {}
+    setLivePane(saved);
+});
 
 function pollLiveSlots(options) {
     const lp = document.getElementById('live-panel');

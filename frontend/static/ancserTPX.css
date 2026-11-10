@@ -2066,11 +2066,8 @@
 .factor-sl-row.pi-dual-sl > .pi-short-sl-group { grid-area: short-sl; }
 .factor-sl-row.pi-dual-sl > .pi-short-hold-group { grid-area: short-time; }
 
-.sidebar #btn-backtest {
-    height: 42px;
-    min-height: 42px;
-    box-sizing: border-box;
-}
+/* 1.5.1g: the fixed 42px #btn-backtest height was removed; EXECUTE BACKTEST
+   is a .hero-btn (ancserTPX-design.css) and an ID rule would override it. */
 
 /* Chart-layer switches share the ordinary parameter-switch geometry. */
 .ui-switch {

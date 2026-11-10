@@ -32,8 +32,8 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z-cleanup1&intraarrow=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&slpair=1&multx=2&robustness=4&footprint=2&cvd=1&flowcompact=1&contract=1&pdptflex=1&datacatalog=20260925&relayout=1&ui151=1">
-    <link rel="stylesheet" href="/static/ancserTPX-design.css?v=1.0.0-design15&motion=4&connection=2&theme=3&watermark=4&chartcover=1&latency=2&research=1&panning=1&pnltransition=1&tablemotion=1&contractsync=1&pioptions=1&relayout=1&ui151=1">
+    <link rel="stylesheet" href="/static/ancserTPX.css?v=1.0.10z-cleanup1&intraarrow=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&statuscompact=1&uirepair=4&calgrid=2&slpair=1&multx=2&robustness=4&footprint=2&cvd=1&flowcompact=1&contract=1&pdptflex=1&datacatalog=20260925&relayout=1&ui151=1&ui151g=1&ui151h=2">
+    <link rel="stylesheet" href="/static/ancserTPX-design.css?v=1.0.0-design15&motion=4&connection=2&theme=3&watermark=4&chartcover=1&latency=2&research=1&panning=1&pnltransition=1&tablemotion=1&contractsync=1&pioptions=1&relayout=1&ui151=1&ui151g=1&ui151h=2">
 </head>
 <body data-ui-density="standard">
 
@@ -286,7 +286,7 @@
             <div id="pi-options-params-bt" class="pi-options-params" style="display:none;margin-top:12px;"></div>
             <div id="tr-params-bt" style="margin-top:12px;">
                 <div class="panel-title mt14">ENTRY</div>
-                <div class="form-row" id="entry-trigger-row-bt">
+                <div class="form-row adv" id="entry-trigger-row-bt">
                     <div class="form-group fx1">
                         <label>ENTRY TRIGGER <span class="lbl-hint">(fixed by model)</span></label>
                         <input type="text" id="sl-model-display-bt" readonly value="TREND: completed candle + model confirmation" class="input-ro-cyan">
@@ -779,7 +779,7 @@
                     </div>
                         </div>
                     </div>
-                    <div class="form-row pi-matrix-shell pi-continuation-shell">
+                    <div class="form-row pi-matrix-shell pi-continuation-shell adv">
                         <div class="form-group fx1 pi-matrix-form-group">
                             <label>CONTINUE SELECTED SIGNALS AT REOPEN
                                 <span class="lbl-hint">one re-entry after the same-day 18:00 ET reopen</span>
@@ -803,7 +803,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="form-row pi-lv2-replace-row">
+                    <div class="form-row pi-lv2-replace-row adv">
                         <div class="form-group fx1">
                             <label>LONG LV2 REPLACES ACTIVE LONG LV3
                                 <span class="lbl-hint">close a bot-owned Level-3 cyan PI, confirm flat, then enter the fresh long Level-2 dark-blue signal</span>
@@ -812,7 +812,7 @@
                             <button type="button" class="pi-matrix-source" id="pi-lv2-replace-source-bt" onclick="onPiLv2ReplaceProxy('bt')" tabindex="-1" aria-hidden="true"></button>
                         </div>
                     </div>
-                    <div class="form-row pi-reopen-gap-row">
+                    <div class="form-row pi-reopen-gap-row adv">
                         <div class="form-group fx1">
                             <label>MAX REOPEN GAP <span class="lbl-hint">(measured from 15:45 ET flat price; 0 = no cap)</span></label>
                             <select id="pi-reopen-gap-bt">
@@ -845,7 +845,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="form-row">
+                    <div class="form-row adv">
                         <div class="form-group fx1">
                             <label>MAX SIGNAL AGE <span class="lbl-hint">(Discord source timestamp · discard older)</span></label>
                             <select id="pi-max-age-bt">
@@ -1135,14 +1135,14 @@
             </div>
 
             <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
-                <button class="btn btn-primary" id="btn-backtest" onclick="runBacktest()" disabled>EXECUTE BACKTEST</button>
+                <button class="btn btn-primary hero-btn ticks" id="btn-backtest" onclick="runBacktest()" aria-label="Execute backtest" disabled><span class="wm-clip" data-wm="回測" aria-hidden="true"></span><span class="micro">EXECUTE</span><span class="hero-name">BACKTEST</span><span class="hero-sub"></span></button>
                 <div id="backtest-progress-wrap" style="display:none;margin-top:1px;">
                     <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
                         <span style="font-size:9px;letter-spacing:1px;color:var(--text3);">BACKTEST</span>
                         <span id="backtest-progress-text" style="font-size:9px;font-family:'IBM Plex Mono',monospace;color:var(--text2);">preparing</span>
                     </div>
                     <div style="height:2px;background:rgba(247,239,224,0.07);border-radius:1px;overflow:hidden;">
-                        <div id="backtest-progress-bar" style="height:100%;width:0%;background:var(--green);border-radius:1px;transition:width 0.25s linear;box-shadow:0 0 6px rgba(0,229,160,0.5);"></div>
+                        <div id="backtest-progress-bar" style="height:100%;width:0%;background:var(--green);border-radius:1px;transition:width 0.25s linear;"></div>
                     </div>
                 </div>
             </div>
@@ -1339,7 +1339,7 @@
                 </div>
                 <div id="tr-params-live" style="margin-top:12px;">
                     <div class="panel-title mt14">ENTRY</div>
-                    <div class="form-row" id="entry-trigger-row-live">
+                    <div class="form-row adv" id="entry-trigger-row-live">
                         <div class="form-group fx1">
                             <label>ENTRY TRIGGER <span class="lbl-hint">(fixed by model)</span></label>
                             <input type="text" id="sl-model-display-live" readonly value="TREND: completed candle + model confirmation" class="input-ro-cyan">
@@ -1810,7 +1810,7 @@
                     </div>
                         </div>
                     </div>
-                    <div class="form-row pi-matrix-shell pi-continuation-shell">
+                    <div class="form-row pi-matrix-shell pi-continuation-shell adv">
                         <div class="form-group fx1 pi-matrix-form-group">
                             <label>CONTINUE SELECTED SIGNALS AT REOPEN
                                 <span class="lbl-hint">one re-entry after the same-day 18:00 ET reopen</span>
@@ -1834,7 +1834,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="form-row pi-lv2-replace-row">
+                    <div class="form-row pi-lv2-replace-row adv">
                         <div class="form-group fx1">
                             <label>LONG LV2 REPLACES ACTIVE LONG LV3
                                 <span class="lbl-hint">close a bot-owned Level-3 cyan PI, confirm flat, then enter the fresh long Level-2 dark-blue signal</span>
@@ -1843,7 +1843,7 @@
                             <button type="button" class="pi-matrix-source" id="pi-lv2-replace-source-live" onclick="onPiLv2ReplaceProxy('live')" tabindex="-1" aria-hidden="true"></button>
                         </div>
                     </div>
-                    <div class="form-row pi-reopen-gap-row">
+                    <div class="form-row pi-reopen-gap-row adv">
                         <div class="form-group fx1">
                             <label>MAX REOPEN GAP <span class="lbl-hint">(measured from 15:45 ET flat price; 0 = no cap)</span></label>
                             <select id="pi-reopen-gap-live">
@@ -1876,7 +1876,7 @@
                             </div>
                         </div>
                     </div>
-                    <div class="form-row">
+                    <div class="form-row adv">
                         <div class="form-group fx1">
                             <label>MAX SIGNAL AGE <span class="lbl-hint">(Discord source timestamp · discard older)</span></label>
                             <select id="pi-max-age-live">
@@ -2169,40 +2169,51 @@
             <!-- Live account slot: the workspace follows one selected account.
                  Status is polled from /live/status-all for compatibility with the
                  server registry, while the UI exposes only the main account. -->
-            <div class="panel">
+            <!-- 1.5.1h: one live pane at a time (FUTURES = Topstep terminal account,
+                 OPTIONS = Robinhood ALERT account) so GO LIVE never scrolls away. -->
+            <div class="seg-switch live-pane-switch" role="tablist" aria-label="Live account">
+                <button type="button" class="seg-btn active" role="tab" aria-selected="true" data-live-pane="futures" onclick="setLivePane('futures')">FUTURES</button>
+                <button type="button" class="seg-btn" role="tab" aria-selected="false" data-live-pane="options" onclick="setLivePane('options')">OPTIONS</button>
+            </div>
+            <div class="panel" id="futures-account-panel" data-live-pane-panel="futures">
                 <div class="panel-title">ACCOUNT MAIN</div>
-                <div class="slot-status" id="daily-start-settings">
-                    <label><input type="checkbox" id="daily-start-enabled"> Daily start · Terminal</label>
-                    <div class="slot-line">
-                        <input type="time" id="daily-start-time" value="06:30" aria-label="Daily terminal start time">
-                        <span>America/Los_Angeles</span>
-                        <button type="button" class="btn" id="daily-start-save" onclick="saveDailyStart()">SAVE</button>
-                    </div>
-                    <div class="slot-line" id="daily-start-description">Loading daily start setting…</div>
-                    <div class="slot-line">STOP keeps Daily start OFF until enabled again. Keep Windows signed in.</div>
+                <!-- Exception-based status (Few): the head line and four stat tiles are
+                     always there; MODE / MBO / LOSS LOCK / VOLATILITY appear only when
+                     they are abnormal. -->
+                <div class="live-head"><span class="slot-dot" id="live-slot-dot-1"></span><span class="live-head-status" id="live-slot-status-1">—</span><span class="live-head-mkt"><span class="micro">MARKET</span> <span id="live-slot-mkt-1">--</span></span></div>
+                <div class="stat-grid">
+                    <div class="stat-tile stat-hero"><span class="micro">DAY NET P&amp;L</span><span class="stat-value" id="live-slot-pnl-1">--</span></div>
+                    <div class="stat-tile"><span class="micro">LOSS LIMIT LEFT</span><span class="stat-value" id="live-slot-dll-1">--</span><span class="meter" aria-hidden="true"><span class="meter-fill" id="live-slot-dll-meter-1"></span></span></div>
+                    <div class="stat-tile"><span class="micro">POSITION</span><span class="stat-value stat-text" id="live-slot-pos-1">--</span></div>
+                    <div class="stat-tile stat-wide"><span class="micro">PHASE</span><span class="stat-value stat-text" id="live-slot-phase-1">--</span></div>
+                </div>
+                <div class="exc-chips">
+                    <span class="exc-chip" hidden><span class="micro">MODE</span> <span id="live-slot-mode-1">--</span></span>
+                    <span class="exc-chip" hidden><span class="micro">MBO</span> <span id="live-slot-mbo-1">--</span></span>
+                    <span class="exc-chip" hidden><span class="micro">LOSS LOCK</span> <span id="live-slot-dl-1">--</span></span>
+                    <span class="exc-chip" hidden><span class="micro">VOLATILITY</span> <span id="live-slot-rv-1">--</span></span>
                 </div>
                 <select id="live-acct-select-1" onchange="onLiveSlotChange(1)" class="slot-input"><option value="">-- SELECT ACCOUNT --</option></select>
                 <select id="live-acct-preset-1" onchange="onLiveSlotChange(1)" class="slot-input" style="margin-top:6px;"><option value="">-- SELECT PRESET --</option></select>
+                <button class="btn btn-primary hero-btn ticks" onclick="liveSlotGoLive(1)" aria-label="Go live"><span class="wm-clip" data-wm="實盤" aria-hidden="true"></span><span class="micro">GO</span><span class="hero-name">LIVE</span><span class="hero-sub"></span></button>
                 <div class="slot-btnrow">
-                    <button class="btn btn-primary fx1" onclick="liveSlotGoLive(1)">GO LIVE</button>
                     <button class="btn fx1" onclick="liveSlotStop(1)">STOP</button>
                     <button class="btn btn-danger fx1" onclick="liveSlotFlatten(1)">FLAT</button>
                 </div>
-                <div class="slot-status">
-                    <div class="slot-head"><span class="slot-dot" id="live-slot-dot-1"></span>STATUS: <span id="live-slot-status-1" style="color:var(--text3);letter-spacing:1px;">—</span></div>
-                    <div class="slot-line slot-phase-line">PHASE: <span id="live-slot-phase-1" class="c-t3 slot-phase-text">--</span></div>
-                    <div class="slot-line">MODE: <span id="live-slot-mode-1" class="c-t3">--</span></div>
-                    <div class="slot-line">MARKET: <span id="live-slot-mkt-1" class="c-t3">--</span></div>
-                    <div class="slot-line">MBO DATA: <span id="live-slot-mbo-1" class="c-t3">--</span></div>
-                    <div class="slot-line">BOT LOSS LOCK: <span id="live-slot-dl-1" class="c-t3">--</span></div>
-                    <div class="slot-line">VOLATILITY GATE: <span id="live-slot-rv-1" class="c-t3">--</span></div>
-                    <div class="slot-line">DAILY PNL: <span id="live-slot-pnl-1" class="c-t3">--</span></div>
+                <div class="daily-start" id="daily-start-settings">
+                    <div class="daily-start-row">
+                        <label title="Starts the terminal on trading weekdays. STOP keeps it OFF until enabled again. Keep Windows signed in and awake."><input type="checkbox" id="daily-start-enabled"> <span class="micro">AUTO START</span></label>
+                        <input type="time" id="daily-start-time" value="06:30" aria-label="Daily terminal start time">
+                        <span class="micro">PT</span>
+                        <button type="button" class="btn btn-mini" id="daily-start-save" onclick="saveDailyStart()">SAVE</button>
+                    </div>
+                    <div class="daily-start-state"><span class="state-chip" id="daily-start-chip">…</span><span class="daily-start-detail" id="daily-start-description">Loading daily start setting…</span></div>
                 </div>
             </div>
             <!-- PI options account (Robinhood).  ALERT mode only turns PI
                  signals into order tickets; PAPER/LIVE need the Robinhood
                  Agentic Trading connection, which is not set up yet. -->
-            <div class="panel" id="options-account-panel">
+            <div class="panel" id="options-account-panel" data-live-pane-panel="options" hidden>
                 <div class="panel-title">ACCOUNT OPTIONS · ROBINHOOD</div>
                 <div class="slot-status" style="margin-top:0;"><div class="slot-line">BROKER: <span id="opt-broker-status" class="c-t3">NOT CONNECTED</span></div></div>
                 <div class="form-group" style="margin-top:6px;">
@@ -2605,7 +2616,7 @@
 </div>
 
     <script src="/static/tpx-system.js?v=1"></script>
-    <script src="/static/topstep-eval.js?v=1.0.9k-topstep2"></script>
-    <script src="/static/ancserTPX.js?v=1.0.10z-cleanup1&intraarrow=1&nyzone=20260624&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&fade109=1&riskgate109=1&acct109=6&modelrename=1&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&uirepair=4&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&contractroot=1&footprint=2&cvd=1&flowcompact=1&deltaabsorb=1&ui=straight3&researchcurve=1&layerswitch=2&tradealign=1&uihotfix=3&connectiontrim=1&chartpan=2&motion=4&connectionstatus=1&autoscale=2&timeformat=2&theme=2&chartcover=1&researchtheme=1&panning=1&pnltransition=1&contractdisplay=1&pdptflex=1&tablemotion=1&riskalpha=1&notrade=2&panfree=1&statushealth=1&datacatalog=20260925&wallgap=1&contractsync=1&oflayers=1&pioptions=1&optrows=1&optsize=1&relayout=1&ui151=2"></script>
+    <script src="/static/topstep-eval.js?v=1.0.9k-topstep2&dll=1"></script>
+    <script src="/static/ancserTPX.js?v=1.0.10z-cleanup1&intraarrow=1&nyzone=20260624&rr025=1&cal=8&tradezone=1&topstepday=1&netpnl=2&mktsess=1&chartfix=1&uifix=3&fade109=1&riskgate109=1&acct109=6&modelrename=1&paramui=1&or15viz=1&pmo=1&mnqsig=1&vahline1=2&kdjma1=1&winlock1=1&presetsync=4&signalstyle=4&holdoff=1&ematri=1&siglegend=1&boxfix=4&accenter=1&livepnl=1&axisclip=1&roles=1&englishlog=1&research=2&sessfib=1&mom=1&tpcap=6&norvgate=1&norisk=1&accountstate=1&backtestfix=1&uirepair=4&robustness=4&piaudit=1&chartcatchup=1&ver111=1&dedupe=1&tradehistory=1&slpair=1&multx=1&websec=1&contractroot=1&footprint=2&cvd=1&flowcompact=1&deltaabsorb=1&ui=straight3&researchcurve=1&layerswitch=2&tradealign=1&uihotfix=3&connectiontrim=1&chartpan=2&motion=4&connectionstatus=1&autoscale=2&timeformat=2&theme=2&chartcover=1&researchtheme=1&panning=1&pnltransition=1&contractdisplay=1&pdptflex=1&tablemotion=1&riskalpha=1&notrade=2&panfree=1&statushealth=1&datacatalog=20260925&wallgap=1&contractsync=1&oflayers=1&pioptions=1&optrows=1&optsize=1&relayout=1&ui151=2&ui151g=1&ui151h=2"></script>
 </body>
 </html>

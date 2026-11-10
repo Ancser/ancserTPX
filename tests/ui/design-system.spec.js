@@ -394,7 +394,7 @@ test("legacy deep-blue and Apple Light palettes switch and persist", async ({ pa
     page: getComputedStyle(document.documentElement).getPropertyValue("--surface-page").trim(),
     chart: getComputedStyle(document.documentElement).getPropertyValue("--surface-chart").trim(),
   }));
-  expect(graphite).toEqual({ page: "#08090d", chart: "#08090d" });
+  expect(graphite).toEqual({ page: "#0e1116", chart: "#15181d" });   // Relayout v2 palette
 
   const baseMotion = await page.evaluate(() => ({
     motion: getComputedStyle(document.documentElement).getPropertyValue("--ui-motion-duration").trim(),
@@ -416,16 +416,21 @@ test("legacy deep-blue and Apple Light palettes switch and persist", async ({ pa
   expect(baseMotion.research).toContain("0.18s");
   expect(baseMotion.pnl).toContain("0.18s");
 
-  await theme.click();
-  await expect(page.locator("html")).toHaveAttribute("data-tpx-theme", "apple-light");
-  await expect(theme).toHaveAttribute("data-theme", "apple-light");
-  const themeMotion = await page.evaluate(() => ({
+  // Click and sample in the same synchronous task: the 150 ms crossfade can end
+  // before a separate evaluate() runs on a slow runner (CLAUDE.md: no sleep-
+  // or race-based assertions). Measured mid-transition by construction.
+  const themeMotion = await page.evaluate(() => {
+    document.getElementById("theme-toggle").click();
+    return {
     transitioning: document.documentElement.classList.contains("theme-transitioning"),
     chart: getComputedStyle(document.querySelector("#chart-container")).transitionDuration,
     info: getComputedStyle(document.querySelector("#bottom-panel")).transitionDuration,
     research: getComputedStyle(document.querySelector("#calendar-view")).transitionDuration,
     pnl: getComputedStyle(document.querySelector("#pnl-curve-canvas")).transitionDuration,
-  }));
+    };
+  });
+  await expect(page.locator("html")).toHaveAttribute("data-tpx-theme", "apple-light");
+  await expect(theme).toHaveAttribute("data-theme", "apple-light");
   expect(themeMotion.transitioning).toBe(true);
   expect(themeMotion.chart).toContain("0.15s");
   expect(themeMotion.info).toContain("0.15s");
@@ -465,7 +470,7 @@ test("chart shell uses straight edges, restored watermark, and one account surfa
   expect(shell.panelRadius).toBe("0px");
   expect(shell.controlRadius).toBe("0px");
   expect(shell.watermark).toBe("ancserTPX");
-  expect(shell.watermarkFont).toContain("Orbitron");
+  expect(shell.watermarkFont).toContain("Inter");   // Relayout v2: Orbitron retired
   expect(shell.watermarkPosition).toEqual({ left: "12px", bottom: "34px", transform: "none" });
   expect(shell.minor).toBe(0);
   expect(shell.legend).toBeNull();
@@ -1091,8 +1096,20 @@ test("uses clear icons and flat, darker controls for the parameter rail", async 
       inputSurface: root.getPropertyValue("--surface-input").trim(),
       performanceSource: document.querySelector("#perf-source"),
       backtestButton: (() => {
-        const css = getComputedStyle(document.querySelector("#btn-backtest"));
-        return { background: css.backgroundColor, border: css.borderTopWidth, color: css.color };
+        const btn = document.querySelector("#btn-backtest");
+        const css = getComputedStyle(btn);
+        const wm = btn.querySelector(".wm-clip");
+        const wmCss = wm ? getComputedStyle(wm, "::after") : null;
+        const tl = getComputedStyle(btn, "::before");
+        const br = getComputedStyle(btn, "::after");
+        return {
+          background: css.backgroundColor, border: css.borderTopWidth, overflow: css.overflow,
+          height: Math.round(btn.getBoundingClientRect().height),
+          label: [btn.querySelector(".micro")?.textContent, btn.querySelector(".hero-name")?.textContent],
+          watermark: wm ? { text: wm.dataset.wm, hidden: wm.getAttribute("aria-hidden"),
+            clip: getComputedStyle(wm).overflow, content: wmCss.content } : null,
+          ticks: [tl.borderTopWidth, tl.borderLeftWidth, br.borderBottomWidth, br.borderRightWidth, tl.top, br.bottom],
+        };
       })(),
       switch: (() => {
         const track = document.querySelector(".ui-switch.on");
@@ -1117,14 +1134,22 @@ test("uses clear icons and flat, darker controls for the parameter rail", async 
   expect(surface.titles).not.toContain("ENTRY SETTINGS");
   expect(surface.titles).not.toContain("EXIT SETTINGS");
   expect(surface.titleBorders).toEqual(["0px", "0px", "0px"]);
-  expect(surface.titleLeftBorder).toBe("3px");
+  expect(surface.titleLeftBorder).toBe("0px");   // Relayout v2: no title bar
   expect(surface.buttonBorder).toBe("0px");
   expect(surface.inputBorder).toBe("0px");
   expect(surface.metricBorder).toBe("0px");
-  expect(surface.buttonSurface).toBe("#1b2535");
-  expect(surface.inputSurface).toBe("#080c14");
+  expect(surface.buttonSurface).toBe("#2f3136");
+  expect(surface.inputSurface).toBe("#131518");
   expect(surface.performanceSource).toBeNull();
-  expect(surface.backtestButton).toEqual({ background: "rgba(0, 0, 0, 0)", border: "1px", color: "rgb(0, 229, 160)" });
+  // 1.5.1g hero button (docs/UI_RENEWAL_FROM_AGEOFDEV.md §4–§5, user decision
+  // 2026-11-08): gray surface, English two-line label, Chinese watermark cut by
+  // the edge inside an aria-hidden clip, 「」 ticks drawn outside an unclipped box.
+  expect(surface.backtestButton).toEqual({
+    background: "rgb(47, 49, 54)", border: "0px", overflow: "visible", height: 92,
+    label: ["EXECUTE", "BACKTEST"],
+    watermark: { text: "回測", hidden: "true", clip: "hidden", content: '"回測"' },
+    ticks: ["1px", "1px", "1px", "1px", "-6px", "-6px"],
+  });
   expect(surface.switch.trackRadius).toBe("0px");
   expect(surface.switch.trackBackground).toBe("rgba(0, 0, 0, 0)");
   expect(surface.switch.thumbRadius).toBe("0px");
@@ -1259,7 +1284,7 @@ test("PI OPTIONS model uses its own panel and endpoint; the options account arms
   const rows = page.locator("#trades-tbody tr");
   await expect(rows).toHaveCount(2);
   await expect(rows.nth(0)).toContainText("+150.0%");                    // newest first
-  await expect(rows.nth(0)).toContainText("$+893.50");
+  await expect(rows.nth(0)).toContainText("+$893.50");   // Relayout v2 formatMoney
   await expect(rows.nth(0)).toContainText("TIME");
   // A limit filled the next morning: TIME starts at the signal, ENTRY carries the fill time.
   await expect(rows.nth(0).locator("td").nth(1)).toHaveAttribute("class", /trade-time-cell/);
