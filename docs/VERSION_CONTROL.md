@@ -18,6 +18,8 @@
 
 | 版本／提交訊息 | commit | 日期 | 內容依據 |
 |---|---|---|---|
+| 1.5.1k QA checklist | `7edabc9` | 2026-11-09 | 新增 `docs/QA.md`：CI 紅燈分類處理、UI 截圖前後對照、影響實盤改動後的首個交易日唯讀檢查表（L1–L10）。首筆紀錄：DST 修正後首次 06:30 自動啟動通過，粉π 空 2 MNQ 60 分平倉 +$146 |
+| 1.5.1j fix 2 stale UI tests | `a5c0639` | 2026-11-09 | 1H 切換測試改用固定日期（原本跨 11/1 夏令時間結束夜，400 根變 399）；catch-up 測試改認 U+2212 負號。Playwright 62 過、2 跳過 |
 | 1.5.1i CI skips private-data tests | `3bd1301` | 2026-11-09 | CI 沒有 ancserMarketData：Rust parity 與 Theta 回放測試缺資料時跳過（本機照跑）；GitHub 連續紅燈主因之一 |
 | 1.5.1h Grok webhook forwarder | `79c4994` | 2026-11-09 | PI 事件轉發給 Grok Bot（只轉發、不過濾、不下單）；payload 標 received_at／catch_up／listener_role；測試無法打到真的 Bot |
 | 1.5.1g UI renewal | `280578f` | 2026-11-09 | 大按鈕＋角記號；Live 主角損益、日虧損剩餘量表、異常才顯示；Backtest ADVANCED 收合；Research 候選卡片；動畫 |
